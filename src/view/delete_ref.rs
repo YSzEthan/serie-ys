@@ -10,13 +10,13 @@ use ratatui::{
 };
 
 use crate::{
-    color::ColorTheme,
-    config::UiConfig,
+    app::AppContext,
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
     git::{
         delete_branch, delete_branch_force, delete_remote_branch, delete_remote_tag, delete_tag,
         Ref, RefType,
     },
+    view::{ListRefreshViewContext, RefreshViewContext},
     widget::{
         commit_list::{CommitList, CommitListState},
         ref_list::RefListState,
@@ -25,9 +25,9 @@ use crate::{
 
 #[derive(Debug)]
 pub struct DeleteRefView<'a> {
-    commit_list_state: Option<CommitListState>,
+    commit_list_state: Option<CommitListState<'a>>,
     ref_list_state: RefListState,
-    refs: Vec<Rc<Ref>>,
+    refs: Vec<Ref>,
     repo_path: PathBuf,
 
     ref_name: String,
@@ -35,21 +35,19 @@ pub struct DeleteRefView<'a> {
     delete_from_remote: bool,
     force_delete: bool,
 
-    ui_config: &'a UiConfig,
-    color_theme: &'a ColorTheme,
+    ctx: Rc<AppContext>,
     tx: Sender,
 }
 
 impl<'a> DeleteRefView<'a> {
     pub fn new(
-        commit_list_state: CommitListState,
+        commit_list_state: CommitListState<'a>,
         ref_list_state: RefListState,
-        refs: Vec<Rc<Ref>>,
+        refs: Vec<Ref>,
         repo_path: PathBuf,
         ref_name: String,
         ref_type: RefType,
-        ui_config: &'a UiConfig,
-        color_theme: &'a ColorTheme,
+        ctx: Rc<AppContext>,
         tx: Sender,
     ) -> DeleteRefView<'a> {
         DeleteRefView {
@@ -61,8 +59,7 @@ impl<'a> DeleteRefView<'a> {
             ref_type,
             delete_from_remote: ref_type == RefType::RemoteBranch,
             force_delete: false,
-            ui_config,
-            color_theme,
+            ctx,
             tx,
         }
     }
@@ -99,6 +96,18 @@ impl<'a> DeleteRefView<'a> {
         let delete_from_remote = self.delete_from_remote;
         let force_delete = self.force_delete;
         let tx = self.tx.clone();
+
+        // Build refresh context before closing
+        let list_context = self
+            .commit_list_state
+            .as_ref()
+            .map(ListRefreshViewContext::from)
+            .unwrap_or(ListRefreshViewContext {
+                commit_hash: String::new(),
+                selected: 0,
+                height: 0,
+                scroll_to_top: true,
+            });
 
         let pending_msg = match ref_type {
             RefType::Tag => {
@@ -178,18 +187,18 @@ impl<'a> DeleteRefView<'a> {
                             format!("Remote branch '{}' deleted", ref_name)
                         }
                     };
-                    tx.send(AppEvent::RemoveRefFromList {
-                        ref_name: ref_name.clone(),
-                    });
                     tx.send(AppEvent::NotifySuccess(msg));
                     tx.send(AppEvent::HidePendingOverlay);
+                    tx.send(AppEvent::Refresh(RefreshViewContext::List {
+                        list_context: list_context.clone(),
+                    }));
                 }
                 Err(e) => {
-                    // If local deletion succeeded, still update UI
+                    // If local deletion succeeded, still refresh UI
                     if local_deleted {
-                        tx.send(AppEvent::RemoveRefFromList {
-                            ref_name: ref_name.clone(),
-                        });
+                        tx.send(AppEvent::Refresh(RefreshViewContext::List {
+                            list_context: list_context.clone(),
+                        }));
                     }
                     tx.send(AppEvent::HidePendingOverlay);
                     tx.send(AppEvent::NotifyError(e));
@@ -204,15 +213,16 @@ impl<'a> DeleteRefView<'a> {
         };
 
         let graph_width = list_state.graph_area_cell_width() + 1;
-        let refs_width = (area.width.saturating_sub(graph_width)).min(self.ui_config.refs.width);
+        let refs_width =
+            (area.width.saturating_sub(graph_width)).min(self.ctx.ui_config.refs.width);
 
         let [list_area, refs_area] =
             Layout::horizontal([Constraint::Min(0), Constraint::Length(refs_width)]).areas(area);
 
-        let commit_list = CommitList::new(&self.ui_config.list, self.color_theme);
+        let commit_list = CommitList::new(self.ctx.clone());
         f.render_stateful_widget(commit_list, list_area, list_state);
 
-        let ref_list = crate::widget::ref_list::RefList::new(&self.refs, self.color_theme);
+        let ref_list = crate::widget::ref_list::RefList::new(&self.refs, self.ctx.clone());
         f.render_stateful_widget(ref_list, refs_area, &mut self.ref_list_state);
 
         let dialog_width = 50u16.min(area.width.saturating_sub(4));
@@ -239,11 +249,11 @@ impl<'a> DeleteRefView<'a> {
         let block = Block::default()
             .title(title)
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(self.color_theme.divider_fg))
+            .border_style(Style::default().fg(self.ctx.color_theme.divider_fg))
             .style(
                 Style::default()
-                    .bg(self.color_theme.bg)
-                    .fg(self.color_theme.fg),
+                    .bg(self.ctx.color_theme.bg)
+                    .fg(self.ctx.color_theme.fg),
             )
             .padding(Padding::horizontal(1));
 
@@ -258,7 +268,7 @@ impl<'a> DeleteRefView<'a> {
         .areas(inner_area);
 
         let name_line = Line::from(vec![Span::raw(&self.ref_name)
-            .fg(self.color_theme.fg)
+            .fg(self.ctx.color_theme.fg)
             .add_modifier(Modifier::BOLD)]);
         f.render_widget(Paragraph::new(name_line), name_area);
 
@@ -270,35 +280,35 @@ impl<'a> DeleteRefView<'a> {
                     "[ ]"
                 };
                 Line::from(vec![
-                    Span::styled(checkbox, Style::default().fg(self.color_theme.fg)),
-                    Span::raw(" Delete from origin").fg(self.color_theme.fg),
+                    Span::styled(checkbox, Style::default().fg(self.ctx.color_theme.fg)),
+                    Span::raw(" Delete from origin").fg(self.ctx.color_theme.fg),
                 ])
             }
             RefType::Branch => {
                 let checkbox = if self.force_delete { "[x]" } else { "[ ]" };
                 Line::from(vec![
-                    Span::styled(checkbox, Style::default().fg(self.color_theme.fg)),
-                    Span::raw(" Force delete (-D)").fg(self.color_theme.fg),
+                    Span::styled(checkbox, Style::default().fg(self.ctx.color_theme.fg)),
+                    Span::raw(" Force delete (-D)").fg(self.ctx.color_theme.fg),
                 ])
             }
-            RefType::RemoteBranch => Line::from(vec![Span::raw("").fg(self.color_theme.fg)]),
+            RefType::RemoteBranch => Line::from(vec![Span::raw("").fg(self.ctx.color_theme.fg)]),
         };
         f.render_widget(Paragraph::new(checkbox_line), checkbox_area);
 
         let hint_line = Line::from(vec![
-            Span::raw("Enter").fg(self.color_theme.help_key_fg),
-            Span::raw(" delete  ").fg(self.color_theme.fg),
-            Span::raw("Esc").fg(self.color_theme.help_key_fg),
-            Span::raw(" cancel  ").fg(self.color_theme.fg),
-            Span::raw("←→").fg(self.color_theme.help_key_fg),
-            Span::raw(" toggle").fg(self.color_theme.fg),
+            Span::raw("Enter").fg(self.ctx.color_theme.help_key_fg),
+            Span::raw(" delete  ").fg(self.ctx.color_theme.fg),
+            Span::raw("Esc").fg(self.ctx.color_theme.help_key_fg),
+            Span::raw(" cancel  ").fg(self.ctx.color_theme.fg),
+            Span::raw("←→").fg(self.ctx.color_theme.help_key_fg),
+            Span::raw(" toggle").fg(self.ctx.color_theme.fg),
         ]);
         f.render_widget(Paragraph::new(hint_line).centered(), hint_area);
     }
 }
 
 impl<'a> DeleteRefView<'a> {
-    pub fn take_list_state(&mut self) -> Option<CommitListState> {
+    pub fn take_list_state(&mut self) -> Option<CommitListState<'a>> {
         self.commit_list_state.take()
     }
 
@@ -306,22 +316,16 @@ impl<'a> DeleteRefView<'a> {
         std::mem::take(&mut self.ref_list_state)
     }
 
-    pub fn take_refs(&mut self) -> Vec<Rc<Ref>> {
+    pub fn take_refs(&mut self) -> Vec<Ref> {
         std::mem::take(&mut self.refs)
     }
 
-    pub fn remove_ref(&mut self, ref_name: &str) {
-        if let Some(target) = self
-            .refs
-            .iter()
-            .find(|r| r.name() == ref_name)
-            .map(|r| r.target().clone())
-        {
-            if let Some(list_state) = self.commit_list_state.as_mut() {
-                list_state.remove_ref_from_commit(&target, ref_name);
-            }
+    pub fn refresh(&self) {
+        if let Some(list_state) = self.commit_list_state.as_ref() {
+            let list_context = ListRefreshViewContext::from(list_state);
+            let context = RefreshViewContext::List { list_context };
+            self.tx.send(AppEvent::Clear);
+            self.tx.send(AppEvent::Refresh(context));
         }
-        self.refs.retain(|r| r.name() != ref_name);
-        self.ref_list_state.adjust_selection_after_delete();
     }
 }

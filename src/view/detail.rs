@@ -8,11 +8,10 @@ use ratatui::{
 };
 
 use crate::{
-    color::ColorTheme,
-    config::UiConfig,
+    app::AppContext,
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
     git::{Commit, FileChange, Ref, Repository},
-    protocol::ImageProtocol,
+    view::{ListRefreshViewContext, RefreshViewContext},
     widget::{
         commit_detail::{CommitDetail, CommitDetailState},
         commit_list::{CommitList, CommitListState},
@@ -21,29 +20,25 @@ use crate::{
 
 #[derive(Debug)]
 pub struct DetailView<'a> {
-    commit_list_state: Option<CommitListState>,
+    commit_list_state: Option<CommitListState<'a>>,
     commit_detail_state: CommitDetailState,
 
-    commit: Rc<Commit>,
+    commit: Commit,
     changes: Vec<FileChange>,
-    refs: Vec<Rc<Ref>>,
+    refs: Vec<Ref>,
 
-    ui_config: &'a UiConfig,
-    color_theme: &'a ColorTheme,
-    image_protocol: ImageProtocol,
+    ctx: Rc<AppContext>,
     tx: Sender,
     clear: bool,
 }
 
 impl<'a> DetailView<'a> {
     pub fn new(
-        commit_list_state: CommitListState,
-        commit: Rc<Commit>,
+        commit_list_state: CommitListState<'a>,
+        commit: Commit,
         changes: Vec<FileChange>,
-        refs: Vec<Rc<Ref>>,
-        ui_config: &'a UiConfig,
-        color_theme: &'a ColorTheme,
-        image_protocol: ImageProtocol,
+        refs: Vec<Ref>,
+        ctx: Rc<AppContext>,
         tx: Sender,
     ) -> DetailView<'a> {
         DetailView {
@@ -52,9 +47,7 @@ impl<'a> DetailView<'a> {
             commit,
             changes,
             refs,
-            ui_config,
-            color_theme,
-            image_protocol,
+            ctx,
             tx,
             clear: false,
         }
@@ -116,56 +109,60 @@ impl<'a> DetailView<'a> {
             UserEvent::FullCopy => {
                 self.copy_commit_hash();
             }
-            UserEvent::UserCommandViewToggle(n) => {
+            UserEvent::UserCommand(n) => {
                 self.tx.send(AppEvent::OpenUserCommand(n));
             }
             UserEvent::HelpToggle => {
                 self.tx.send(AppEvent::OpenHelp);
             }
-            UserEvent::Cancel | UserEvent::Close => {
+            UserEvent::Confirm | UserEvent::Cancel | UserEvent::Close => {
                 self.tx.send(AppEvent::ClearDetail); // hack: reset the rendering of the image area
                 self.tx.send(AppEvent::CloseDetail);
+            }
+            UserEvent::Refresh => {
+                self.refresh();
             }
             _ => {}
         }
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect) {
-        let Some(list_state) = self.commit_list_state.as_mut() else {
-            return;
-        };
-
-        let detail_height = (area.height - 1).min(self.ui_config.detail.height);
+        let detail_height = (area.height - 1).min(self.ctx.ui_config.detail.height);
         let [list_area, detail_area] =
             Layout::vertical([Constraint::Min(0), Constraint::Length(detail_height)]).areas(area);
 
-        let commit_list = CommitList::new(&self.ui_config.list, self.color_theme);
-        f.render_stateful_widget(commit_list, list_area, list_state);
+        let commit_list = CommitList::new(self.ctx.clone());
+        f.render_stateful_widget(
+            commit_list,
+            list_area,
+            self.commit_list_state
+                .as_mut()
+                .expect("commit_list_state already taken"),
+        );
 
         if self.clear {
             f.render_widget(Clear, detail_area);
             return;
         }
 
-        let commit_detail = CommitDetail::new(
-            &self.commit,
-            &self.changes,
-            &self.refs,
-            &self.ui_config.detail,
-            self.color_theme,
-        );
+        let commit_detail =
+            CommitDetail::new(&self.commit, &self.changes, &self.refs, self.ctx.clone());
         f.render_stateful_widget(commit_detail, detail_area, &mut self.commit_detail_state);
 
         // clear the image area if needed
         for y in detail_area.top()..detail_area.bottom() {
-            self.image_protocol.clear_line(y);
+            self.ctx.image_protocol.clear_line(y);
         }
     }
 }
 
 impl<'a> DetailView<'a> {
-    pub fn take_list_state(&mut self) -> Option<CommitListState> {
+    pub fn take_list_state(&mut self) -> Option<CommitListState<'a>> {
         self.commit_list_state.take()
+    }
+
+    pub fn as_list_state(&self) -> &CommitListState<'_> {
+        self.commit_list_state.as_ref().unwrap()
     }
 
     pub fn select_older_commit(&mut self, repository: &Repository) {
@@ -182,7 +179,7 @@ impl<'a> DetailView<'a> {
 
     fn update_selected_commit<F>(&mut self, repository: &Repository, update_commit_list_state: F)
     where
-        F: FnOnce(&mut CommitListState),
+        F: FnOnce(&mut CommitListState<'a>),
     {
         let Some(commit_list_state) = self.commit_list_state.as_mut() else {
             return;
@@ -190,7 +187,7 @@ impl<'a> DetailView<'a> {
         update_commit_list_state(commit_list_state);
         let selected = commit_list_state.selected_commit_hash().clone();
         let (commit, changes) = repository.commit_detail(&selected);
-        let refs = repository.refs(&selected);
+        let refs = repository.refs(&selected).into_iter().cloned().collect();
         self.commit = commit;
         self.changes = changes;
         self.refs = refs;
@@ -214,5 +211,13 @@ impl<'a> DetailView<'a> {
 
     fn copy_to_clipboard(&self, name: String, value: String) {
         self.tx.send(AppEvent::CopyToClipboard { name, value });
+    }
+
+    pub fn refresh(&self) {
+        let list_state = self.as_list_state();
+        let list_context = ListRefreshViewContext::from(list_state);
+        let context = RefreshViewContext::Detail { list_context };
+        self.tx.send(AppEvent::Clear); // hack: reset the rendering of the image area
+        self.tx.send(AppEvent::Refresh(context));
     }
 }

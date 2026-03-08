@@ -1,5 +1,3 @@
-use std::rc::Rc;
-
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::git::{Commit, CommitHash, Repository};
@@ -22,8 +20,8 @@ impl GraphDataSource for Repository {
 }
 
 #[derive(Debug)]
-pub struct Graph {
-    pub commits: Vec<Rc<Commit>>,
+pub struct Graph<'a> {
+    pub commits: Vec<&'a Commit>,
     pub commit_pos_map: CommitPosMap,
     pub edges: Vec<Vec<Edge>>,
     pub max_pos_x: usize,
@@ -60,7 +58,13 @@ pub enum EdgeType {
     LeftBottom,  // ╰
 }
 
-pub fn calc_graph(repository: &Repository) -> Graph {
+impl EdgeType {
+    pub fn is_vertically_related(&self) -> bool {
+        matches!(self, EdgeType::Vertical | EdgeType::Up | EdgeType::Down)
+    }
+}
+
+pub fn calc_graph<'a>(repository: &'a Repository) -> Graph<'a> {
     let commits = repository.all_commits();
 
     let commit_pos_map = calc_commit_positions(&commits, repository);
@@ -74,7 +78,7 @@ pub fn calc_graph(repository: &Repository) -> Graph {
     }
 }
 
-fn calc_commit_positions(commits: &[Rc<Commit>], source: &impl GraphDataSource) -> CommitPosMap {
+fn calc_commit_positions(commits: &[&Commit], source: &impl GraphDataSource) -> CommitPosMap {
     let mut commit_pos_map: CommitPosMap = FxHashMap::default();
     let mut commit_line_state: Vec<Option<CommitHash>> = Vec::new();
 
@@ -170,7 +174,7 @@ impl WrappedEdge {
 
 fn calc_edges(
     commit_pos_map: &CommitPosMap,
-    commits: &[Rc<Commit>],
+    commits: &[&Commit],
     source: &impl GraphDataSource,
 ) -> (Vec<Vec<Edge>>, usize) {
     let mut max_pos_x = 0;
@@ -270,6 +274,21 @@ fn calc_edges(
 
         if max_pos_x < pos_x {
             max_pos_x = pos_x;
+        }
+
+        // draw down edge if has parent but parent not in the graph (when max_count is set)
+        if !commit.parent_commit_hashes.is_empty()
+            && !commit_pos_map.contains_key(&commit.parent_commit_hashes[0])
+        {
+            edges[pos_y].push(WrappedEdge::new(EdgeType::Down, pos_x, pos_x, hash.clone()));
+            ((pos_y + 1)..commits.len()).for_each(|y| {
+                edges[y].push(WrappedEdge::new(
+                    EdgeType::Vertical,
+                    pos_x,
+                    pos_x,
+                    hash.clone(),
+                ));
+            });
         }
     }
 
@@ -514,12 +533,12 @@ fn find_nearest_visible_parent(
     None
 }
 
-pub fn calc_graph_filtered(
-    repository: &Repository,
+pub fn calc_graph_filtered<'a>(
+    repository: &'a Repository,
     visible_hashes: &FxHashSet<CommitHash>,
-) -> Graph {
+) -> Graph<'a> {
     let all_commits = repository.all_commits();
-    let commits: Vec<Rc<Commit>> = all_commits
+    let commits: Vec<&Commit> = all_commits
         .into_iter()
         .filter(|c| visible_hashes.contains(&c.commit_hash))
         .collect();

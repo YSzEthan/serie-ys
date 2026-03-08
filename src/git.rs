@@ -1,14 +1,13 @@
 use std::{
-    collections::HashMap,
     hash::Hash,
     io::{BufRead, BufReader},
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    rc::Rc,
     sync::Arc,
 };
 
 use chrono::{DateTime, FixedOffset};
+use rustc_hash::FxHashMap;
 
 use crate::Result;
 
@@ -112,6 +111,7 @@ impl Ref {
 pub enum Head {
     Branch { name: String },
     Detached { target: CommitHash },
+    None,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -120,15 +120,14 @@ pub enum SortCommit {
     Topological,
 }
 
-type CommitMap = HashMap<CommitHash, Rc<Commit>>;
-type CommitsMap = HashMap<CommitHash, Vec<CommitHash>>;
+type CommitMap = FxHashMap<CommitHash, Commit>;
+type CommitsMap = FxHashMap<CommitHash, Vec<CommitHash>>;
 
-type RefMap = HashMap<CommitHash, Vec<Rc<Ref>>>;
+type RefMap = FxHashMap<CommitHash, Vec<Ref>>;
 
 #[derive(Debug)]
 pub struct Repository {
     path: PathBuf,
-    sort: SortCommit,
     commit_map: CommitMap,
 
     parents_map: CommitsMap,
@@ -141,11 +140,16 @@ pub struct Repository {
 }
 
 impl Repository {
-    pub fn load(path: &Path, sort: SortCommit) -> Result<Self> {
+    pub fn load(path: &Path, sort: SortCommit, max_count: Option<usize>) -> Result<Self> {
         check_git_repository(path)?;
 
+        let (mut ref_map, head) = load_refs(path);
+
         let stashes = load_all_stashes(path);
-        let commits = load_all_commits(path, sort, &stashes);
+        let commits = load_all_commits(path, sort, &head, &stashes, max_count);
+        if commits.is_empty() {
+            return Err("no commits in the repository".into());
+        }
 
         let commits = merge_stashes_to_commits(commits, stashes);
         let commit_hashes = commits.iter().map(|c| c.commit_hash.clone()).collect();
@@ -153,27 +157,45 @@ impl Repository {
         let (parents_map, children_map) = build_commits_maps(&commits);
         let commit_map = to_commit_map(commits);
 
-        let (mut ref_map, head) = load_refs(path);
         let stash_ref_map = load_stashes_as_refs(path);
         merge_ref_maps(&mut ref_map, stash_ref_map);
 
-        Ok(Self {
-            path: path.to_path_buf(),
-            sort,
+        Ok(Self::new(
+            path.to_path_buf(),
             commit_map,
             parents_map,
             children_map,
             ref_map,
             head,
             commit_hashes,
-        })
+        ))
     }
 
-    pub fn commit(&self, commit_hash: &CommitHash) -> Option<Rc<Commit>> {
-        self.commit_map.get(commit_hash).cloned()
+    pub fn new(
+        path: PathBuf,
+        commit_map: CommitMap,
+        parents_map: CommitsMap,
+        children_map: CommitsMap,
+        ref_map: RefMap,
+        head: Head,
+        commit_hashes: Vec<CommitHash>,
+    ) -> Self {
+        Self {
+            path,
+            commit_map,
+            parents_map,
+            children_map,
+            ref_map,
+            head,
+            commit_hashes,
+        }
     }
 
-    pub fn all_commits(&self) -> Vec<Rc<Commit>> {
+    pub fn commit(&self, commit_hash: &CommitHash) -> Option<&Commit> {
+        self.commit_map.get(commit_hash)
+    }
+
+    pub fn all_commits(&self) -> Vec<&Commit> {
         self.commit_hashes
             .iter()
             .filter_map(|hash| self.commit(hash))
@@ -194,46 +216,33 @@ impl Repository {
             .unwrap_or_default()
     }
 
-    pub fn refs(&self, commit_hash: &CommitHash) -> Vec<Rc<Ref>> {
-        self.ref_map.get(commit_hash).cloned().unwrap_or_default()
+    pub fn refs(&self, commit_hash: &CommitHash) -> Vec<&Ref> {
+        self.ref_map
+            .get(commit_hash)
+            .map(|refs| refs.iter().collect::<Vec<&Ref>>())
+            .unwrap_or_default()
     }
 
-    pub fn all_refs(&self) -> Vec<Rc<Ref>> {
-        self.ref_map.values().flatten().cloned().collect()
+    pub fn all_refs(&self) -> Vec<&Ref> {
+        self.ref_map.values().flatten().collect()
     }
 
-    pub fn head(&self) -> Head {
-        self.head.clone()
+    pub fn head(&self) -> &Head {
+        &self.head
     }
 
     pub fn path(&self) -> &Path {
         &self.path
     }
 
-    pub fn commit_detail(&self, commit_hash: &CommitHash) -> (Rc<Commit>, Vec<FileChange>) {
-        let commit = self.commit(commit_hash).unwrap();
+    pub fn commit_detail(&self, commit_hash: &CommitHash) -> (Commit, Vec<FileChange>) {
+        let commit = self.commit(commit_hash).unwrap().clone();
         let changes = if commit.parent_commit_hashes.is_empty() {
             get_initial_commit_additions(&self.path, commit_hash)
         } else {
             get_diff_summary(&self.path, commit_hash)
         };
         (commit, changes)
-    }
-
-    pub fn sort_order(&self) -> SortCommit {
-        self.sort
-    }
-
-    pub fn add_ref(&mut self, new_ref: Ref) {
-        let target = new_ref.target().clone();
-        let rc_ref = Rc::new(new_ref);
-        self.ref_map.entry(target).or_default().push(rc_ref);
-    }
-
-    pub fn remove_ref(&mut self, ref_name: &str) {
-        for refs in self.ref_map.values_mut() {
-            refs.retain(|r| r.name() != ref_name);
-        }
     }
 }
 
@@ -265,7 +274,13 @@ fn is_bare_repository(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
-fn load_all_commits(path: &Path, sort: SortCommit, stashes: &[Commit]) -> Vec<Commit> {
+fn load_all_commits(
+    path: &Path,
+    sort: SortCommit,
+    head: &Head,
+    stashes: &[Commit],
+    max_count: Option<usize>,
+) -> Vec<Commit> {
     let mut cmd = Command::new("git");
     cmd.arg("log");
 
@@ -284,7 +299,14 @@ fn load_all_commits(path: &Path, sort: SortCommit, stashes: &[Commit]) -> Vec<Co
     stashes.iter().for_each(|stash| {
         cmd.arg(stash.parent_commit_hashes[0].as_str());
     });
-    cmd.arg("HEAD");
+
+    if !matches!(head, Head::None) {
+        cmd.arg("HEAD");
+    }
+
+    if let Some(n) = max_count {
+        cmd.arg("--max-count").arg(n.to_string());
+    }
 
     cmd.current_dir(path).stdout(Stdio::piped());
 
@@ -396,8 +418,8 @@ fn parse_parent_commit_hashes(s: &str) -> Vec<CommitHash> {
 }
 
 fn build_commits_maps(commits: &Vec<Commit>) -> (CommitsMap, CommitsMap) {
-    let mut parents_map: CommitsMap = HashMap::new();
-    let mut children_map: CommitsMap = HashMap::new();
+    let mut parents_map: CommitsMap = FxHashMap::default();
+    let mut children_map: CommitsMap = FxHashMap::default();
     for commit in commits {
         let hash = &commit.commit_hash;
         for parent_hash in &commit.parent_commit_hashes {
@@ -418,7 +440,7 @@ fn build_commits_maps(commits: &Vec<Commit>) -> (CommitsMap, CommitsMap) {
 fn to_commit_map(commits: Vec<Commit>) -> CommitMap {
     commits
         .into_iter()
-        .map(|commit| (commit.commit_hash.clone(), Rc::new(commit)))
+        .map(|commit| (commit.commit_hash.clone(), commit))
         .collect()
 }
 
@@ -426,12 +448,14 @@ fn merge_stashes_to_commits(commits: Vec<Commit>, stashes: Vec<Commit>) -> Vec<C
     // Stash commit has multiple parent commits, but the first parent commit is the commit that the stash was created from.
     // If the first parent commit is not found, the stash commit is ignored.
     let mut ret = Vec::new();
-    let mut statsh_map: HashMap<CommitHash, Vec<Commit>> =
-        stashes.into_iter().fold(HashMap::new(), |mut acc, commit| {
-            let parent = commit.parent_commit_hashes[0].clone();
-            acc.entry(parent).or_default().push(commit);
-            acc
-        });
+    let mut statsh_map: FxHashMap<CommitHash, Vec<Commit>> =
+        stashes
+            .into_iter()
+            .fold(FxHashMap::default(), |mut acc, commit| {
+                let parent = commit.parent_commit_hashes[0].clone();
+                acc.entry(parent).or_default().push(commit);
+                acc
+            });
     for commit in commits {
         if let Some(stashes) = statsh_map.remove(&commit.commit_hash) {
             for stash in stashes {
@@ -458,9 +482,9 @@ fn load_refs(path: &Path) -> (RefMap, Head) {
 
     let reader = BufReader::new(stdout);
 
-    let mut ref_map = RefMap::new();
-    let mut tag_map: HashMap<String, Ref> = HashMap::new();
-    let mut head: Option<Head> = None;
+    let mut ref_map = RefMap::default();
+    let mut tag_map: FxHashMap<String, Ref> = FxHashMap::default();
+    let mut head: Head = Head::None;
 
     for line in reader.lines() {
         let line = line.unwrap();
@@ -475,14 +499,14 @@ fn load_refs(path: &Path) -> (RefMap, Head) {
 
         if refs == "HEAD" {
             head = if let Some(branch) = get_current_branch(path) {
-                Some(Head::Branch { name: branch })
+                Head::Branch { name: branch }
             } else {
-                Some(Head::Detached {
+                Head::Detached {
                     target: hash.into(),
-                })
+                }
             };
         } else if let Some(r) = parse_branch_refs(hash, refs) {
-            ref_map.entry(hash.into()).or_default().push(Rc::new(r));
+            ref_map.entry(hash.into()).or_default().push(r);
         } else if let Some(r) = parse_tag_refs(hash, refs) {
             // if annotated tag exists, it will be overwritten by the following line of the same tag
             // this will make the tag point to the commit that the annotated tag points to
@@ -490,13 +514,8 @@ fn load_refs(path: &Path) -> (RefMap, Head) {
         }
     }
 
-    let head = head.expect("HEAD not found in `git show-ref --head` output");
-
     for tag in tag_map.into_values() {
-        ref_map
-            .entry(tag.target().clone())
-            .or_default()
-            .push(Rc::new(tag));
+        ref_map.entry(tag.target().clone()).or_default().push(tag);
     }
 
     ref_map.values_mut().for_each(|refs| refs.sort());
@@ -522,7 +541,7 @@ fn load_stashes_as_refs(path: &Path) -> RefMap {
 
     let reader = BufReader::new(stdout);
 
-    let mut ref_map = RefMap::new();
+    let mut ref_map = RefMap::default();
 
     for line in reader.lines() {
         let line = line.unwrap();
@@ -542,7 +561,7 @@ fn load_stashes_as_refs(path: &Path) -> RefMap {
             target: hash.into(),
         };
 
-        ref_map.entry(hash.into()).or_default().push(Rc::new(r));
+        ref_map.entry(hash.into()).or_default().push(r);
     }
 
     cmd.wait().unwrap();

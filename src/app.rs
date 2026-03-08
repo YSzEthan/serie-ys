@@ -1,4 +1,4 @@
-use std::{collections::HashMap, rc::Rc};
+use std::rc::Rc;
 
 use ratatui::{
     backend::Backend,
@@ -6,23 +6,21 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, Borders, Padding, Paragraph},
+    widgets::{Block, Borders, Clear, Padding, Paragraph},
     Frame, Terminal,
 };
-
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{
     color::{ColorTheme, GraphColorSet},
-    compute_filtered_graph,
-    config::{CoreConfig, CursorType, UiConfig},
+    config::{CoreConfig, CursorType, UiConfig, UserCommand, UserCommandType},
     event::{AppEvent, Receiver, Sender, UserEvent, UserEventWithCount},
-    external::copy_to_clipboard,
-    git::{CommitHash, Head, Ref, RefType, Repository},
-    graph::{calc_graph, CellWidthType, Graph, GraphImageManager},
+    external::{copy_to_clipboard, exec_user_command, ExternalCommandParameters},
+    git::{Commit, CommitHash, Head, Ref, RefType, Repository},
+    graph::{CellWidthType, Graph, GraphImageManager},
     keybind::KeyBind,
     protocol::ImageProtocol,
-    view::View,
+    view::{RefreshViewContext, View},
     widget::{
         commit_list::{CommitInfo, CommitListState},
         pending_overlay::PendingOverlay,
@@ -30,8 +28,9 @@ use crate::{
     FilteredGraphData,
 };
 
-#[derive(Debug)]
+#[derive(Debug, Default)]
 enum StatusLine {
+    #[default]
     None,
     Input(String, Option<u16>, Option<String>),
     NotificationInfo(String),
@@ -40,50 +39,65 @@ enum StatusLine {
     NotificationError(String),
 }
 
+#[derive(Clone, Copy)]
 pub enum InitialSelection {
     Latest,
     Head,
 }
 
+pub enum Ret {
+    Quit,
+    Refresh(RefreshRequest),
+}
+
+pub struct RefreshRequest {
+    pub rx: Receiver,
+    pub context: RefreshViewContext,
+}
+
 #[derive(Debug)]
-pub struct App<'a> {
-    repository: Repository,
-    view: View<'a>,
+pub struct AppContext {
+    pub keybind: KeyBind,
+    pub core_config: CoreConfig,
+    pub ui_config: UiConfig,
+    pub color_theme: ColorTheme,
+    pub image_protocol: ImageProtocol,
+}
+
+#[derive(Debug, Default)]
+struct AppStatus {
     status_line: StatusLine,
-    pending_message: Option<String>,
-
-    keybind: &'a KeyBind,
-    core_config: &'a CoreConfig,
-    ui_config: &'a UiConfig,
-    color_theme: &'a ColorTheme,
-    graph_color_set: &'a GraphColorSet,
-    cell_width_type: CellWidthType,
-    image_protocol: ImageProtocol,
-    tx: Sender,
-
     numeric_prefix: String,
     view_area: Rect,
+    clear: bool,
+}
+
+#[derive(Debug)]
+pub struct App<'a> {
+    repository: &'a Repository,
+    view: View<'a>,
+    app_status: AppStatus,
+    pending_message: Option<String>,
+    ctx: Rc<AppContext>,
+    tx: Sender,
 }
 
 impl<'a> App<'a> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
-        repository: Repository,
-        graph_image_manager: GraphImageManager,
-        graph: &Graph,
-        filtered_graph: Option<FilteredGraphData>,
+        repository: &'a Repository,
+        graph_image_manager: GraphImageManager<'a>,
+        graph: &Rc<Graph<'a>>,
+        filtered_graph: Option<FilteredGraphData<'a>>,
         remote_only_commits: FxHashSet<CommitHash>,
-        keybind: &'a KeyBind,
-        core_config: &'a CoreConfig,
-        ui_config: &'a UiConfig,
-        color_theme: &'a ColorTheme,
         graph_color_set: &'a GraphColorSet,
         cell_width_type: CellWidthType,
-        image_protocol: ImageProtocol,
         initial_selection: InitialSelection,
+        ctx: Rc<AppContext>,
         tx: Sender,
+        refresh_view_context: Option<RefreshViewContext>,
     ) -> Self {
-        let mut ref_name_to_commit_index_map = HashMap::new();
+        let mut ref_name_to_commit_index_map = FxHashMap::default();
         let commits = graph
             .commits
             .iter()
@@ -95,7 +109,7 @@ impl<'a> App<'a> {
                 }
                 let (pos_x, _) = graph.commit_pos_map[&commit.commit_hash];
                 let graph_color = graph_color_set.get(pos_x).to_ratatui_color();
-                CommitInfo::new(commit.clone(), refs, graph_color)
+                CommitInfo::new(commit, refs, graph_color)
             })
             .collect();
         let graph_cell_width = match cell_width_type {
@@ -121,15 +135,15 @@ impl<'a> App<'a> {
                 (None, 0, None)
             };
 
-        let head = repository.head();
+        let head = repository.head().clone();
         let mut commit_list_state = CommitListState::new(
             commits,
             graph_image_manager,
             graph_cell_width,
             head,
             ref_name_to_commit_index_map,
-            core_config.search.ignore_case,
-            core_config.search.fuzzy,
+            ctx.core_config.search.ignore_case,
+            ctx.core_config.search.fuzzy,
             filtered_image_manager,
             filtered_cell_width,
             filtered_colors,
@@ -137,28 +151,27 @@ impl<'a> App<'a> {
         );
         if let InitialSelection::Head = initial_selection {
             match repository.head() {
-                Head::Branch { name } => commit_list_state.select_ref(&name),
-                Head::Detached { target } => commit_list_state.select_commit_hash(&target),
+                Head::Branch { name } => commit_list_state.select_ref(name),
+                Head::Detached { target } => commit_list_state.select_commit_hash(target),
+                Head::None => {}
             }
         }
-        let view = View::of_list(commit_list_state, ui_config, color_theme, tx.clone());
+        let view = View::of_list(commit_list_state, ctx.clone(), tx.clone());
 
-        Self {
+        let mut app = Self {
             repository,
-            status_line: StatusLine::None,
-            pending_message: None,
             view,
-            keybind,
-            core_config,
-            ui_config,
-            color_theme,
-            graph_color_set,
-            cell_width_type,
-            image_protocol,
+            app_status: AppStatus::default(),
+            pending_message: None,
+            ctx,
             tx,
-            numeric_prefix: String::new(),
-            view_area: Rect::default(),
+        };
+
+        if let Some(context) = refresh_view_context {
+            app.init_with_context(context);
         }
+
+        app
     }
 }
 
@@ -167,11 +180,11 @@ impl App<'_> {
         &mut self,
         terminal: &mut Terminal<B>,
         rx: Receiver,
-    ) -> std::io::Result<()> {
+    ) -> Result<Ret, B::Error> {
         loop {
             if self.view.take_graph_clear() {
-                for y in self.view_area.top()..self.view_area.bottom() {
-                    self.image_protocol.clear_line(y);
+                for y in self.app_status.view_area.top()..self.app_status.view_area.bottom() {
+                    self.ctx.image_protocol.clear_line(y);
                 }
                 terminal.clear()?;
             }
@@ -180,7 +193,7 @@ impl App<'_> {
                 AppEvent::Key(key) => {
                     // Handle pending overlay - Esc hides it
                     if self.pending_message.is_some() {
-                        if let Some(UserEvent::Cancel) = self.keybind.get(&key) {
+                        if let Some(UserEvent::Cancel) = self.ctx.keybind.get(&key) {
                             self.pending_message = None;
                             self.tx.send(AppEvent::NotifyInfo(
                                 "Operation continues in background".into(),
@@ -191,7 +204,7 @@ impl App<'_> {
                         continue;
                     }
 
-                    match self.status_line {
+                    match self.app_status.status_line {
                         StatusLine::None | StatusLine::Input(_, _, _) => {
                             // do nothing
                         }
@@ -208,12 +221,12 @@ impl App<'_> {
                         }
                     }
 
-                    let user_event = self.keybind.get(&key);
+                    let user_event = self.ctx.keybind.get(&key);
 
                     if let Some(UserEvent::Cancel) = user_event {
-                        if !self.numeric_prefix.is_empty() {
+                        if !self.app_status.numeric_prefix.is_empty() {
                             // Clear numeric prefix and cancel the event
-                            self.numeric_prefix.clear();
+                            self.app_status.numeric_prefix.clear();
                             continue;
                         }
                     }
@@ -224,17 +237,17 @@ impl App<'_> {
                         }
                         Some(ue) => {
                             let event_with_count =
-                                process_numeric_prefix(&self.numeric_prefix, *ue, key);
+                                process_numeric_prefix(&self.app_status.numeric_prefix, *ue, key);
                             self.view.handle_event(event_with_count, key);
-                            self.numeric_prefix.clear();
+                            self.app_status.numeric_prefix.clear();
                         }
                         None => {
                             let is_input_mode =
-                                matches!(self.status_line, StatusLine::Input(_, _, _))
+                                matches!(self.app_status.status_line, StatusLine::Input(_, _, _))
                                     || matches!(self.view, View::CreateTag(_));
                             if is_input_mode {
                                 // In input mode, pass all key events to the view
-                                self.numeric_prefix.clear();
+                                self.app_status.numeric_prefix.clear();
                                 self.view.handle_event(
                                     UserEventWithCount::from_event(UserEvent::Unknown),
                                     key,
@@ -242,9 +255,9 @@ impl App<'_> {
                             } else if let KeyCode::Char(c) = key.code {
                                 // Accumulate numeric prefix
                                 if c.is_ascii_digit()
-                                    && (c != '0' || !self.numeric_prefix.is_empty())
+                                    && (c != '0' || !self.app_status.numeric_prefix.is_empty())
                                 {
-                                    self.numeric_prefix.push(c);
+                                    self.app_status.numeric_prefix.push(c);
                                 }
                             }
                         }
@@ -254,7 +267,10 @@ impl App<'_> {
                     let _ = (w, h);
                 }
                 AppEvent::Quit => {
-                    return Ok(());
+                    return Ok(Ret::Quit);
+                }
+                AppEvent::Clear => {
+                    self.clear();
                 }
                 AppEvent::OpenDetail => {
                     self.open_detail();
@@ -286,32 +302,17 @@ impl App<'_> {
                 AppEvent::CloseCreateTag => {
                     self.close_create_tag();
                 }
-                AppEvent::AddTagToCommit {
-                    commit_hash,
-                    tag_name,
-                } => {
-                    self.add_tag_to_commit(&commit_hash, &tag_name);
-                }
                 AppEvent::OpenDeleteTag => {
                     self.open_delete_tag();
                 }
                 AppEvent::CloseDeleteTag => {
                     self.close_delete_tag();
                 }
-                AppEvent::RemoveTagFromCommit {
-                    commit_hash,
-                    tag_name,
-                } => {
-                    self.remove_tag_from_commit(&commit_hash, &tag_name);
-                }
                 AppEvent::OpenDeleteRef { ref_name, ref_type } => {
                     self.open_delete_ref(ref_name, ref_type);
                 }
                 AppEvent::CloseDeleteRef => {
                     self.close_delete_ref();
-                }
-                AppEvent::RemoveRefFromList { ref_name } => {
-                    self.remove_ref_from_list(&ref_name);
                 }
                 AppEvent::OpenHelp => {
                     self.open_help();
@@ -333,6 +334,10 @@ impl App<'_> {
                 }
                 AppEvent::CopyToClipboard { name, value } => {
                     self.copy_to_clipboard(name, value);
+                }
+                AppEvent::Refresh(context) => {
+                    let request = RefreshRequest { rx, context };
+                    return Ok(Ret::Refresh(request));
                 }
                 AppEvent::ClearStatusLine => {
                     self.clear_status_line();
@@ -358,21 +363,24 @@ impl App<'_> {
                 AppEvent::HidePendingOverlay => {
                     self.pending_message = None;
                 }
-                AppEvent::Refresh => {
-                    self.refresh();
-                }
             }
         }
     }
 
     fn render(&mut self, f: &mut Frame) {
         let base = Block::default()
-            .fg(self.color_theme.fg)
-            .bg(self.color_theme.bg);
+            .fg(self.ctx.color_theme.fg)
+            .bg(self.ctx.color_theme.bg);
         f.render_widget(base, f.area());
 
         let [view_area, status_line_area] =
             Layout::vertical([Constraint::Min(0), Constraint::Length(2)]).areas(f.area());
+
+        if self.app_status.clear {
+            self.render_clear(f, view_area);
+            self.reset_clear();
+            return;
+        }
 
         self.update_state(view_area);
 
@@ -380,21 +388,28 @@ impl App<'_> {
         self.render_status_line(f, status_line_area);
 
         if let Some(message) = &self.pending_message {
-            let overlay = PendingOverlay::new(message, self.color_theme);
+            let overlay = PendingOverlay::new(message, &self.ctx.color_theme);
             f.render_widget(overlay, f.area());
         }
     }
 }
 
 impl App<'_> {
+    fn render_clear(&mut self, f: &mut Frame, area: Rect) {
+        f.render_widget(Clear, area);
+        for y in area.top()..area.bottom() {
+            self.ctx.image_protocol.clear_line(y);
+        }
+    }
+
     fn render_status_line(&self, f: &mut Frame, area: Rect) {
-        let text: Line = match &self.status_line {
+        let text: Line = match &self.app_status.status_line {
             StatusLine::None => {
-                if self.numeric_prefix.is_empty() {
+                if self.app_status.numeric_prefix.is_empty() {
                     self.build_hotkey_hints()
                 } else {
-                    Line::raw(self.numeric_prefix.as_str())
-                        .fg(self.color_theme.status_input_transient_fg)
+                    Line::raw(self.app_status.numeric_prefix.as_str())
+                        .fg(self.ctx.color_theme.status_input_transient_fg)
                 }
             }
             StatusLine::Input(msg, _, transient_msg) => {
@@ -403,43 +418,45 @@ impl App<'_> {
                     let t_msg_w = console::measure_text_width(t_msg.as_str());
                     let pad_w = area.width as usize - msg_w - t_msg_w - 2 /* pad */;
                     Line::from(vec![
-                        msg.as_str().fg(self.color_theme.status_input_fg),
+                        msg.as_str().fg(self.ctx.color_theme.status_input_fg),
                         " ".repeat(pad_w).into(),
                         t_msg
                             .as_str()
-                            .fg(self.color_theme.status_input_transient_fg),
+                            .fg(self.ctx.color_theme.status_input_transient_fg),
                     ])
                 } else {
-                    Line::raw(msg).fg(self.color_theme.status_input_fg)
+                    Line::raw(msg).fg(self.ctx.color_theme.status_input_fg)
                 }
             }
-            StatusLine::NotificationInfo(msg) => Line::raw(msg).fg(self.color_theme.status_info_fg),
+            StatusLine::NotificationInfo(msg) => {
+                Line::raw(msg).fg(self.ctx.color_theme.status_info_fg)
+            }
             StatusLine::NotificationSuccess(msg) => Line::raw(msg)
                 .add_modifier(Modifier::BOLD)
-                .fg(self.color_theme.status_success_fg),
+                .fg(self.ctx.color_theme.status_success_fg),
             StatusLine::NotificationWarn(msg) => Line::raw(msg)
                 .add_modifier(Modifier::BOLD)
-                .fg(self.color_theme.status_warn_fg),
+                .fg(self.ctx.color_theme.status_warn_fg),
             StatusLine::NotificationError(msg) => Line::raw(format!("ERROR: {msg}"))
                 .add_modifier(Modifier::BOLD)
-                .fg(self.color_theme.status_error_fg),
+                .fg(self.ctx.color_theme.status_error_fg),
         };
         let paragraph = Paragraph::new(text).block(
             Block::default()
                 .borders(Borders::TOP)
-                .style(Style::default().fg(self.color_theme.divider_fg))
+                .style(Style::default().fg(self.ctx.color_theme.divider_fg))
                 .padding(Padding::horizontal(1)),
         );
         f.render_widget(paragraph, area);
 
-        if let StatusLine::Input(_, Some(cursor_pos), _) = &self.status_line {
+        if let StatusLine::Input(_, Some(cursor_pos), _) = &self.app_status.status_line {
             let (x, y) = (area.x + cursor_pos + 1, area.y + 1);
-            match &self.ui_config.common.cursor_type {
+            match &self.ctx.ui_config.common.cursor_type {
                 CursorType::Native => {
                     f.set_cursor_position((x, y));
                 }
                 CursorType::Virtual(cursor) => {
-                    let style = Style::default().fg(self.color_theme.virtual_cursor_fg);
+                    let style = Style::default().fg(self.ctx.color_theme.virtual_cursor_fg);
                     f.buffer_mut().set_string(x, y, cursor, style);
                 }
             }
@@ -453,7 +470,7 @@ impl App<'_> {
                 (UserEvent::Filter, "filter"),
                 (UserEvent::IgnoreCaseToggle, "case"),
                 (UserEvent::CreateTag, "tag"),
-                (UserEvent::RefListToggle, "refs"),
+                (UserEvent::RefList, "refs"),
                 (UserEvent::RemoteRefsToggle, "remote"),
                 (UserEvent::Refresh, "refresh"),
                 (UserEvent::HelpToggle, "help"),
@@ -465,7 +482,7 @@ impl App<'_> {
             ],
             View::Refs(_) => vec![
                 (UserEvent::ShortCopy, "copy"),
-                (UserEvent::UserCommandViewToggle(1), "delete"),
+                (UserEvent::UserCommand(1), "delete"),
                 (UserEvent::Close, "close"),
                 (UserEvent::HelpToggle, "help"),
             ],
@@ -477,12 +494,12 @@ impl App<'_> {
             _ => vec![],
         };
 
-        let key_fg = self.color_theme.help_key_fg;
-        let desc_fg = self.color_theme.status_input_transient_fg;
+        let key_fg = self.ctx.color_theme.help_key_fg;
+        let desc_fg = self.ctx.color_theme.status_input_transient_fg;
 
         let mut spans: Vec<Span<'static>> = Vec::new();
         for (i, (event, desc)) in hints.iter().enumerate() {
-            if let Some(key) = self.keybind.keys_for_event(*event).first() {
+            if let Some(key) = self.ctx.keybind.keys_for_event(*event).first() {
                 if i > 0 {
                     spans.push(Span::raw("  "));
                 }
@@ -500,28 +517,42 @@ impl App<'_> {
 
 impl App<'_> {
     fn update_state(&mut self, view_area: Rect) {
-        self.view_area = view_area;
+        self.app_status.view_area = view_area;
+    }
+
+    fn clear(&mut self) {
+        self.app_status.clear = true;
+    }
+
+    fn reset_clear(&mut self) {
+        self.app_status.clear = false;
     }
 
     fn open_detail(&mut self) {
-        if let View::List(ref mut view) = self.view {
-            let Some(commit_list_state) = view.take_list_state() else {
-                return;
-            };
-            let selected = commit_list_state.selected_commit_hash().clone();
-            let (commit, changes) = self.repository.commit_detail(&selected);
-            let refs = self.repository.refs(&selected);
-            self.view = View::of_detail(
-                commit_list_state,
-                commit,
-                changes,
-                refs,
-                self.ui_config,
-                self.color_theme,
-                self.image_protocol,
-                self.tx.clone(),
-            );
-        }
+        let commit_list_state = match self.view {
+            View::List(ref mut view) => view.take_list_state(),
+            View::UserCommand(ref mut view) => view.take_list_state(),
+            _ => return,
+        };
+        let Some(commit_list_state) = commit_list_state else {
+            return;
+        };
+        let selected = commit_list_state.selected_commit_hash().clone();
+        let (commit, changes) = self.repository.commit_detail(&selected);
+        let refs = self
+            .repository
+            .refs(&selected)
+            .into_iter()
+            .cloned()
+            .collect();
+        self.view = View::of_detail(
+            commit_list_state,
+            commit,
+            changes,
+            refs,
+            self.ctx.clone(),
+            self.tx.clone(),
+        );
     }
 
     fn close_detail(&mut self) {
@@ -529,12 +560,7 @@ impl App<'_> {
             let Some(commit_list_state) = view.take_list_state() else {
                 return;
             };
-            self.view = View::of_list(
-                commit_list_state,
-                self.ui_config,
-                self.color_theme,
-                self.tx.clone(),
-            );
+            self.view = View::of_list(commit_list_state, self.ctx.clone(), self.tx.clone());
         }
     }
 
@@ -545,102 +571,102 @@ impl App<'_> {
     }
 
     fn open_user_command(&mut self, user_command_number: usize) {
-        if let View::List(ref mut view) = self.view {
-            let Some(commit_list_state) = view.take_list_state() else {
-                return;
-            };
-            let selected = commit_list_state.selected_commit_hash().clone();
-            let (commit, _) = self.repository.commit_detail(&selected);
-            self.view = View::of_user_command_from_list(
-                commit_list_state,
-                commit,
-                user_command_number,
-                self.view_area,
-                self.core_config,
-                self.ui_config,
-                self.color_theme,
-                self.image_protocol,
-                self.tx.clone(),
-            );
-        } else if let View::Detail(ref mut view) = self.view {
-            let Some(commit_list_state) = view.take_list_state() else {
-                return;
-            };
-            let selected = commit_list_state.selected_commit_hash().clone();
-            let (commit, _) = self.repository.commit_detail(&selected);
-            self.view = View::of_user_command_from_detail(
-                commit_list_state,
-                commit,
-                user_command_number,
-                self.view_area,
-                self.core_config,
-                self.ui_config,
-                self.color_theme,
-                self.image_protocol,
-                self.tx.clone(),
-            );
-        } else if let View::UserCommand(ref mut view) = self.view {
-            let before_view_is_list = view.before_view_is_list();
-            let Some(commit_list_state) = view.take_list_state() else {
-                return;
-            };
-            let selected = commit_list_state.selected_commit_hash().clone();
-            let (commit, _) = self.repository.commit_detail(&selected);
-            if before_view_is_list {
-                self.view = View::of_user_command_from_list(
+        match extract_user_command_by_number(user_command_number, &self.ctx).map(|c| &c.r#type) {
+            Ok(UserCommandType::Inline) => {
+                self.open_user_command_inline(user_command_number);
+            }
+            Ok(UserCommandType::Silent) => {
+                self.open_user_command_silent(user_command_number);
+            }
+            Err(err) => {
+                self.tx.send(AppEvent::NotifyError(err));
+            }
+        }
+    }
+
+    fn open_user_command_inline(&mut self, user_command_number: usize) {
+        let commit_list_state = match self.view {
+            View::List(ref mut view) => view.take_list_state(),
+            View::Detail(ref mut view) => view.take_list_state(),
+            View::UserCommand(ref mut view) => view.take_list_state(),
+            _ => return,
+        };
+        let Some(commit_list_state) = commit_list_state else {
+            return;
+        };
+        let selected = commit_list_state.selected_commit_hash().clone();
+        let (commit, _) = self.repository.commit_detail(&selected);
+        let refs: Vec<Ref> = self
+            .repository
+            .refs(&selected)
+            .into_iter()
+            .cloned()
+            .collect();
+        match build_external_command_parameters(
+            &commit,
+            &refs,
+            user_command_number,
+            self.app_status.view_area,
+            &self.ctx,
+        ) {
+            Ok(params) => {
+                self.view = View::of_user_command(
                     commit_list_state,
-                    commit,
+                    params,
                     user_command_number,
-                    self.view_area,
-                    self.core_config,
-                    self.ui_config,
-                    self.color_theme,
-                    self.image_protocol,
+                    self.ctx.clone(),
                     self.tx.clone(),
                 );
-            } else {
-                self.view = View::of_user_command_from_detail(
-                    commit_list_state,
-                    commit,
-                    user_command_number,
-                    self.view_area,
-                    self.core_config,
-                    self.ui_config,
-                    self.color_theme,
-                    self.image_protocol,
-                    self.tx.clone(),
-                );
+            }
+            Err(err) => {
+                self.tx.send(AppEvent::NotifyError(err));
+            }
+        };
+    }
+
+    fn open_user_command_silent(&mut self, user_command_number: usize) {
+        let commit_list_state = match self.view {
+            View::List(ref mut view) => view.as_list_state(),
+            View::Detail(ref mut view) => view.as_list_state(),
+            View::UserCommand(ref mut view) => view.as_list_state(),
+            _ => return,
+        };
+        let selected = commit_list_state.selected_commit_hash().clone();
+        let (commit, _) = self.repository.commit_detail(&selected);
+        let refs: Vec<Ref> = self
+            .repository
+            .refs(&selected)
+            .into_iter()
+            .cloned()
+            .collect();
+        let result = build_external_command_parameters(
+            &commit,
+            &refs,
+            user_command_number,
+            self.app_status.view_area,
+            &self.ctx,
+        )
+        .and_then(exec_user_command);
+        match result {
+            Ok(_) => {
+                if extract_user_command_by_number(user_command_number, &self.ctx)
+                    .map(|c| c.refresh)
+                    .unwrap_or_default()
+                {
+                    self.view.refresh();
+                }
+            }
+            Err(err) => {
+                self.tx.send(AppEvent::NotifyError(err));
             }
         }
     }
 
     fn close_user_command(&mut self) {
         if let View::UserCommand(ref mut view) = self.view {
-            let before_view_is_list = view.before_view_is_list();
-            let Some(commit_list_state) = view.take_list_state() else {
-                return;
-            };
-            let selected = commit_list_state.selected_commit_hash().clone();
-            let (commit, changes) = self.repository.commit_detail(&selected);
-            let refs = self.repository.refs(&selected);
-            if before_view_is_list {
-                self.view = View::of_list(
-                    commit_list_state,
-                    self.ui_config,
-                    self.color_theme,
-                    self.tx.clone(),
-                );
-            } else {
-                self.view = View::of_detail(
-                    commit_list_state,
-                    commit,
-                    changes,
-                    refs,
-                    self.ui_config,
-                    self.color_theme,
-                    self.image_protocol,
-                    self.tx.clone(),
-                );
+            let commit_list_state = view.take_list_state();
+            if let Some(commit_list_state) = commit_list_state {
+                self.view = View::of_list(commit_list_state, self.ctx.clone(), self.tx.clone());
             }
         }
     }
@@ -656,19 +682,9 @@ impl App<'_> {
             let Some(commit_list_state) = view.take_list_state() else {
                 return;
             };
-            let refs = self.get_current_refs();
-            self.view = View::of_refs(
-                commit_list_state,
-                refs,
-                self.ui_config,
-                self.color_theme,
-                self.tx.clone(),
-            );
+            let refs: Vec<Ref> = self.repository.all_refs().into_iter().cloned().collect();
+            self.view = View::of_refs(commit_list_state, refs, self.ctx.clone(), self.tx.clone());
         }
-    }
-
-    fn get_current_refs(&self) -> Vec<Rc<Ref>> {
-        self.repository.all_refs()
     }
 
     fn close_refs(&mut self) {
@@ -676,12 +692,7 @@ impl App<'_> {
             let Some(commit_list_state) = view.take_list_state() else {
                 return;
             };
-            self.view = View::of_list(
-                commit_list_state,
-                self.ui_config,
-                self.color_theme,
-                self.tx.clone(),
-            );
+            self.view = View::of_list(commit_list_state, self.ctx.clone(), self.tx.clone());
         }
     }
 
@@ -695,8 +706,7 @@ impl App<'_> {
                 commit_list_state,
                 commit_hash,
                 self.repository.path().to_path_buf(),
-                self.ui_config,
-                self.color_theme,
+                self.ctx.clone(),
                 self.tx.clone(),
             );
         }
@@ -707,31 +717,7 @@ impl App<'_> {
             let Some(commit_list_state) = view.take_list_state() else {
                 return;
             };
-            self.view = View::of_list(
-                commit_list_state,
-                self.ui_config,
-                self.color_theme,
-                self.tx.clone(),
-            );
-        }
-    }
-
-    fn add_tag_to_commit(&mut self, commit_hash: &CommitHash, tag_name: &str) {
-        let new_tag = Ref::Tag {
-            name: tag_name.to_string(),
-            target: commit_hash.clone(),
-        };
-
-        self.repository.add_ref(new_tag.clone());
-
-        match &mut self.view {
-            View::List(view) => {
-                view.add_ref_to_commit(commit_hash, new_tag);
-            }
-            View::CreateTag(view) => {
-                view.add_ref_to_commit(commit_hash, new_tag);
-            }
-            _ => {}
+            self.view = View::of_list(commit_list_state, self.ctx.clone(), self.tx.clone());
         }
     }
 
@@ -741,15 +727,14 @@ impl App<'_> {
                 return;
             };
             let commit_hash = commit_list_state.selected_commit_hash().clone();
-            let tags = commit_list_state.selected_commit_refs();
-            let has_tags = tags.iter().any(|r| matches!(r.as_ref(), Ref::Tag { .. }));
+            let tags: Vec<Ref> = commit_list_state
+                .selected_commit_refs()
+                .iter()
+                .map(|r| (*r).clone())
+                .collect();
+            let has_tags = tags.iter().any(|r| matches!(r, Ref::Tag { .. }));
             if !has_tags {
-                self.view = View::of_list(
-                    commit_list_state,
-                    self.ui_config,
-                    self.color_theme,
-                    self.tx.clone(),
-                );
+                self.view = View::of_list(commit_list_state, self.ctx.clone(), self.tx.clone());
                 self.tx
                     .send(AppEvent::NotifyWarn("No tags on this commit".into()));
                 return;
@@ -759,8 +744,7 @@ impl App<'_> {
                 commit_hash,
                 tags,
                 self.repository.path().to_path_buf(),
-                self.ui_config,
-                self.color_theme,
+                self.ctx.clone(),
                 self.tx.clone(),
             );
         }
@@ -771,26 +755,7 @@ impl App<'_> {
             let Some(commit_list_state) = view.take_list_state() else {
                 return;
             };
-            self.view = View::of_list(
-                commit_list_state,
-                self.ui_config,
-                self.color_theme,
-                self.tx.clone(),
-            );
-        }
-    }
-
-    fn remove_tag_from_commit(&mut self, commit_hash: &CommitHash, tag_name: &str) {
-        self.repository.remove_ref(tag_name);
-
-        match &mut self.view {
-            View::List(view) => {
-                view.remove_ref_from_commit(commit_hash, tag_name);
-            }
-            View::DeleteTag(view) => {
-                view.remove_ref_from_commit(commit_hash, tag_name);
-            }
-            _ => {}
+            self.view = View::of_list(commit_list_state, self.ctx.clone(), self.tx.clone());
         }
     }
 
@@ -808,8 +773,7 @@ impl App<'_> {
                 self.repository.path().to_path_buf(),
                 ref_name,
                 ref_type,
-                self.ui_config,
-                self.color_theme,
+                self.ctx.clone(),
                 self.tx.clone(),
             );
         }
@@ -826,37 +790,15 @@ impl App<'_> {
                 commit_list_state,
                 ref_list_state,
                 refs,
-                self.ui_config,
-                self.color_theme,
+                self.ctx.clone(),
                 self.tx.clone(),
             );
         }
     }
 
-    fn remove_ref_from_list(&mut self, ref_name: &str) {
-        self.repository.remove_ref(ref_name);
-
-        match &mut self.view {
-            View::Refs(view) => {
-                view.remove_ref(ref_name);
-            }
-            View::DeleteRef(view) => {
-                view.remove_ref(ref_name);
-            }
-            _ => {}
-        }
-    }
-
     fn open_help(&mut self) {
         let before_view = std::mem::take(&mut self.view);
-        self.view = View::of_help(
-            before_view,
-            self.color_theme,
-            self.image_protocol,
-            self.tx.clone(),
-            self.keybind,
-            self.core_config,
-        );
+        self.view = View::of_help(before_view, self.ctx.clone(), self.tx.clone());
     }
 
     fn close_help(&mut self) {
@@ -873,30 +815,66 @@ impl App<'_> {
 
     fn select_older_commit(&mut self) {
         if let View::Detail(ref mut view) = self.view {
-            view.select_older_commit(&self.repository);
+            view.select_older_commit(self.repository);
         } else if let View::UserCommand(ref mut view) = self.view {
-            view.select_older_commit(&self.repository, self.view_area);
+            view.select_older_commit(
+                self.repository,
+                self.app_status.view_area,
+                build_external_command_parameters,
+            );
         }
     }
 
     fn select_newer_commit(&mut self) {
         if let View::Detail(ref mut view) = self.view {
-            view.select_newer_commit(&self.repository);
+            view.select_newer_commit(self.repository);
         } else if let View::UserCommand(ref mut view) = self.view {
-            view.select_newer_commit(&self.repository, self.view_area);
+            view.select_newer_commit(
+                self.repository,
+                self.app_status.view_area,
+                build_external_command_parameters,
+            );
         }
     }
 
     fn select_parent_commit(&mut self) {
         if let View::Detail(ref mut view) = self.view {
-            view.select_parent_commit(&self.repository);
+            view.select_parent_commit(self.repository);
         } else if let View::UserCommand(ref mut view) = self.view {
-            view.select_parent_commit(&self.repository, self.view_area);
+            view.select_parent_commit(
+                self.repository,
+                self.app_status.view_area,
+                build_external_command_parameters,
+            );
+        }
+    }
+
+    fn init_with_context(&mut self, context: RefreshViewContext) {
+        if let View::List(ref mut view) = self.view {
+            view.reset_commit_list_with(context.list_context());
+        }
+        match context {
+            RefreshViewContext::List { .. } => {}
+            RefreshViewContext::Detail { .. } => {
+                self.open_detail();
+            }
+            RefreshViewContext::UserCommand {
+                user_command_context,
+                ..
+            } => {
+                self.open_user_command(user_command_context.n);
+            }
+            RefreshViewContext::Refs { refs_context, .. } => {
+                self.open_refs();
+                if let View::Refs(ref mut view) = self.view {
+                    view.reset_refs_with(refs_context);
+                }
+            }
         }
     }
 
     fn clear_status_line(&mut self) {
-        self.status_line = StatusLine::None;
+        self.app_status.status_line = StatusLine::None;
     }
 
     fn update_status_input(
@@ -905,27 +883,27 @@ impl App<'_> {
         cursor_pos: Option<u16>,
         transient_msg: Option<String>,
     ) {
-        self.status_line = StatusLine::Input(msg, cursor_pos, transient_msg);
+        self.app_status.status_line = StatusLine::Input(msg, cursor_pos, transient_msg);
     }
 
     fn info_notification(&mut self, msg: String) {
-        self.status_line = StatusLine::NotificationInfo(msg);
+        self.app_status.status_line = StatusLine::NotificationInfo(msg);
     }
 
     fn success_notification(&mut self, msg: String) {
-        self.status_line = StatusLine::NotificationSuccess(msg);
+        self.app_status.status_line = StatusLine::NotificationSuccess(msg);
     }
 
     fn warn_notification(&mut self, msg: String) {
-        self.status_line = StatusLine::NotificationWarn(msg);
+        self.app_status.status_line = StatusLine::NotificationWarn(msg);
     }
 
     fn error_notification(&mut self, msg: String) {
-        self.status_line = StatusLine::NotificationError(msg);
+        self.app_status.status_line = StatusLine::NotificationError(msg);
     }
 
     fn copy_to_clipboard(&self, name: String, value: String) {
-        match copy_to_clipboard(value) {
+        match copy_to_clipboard(value, &self.ctx.core_config.external.clipboard) {
             Ok(_) => {
                 let msg = format!("Copied {name} to clipboard successfully");
                 self.tx.send(AppEvent::NotifySuccess(msg));
@@ -934,109 +912,6 @@ impl App<'_> {
                 self.tx.send(AppEvent::NotifyError(msg));
             }
         }
-    }
-
-    fn refresh(&mut self) {
-        // Reload repository from disk
-        let sort = self.repository.sort_order();
-        let path = self.repository.path().to_path_buf();
-
-        let repository = match Repository::load(&path, sort) {
-            Ok(repo) => repo,
-            Err(e) => {
-                self.tx
-                    .send(AppEvent::NotifyError(format!("Refresh failed: {}", e)));
-                return;
-            }
-        };
-
-        // Recalculate graph
-        let graph = Rc::new(calc_graph(&repository));
-
-        // Create new graph image manager
-        let graph_image_manager = GraphImageManager::new(
-            Rc::clone(&graph),
-            self.graph_color_set,
-            self.cell_width_type,
-            self.image_protocol,
-            false, // don't preload
-        );
-
-        // Compute filtered graph
-        let (filtered_graph, remote_only_commits) = compute_filtered_graph(
-            &repository,
-            &graph,
-            self.graph_color_set,
-            self.cell_width_type,
-            self.image_protocol,
-            false,
-        );
-
-        // Build new commit list state
-        let mut ref_name_to_commit_index_map = HashMap::new();
-        let commits = graph
-            .commits
-            .iter()
-            .enumerate()
-            .map(|(i, commit)| {
-                let refs = repository.refs(&commit.commit_hash);
-                for r in &refs {
-                    ref_name_to_commit_index_map.insert(r.name().to_string(), i);
-                }
-                let (pos_x, _) = graph.commit_pos_map[&commit.commit_hash];
-                let graph_color = self.graph_color_set.get(pos_x).to_ratatui_color();
-                CommitInfo::new(commit.clone(), refs, graph_color)
-            })
-            .collect();
-
-        let graph_cell_width = match self.cell_width_type {
-            CellWidthType::Double => (graph.max_pos_x + 1) as u16 * 2,
-            CellWidthType::Single => (graph.max_pos_x + 1) as u16,
-        };
-
-        let (filtered_image_manager, filtered_cell_width, filtered_colors) =
-            if let Some(fg) = filtered_graph {
-                let colors: FxHashMap<CommitHash, ratatui::style::Color> = fg
-                    .graph
-                    .commits
-                    .iter()
-                    .map(|c| {
-                        let (pos_x, _) = fg.graph.commit_pos_map[&c.commit_hash];
-                        let color = self.graph_color_set.get(pos_x).to_ratatui_color();
-                        (c.commit_hash.clone(), color)
-                    })
-                    .collect();
-                (Some(fg.image_manager), fg.cell_width, Some(colors))
-            } else {
-                (None, 0, None)
-            };
-
-        let head = repository.head();
-        let commit_list_state = CommitListState::new(
-            commits,
-            graph_image_manager,
-            graph_cell_width,
-            head,
-            ref_name_to_commit_index_map,
-            self.core_config.search.ignore_case,
-            self.core_config.search.fuzzy,
-            filtered_image_manager,
-            filtered_cell_width,
-            filtered_colors,
-            remote_only_commits,
-        );
-
-        // Update app state
-        self.repository = repository;
-        self.view = View::of_list(
-            commit_list_state,
-            self.ui_config,
-            self.color_theme,
-            self.tx.clone(),
-        );
-
-        self.tx
-            .send(AppEvent::NotifySuccess("Repository refreshed".into()));
     }
 }
 
@@ -1055,6 +930,72 @@ fn process_numeric_prefix(
     } else {
         UserEventWithCount::from_event(user_event)
     }
+}
+
+fn extract_user_command_by_number(
+    user_command_number: usize,
+    ctx: &AppContext,
+) -> Result<&UserCommand, String> {
+    ctx.core_config
+        .user_command
+        .commands
+        .get(&user_command_number.to_string())
+        .ok_or_else(|| {
+            format!(
+                "No user command configured for number {}",
+                user_command_number
+            )
+        })
+}
+
+fn build_external_command_parameters(
+    commit: &Commit,
+    refs: &[Ref],
+    user_command_number: usize,
+    view_area: Rect,
+    ctx: &AppContext,
+) -> Result<ExternalCommandParameters, String> {
+    let command = extract_user_command_by_number(user_command_number, ctx)?
+        .commands
+        .iter()
+        .map(String::to_string)
+        .collect();
+    let target_hash = commit.commit_hash.as_str().to_string();
+    let parent_hashes: Vec<String> = commit
+        .parent_commit_hashes
+        .iter()
+        .map(|c| c.as_str().to_string())
+        .collect();
+
+    let mut all_refs = vec![];
+    let mut branches = vec![];
+    let mut remote_branches = vec![];
+    let mut tags = vec![];
+    for r in refs {
+        match r {
+            Ref::Tag { .. } => tags.push(r.name().to_string()),
+            Ref::Branch { .. } => branches.push(r.name().to_string()),
+            Ref::RemoteBranch { .. } => remote_branches.push(r.name().to_string()),
+            Ref::Stash { .. } => continue, // skip stashes
+        }
+        all_refs.push(r.name().to_string());
+    }
+
+    let area_width = view_area.width.saturating_sub(4); // minus the left and right padding
+    let area_height = (view_area.height.saturating_sub(1))
+        .min(ctx.ui_config.user_command.height)
+        .saturating_sub(1); // minus the top border
+    Ok(ExternalCommandParameters {
+        command,
+        target_hash,
+        parent_hashes,
+        all_refs,
+        branches,
+        remote_branches,
+        tags,
+        area_width,
+        area_height,
+    })
 }
 
 #[cfg(test)]

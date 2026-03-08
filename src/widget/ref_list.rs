@@ -9,7 +9,7 @@ use ratatui::{
 use semver::Version;
 use tui_tree_widget::{Tree, TreeItem, TreeState};
 
-use crate::{color::ColorTheme, git::Ref};
+use crate::{app::AppContext, color::ColorTheme, git::Ref};
 
 const TREE_BRANCH_ROOT_IDENT: &str = "__branches__";
 const TREE_REMOTE_ROOT_IDENT: &str = "__remotes__";
@@ -102,45 +102,46 @@ impl RefListState {
         }
     }
 
-    pub fn adjust_selection_after_delete(&mut self) {
-        // After item deletion, tree_state may point to non-existent item
-        // The safest approach: just move selection, the tree widget will adjust
-        // Try down first (next item takes deleted item's place), then up as fallback
-        let before: Vec<String> = self.tree_state.selected().to_vec();
-        self.tree_state.key_down();
-        if self.tree_state.selected() == before {
-            // key_down didn't move (we were at the end), try key_up
-            self.tree_state.key_up();
+    pub fn current_tree_status(&self) -> (Vec<String>, Vec<Vec<String>>) {
+        let selected = self.tree_state.selected().into();
+        let opened = self.tree_state.opened().iter().cloned().collect();
+        (selected, opened)
+    }
+
+    pub fn reset_tree_status(&mut self, selected: Vec<String>, opened: Vec<Vec<String>>) {
+        self.tree_state.select(selected);
+        for node in opened {
+            self.tree_state.open(node);
         }
     }
 }
 
-pub struct RefList<'a> {
-    items: Vec<TreeItem<'a, String>>,
-    color_theme: &'a ColorTheme,
+pub struct RefList {
+    items: Vec<TreeItem<'static, String>>,
+    ctx: Rc<AppContext>,
 }
 
-impl<'a> RefList<'a> {
-    pub fn new(refs: &'a [Rc<Ref>], color_theme: &'a ColorTheme) -> RefList<'a> {
-        let items = build_ref_tree_items(refs, color_theme);
-        RefList { items, color_theme }
+impl RefList {
+    pub fn new(refs: &[Ref], ctx: Rc<AppContext>) -> RefList {
+        let items = build_ref_tree_items(refs, &ctx.color_theme);
+        RefList { items, ctx }
     }
 }
 
-impl StatefulWidget for RefList<'_> {
+impl StatefulWidget for RefList {
     type State = RefListState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
         let make_block = || {
             Block::default()
                 .borders(Borders::LEFT)
-                .style(Style::default().fg(self.color_theme.divider_fg))
+                .style(Style::default().fg(self.ctx.color_theme.divider_fg))
                 .padding(Padding::horizontal(1))
         };
 
         let Ok(tree) = Tree::new(&self.items) else {
             Paragraph::new("Error: failed to build ref tree")
-                .fg(self.color_theme.status_error_fg)
+                .fg(self.ctx.color_theme.status_error_fg)
                 .block(make_block())
                 .render(area, buf);
             return;
@@ -151,25 +152,27 @@ impl StatefulWidget for RefList<'_> {
             .node_no_children_symbol("  ")
             .highlight_style(
                 Style::default()
-                    .bg(self.color_theme.ref_selected_bg)
-                    .fg(self.color_theme.ref_selected_fg),
+                    .bg(self.ctx.color_theme.ref_selected_bg)
+                    .fg(self.ctx.color_theme.ref_selected_fg),
             )
-            .block(make_block());
+            .block(
+                Block::default()
+                    .borders(Borders::LEFT)
+                    .style(Style::default().fg(self.ctx.color_theme.divider_fg))
+                    .padding(Padding::horizontal(1)),
+            );
         StatefulWidget::render(tree, area, buf, &mut state.tree_state);
     }
 }
 
-fn build_ref_tree_items<'a>(
-    refs: &'a [Rc<Ref>],
-    color_theme: &'a ColorTheme,
-) -> Vec<TreeItem<'a, String>> {
+fn build_ref_tree_items(refs: &[Ref], color_theme: &ColorTheme) -> Vec<TreeItem<'static, String>> {
     let mut branch_refs = Vec::new();
     let mut remote_refs = Vec::new();
     let mut tag_refs = Vec::new();
     let mut stash_refs = Vec::new();
 
     for r in refs {
-        match r.as_ref() {
+        match r {
             Ref::Tag { name, .. } => tag_refs.push(name.clone()),
             Ref::Branch { name, .. } => branch_refs.push(name.clone()),
             Ref::RemoteBranch { name, .. } => remote_refs.push(name.clone()),
@@ -219,7 +222,6 @@ fn build_ref_tree_items<'a>(
         ),
     ]
     .into_iter()
-    .flatten()
     .collect()
 }
 
@@ -280,18 +282,17 @@ fn refs_to_ref_tree_nodes(ref_names: Vec<String>) -> Vec<RefTreeNode> {
 fn ref_tree_nodes_to_tree_items(
     nodes: Vec<RefTreeNode>,
     color_theme: &ColorTheme,
-) -> Vec<TreeItem<'_, String>> {
-    nodes
-        .into_iter()
-        .filter_map(|node| {
-            if node.children.is_empty() {
-                tree_item(node.identifier, node.name, Vec::new(), color_theme)
-            } else {
-                let children = ref_tree_nodes_to_tree_items(node.children, color_theme);
-                tree_item(node.identifier, node.name, children, color_theme)
-            }
-        })
-        .collect()
+) -> Vec<TreeItem<'static, String>> {
+    let mut items = Vec::new();
+    for node in nodes {
+        if node.children.is_empty() {
+            items.push(tree_leaf_item(node.identifier, node.name, color_theme));
+        } else {
+            let children = ref_tree_nodes_to_tree_items(node.children, color_theme);
+            items.push(tree_item(node.identifier, node.name, children, color_theme));
+        }
+    }
+    items
 }
 
 fn sort_branch_tree_nodes(nodes: &mut [RefTreeNode]) {
@@ -331,11 +332,19 @@ fn parse_semantic_version_tag(tag: &str) -> Option<Version> {
     Version::parse(tag).ok()
 }
 
-fn tree_item<'a>(
+fn tree_item(
     identifier: String,
     name: String,
-    children: Vec<TreeItem<'a, String>>,
-    color_theme: &'a ColorTheme,
-) -> Option<TreeItem<'a, String>> {
-    TreeItem::new(identifier, name.fg(color_theme.fg), children).ok()
+    children: Vec<TreeItem<'static, String>>,
+    color_theme: &ColorTheme,
+) -> TreeItem<'static, String> {
+    TreeItem::new(identifier, name.fg(color_theme.fg), children).unwrap()
+}
+
+fn tree_leaf_item(
+    identifier: String,
+    name: String,
+    color_theme: &ColorTheme,
+) -> TreeItem<'static, String> {
+    tree_item(identifier, name, Vec::new(), color_theme)
 }

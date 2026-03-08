@@ -10,77 +10,54 @@ use ratatui::{
 };
 
 use crate::{
-    color::ColorTheme,
-    config::{CoreConfig, UiConfig},
+    app::AppContext,
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
-    external::exec_user_command,
-    git::{Commit, Repository},
-    protocol::ImageProtocol,
+    external::{exec_user_command, ExternalCommandParameters},
+    git::{Commit, Ref, Repository},
+    view::{ListRefreshViewContext, RefreshViewContext, UserCommandRefreshViewContext},
     widget::{
         commit_list::{CommitList, CommitListState},
         commit_user_command::{CommitUserCommand, CommitUserCommandState},
     },
 };
 
-#[derive(Debug)]
-pub enum UserCommandViewBeforeView {
-    List,
-    Detail,
-}
+type BuildParamsFn =
+    fn(&Commit, &[Ref], usize, Rect, &AppContext) -> Result<ExternalCommandParameters, String>;
 
 #[derive(Debug)]
 pub struct UserCommandView<'a> {
-    commit_list_state: Option<CommitListState>,
+    commit_list_state: Option<CommitListState<'a>>,
     commit_user_command_state: CommitUserCommandState,
 
     user_command_number: usize,
-    user_command_output_lines: Vec<Line<'a>>,
+    user_command_output_lines: Vec<Line<'static>>,
 
-    core_config: &'a CoreConfig,
-    ui_config: &'a UiConfig,
-    color_theme: &'a ColorTheme,
-    image_protocol: ImageProtocol,
+    ctx: Rc<AppContext>,
     tx: Sender,
-    before_view: UserCommandViewBeforeView,
     clear: bool,
 }
 
 impl<'a> UserCommandView<'a> {
     pub fn new(
-        commit_list_state: CommitListState,
-        commit: Rc<Commit>,
+        commit_list_state: CommitListState<'a>,
+        params: ExternalCommandParameters,
         user_command_number: usize,
-        view_area: Rect,
-        core_config: &'a CoreConfig,
-        ui_config: &'a UiConfig,
-        color_theme: &'a ColorTheme,
-        image_protocol: ImageProtocol,
+        ctx: Rc<AppContext>,
         tx: Sender,
-        before_view: UserCommandViewBeforeView,
     ) -> UserCommandView<'a> {
-        let user_command_output_lines = build_user_command_output_lines(
-            &commit,
-            user_command_number,
-            view_area,
-            core_config,
-            ui_config,
-        )
-        .unwrap_or_else(|err| {
-            tx.send(AppEvent::NotifyError(err));
-            vec![]
-        });
+        let user_command_output_lines = build_user_command_output_lines(params, ctx.clone())
+            .unwrap_or_else(|err| {
+                tx.send(AppEvent::NotifyError(err));
+                vec![]
+            });
 
         UserCommandView {
             commit_list_state: Some(commit_list_state),
             commit_user_command_state: CommitUserCommandState::default(),
             user_command_number,
             user_command_output_lines,
-            core_config,
-            ui_config,
-            color_theme,
-            image_protocol,
+            ctx,
             tx,
-            before_view,
             clear: false,
         }
     }
@@ -138,7 +115,7 @@ impl<'a> UserCommandView<'a> {
             UserEvent::HelpToggle => {
                 self.tx.send(AppEvent::OpenHelp);
             }
-            UserEvent::UserCommandViewToggle(n) => {
+            UserEvent::UserCommand(n) => {
                 if n == self.user_command_number {
                     self.close();
                 } else {
@@ -146,28 +123,30 @@ impl<'a> UserCommandView<'a> {
                     self.tx.send(AppEvent::OpenUserCommand(n));
                 }
             }
+            UserEvent::Confirm => {
+                self.tx.send(AppEvent::OpenDetail);
+            }
             UserEvent::Cancel | UserEvent::Close => {
                 self.close();
+            }
+            UserEvent::Refresh => {
+                self.refresh();
             }
             _ => {}
         }
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect) {
-        let Some(list_state) = self.commit_list_state.as_mut() else {
-            return;
-        };
-
-        let user_command_height = (area.height - 1).min(self.ui_config.user_command.height);
+        let user_command_height = (area.height - 1).min(self.ctx.ui_config.user_command.height);
         let [list_area, user_command_area] =
             Layout::vertical([Constraint::Min(0), Constraint::Length(user_command_height)])
                 .areas(area);
 
-        let commit_list = CommitList::new(&self.ui_config.list, self.color_theme);
-        f.render_stateful_widget(commit_list, list_area, list_state);
+        let commit_list = CommitList::new(self.ctx.clone());
+        f.render_stateful_widget(commit_list, list_area, self.as_mut_list_state());
 
         let commit_user_command =
-            CommitUserCommand::new(&self.user_command_output_lines, self.color_theme);
+            CommitUserCommand::new(&self.user_command_output_lines, self.ctx.clone());
         f.render_stateful_widget(
             commit_user_command,
             user_command_area,
@@ -181,49 +160,84 @@ impl<'a> UserCommandView<'a> {
 
         // clear the image area if needed
         for y in user_command_area.top()..user_command_area.bottom() {
-            self.image_protocol.clear_line(y);
+            self.ctx.image_protocol.clear_line(y);
         }
     }
 }
 
 impl<'a> UserCommandView<'a> {
-    pub fn take_list_state(&mut self) -> Option<CommitListState> {
+    pub fn take_list_state(&mut self) -> Option<CommitListState<'a>> {
         self.commit_list_state.take()
     }
 
-    pub fn select_older_commit(&mut self, repository: &Repository, view_area: Rect) {
-        self.update_selected_commit(repository, view_area, |state| state.select_next());
+    pub fn as_list_state(&self) -> &CommitListState<'a> {
+        self.commit_list_state.as_ref().unwrap()
     }
 
-    pub fn select_newer_commit(&mut self, repository: &Repository, view_area: Rect) {
-        self.update_selected_commit(repository, view_area, |state| state.select_prev());
+    pub fn as_mut_list_state(&mut self) -> &mut CommitListState<'a> {
+        self.commit_list_state
+            .as_mut()
+            .expect("commit_list_state already taken")
     }
 
-    pub fn select_parent_commit(&mut self, repository: &Repository, view_area: Rect) {
-        self.update_selected_commit(repository, view_area, |state| state.select_parent());
+    pub fn select_older_commit(
+        &mut self,
+        repository: &Repository,
+        view_area: Rect,
+        build_parameters: BuildParamsFn,
+    ) {
+        self.update_selected_commit(repository, view_area, build_parameters, |state| {
+            state.select_next()
+        });
+    }
+
+    pub fn select_newer_commit(
+        &mut self,
+        repository: &Repository,
+        view_area: Rect,
+        build_parameters: BuildParamsFn,
+    ) {
+        self.update_selected_commit(repository, view_area, build_parameters, |state| {
+            state.select_prev()
+        });
+    }
+
+    pub fn select_parent_commit(
+        &mut self,
+        repository: &Repository,
+        view_area: Rect,
+        build_parameters: BuildParamsFn,
+    ) {
+        self.update_selected_commit(repository, view_area, build_parameters, |state| {
+            state.select_parent()
+        });
     }
 
     fn update_selected_commit<F>(
         &mut self,
         repository: &Repository,
         view_area: Rect,
+        build_parameters: BuildParamsFn,
         update_commit_list_state: F,
     ) where
-        F: FnOnce(&mut CommitListState),
+        F: FnOnce(&mut CommitListState<'a>),
     {
         let Some(commit_list_state) = self.commit_list_state.as_mut() else {
             return;
         };
         update_commit_list_state(commit_list_state);
+
         let selected = commit_list_state.selected_commit_hash().clone();
         let (commit, _) = repository.commit_detail(&selected);
-        self.user_command_output_lines = build_user_command_output_lines(
+        let refs: Vec<Ref> = repository.refs(&selected).into_iter().cloned().collect();
+        self.user_command_output_lines = build_parameters(
             &commit,
+            &refs,
             self.user_command_number,
             view_area,
-            self.core_config,
-            self.ui_config,
+            &self.ctx,
         )
+        .and_then(|params| build_user_command_output_lines(params, self.ctx.clone()))
         .unwrap_or_else(|err| {
             self.tx.send(AppEvent::NotifyError(err));
             vec![]
@@ -236,49 +250,32 @@ impl<'a> UserCommandView<'a> {
         self.clear = true;
     }
 
-    pub fn before_view_is_list(&self) -> bool {
-        matches!(self.before_view, UserCommandViewBeforeView::List)
-    }
-
     fn close(&self) {
         self.tx.send(AppEvent::ClearUserCommand); // hack: reset the rendering of the image area
         self.tx.send(AppEvent::CloseUserCommand);
     }
+
+    pub fn refresh(&self) {
+        let list_state = self.as_list_state();
+        let list_context = ListRefreshViewContext::from(list_state);
+        let user_command_context = UserCommandRefreshViewContext {
+            n: self.user_command_number,
+        };
+        let context = RefreshViewContext::UserCommand {
+            list_context,
+            user_command_context,
+        };
+        self.tx.send(AppEvent::Clear); // hack: reset the rendering of the image area
+        self.tx.send(AppEvent::Refresh(context));
+    }
 }
 
-fn build_user_command_output_lines<'a>(
-    commit: &Commit,
-    user_command_number: usize,
-    view_area: Rect,
-    core_config: &'a CoreConfig,
-    ui_config: &'a UiConfig,
-) -> Result<Vec<Line<'a>>, String> {
-    let command = core_config
-        .user_command
-        .commands
-        .get(&user_command_number.to_string())
-        .ok_or_else(|| {
-            format!(
-                "No user command configured for number {}",
-                user_command_number
-            )
-        })?
-        .commands
-        .iter()
-        .map(String::as_str)
-        .collect::<Vec<_>>();
-    let target_hash = commit.commit_hash.as_str();
-    let parent_hash = commit
-        .parent_commit_hashes
-        .first()
-        .map(|c| c.as_str())
-        .unwrap_or_default();
-
-    let area_width = view_area.width - 4; // minus the left and right padding
-    let area_height = (view_area.height - 1).min(ui_config.user_command.height) - 1; // minus the top border
-
-    let tab_spaces = " ".repeat(core_config.user_command.tab_width as usize);
-    exec_user_command(&command, target_hash, parent_hash, area_width, area_height)
+fn build_user_command_output_lines(
+    params: ExternalCommandParameters,
+    ctx: Rc<AppContext>,
+) -> Result<Vec<Line<'static>>, String> {
+    let tab_spaces = " ".repeat(ctx.core_config.user_command.tab_width as usize);
+    exec_user_command(params)
         .and_then(|output| {
             output
                 .replace('\t', &tab_spaces) // tab is not rendered correctly, so replace it

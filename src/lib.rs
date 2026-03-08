@@ -14,7 +14,7 @@ mod widget;
 
 use std::{collections::VecDeque, path::Path, rc::Rc};
 
-use app::App;
+use app::{App, Ret};
 use clap::{Parser, ValueEnum};
 use graph::{Graph, GraphImageManager};
 use rustc_hash::FxHashSet;
@@ -28,6 +28,10 @@ struct Args {
     #[arg(default_value = ".")]
     path: String,
 
+    /// Maximum number of commits to render
+    #[arg(short = 'n', long, value_name = "NUMBER")]
+    max_count: Option<usize>,
+
     /// Image protocol to render graph [default: auto]
     #[arg(short, long, value_name = "TYPE")]
     protocol: Option<ImageProtocolType>,
@@ -39,6 +43,10 @@ struct Args {
     /// Commit graph image cell width [default: auto]
     #[arg(short, long, value_name = "TYPE")]
     graph_width: Option<GraphWidthType>,
+
+    /// Commit graph image edge style [default: rounded]
+    #[arg(short = 's', long, value_name = "TYPE")]
+    graph_style: Option<GraphStyle>,
 
     /// Initial selection of commit [default: latest]
     #[arg(short, long, value_name = "TYPE")]
@@ -95,6 +103,23 @@ pub enum GraphWidthType {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
 #[serde(rename_all = "lowercase")]
+pub enum GraphStyle {
+    Rounded,
+    Angular,
+}
+
+impl From<Option<GraphStyle>> for graph::GraphStyle {
+    fn from(style: Option<GraphStyle>) -> Self {
+        match style {
+            Some(GraphStyle::Rounded) => graph::GraphStyle::Rounded,
+            Some(GraphStyle::Angular) => graph::GraphStyle::Angular,
+            None => graph::GraphStyle::Rounded,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum InitialSelection {
     Latest,
     Head,
@@ -112,30 +137,31 @@ impl From<Option<InitialSelection>> for app::InitialSelection {
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-pub struct FilteredGraphData {
-    pub graph: Rc<Graph>,
-    pub image_manager: GraphImageManager,
+pub struct FilteredGraphData<'a> {
+    pub graph: Rc<Graph<'a>>,
+    pub image_manager: GraphImageManager<'a>,
     pub cell_width: u16,
 }
 
 /// BFS from all local refs to find commits reachable only from remote branches.
 pub fn find_remote_only_commits(
     repository: &git::Repository,
-    full_graph: &Graph,
+    full_graph: &Graph<'_>,
 ) -> FxHashSet<git::CommitHash> {
     // Collect all commit hashes in the graph
-    let all_hashes: FxHashSet<git::CommitHash> =
-        full_graph.commits.iter().map(|c| c.commit_hash.clone()).collect();
+    let all_hashes: FxHashSet<git::CommitHash> = full_graph
+        .commits
+        .iter()
+        .map(|c| c.commit_hash.clone())
+        .collect();
 
     // Collect BFS seeds: targets of local refs (Branch, Tag, Stash) + HEAD
     let mut seeds: Vec<git::CommitHash> = Vec::new();
     for commit in &full_graph.commits {
         let refs = repository.refs(&commit.commit_hash);
         for r in &refs {
-            match r.as_ref() {
-                git::Ref::Branch { .. }
-                | git::Ref::Tag { .. }
-                | git::Ref::Stash { .. } => {
+            match r {
+                git::Ref::Branch { .. } | git::Ref::Tag { .. } | git::Ref::Stash { .. } => {
                     seeds.push(commit.commit_hash.clone());
                     break;
                 }
@@ -150,19 +176,21 @@ pub fn find_remote_only_commits(
             // Find commit for this branch
             for commit in &full_graph.commits {
                 let refs = repository.refs(&commit.commit_hash);
-                if refs.iter().any(|r| {
-                    matches!(r.as_ref(), git::Ref::Branch { name: n, .. } if n == &name)
-                }) {
+                if refs
+                    .iter()
+                    .any(|r| matches!(r, git::Ref::Branch { name: n, .. } if n == name))
+                {
                     seeds.push(commit.commit_hash.clone());
                     break;
                 }
             }
         }
         git::Head::Detached { target } => {
-            if all_hashes.contains(&target) {
-                seeds.push(target);
+            if all_hashes.contains(target) {
+                seeds.push(target.clone());
             }
         }
+        git::Head::None => {}
     }
 
     // BFS from seeds, walking parent links
@@ -188,14 +216,15 @@ pub fn find_remote_only_commits(
         .collect()
 }
 
-pub fn compute_filtered_graph(
-    repository: &git::Repository,
-    full_graph: &Graph,
+pub fn compute_filtered_graph<'a>(
+    repository: &'a git::Repository,
+    full_graph: &Graph<'a>,
     graph_color_set: &color::GraphColorSet,
     cell_width_type: graph::CellWidthType,
     image_protocol: protocol::ImageProtocol,
     preload: bool,
-) -> (Option<FilteredGraphData>, FxHashSet<git::CommitHash>) {
+    graph_style: graph::GraphStyle,
+) -> (Option<FilteredGraphData<'a>>, FxHashSet<git::CommitHash>) {
     let remote_only = find_remote_only_commits(repository, full_graph);
 
     if remote_only.is_empty() {
@@ -221,6 +250,7 @@ pub fn compute_filtered_graph(
         Rc::clone(&filtered),
         graph_color_set,
         cell_width_type,
+        graph_style,
         image_protocol,
         preload,
     );
@@ -237,12 +267,14 @@ pub fn compute_filtered_graph(
 
 pub fn run() -> Result<()> {
     let args = Args::parse();
-    let (core_config, ui_config, graph_config, color_theme, key_bind_patch) = config::load()?;
-    let key_bind = keybind::KeyBind::new(key_bind_patch);
+    let (core_config, ui_config, graph_config, color_theme, keybind_patch) = config::load()?;
+    let keybind = keybind::KeyBind::new(keybind_patch);
 
+    let max_count = args.max_count;
     let image_protocol = args.protocol.or(core_config.option.protocol).into();
     let order = args.order.or(core_config.option.order).into();
     let graph_width = args.graph_width.or(core_config.option.graph_width);
+    let graph_style = args.graph_style.or(core_config.option.graph_style).into();
     let initial_selection = args
         .initial_selection
         .or(core_config.option.initial_selection)
@@ -250,51 +282,79 @@ pub fn run() -> Result<()> {
 
     let graph_color_set = color::GraphColorSet::new(&graph_config.color);
 
-    let repository = git::Repository::load(Path::new(&args.path), order)?;
-
-    let graph = Rc::new(graph::calc_graph(&repository));
-
-    let cell_width_type = check::decide_cell_width_type(&graph, graph_width)?;
-
-    let graph_image_manager = GraphImageManager::new(
-        Rc::clone(&graph),
-        &graph_color_set,
-        cell_width_type,
+    let ctx = Rc::new(app::AppContext {
+        keybind,
+        core_config,
+        ui_config,
+        color_theme,
         image_protocol,
-        args.preload,
-    );
+    });
 
-    // Compute filtered graph for remote-only commit hiding
-    let (filtered_graph, remote_only_commits) = compute_filtered_graph(
-        &repository,
-        &graph,
-        &graph_color_set,
-        cell_width_type,
-        image_protocol,
-        args.preload,
-    );
+    let (tx, mut rx) = event::init();
+    let mut refresh_view_context = None;
+    let mut terminal = None;
 
-    let mut terminal = ratatui::init();
+    let ret = loop {
+        let repository = git::Repository::load(Path::new(&args.path), order, max_count)?;
 
-    let (tx, rx) = event::init();
+        let graph = graph::calc_graph(&repository);
 
-    let mut app = App::new(
-        repository,
-        graph_image_manager,
-        &graph,
-        filtered_graph,
-        remote_only_commits,
-        &key_bind,
-        &core_config,
-        &ui_config,
-        &color_theme,
-        &graph_color_set,
-        cell_width_type,
-        image_protocol,
-        initial_selection,
-        tx,
-    );
-    let ret = app.run(&mut terminal, rx);
+        let cell_width_type = check::decide_cell_width_type(&graph, graph_width)?;
+
+        let graph = Rc::new(graph);
+
+        let graph_image_manager = GraphImageManager::new(
+            Rc::clone(&graph),
+            &graph_color_set,
+            cell_width_type,
+            graph_style,
+            image_protocol,
+            args.preload,
+        );
+
+        // Compute filtered graph for remote-only commit hiding
+        let (filtered_graph, remote_only_commits) = compute_filtered_graph(
+            &repository,
+            &graph,
+            &graph_color_set,
+            cell_width_type,
+            image_protocol,
+            args.preload,
+            graph_style,
+        );
+
+        if terminal.is_none() {
+            terminal = Some(ratatui::init());
+        }
+
+        let mut app = App::new(
+            &repository,
+            graph_image_manager,
+            &graph,
+            filtered_graph,
+            remote_only_commits,
+            &graph_color_set,
+            cell_width_type,
+            initial_selection,
+            ctx.clone(),
+            tx.clone(),
+            refresh_view_context,
+        );
+
+        match app.run(terminal.as_mut().unwrap(), rx) {
+            Ok(Ret::Quit) => {
+                break Ok(());
+            }
+            Ok(Ret::Refresh(request)) => {
+                rx = request.rx;
+                refresh_view_context = Some(request.context);
+                continue;
+            }
+            Err(e) => {
+                break Err(e);
+            }
+        }
+    };
 
     ratatui::restore();
     ret.map_err(Into::into)

@@ -1,7 +1,7 @@
-use std::collections::HashMap;
 use std::ops::{Deref, DerefMut};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use rustc_hash::FxHashMap;
 use serde::{de::Deserializer, Deserialize};
 
 use crate::event::UserEvent;
@@ -9,10 +9,10 @@ use crate::event::UserEvent;
 const DEFAULT_KEY_BIND: &str = include_str!("../assets/default-keybind.toml");
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct KeyBind(HashMap<KeyEvent, UserEvent>);
+pub struct KeyBind(FxHashMap<KeyEvent, UserEvent>);
 
 impl Deref for KeyBind {
-    type Target = HashMap<KeyEvent, UserEvent>;
+    type Target = FxHashMap<KeyEvent, UserEvent>;
 
     fn deref(&self) -> &Self::Target {
         &self.0
@@ -49,11 +49,11 @@ impl KeyBind {
         key_events.into_iter().map(key_event_to_string).collect()
     }
 
-    pub fn user_command_view_toggle_event_numbers(&self) -> Vec<usize> {
+    pub fn user_command_event_numbers(&self) -> Vec<usize> {
         let mut numbers: Vec<usize> = self
             .values()
             .filter_map(|ue| {
-                if let UserEvent::UserCommandViewToggle(n) = ue {
+                if let UserEvent::UserCommand(n) = ue {
                     Some(*n)
                 } else {
                     None
@@ -70,8 +70,8 @@ impl<'de> Deserialize<'de> for KeyBind {
     where
         D: Deserializer<'de>,
     {
-        let parsed_map = HashMap::<UserEvent, Vec<String>>::deserialize(deserializer)?;
-        let mut key_map = HashMap::<KeyEvent, UserEvent>::new();
+        let parsed_map = FxHashMap::<UserEvent, Vec<String>>::deserialize(deserializer)?;
+        let mut key_map = FxHashMap::<KeyEvent, UserEvent>::default();
         for (user_event, key_events) in parsed_map {
             for key_event_str in key_events {
                 let key_event = match parse_key_event(&key_event_str) {
@@ -257,7 +257,7 @@ mod tests {
             navigate_left = ["ctrl-h", "shift-h", "alt-h"]
             navigate_right = ["ctrl-shift-l", "alt-shift-ctrl-l"]
             quit = ["esc", "f12"]
-            user_command_view_toggle_1 = ["d"]
+            user_command_1 = ["d"]
             user_command_view_toggle_10 = ["e"]
         "#;
 
@@ -305,11 +305,11 @@ mod tests {
                 ),
                 (
                     KeyEvent::new(KeyCode::Char('d'), KeyModifiers::empty()),
-                    UserEvent::UserCommandViewToggle(1),
+                    UserEvent::UserCommand(1),
                 ),
                 (
                     KeyEvent::new(KeyCode::Char('e'), KeyModifiers::empty()),
-                    UserEvent::UserCommandViewToggle(10),
+                    UserEvent::UserCommand(10),
                 ),
             ]
             .into_iter()

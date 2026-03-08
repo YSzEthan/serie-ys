@@ -1,3 +1,5 @@
+use std::rc::Rc;
+
 use ratatui::{
     crossterm::event::KeyEvent,
     layout::{Constraint, Layout, Rect},
@@ -8,11 +10,11 @@ use ratatui::{
 };
 
 use crate::{
+    app::AppContext,
     color::ColorTheme,
     config::CoreConfig,
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
     keybind::KeyBind,
-    protocol::ImageProtocol,
     view::View,
 };
 
@@ -27,21 +29,15 @@ pub struct HelpView<'a> {
     offset: usize,
     height: usize,
 
-    image_protocol: ImageProtocol,
+    ctx: Rc<AppContext>,
     tx: Sender,
     clear: bool,
 }
 
 impl HelpView<'_> {
-    pub fn new<'a>(
-        before: View<'a>,
-        color_theme: &'a ColorTheme,
-        image_protocol: ImageProtocol,
-        tx: Sender,
-        keybind: &'a KeyBind,
-        core_config: &'a CoreConfig,
-    ) -> HelpView<'a> {
-        let (help_key_lines, help_value_lines) = build_lines(color_theme, keybind, core_config);
+    pub fn new<'a>(before: View<'a>, ctx: Rc<AppContext>, tx: Sender) -> HelpView<'a> {
+        let (help_key_lines, help_value_lines) =
+            build_lines(&ctx.color_theme, &ctx.keybind, &ctx.core_config);
         let help_key_line_max_width = help_key_lines
             .iter()
             .map(|line| line.width())
@@ -54,7 +50,7 @@ impl HelpView<'_> {
             help_key_line_max_width,
             offset: 0,
             height: 0,
-            image_protocol,
+            ctx,
             tx,
             clear: false,
         }
@@ -159,7 +155,7 @@ impl HelpView<'_> {
 
         // clear the image area if needed
         for y in area.top()..area.bottom() {
-            self.image_protocol.clear_line(y);
+            self.ctx.image_protocol.clear_line(y);
         }
     }
 }
@@ -217,16 +213,16 @@ fn build_lines(
     keybind: &KeyBind,
     core_config: &CoreConfig,
 ) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
-    let user_command_view_toggle_helps = keybind
-        .user_command_view_toggle_event_numbers()
+    let user_command_help_items = keybind
+        .user_command_event_numbers()
         .into_iter()
         .flat_map(|n| {
             core_config
                 .user_command
                 .commands
                 .get(&n.to_string())
-                .map(|c| format!("Toggle user command {} - {}", n, c.name))
-                .map(|desc| (vec![UserEvent::UserCommandViewToggle(n)], desc))
+                .map(|c| format!("Execute user command {} - {}", n, c.name))
+                .map(|desc| (vec![UserEvent::UserCommand(n)], desc))
         })
         .collect::<Vec<_>>();
 
@@ -265,24 +261,25 @@ fn build_lines(
         (vec![UserEvent::SelectMiddle], "Select middle of the screen".into()),
         (vec![UserEvent::SelectBottom], "Select bottom of the screen".into()),
         (vec![UserEvent::Confirm], "Show commit details".into()),
-        (vec![UserEvent::RefListToggle], "Open refs list".into()),
+        (vec![UserEvent::RefList], "Open refs list".into()),
         (vec![UserEvent::Search], "Start search".into()),
         (vec![UserEvent::Cancel], "Cancel search".into()),
         (vec![UserEvent::GoToNext], "Go to next search match".into()),
         (vec![UserEvent::GoToPrevious], "Go to previous search match".into()),
         (vec![UserEvent::IgnoreCaseToggle], "Toggle ignore case".into()),
         (vec![UserEvent::FuzzyToggle], "Toggle fuzzy match".into()),
+        (vec![UserEvent::Refresh], "Refresh".into()),
         (vec![UserEvent::ShortCopy], "Copy commit short hash".into()),
         (vec![UserEvent::FullCopy], "Copy commit hash".into()),
         (vec![UserEvent::CreateTag], "Create tag on commit".into()),
         (vec![UserEvent::DeleteTag], "Delete tag from commit".into()),
         (vec![UserEvent::RemoteRefsToggle], "Toggle remote refs".into()),
     ];
-    list_helps.extend(user_command_view_toggle_helps.clone());
+    list_helps.extend(user_command_help_items.clone());
     let (list_key_lines, list_value_lines) = build_block_lines("Commit List:", list_helps, color_theme, keybind);
 
     let mut detail_helps = vec![
-        (vec![UserEvent::Cancel, UserEvent::Close], "Close commit details".into()),
+        (vec![UserEvent::Cancel, UserEvent::Close, UserEvent::Confirm], "Close commit details".into()),
         (vec![UserEvent::NavigateDown], "Scroll down".into()),
         (vec![UserEvent::NavigateUp], "Scroll up".into()),
         (vec![UserEvent::PageDown], "Scroll page down".into()),
@@ -294,20 +291,22 @@ fn build_lines(
         (vec![UserEvent::SelectDown], "Select older commit".into()),
         (vec![UserEvent::SelectUp], "Select newer commit".into()),
         (vec![UserEvent::GoToParent], "Select parent commit".into()),
+        (vec![UserEvent::Refresh], "Refresh".into()),
         (vec![UserEvent::ShortCopy], "Copy commit short hash".into()),
         (vec![UserEvent::FullCopy], "Copy commit hash".into()),
     ];
-    detail_helps.extend(user_command_view_toggle_helps.clone());
+    detail_helps.extend(user_command_help_items.clone());
     let (detail_key_lines, detail_value_lines) = build_block_lines("Commit Detail:", detail_helps, color_theme, keybind);
 
     let refs_helps = vec![
-        (vec![UserEvent::Cancel, UserEvent::Close, UserEvent::RefListToggle], "Close refs list".into()),
+        (vec![UserEvent::Cancel, UserEvent::Close, UserEvent::RefList], "Close refs list".into()),
         (vec![UserEvent::NavigateDown, UserEvent::SelectDown], "Move down".into()),
         (vec![UserEvent::NavigateUp, UserEvent::SelectUp], "Move up".into()),
         (vec![UserEvent::GoToTop], "Go to top".into()),
         (vec![UserEvent::GoToBottom], "Go to bottom".into()),
         (vec![UserEvent::NavigateRight], "Open node".into()),
         (vec![UserEvent::NavigateLeft], "Close node".into()),
+        (vec![UserEvent::Refresh], "Refresh".into()),
         (vec![UserEvent::ShortCopy], "Copy ref name".into()),
     ];
     let (refs_key_lines, refs_value_lines) = build_block_lines("Refs List:", refs_helps, color_theme, keybind);
@@ -326,8 +325,10 @@ fn build_lines(
         (vec![UserEvent::SelectDown], "Select older commit".into()),
         (vec![UserEvent::SelectUp], "Select newer commit".into()),
         (vec![UserEvent::GoToParent], "Select parent commit".into()),
+        (vec![UserEvent::Refresh], "Refresh".into()),
+        (vec![UserEvent::Confirm], "Show commit details".into()),
     ];
-    user_command_helps.extend(user_command_view_toggle_helps);
+    user_command_helps.extend(user_command_help_items);
     let (user_command_key_lines, user_command_value_lines) = build_block_lines("User Command:", user_command_helps, color_theme, keybind);
 
     let key_lines = join_line_groups_with_empty(vec![

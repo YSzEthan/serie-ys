@@ -6,7 +6,7 @@ use crate::{
 };
 
 pub fn decide_cell_width_type(
-    graph: &Graph,
+    graph: &Graph<'_>,
     cell_width_type: Option<GraphWidthType>,
 ) -> Result<CellWidthType> {
     let (w, h) = terminal::size()?;

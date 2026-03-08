@@ -3,21 +3,14 @@ use std::{path::PathBuf, rc::Rc};
 use ratatui::{crossterm::event::KeyEvent, layout::Rect, Frame};
 
 use crate::{
-    color::ColorTheme,
-    config::{CoreConfig, UiConfig},
+    app::AppContext,
     event::{Sender, UserEventWithCount},
+    external::ExternalCommandParameters,
     git::{Commit, CommitHash, FileChange, Ref, RefType},
-    keybind::KeyBind,
-    protocol::ImageProtocol,
     view::{
-        create_tag::CreateTagView,
-        delete_ref::DeleteRefView,
-        delete_tag::DeleteTagView,
-        detail::DetailView,
-        help::HelpView,
-        list::ListView,
-        refs::RefsView,
-        user_command::{UserCommandView, UserCommandViewBeforeView},
+        create_tag::CreateTagView, delete_ref::DeleteRefView, delete_tag::DeleteTagView,
+        detail::DetailView, help::HelpView, list::ListView, refs::RefsView,
+        user_command::UserCommandView,
     },
     widget::{commit_list::CommitListState, ref_list::RefListState},
 };
@@ -73,27 +66,19 @@ impl<'a> View<'a> {
     }
 
     pub fn of_list(
-        commit_list_state: CommitListState,
-        ui_config: &'a UiConfig,
-        color_theme: &'a ColorTheme,
+        commit_list_state: CommitListState<'a>,
+        ctx: Rc<AppContext>,
         tx: Sender,
     ) -> Self {
-        View::List(Box::new(ListView::new(
-            commit_list_state,
-            ui_config,
-            color_theme,
-            tx,
-        )))
+        View::List(Box::new(ListView::new(commit_list_state, ctx, tx)))
     }
 
     pub fn of_detail(
-        commit_list_state: CommitListState,
-        commit: Rc<Commit>,
+        commit_list_state: CommitListState<'a>,
+        commit: Commit,
         changes: Vec<FileChange>,
-        refs: Vec<Rc<Ref>>,
-        ui_config: &'a UiConfig,
-        color_theme: &'a ColorTheme,
-        image_protocol: ImageProtocol,
+        refs: Vec<Ref>,
+        ctx: Rc<AppContext>,
         tx: Sender,
     ) -> Self {
         View::Detail(Box::new(DetailView::new(
@@ -101,122 +86,74 @@ impl<'a> View<'a> {
             commit,
             changes,
             refs,
-            ui_config,
-            color_theme,
-            image_protocol,
+            ctx,
             tx,
         )))
     }
 
-    pub fn of_user_command_from_list(
-        commit_list_state: CommitListState,
-        commit: Rc<Commit>,
+    pub fn of_user_command(
+        commit_list_state: CommitListState<'a>,
+        params: ExternalCommandParameters,
         user_command_number: usize,
-        view_area: Rect,
-        core_config: &'a CoreConfig,
-        ui_config: &'a UiConfig,
-        color_theme: &'a ColorTheme,
-        image_protocol: ImageProtocol,
+        ctx: Rc<AppContext>,
         tx: Sender,
     ) -> Self {
         View::UserCommand(Box::new(UserCommandView::new(
             commit_list_state,
-            commit,
+            params,
             user_command_number,
-            view_area,
-            core_config,
-            ui_config,
-            color_theme,
-            image_protocol,
+            ctx,
             tx,
-            UserCommandViewBeforeView::List,
-        )))
-    }
-
-    pub fn of_user_command_from_detail(
-        commit_list_state: CommitListState,
-        commit: Rc<Commit>,
-        user_command_number: usize,
-        view_area: Rect,
-        core_config: &'a CoreConfig,
-        ui_config: &'a UiConfig,
-        color_theme: &'a ColorTheme,
-        image_protocol: ImageProtocol,
-        tx: Sender,
-    ) -> Self {
-        View::UserCommand(Box::new(UserCommandView::new(
-            commit_list_state,
-            commit,
-            user_command_number,
-            view_area,
-            core_config,
-            ui_config,
-            color_theme,
-            image_protocol,
-            tx,
-            UserCommandViewBeforeView::Detail,
         )))
     }
 
     pub fn of_refs(
-        commit_list_state: CommitListState,
-        refs: Vec<Rc<Ref>>,
-        ui_config: &'a UiConfig,
-        color_theme: &'a ColorTheme,
+        commit_list_state: CommitListState<'a>,
+        refs: Vec<Ref>,
+        ctx: Rc<AppContext>,
         tx: Sender,
     ) -> Self {
-        View::Refs(Box::new(RefsView::new(
-            commit_list_state,
-            refs,
-            ui_config,
-            color_theme,
-            tx,
-        )))
+        View::Refs(Box::new(RefsView::new(commit_list_state, refs, ctx, tx)))
     }
 
     pub fn of_refs_with_state(
-        commit_list_state: CommitListState,
+        commit_list_state: CommitListState<'a>,
         ref_list_state: RefListState,
-        refs: Vec<Rc<Ref>>,
-        ui_config: &'a UiConfig,
-        color_theme: &'a ColorTheme,
+        refs: Vec<Ref>,
+        ctx: Rc<AppContext>,
         tx: Sender,
     ) -> Self {
         View::Refs(Box::new(RefsView::with_state(
             commit_list_state,
             ref_list_state,
             refs,
-            ui_config,
-            color_theme,
+            ctx,
             tx,
         )))
     }
 
     pub fn of_create_tag(
-        commit_list_state: CommitListState,
+        commit_list_state: CommitListState<'a>,
         commit_hash: CommitHash,
         repo_path: PathBuf,
-        ui_config: &'a UiConfig,
-        color_theme: &'a ColorTheme,
+        ctx: Rc<AppContext>,
         tx: Sender,
     ) -> Self {
         View::CreateTag(Box::new(CreateTagView::new(
             commit_list_state,
             commit_hash,
             repo_path,
-            ui_config,
-            color_theme,
+            ctx,
             tx,
         )))
     }
 
     pub fn of_delete_tag(
-        commit_list_state: CommitListState,
+        commit_list_state: CommitListState<'a>,
         commit_hash: CommitHash,
-        tags: Vec<Rc<Ref>>,
+        tags: Vec<Ref>,
         repo_path: PathBuf,
-        ui_config: &'a UiConfig,
-        color_theme: &'a ColorTheme,
+        ctx: Rc<AppContext>,
         tx: Sender,
     ) -> Self {
         View::DeleteTag(Box::new(DeleteTagView::new(
@@ -224,21 +161,19 @@ impl<'a> View<'a> {
             commit_hash,
             tags,
             repo_path,
-            ui_config,
-            color_theme,
+            ctx,
             tx,
         )))
     }
 
     pub fn of_delete_ref(
-        commit_list_state: CommitListState,
+        commit_list_state: CommitListState<'a>,
         ref_list_state: RefListState,
-        refs: Vec<Rc<Ref>>,
+        refs: Vec<Ref>,
         repo_path: PathBuf,
         ref_name: String,
         ref_type: RefType,
-        ui_config: &'a UiConfig,
-        color_theme: &'a ColorTheme,
+        ctx: Rc<AppContext>,
         tx: Sender,
     ) -> Self {
         View::DeleteRef(Box::new(DeleteRefView::new(
@@ -248,27 +183,90 @@ impl<'a> View<'a> {
             repo_path,
             ref_name,
             ref_type,
-            ui_config,
-            color_theme,
+            ctx,
             tx,
         )))
     }
 
-    pub fn of_help(
-        before: View<'a>,
-        color_theme: &'a ColorTheme,
-        image_protocol: ImageProtocol,
-        tx: Sender,
-        keybind: &'a KeyBind,
-        core_config: &'a CoreConfig,
-    ) -> Self {
-        View::Help(Box::new(HelpView::new(
-            before,
-            color_theme,
-            image_protocol,
-            tx,
-            keybind,
-            core_config,
-        )))
+    pub fn of_help(before: View<'a>, ctx: Rc<AppContext>, tx: Sender) -> Self {
+        View::Help(Box::new(HelpView::new(before, ctx, tx)))
     }
+
+    pub fn refresh(&mut self) {
+        match self {
+            View::Default => {}
+            View::List(view) => view.refresh(),
+            View::Detail(view) => view.refresh(),
+            View::UserCommand(view) => view.refresh(),
+            View::Refs(view) => view.refresh(),
+            View::CreateTag(view) => view.refresh(),
+            View::DeleteTag(view) => view.refresh(),
+            View::DeleteRef(view) => view.refresh(),
+            View::Help(_) => {}
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum RefreshViewContext {
+    List {
+        list_context: ListRefreshViewContext,
+    },
+    Detail {
+        list_context: ListRefreshViewContext,
+    },
+    UserCommand {
+        list_context: ListRefreshViewContext,
+        user_command_context: UserCommandRefreshViewContext,
+    },
+    Refs {
+        list_context: ListRefreshViewContext,
+        refs_context: RefsRefreshViewContext,
+    },
+}
+
+impl RefreshViewContext {
+    pub fn list_context(&self) -> &ListRefreshViewContext {
+        match self {
+            RefreshViewContext::List { list_context }
+            | RefreshViewContext::Detail { list_context }
+            | RefreshViewContext::UserCommand { list_context, .. }
+            | RefreshViewContext::Refs { list_context, .. } => list_context,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct ListRefreshViewContext {
+    pub commit_hash: String,
+    pub selected: usize,
+    pub height: usize,
+    pub scroll_to_top: bool,
+}
+
+impl From<&CommitListState<'_>> for ListRefreshViewContext {
+    fn from(list_state: &CommitListState<'_>) -> Self {
+        let commit_hash = list_state.selected_commit_hash().as_str().into();
+        let (selected, offset, height) = list_state.current_list_status();
+        // If the selected commit is the top one and there is no offset, it means the list is already scrolled to the top.
+        // In this case, we set scroll_to_top to true to indicate that the view should be scrolled to the top after refresh.
+        let scroll_to_top = selected == 0 && offset == 0;
+        ListRefreshViewContext {
+            commit_hash,
+            selected,
+            height,
+            scroll_to_top,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct UserCommandRefreshViewContext {
+    pub n: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct RefsRefreshViewContext {
+    pub selected: Vec<String>,
+    pub opened: Vec<Vec<String>>,
 }

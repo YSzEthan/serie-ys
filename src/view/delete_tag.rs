@@ -10,16 +10,16 @@ use ratatui::{
 };
 
 use crate::{
-    color::ColorTheme,
-    config::UiConfig,
+    app::AppContext,
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
     git::{delete_remote_tag, delete_tag, CommitHash, Ref},
+    view::{ListRefreshViewContext, RefreshViewContext},
     widget::commit_list::{CommitList, CommitListState},
 };
 
 #[derive(Debug)]
 pub struct DeleteTagView<'a> {
-    commit_list_state: Option<CommitListState>,
+    commit_list_state: Option<CommitListState<'a>>,
     commit_hash: CommitHash,
     repo_path: PathBuf,
 
@@ -27,24 +27,22 @@ pub struct DeleteTagView<'a> {
     selected_index: usize,
     delete_from_remote: bool,
 
-    ui_config: &'a UiConfig,
-    color_theme: &'a ColorTheme,
+    ctx: Rc<AppContext>,
     tx: Sender,
 }
 
 impl<'a> DeleteTagView<'a> {
     pub fn new(
-        commit_list_state: CommitListState,
+        commit_list_state: CommitListState<'a>,
         commit_hash: CommitHash,
-        tags: Vec<Rc<Ref>>,
+        tags: Vec<Ref>,
         repo_path: PathBuf,
-        ui_config: &'a UiConfig,
-        color_theme: &'a ColorTheme,
+        ctx: Rc<AppContext>,
         tx: Sender,
     ) -> DeleteTagView<'a> {
         let mut tag_names: Vec<String> = tags
             .into_iter()
-            .filter_map(|r| match r.as_ref() {
+            .filter_map(|r| match &r {
                 Ref::Tag { name, .. } => Some(name.clone()),
                 _ => None,
             })
@@ -59,8 +57,7 @@ impl<'a> DeleteTagView<'a> {
             tags: tag_names,
             selected_index: 0,
             delete_from_remote: true,
-            ui_config,
-            color_theme,
+            ctx,
             tx,
         }
     }
@@ -99,9 +96,20 @@ impl<'a> DeleteTagView<'a> {
 
         // Prepare data for background thread
         let repo_path = self.repo_path.clone();
-        let commit_hash = self.commit_hash.clone();
         let delete_from_remote = self.delete_from_remote;
         let tx = self.tx.clone();
+
+        // Build refresh context before closing
+        let list_context = self
+            .commit_list_state
+            .as_ref()
+            .map(ListRefreshViewContext::from)
+            .unwrap_or(ListRefreshViewContext {
+                commit_hash: self.commit_hash.as_str().into(),
+                selected: 0,
+                height: 0,
+                scroll_to_top: false,
+            });
 
         // Show pending overlay and close dialog
         let pending_msg = if delete_from_remote {
@@ -129,21 +137,13 @@ impl<'a> DeleteTagView<'a> {
                         "Local tag deleted, but failed to delete from remote: {}",
                         e
                     )));
-                    // Still remove tag from UI since local deletion succeeded
-                    tx.send(AppEvent::RemoveTagFromCommit {
-                        commit_hash,
-                        tag_name,
-                    });
+                    // Still refresh to show deletion
+                    tx.send(AppEvent::Refresh(RefreshViewContext::List { list_context }));
                     return;
                 }
             }
 
             // Success
-            tx.send(AppEvent::RemoveTagFromCommit {
-                commit_hash,
-                tag_name: tag_name.clone(),
-            });
-
             let msg = if delete_from_remote {
                 format!("Tag '{}' deleted from local and remote", tag_name)
             } else {
@@ -151,6 +151,7 @@ impl<'a> DeleteTagView<'a> {
             };
             tx.send(AppEvent::NotifySuccess(msg));
             tx.send(AppEvent::HidePendingOverlay);
+            tx.send(AppEvent::Refresh(RefreshViewContext::List { list_context }));
         });
     }
 
@@ -159,7 +160,7 @@ impl<'a> DeleteTagView<'a> {
             return;
         };
 
-        let commit_list = CommitList::new(&self.ui_config.list, self.color_theme);
+        let commit_list = CommitList::new(self.ctx.clone());
         f.render_stateful_widget(commit_list, area, list_state);
 
         let dialog_width = 50u16.min(area.width.saturating_sub(4));
@@ -181,11 +182,11 @@ impl<'a> DeleteTagView<'a> {
         let block = Block::default()
             .title(" Delete Tag ")
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(self.color_theme.divider_fg))
+            .border_style(Style::default().fg(self.ctx.color_theme.divider_fg))
             .style(
                 Style::default()
-                    .bg(self.color_theme.bg)
-                    .fg(self.color_theme.fg),
+                    .bg(self.ctx.color_theme.bg)
+                    .fg(self.ctx.color_theme.fg),
             )
             .padding(Padding::horizontal(1));
 
@@ -201,8 +202,8 @@ impl<'a> DeleteTagView<'a> {
         .areas(inner_area);
 
         let commit_line = Line::from(vec![
-            Span::raw("Commit: ").fg(self.color_theme.fg),
-            Span::raw(self.commit_hash.as_short_hash()).fg(self.color_theme.list_hash_fg),
+            Span::raw("Commit: ").fg(self.ctx.color_theme.fg),
+            Span::raw(self.commit_hash.as_short_hash()).fg(self.ctx.color_theme.list_hash_fg),
         ]);
         f.render_widget(Paragraph::new(commit_line), commit_area);
 
@@ -215,7 +216,7 @@ impl<'a> DeleteTagView<'a> {
                 let prefix = if is_selected { "> " } else { "  " };
                 let style = if is_selected {
                     Style::default()
-                        .bg(self.color_theme.list_selected_bg)
+                        .bg(self.ctx.color_theme.list_selected_bg)
                         .add_modifier(Modifier::BOLD)
                 } else {
                     Style::default()
@@ -226,7 +227,9 @@ impl<'a> DeleteTagView<'a> {
 
         if tag_lines.is_empty() {
             f.render_widget(
-                Paragraph::new(Line::from("No tags on this commit".fg(self.color_theme.fg))),
+                Paragraph::new(Line::from(
+                    "No tags on this commit".fg(self.ctx.color_theme.fg),
+                )),
                 list_area,
             );
         } else {
@@ -238,35 +241,38 @@ impl<'a> DeleteTagView<'a> {
         } else {
             "[ ]"
         };
-        let checkbox_style = Style::default().fg(self.color_theme.fg);
+        let checkbox_style = Style::default().fg(self.ctx.color_theme.fg);
         let checkbox_line = Line::from(vec![
             Span::styled(checkbox, checkbox_style),
-            Span::raw(" Delete from origin").fg(self.color_theme.fg),
+            Span::raw(" Delete from origin").fg(self.ctx.color_theme.fg),
         ]);
         f.render_widget(Paragraph::new(checkbox_line), checkbox_area);
 
         let hint_line = Line::from(vec![
-            Span::raw("Enter").fg(self.color_theme.help_key_fg),
-            Span::raw(" delete  ").fg(self.color_theme.fg),
-            Span::raw("Esc").fg(self.color_theme.help_key_fg),
-            Span::raw(" close  ").fg(self.color_theme.fg),
-            Span::raw("↑↓").fg(self.color_theme.help_key_fg),
-            Span::raw(" select  ").fg(self.color_theme.fg),
-            Span::raw("←→").fg(self.color_theme.help_key_fg),
-            Span::raw(" toggle").fg(self.color_theme.fg),
+            Span::raw("Enter").fg(self.ctx.color_theme.help_key_fg),
+            Span::raw(" delete  ").fg(self.ctx.color_theme.fg),
+            Span::raw("Esc").fg(self.ctx.color_theme.help_key_fg),
+            Span::raw(" close  ").fg(self.ctx.color_theme.fg),
+            Span::raw("↑↓").fg(self.ctx.color_theme.help_key_fg),
+            Span::raw(" select  ").fg(self.ctx.color_theme.fg),
+            Span::raw("←→").fg(self.ctx.color_theme.help_key_fg),
+            Span::raw(" toggle").fg(self.ctx.color_theme.fg),
         ]);
         f.render_widget(Paragraph::new(hint_line).centered(), hint_area);
     }
 }
 
 impl<'a> DeleteTagView<'a> {
-    pub fn take_list_state(&mut self) -> Option<CommitListState> {
+    pub fn take_list_state(&mut self) -> Option<CommitListState<'a>> {
         self.commit_list_state.take()
     }
 
-    pub fn remove_ref_from_commit(&mut self, commit_hash: &CommitHash, tag_name: &str) {
-        if let Some(list_state) = self.commit_list_state.as_mut() {
-            list_state.remove_ref_from_commit(commit_hash, tag_name);
+    pub fn refresh(&self) {
+        if let Some(list_state) = self.commit_list_state.as_ref() {
+            let list_context = ListRefreshViewContext::from(list_state);
+            let context = RefreshViewContext::List { list_context };
+            self.tx.send(AppEvent::Clear);
+            self.tx.send(AppEvent::Refresh(context));
         }
     }
 }

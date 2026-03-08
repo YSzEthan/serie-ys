@@ -1,33 +1,32 @@
+use std::rc::Rc;
+
 use ratatui::{crossterm::event::KeyEvent, layout::Rect, Frame};
 
 use crate::{
-    color::ColorTheme,
-    config::UiConfig,
+    app::AppContext,
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
-    git::{CommitHash, Ref},
+    git::CommitHash,
+    view::{ListRefreshViewContext, RefreshViewContext},
     widget::commit_list::{CommitList, CommitListState, FilterState, SearchState},
 };
 
 #[derive(Debug)]
 pub struct ListView<'a> {
-    commit_list_state: Option<CommitListState>,
+    commit_list_state: Option<CommitListState<'a>>,
 
-    ui_config: &'a UiConfig,
-    color_theme: &'a ColorTheme,
+    ctx: Rc<AppContext>,
     tx: Sender,
 }
 
 impl<'a> ListView<'a> {
     pub fn new(
-        commit_list_state: CommitListState,
-        ui_config: &'a UiConfig,
-        color_theme: &'a ColorTheme,
+        commit_list_state: CommitListState<'a>,
+        ctx: Rc<AppContext>,
         tx: Sender,
     ) -> ListView<'a> {
         ListView {
             commit_list_state: Some(commit_list_state),
-            ui_config,
-            color_theme,
+            ctx,
             tx,
         }
     }
@@ -173,7 +172,7 @@ impl<'a> ListView<'a> {
                 self.as_mut_list_state().start_filter();
                 self.update_filter_query();
             }
-            UserEvent::UserCommandViewToggle(n) => {
+            UserEvent::UserCommand(n) => {
                 self.tx.send(AppEvent::OpenUserCommand(n));
             }
             UserEvent::HelpToggle => {
@@ -187,7 +186,7 @@ impl<'a> ListView<'a> {
             UserEvent::Confirm => {
                 self.tx.send(AppEvent::OpenDetail);
             }
-            UserEvent::RefListToggle => {
+            UserEvent::RefList => {
                 self.tx.send(AppEvent::OpenRefs);
             }
             UserEvent::CreateTag => {
@@ -199,9 +198,11 @@ impl<'a> ListView<'a> {
             UserEvent::RemoteRefsToggle => {
                 let show = self.as_mut_list_state().toggle_remote_refs();
                 if show {
-                    self.tx.send(AppEvent::NotifyInfo("Remote refs: shown".into()));
+                    self.tx
+                        .send(AppEvent::NotifyInfo("Remote refs: shown".into()));
                 } else {
-                    self.tx.send(AppEvent::NotifyInfo("Remote refs: hidden".into()));
+                    self.tx
+                        .send(AppEvent::NotifyInfo("Remote refs: hidden".into()));
                 }
                 let tx = self.tx.clone();
                 std::thread::spawn(move || {
@@ -210,7 +211,7 @@ impl<'a> ListView<'a> {
                 });
             }
             UserEvent::Refresh => {
-                self.tx.send(AppEvent::Refresh);
+                self.refresh();
             }
             _ => {}
         }
@@ -232,16 +233,13 @@ impl<'a> ListView<'a> {
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect) {
-        let Some(list_state) = self.commit_list_state.as_mut() else {
-            return;
-        };
-        let commit_list = CommitList::new(&self.ui_config.list, self.color_theme);
-        f.render_stateful_widget(commit_list, area, list_state);
+        let commit_list = CommitList::new(self.ctx.clone());
+        f.render_stateful_widget(commit_list, area, self.as_mut_list_state());
     }
 }
 
 impl<'a> ListView<'a> {
-    pub fn take_list_state(&mut self) -> Option<CommitListState> {
+    pub fn take_list_state(&mut self) -> Option<CommitListState<'a>> {
         self.commit_list_state.take()
     }
 
@@ -251,25 +249,13 @@ impl<'a> ListView<'a> {
             .is_some_and(|s| s.take_graph_clear())
     }
 
-    pub fn add_ref_to_commit(&mut self, commit_hash: &CommitHash, new_ref: Ref) {
-        if let Some(list_state) = self.commit_list_state.as_mut() {
-            list_state.add_ref_to_commit(commit_hash, new_ref);
-        }
-    }
-
-    pub fn remove_ref_from_commit(&mut self, commit_hash: &CommitHash, tag_name: &str) {
-        if let Some(list_state) = self.commit_list_state.as_mut() {
-            list_state.remove_ref_from_commit(commit_hash, tag_name);
-        }
-    }
-
-    fn as_mut_list_state(&mut self) -> &mut CommitListState {
+    fn as_mut_list_state(&mut self) -> &mut CommitListState<'a> {
         self.commit_list_state
             .as_mut()
             .expect("commit_list_state already taken")
     }
 
-    fn as_list_state(&self) -> &CommitListState {
+    pub fn as_list_state(&self) -> &CommitListState<'a> {
         self.commit_list_state
             .as_ref()
             .expect("commit_list_state already taken")
@@ -339,5 +325,32 @@ impl<'a> ListView<'a> {
 
     fn copy_to_clipboard(&self, name: String, value: String) {
         self.tx.send(AppEvent::CopyToClipboard { name, value });
+    }
+
+    pub fn refresh(&self) {
+        let list_state = self.as_list_state();
+        let list_context = ListRefreshViewContext::from(list_state);
+        let context = RefreshViewContext::List { list_context };
+        self.tx.send(AppEvent::Clear); // hack: reset the rendering of the image area
+        self.tx.send(AppEvent::Refresh(context));
+    }
+
+    pub fn reset_commit_list_with(&mut self, list_context: &ListRefreshViewContext) {
+        let ListRefreshViewContext {
+            commit_hash,
+            selected,
+            height,
+            scroll_to_top,
+        } = list_context;
+        let list_state = self.as_mut_list_state();
+        list_state.reset_height(*height);
+        if *scroll_to_top {
+            list_state.select_first();
+        } else {
+            list_state.select_commit_hash(&CommitHash::from(commit_hash.as_str()));
+            for _ in 0..*selected {
+                list_state.scroll_up();
+            }
+        }
     }
 }

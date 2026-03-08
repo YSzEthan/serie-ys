@@ -7,10 +7,10 @@ use ratatui::{
 };
 
 use crate::{
-    color::ColorTheme,
-    config::UiConfig,
+    app::AppContext,
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
     git::{Ref, RefType},
+    view::{ListRefreshViewContext, RefreshViewContext, RefsRefreshViewContext},
     widget::{
         commit_list::{CommitList, CommitListState},
         ref_list::{RefList, RefListState},
@@ -19,48 +19,43 @@ use crate::{
 
 #[derive(Debug)]
 pub struct RefsView<'a> {
-    commit_list_state: Option<CommitListState>,
+    commit_list_state: Option<CommitListState<'a>>,
     ref_list_state: RefListState,
 
-    refs: Vec<Rc<Ref>>,
+    refs: Vec<Ref>,
 
-    ui_config: &'a UiConfig,
-    color_theme: &'a ColorTheme,
+    ctx: Rc<AppContext>,
     tx: Sender,
 }
 
 impl<'a> RefsView<'a> {
     pub fn new(
-        commit_list_state: CommitListState,
-        refs: Vec<Rc<Ref>>,
-        ui_config: &'a UiConfig,
-        color_theme: &'a ColorTheme,
+        commit_list_state: CommitListState<'a>,
+        refs: Vec<Ref>,
+        ctx: Rc<AppContext>,
         tx: Sender,
     ) -> RefsView<'a> {
         RefsView {
             commit_list_state: Some(commit_list_state),
             ref_list_state: RefListState::new(),
             refs,
-            ui_config,
-            color_theme,
+            ctx,
             tx,
         }
     }
 
     pub fn with_state(
-        commit_list_state: CommitListState,
+        commit_list_state: CommitListState<'a>,
         ref_list_state: RefListState,
-        refs: Vec<Rc<Ref>>,
-        ui_config: &'a UiConfig,
-        color_theme: &'a ColorTheme,
+        refs: Vec<Ref>,
+        ctx: Rc<AppContext>,
         tx: Sender,
     ) -> RefsView<'a> {
         RefsView {
             commit_list_state: Some(commit_list_state),
             ref_list_state,
             refs,
-            ui_config,
-            color_theme,
+            ctx,
             tx,
         }
     }
@@ -73,7 +68,7 @@ impl<'a> RefsView<'a> {
             UserEvent::Quit => {
                 self.tx.send(AppEvent::Quit);
             }
-            UserEvent::Cancel | UserEvent::Close | UserEvent::RefListToggle => {
+            UserEvent::Cancel | UserEvent::Close | UserEvent::RefList => {
                 self.tx.send(AppEvent::CloseRefs);
             }
             UserEvent::NavigateDown | UserEvent::SelectDown => {
@@ -110,8 +105,11 @@ impl<'a> RefsView<'a> {
             UserEvent::HelpToggle => {
                 self.tx.send(AppEvent::OpenHelp);
             }
-            UserEvent::UserCommandViewToggle(_) | UserEvent::DeleteTag => {
+            UserEvent::UserCommand(_) | UserEvent::DeleteTag => {
                 self.open_delete_ref();
+            }
+            UserEvent::Refresh => {
+                self.refresh();
             }
             _ => {}
         }
@@ -141,26 +139,23 @@ impl<'a> RefsView<'a> {
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect) {
-        let Some(list_state) = self.commit_list_state.as_mut() else {
-            return;
-        };
-
-        let graph_width = list_state.graph_area_cell_width() + 1; // graph area + marker
-        let refs_width = (area.width.saturating_sub(graph_width)).min(self.ui_config.refs.width);
+        let graph_width = self.as_list_state().graph_area_cell_width() + 1; // graph area + marker
+        let refs_width =
+            (area.width.saturating_sub(graph_width)).min(self.ctx.ui_config.refs.width);
 
         let [list_area, refs_area] =
             Layout::horizontal([Constraint::Min(0), Constraint::Length(refs_width)]).areas(area);
 
-        let commit_list = CommitList::new(&self.ui_config.list, self.color_theme);
-        f.render_stateful_widget(commit_list, list_area, list_state);
+        let commit_list = CommitList::new(self.ctx.clone());
+        f.render_stateful_widget(commit_list, list_area, self.as_mut_list_state());
 
-        let ref_list = RefList::new(&self.refs, self.color_theme);
+        let ref_list = RefList::new(&self.refs, self.ctx.clone());
         f.render_stateful_widget(ref_list, refs_area, &mut self.ref_list_state);
     }
 }
 
 impl<'a> RefsView<'a> {
-    pub fn take_list_state(&mut self) -> Option<CommitListState> {
+    pub fn take_list_state(&mut self) -> Option<CommitListState<'a>> {
         self.commit_list_state.take()
     }
 
@@ -168,23 +163,20 @@ impl<'a> RefsView<'a> {
         std::mem::take(&mut self.ref_list_state)
     }
 
-    pub fn take_refs(&mut self) -> Vec<Rc<Ref>> {
+    pub fn take_refs(&mut self) -> Vec<Ref> {
         std::mem::take(&mut self.refs)
     }
 
-    pub fn remove_ref(&mut self, ref_name: &str) {
-        if let Some(target) = self
-            .refs
-            .iter()
-            .find(|r| r.name() == ref_name)
-            .map(|r| r.target().clone())
-        {
-            if let Some(list_state) = self.commit_list_state.as_mut() {
-                list_state.remove_ref_from_commit(&target, ref_name);
-            }
-        }
-        self.refs.retain(|r| r.name() != ref_name);
-        self.ref_list_state.adjust_selection_after_delete();
+    fn as_list_state(&self) -> &CommitListState<'a> {
+        self.commit_list_state
+            .as_ref()
+            .expect("commit_list_state already taken")
+    }
+
+    fn as_mut_list_state(&mut self) -> &mut CommitListState<'a> {
+        self.commit_list_state
+            .as_mut()
+            .expect("commit_list_state already taken")
     }
 
     fn update_commit_list_selected(&mut self) {
@@ -205,5 +197,26 @@ impl<'a> RefsView<'a> {
 
     fn copy_to_clipboard(&self, name: String, value: String) {
         self.tx.send(AppEvent::CopyToClipboard { name, value });
+    }
+
+    pub fn refresh(&self) {
+        let list_state = self.as_list_state();
+        let list_context = ListRefreshViewContext::from(list_state);
+        let (tree_selected, tree_opened) = self.ref_list_state.current_tree_status();
+        let refs_context = RefsRefreshViewContext {
+            selected: tree_selected,
+            opened: tree_opened,
+        };
+        let context = RefreshViewContext::Refs {
+            list_context,
+            refs_context,
+        };
+        self.tx.send(AppEvent::Clear); // hack: reset the rendering of the image area
+        self.tx.send(AppEvent::Refresh(context));
+    }
+
+    pub fn reset_refs_with(&mut self, refs_context: RefsRefreshViewContext) {
+        self.ref_list_state
+            .reset_tree_status(refs_context.selected, refs_context.opened);
     }
 }

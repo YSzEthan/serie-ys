@@ -1,9 +1,10 @@
 use std::{
-    collections::HashMap,
     env,
     path::{Path, PathBuf},
 };
 
+use garde::Validate;
+use rustc_hash::FxHashMap;
 use serde::Deserialize;
 use smart_default::SmartDefault;
 use umbra::optional;
@@ -11,7 +12,7 @@ use umbra::optional;
 use crate::{
     color::{ColorTheme, OptionalColorTheme},
     keybind::KeyBind,
-    CommitOrderType, GraphWidthType, ImageProtocolType, InitialSelection, Result,
+    CommitOrderType, GraphStyle, GraphWidthType, ImageProtocolType, InitialSelection, Result,
 };
 
 const XDG_CONFIG_HOME_ENV_NAME: &str = "XDG_CONFIG_HOME";
@@ -50,6 +51,9 @@ pub fn load() -> Result<(
             }
         }
     }?;
+
+    config.validate()?;
+
     Ok((
         config.core,
         config.ui,
@@ -78,29 +82,40 @@ fn read_config_from_path(path: &Path) -> Result<Config> {
 }
 
 #[optional(derives = [Deserialize])]
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Validate)]
 struct Config {
+    #[garde(dive)]
     #[nested]
     core: CoreConfig,
+    #[garde(dive)]
     #[nested]
     ui: UiConfig,
+    #[garde(dive)]
     #[nested]
     graph: GraphConfig,
+    #[garde(skip)]
     #[nested]
     color: ColorTheme,
     // The user customed keybinds, please ref `assets/default-keybind.toml`
+    #[garde(skip)]
     keybind: Option<KeyBind>,
 }
 
 #[optional(derives = [Deserialize])]
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Validate)]
 pub struct CoreConfig {
+    #[garde(skip)]
     #[nested]
     pub option: CoreOptionConfig,
+    #[garde(skip)]
     #[nested]
     pub search: CoreSearchConfig,
+    #[garde(dive)]
     #[nested]
     pub user_command: CoreUserCommandConfig,
+    #[garde(dive)]
+    #[nested]
+    pub external: CoreExternalConfig,
 }
 
 #[optional(derives = [Deserialize])]
@@ -109,6 +124,7 @@ pub struct CoreOptionConfig {
     pub protocol: Option<ImageProtocolType>,
     pub order: Option<CommitOrderType>,
     pub graph_width: Option<GraphWidthType>,
+    pub graph_style: Option<GraphStyle>,
     pub initial_selection: Option<InitialSelection>,
 }
 
@@ -122,10 +138,12 @@ pub struct CoreSearchConfig {
 }
 
 #[optional]
-#[derive(Debug, Clone, PartialEq, Eq, SmartDefault)]
+#[derive(Debug, Clone, PartialEq, Eq, SmartDefault, Validate)]
 pub struct CoreUserCommandConfig {
-    #[default(HashMap::from([("1".into(), UserCommand {
+    #[garde(dive)]
+    #[default(FxHashMap::from_iter([("1".into(), UserCommand {
         name: "git diff".into(),
+        r#type: UserCommandType::Inline,
         commands: vec![
             "git".into(),
             "--no-pager".into(),
@@ -134,8 +152,10 @@ pub struct CoreUserCommandConfig {
             "{{first_parent_hash}}".into(),
             "{{target_hash}}".into(),
         ],
+        refresh: false,
     })]))]
-    pub commands: HashMap<String, UserCommand>,
+    pub commands: FxHashMap<String, UserCommand>,
+    #[garde(range(min = 0))]
     #[default = 4]
     pub tab_width: u16,
 }
@@ -161,7 +181,7 @@ impl<'de> Deserialize<'de> for OptionalCoreUserCommandConfig {
             where
                 V: MapAccess<'de>,
             {
-                let mut commands = HashMap::new();
+                let mut commands = FxHashMap::default();
                 let mut tab_width = None;
 
                 while let Some(key) = map.next_key::<String>()? {
@@ -202,23 +222,57 @@ impl<'de> Deserialize<'de> for OptionalCoreUserCommandConfig {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Validate)]
 pub struct UserCommand {
+    #[garde(length(min = 1))]
     pub name: String,
+    #[serde(default)]
+    #[garde(skip)]
+    pub r#type: UserCommandType,
+    #[garde(length(min = 1), inner(length(min = 1)))]
     pub commands: Vec<String>,
+    #[serde(default)]
+    #[garde(custom(validate_user_command_refresh(&self.r#type)))]
+    pub refresh: bool,
+}
+
+fn validate_user_command_refresh(
+    command_type: &UserCommandType,
+) -> impl FnOnce(&bool, &()) -> garde::Result + '_ {
+    move |refresh, _| {
+        if matches!(command_type, UserCommandType::Inline) && *refresh {
+            return Err(garde::Error::new(
+                "refresh cannot be true for inline command",
+            ));
+        }
+        Ok(())
+    }
+}
+
+#[derive(Debug, Default, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UserCommandType {
+    #[default]
+    Inline,
+    Silent,
 }
 
 #[optional(derives = [Deserialize])]
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Validate)]
 pub struct UiConfig {
+    #[garde(skip)]
     #[nested]
     pub common: UiCommonConfig,
+    #[garde(dive)]
     #[nested]
     pub list: UiListConfig,
+    #[garde(dive)]
     #[nested]
     pub detail: UiDetailConfig,
+    #[garde(dive)]
     #[nested]
     pub user_command: UiUserCommandConfig,
+    #[garde(dive)]
     #[nested]
     pub refs: UiRefsConfig,
 }
@@ -236,56 +290,107 @@ pub enum CursorType {
     Virtual(String),
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, Default, Validate)]
+pub enum ClipboardConfig {
+    #[default]
+    Auto,
+    Custom {
+        #[garde(length(min = 1), inner(length(min = 1)))]
+        commands: Vec<String>,
+    },
+}
+
 #[optional(derives = [Deserialize])]
-#[derive(Debug, Clone, PartialEq, Eq, SmartDefault)]
+#[derive(Debug, Clone, PartialEq, Eq, SmartDefault, Validate)]
+pub struct CoreExternalConfig {
+    #[garde(dive)]
+    #[default(ClipboardConfig::Auto)]
+    pub clipboard: ClipboardConfig,
+}
+
+#[optional(derives = [Deserialize])]
+#[derive(Debug, Clone, PartialEq, Eq, SmartDefault, Validate)]
 pub struct UiListConfig {
+    #[garde(length(min = 1))]
+    #[default(vec![
+        UserListColumnType::Graph,
+        UserListColumnType::Marker,
+        UserListColumnType::Subject,
+        UserListColumnType::Name,
+        UserListColumnType::Hash,
+        UserListColumnType::Date,
+    ])]
+    pub columns: Vec<UserListColumnType>,
+    #[garde(range(min = 1))]
     #[default = 20]
     pub subject_min_width: u16,
+    #[garde(length(min = 1))]
     #[default = "%Y-%m-%d"]
     pub date_format: String,
+    #[garde(range(min = 0))]
     #[default = 10]
     pub date_width: u16,
+    #[garde(skip)]
     #[default = true]
     pub date_local: bool,
+    #[garde(range(min = 0))]
     #[default = 20]
     pub name_width: u16,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UserListColumnType {
+    Graph,
+    Marker,
+    Subject,
+    Name,
+    Hash,
+    Date,
+}
+
 #[optional(derives = [Deserialize])]
-#[derive(Debug, Clone, PartialEq, Eq, SmartDefault)]
+#[derive(Debug, Clone, PartialEq, Eq, SmartDefault, Validate)]
 pub struct UiDetailConfig {
+    #[garde(range(min = 1))]
     #[default = 20]
     pub height: u16,
+    #[garde(length(min = 1))]
     #[default = "%Y-%m-%d %H:%M:%S %z"]
     pub date_format: String,
+    #[garde(skip)]
     #[default = true]
     pub date_local: bool,
 }
 
 #[optional(derives = [Deserialize])]
-#[derive(Debug, Clone, PartialEq, Eq, SmartDefault)]
+#[derive(Debug, Clone, PartialEq, Eq, SmartDefault, Validate)]
 pub struct UiUserCommandConfig {
+    #[garde(range(min = 1))]
     #[default = 20]
     pub height: u16,
 }
 
 #[optional(derives = [Deserialize])]
-#[derive(Debug, Clone, PartialEq, Eq, SmartDefault)]
+#[derive(Debug, Clone, PartialEq, Eq, SmartDefault, Validate)]
 pub struct UiRefsConfig {
+    #[garde(range(min = 1))]
     #[default = 26]
     pub width: u16,
 }
 
 #[optional(derives = [Deserialize])]
-#[derive(Debug, Default, Clone, PartialEq, Eq)]
+#[derive(Debug, Default, Clone, PartialEq, Eq, Validate)]
 pub struct GraphConfig {
+    #[garde(dive)]
     #[nested]
     pub color: GraphColorConfig,
 }
 
 #[optional(derives = [Deserialize])]
-#[derive(Debug, Clone, PartialEq, Eq, SmartDefault)]
+#[derive(Debug, Clone, PartialEq, Eq, SmartDefault, Validate)]
 pub struct GraphColorConfig {
+    #[garde(length(min = 1), inner(pattern(r"^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")))]
     #[default(vec![
         "#E06C76".into(),
         "#98C379".into(),
@@ -295,8 +400,10 @@ pub struct GraphColorConfig {
         "#56B6C2".into(),
     ])]
     pub branches: Vec<String>,
+    #[garde(pattern(r"^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$"))]
     #[default = "#00000000"]
     pub edge: String,
+    #[garde(pattern(r"^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$"))]
     #[default = "#00000000"]
     pub background: String,
 }
@@ -314,6 +421,7 @@ mod tests {
                     protocol: None,
                     order: None,
                     graph_width: None,
+                    graph_style: None,
                     initial_selection: None,
                 },
                 search: CoreSearchConfig {
@@ -321,10 +429,11 @@ mod tests {
                     fuzzy: false,
                 },
                 user_command: CoreUserCommandConfig {
-                    commands: HashMap::from([(
+                    commands: FxHashMap::from_iter([(
                         "1".into(),
                         UserCommand {
                             name: "git diff".into(),
+                            r#type: UserCommandType::Inline,
                             commands: vec![
                                 "git".into(),
                                 "--no-pager".into(),
@@ -333,9 +442,13 @@ mod tests {
                                 "{{first_parent_hash}}".into(),
                                 "{{target_hash}}".into(),
                             ],
+                            refresh: false,
                         },
                     )]),
                     tab_width: 4,
+                },
+                external: CoreExternalConfig {
+                    clipboard: ClipboardConfig::Auto,
                 },
             },
             ui: UiConfig {
@@ -343,6 +456,14 @@ mod tests {
                     cursor_type: CursorType::Native,
                 },
                 list: UiListConfig {
+                    columns: vec![
+                        UserListColumnType::Graph,
+                        UserListColumnType::Marker,
+                        UserListColumnType::Subject,
+                        UserListColumnType::Name,
+                        UserListColumnType::Hash,
+                        UserListColumnType::Date,
+                    ],
                     subject_min_width: 20,
                     date_format: "%Y-%m-%d".into(),
                     date_width: 10,
@@ -384,18 +505,20 @@ mod tests {
             protocol = "kitty"
             order = "topo"
             graph_width = "single"
+            graph_style = "angular"
             initial_selection = "head"
             [core.search]
             ignore_case = true
             fuzzy = true
             [core.user_command]
             commands_1 = { name = "git diff no color", commands = ["git", "diff", "{{first_parent_hash}}", "{{target_hash}}"] }
-            commands_2 = { name = "echo hello", commands = ["echo", "hello"] }
-            commands_10 = { name = "echo world", commands = ["echo", "world"] }
+            commands_2 = { name = "echo hello", type = "silent", commands = ["echo", "hello"], refresh = true }
+            commands_10 = { name = "echo world", type = "inline", commands = ["echo", "world"], refresh = false }
             tab_width = 2
             [ui.common]
             cursor_type = { Virtual = "|" }
             [ui.list]
+            columns = ["date", "subject", "hash", "graph"]
             subject_min_width = 40
             date_format = "%Y/%m/%d"
             date_width = 20
@@ -421,6 +544,7 @@ mod tests {
                     protocol: Some(ImageProtocolType::Kitty),
                     order: Some(CommitOrderType::Topo),
                     graph_width: Some(GraphWidthType::Single),
+                    graph_style: Some(GraphStyle::Angular),
                     initial_selection: Some(InitialSelection::Head),
                 },
                 search: CoreSearchConfig {
@@ -428,35 +552,44 @@ mod tests {
                     fuzzy: true,
                 },
                 user_command: CoreUserCommandConfig {
-                    commands: HashMap::from([
+                    commands: FxHashMap::from_iter([
                         (
                             "1".into(),
                             UserCommand {
                                 name: "git diff no color".into(),
+                                r#type: UserCommandType::Inline,
                                 commands: vec![
                                     "git".into(),
                                     "diff".into(),
                                     "{{first_parent_hash}}".into(),
                                     "{{target_hash}}".into(),
                                 ],
+                                refresh: false,
                             },
                         ),
                         (
                             "2".into(),
                             UserCommand {
                                 name: "echo hello".into(),
+                                r#type: UserCommandType::Silent,
                                 commands: vec!["echo".into(), "hello".into()],
+                                refresh: true,
                             },
                         ),
                         (
                             "10".into(),
                             UserCommand {
                                 name: "echo world".into(),
+                                r#type: UserCommandType::Inline,
                                 commands: vec!["echo".into(), "world".into()],
+                                refresh: false,
                             },
                         ),
                     ]),
                     tab_width: 2,
+                },
+                external: CoreExternalConfig {
+                    clipboard: ClipboardConfig::Auto,
                 },
             },
             ui: UiConfig {
@@ -464,6 +597,12 @@ mod tests {
                     cursor_type: CursorType::Virtual("|".into()),
                 },
                 list: UiListConfig {
+                    columns: vec![
+                        UserListColumnType::Date,
+                        UserListColumnType::Subject,
+                        UserListColumnType::Hash,
+                        UserListColumnType::Graph,
+                    ],
                     subject_min_width: 40,
                     date_format: "%Y/%m/%d".into(),
                     date_width: 20,
@@ -504,6 +643,7 @@ mod tests {
                     protocol: None,
                     order: None,
                     graph_width: None,
+                    graph_style: None,
                     initial_selection: None,
                 },
                 search: CoreSearchConfig {
@@ -511,10 +651,11 @@ mod tests {
                     fuzzy: false,
                 },
                 user_command: CoreUserCommandConfig {
-                    commands: HashMap::from([(
+                    commands: FxHashMap::from_iter([(
                         "1".into(),
                         UserCommand {
                             name: "git diff".into(),
+                            r#type: UserCommandType::Inline,
                             commands: vec![
                                 "git".into(),
                                 "--no-pager".into(),
@@ -523,9 +664,13 @@ mod tests {
                                 "{{first_parent_hash}}".into(),
                                 "{{target_hash}}".into(),
                             ],
+                            refresh: false,
                         },
                     )]),
                     tab_width: 4,
+                },
+                external: CoreExternalConfig {
+                    clipboard: ClipboardConfig::Auto,
                 },
             },
             ui: UiConfig {
@@ -533,6 +678,14 @@ mod tests {
                     cursor_type: CursorType::Native,
                 },
                 list: UiListConfig {
+                    columns: vec![
+                        UserListColumnType::Graph,
+                        UserListColumnType::Marker,
+                        UserListColumnType::Subject,
+                        UserListColumnType::Name,
+                        UserListColumnType::Hash,
+                        UserListColumnType::Date,
+                    ],
                     subject_min_width: 20,
                     date_format: "%Y/%m/%d".into(),
                     date_width: 10,
@@ -565,5 +718,45 @@ mod tests {
             keybind: None,
         };
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn test_config_clipboard_auto() {
+        let toml = r#"
+            [core.external]
+            clipboard = "Auto"
+        "#;
+        let config: Config = toml::from_str::<OptionalConfig>(toml).unwrap().into();
+        assert_eq!(config.core.external.clipboard, ClipboardConfig::Auto);
+    }
+
+    #[test]
+    fn test_config_clipboard_custom_single_command() {
+        let toml = r#"
+            [core.external]
+            clipboard = { Custom = { commands = ["wl-copy"] } }
+        "#;
+        let config: Config = toml::from_str::<OptionalConfig>(toml).unwrap().into();
+        assert_eq!(
+            config.core.external.clipboard,
+            ClipboardConfig::Custom {
+                commands: vec!["wl-copy".into()]
+            }
+        );
+    }
+
+    #[test]
+    fn test_config_clipboard_custom_command_with_args() {
+        let toml = r#"
+            [core.external]
+            clipboard = { Custom = { commands = ["xclip", "-selection", "clipboard"] } }
+        "#;
+        let config: Config = toml::from_str::<OptionalConfig>(toml).unwrap().into();
+        assert_eq!(
+            config.core.external.clipboard,
+            ClipboardConfig::Custom {
+                commands: vec!["xclip".into(), "-selection".into(), "clipboard".into()]
+            }
+        );
     }
 }

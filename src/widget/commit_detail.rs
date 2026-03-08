@@ -10,8 +10,7 @@ use ratatui::{
 };
 
 use crate::{
-    color::ColorTheme,
-    config::UiDetailConfig,
+    app::AppContext,
     git::{Commit, FileChange, Ref},
 };
 
@@ -58,25 +57,22 @@ impl CommitDetailState {
 pub struct CommitDetail<'a> {
     commit: &'a Commit,
     changes: &'a Vec<FileChange>,
-    refs: &'a Vec<Rc<Ref>>,
-    config: &'a UiDetailConfig,
-    color_theme: &'a ColorTheme,
+    refs: &'a Vec<Ref>,
+    ctx: Rc<AppContext>,
 }
 
 impl<'a> CommitDetail<'a> {
     pub fn new(
         commit: &'a Commit,
         changes: &'a Vec<FileChange>,
-        refs: &'a Vec<Rc<Ref>>,
-        config: &'a UiDetailConfig,
-        color_theme: &'a ColorTheme,
+        refs: &'a Vec<Ref>,
+        ctx: Rc<AppContext>,
     ) -> Self {
         Self {
             commit,
             changes,
             refs,
-            config,
-            color_theme,
+            ctx,
         }
     }
 }
@@ -104,11 +100,11 @@ impl StatefulWidget for CommitDetail<'_> {
 impl CommitDetail<'_> {
     fn render_labels_paragraph(&self, lines: Vec<Line>, area: Rect, buf: &mut Buffer) {
         let paragraph = Paragraph::new(lines)
-            .style(Style::default().fg(self.color_theme.fg))
+            .style(Style::default().fg(self.ctx.color_theme.fg))
             .block(
                 Block::default()
                     .borders(Borders::TOP)
-                    .style(Style::default().fg(self.color_theme.divider_fg))
+                    .style(Style::default().fg(self.ctx.color_theme.divider_fg))
                     .padding(Padding::left(2)),
             );
         paragraph.render(area, buf);
@@ -116,11 +112,11 @@ impl CommitDetail<'_> {
 
     fn render_value_paragraph(&self, lines: Vec<Line>, area: Rect, buf: &mut Buffer) {
         let paragraph = Paragraph::new(lines)
-            .style(Style::default().fg(self.color_theme.fg))
+            .style(Style::default().fg(self.ctx.color_theme.fg))
             .block(
                 Block::default()
                     .borders(Borders::TOP)
-                    .style(Style::default().fg(self.color_theme.divider_fg))
+                    .style(Style::default().fg(self.ctx.color_theme.divider_fg))
                     .padding(Padding::new(1, 2, 0, 0)),
             );
         paragraph.render(area, buf);
@@ -130,26 +126,26 @@ impl CommitDetail<'_> {
         let mut label_lines: Vec<Line> = Vec::new();
         let mut value_lines: Vec<Line> = Vec::new();
 
-        label_lines.push(Line::from("   Author: ").fg(self.color_theme.detail_label_fg));
+        label_lines.push(Line::from("   Author: ").fg(self.ctx.color_theme.detail_label_fg));
         label_lines.push(self.empty_line());
         value_lines.extend(self.author_lines());
 
         if is_author_committer_different(self.commit) {
-            label_lines.push(Line::from("Committer: ").fg(self.color_theme.detail_label_fg));
+            label_lines.push(Line::from("Committer: ").fg(self.ctx.color_theme.detail_label_fg));
             label_lines.push(self.empty_line());
             value_lines.extend(self.committer_lines());
         }
 
-        label_lines.push(Line::from("      SHA: ").fg(self.color_theme.detail_label_fg));
+        label_lines.push(Line::from("      SHA: ").fg(self.ctx.color_theme.detail_label_fg));
         value_lines.push(self.sha_line());
 
         if has_parent(self.commit) {
-            label_lines.push(Line::from("  Parents: ").fg(self.color_theme.detail_label_fg));
+            label_lines.push(Line::from("  Parents: ").fg(self.ctx.color_theme.detail_label_fg));
             value_lines.push(self.parents_line());
         }
 
         if has_refs(self.refs) {
-            label_lines.push(Line::from("     Refs: ").fg(self.color_theme.detail_label_fg));
+            label_lines.push(Line::from("     Refs: ").fg(self.ctx.color_theme.detail_label_fg));
             value_lines.push(self.refs_line());
         }
 
@@ -184,20 +180,23 @@ impl CommitDetail<'_> {
         email: &'a str,
         date: &'a DateTime<FixedOffset>,
     ) -> Vec<Line<'a>> {
-        let date_str = if self.config.date_local {
+        let date_str = if self.ctx.ui_config.detail.date_local {
             let local = date.with_timezone(&chrono::Local);
-            local.format(&self.config.date_format).to_string()
+            local
+                .format(&self.ctx.ui_config.detail.date_format)
+                .to_string()
         } else {
-            date.format(&self.config.date_format).to_string()
+            date.format(&self.ctx.ui_config.detail.date_format)
+                .to_string()
         };
         vec![
             Line::from(vec![
-                name.fg(self.color_theme.detail_name_fg),
+                name.fg(self.ctx.color_theme.detail_name_fg),
                 " <".into(),
-                email.fg(self.color_theme.detail_email_fg),
+                email.fg(self.ctx.color_theme.detail_email_fg),
                 "> ".into(),
             ]),
-            Line::from(date_str.fg(self.color_theme.detail_date_fg)),
+            Line::from(date_str.fg(self.ctx.color_theme.detail_date_fg)),
         ]
     }
 
@@ -206,7 +205,7 @@ impl CommitDetail<'_> {
             self.commit
                 .commit_hash
                 .as_str()
-                .fg(self.color_theme.detail_hash_fg),
+                .fg(self.ctx.color_theme.detail_hash_fg),
         )
     }
 
@@ -215,7 +214,7 @@ impl CommitDetail<'_> {
         let parents = &self.commit.parent_commit_hashes;
         for (i, hash) in parents
             .iter()
-            .map(|hash| hash.as_short_hash().fg(self.color_theme.detail_hash_fg))
+            .map(|hash| hash.as_short_hash().fg(self.ctx.color_theme.detail_hash_fg))
             .enumerate()
         {
             spans.push(hash);
@@ -227,20 +226,20 @@ impl CommitDetail<'_> {
     }
 
     fn refs_line(&self) -> Line<'_> {
-        let ref_spans = self.refs.iter().filter_map(|r| match r.as_ref() {
+        let ref_spans = self.refs.iter().filter_map(|r| match r {
             Ref::Branch { name, .. } => Some(
-                Span::raw(name.as_str())
-                    .fg(self.color_theme.detail_ref_branch_fg)
+                Span::raw(name)
+                    .fg(self.ctx.color_theme.detail_ref_branch_fg)
                     .add_modifier(Modifier::BOLD),
             ),
             Ref::RemoteBranch { name, .. } => Some(
-                Span::raw(name.as_str())
-                    .fg(self.color_theme.detail_ref_remote_branch_fg)
+                Span::raw(name)
+                    .fg(self.ctx.color_theme.detail_ref_remote_branch_fg)
                     .add_modifier(Modifier::BOLD),
             ),
             Ref::Tag { name, .. } => Some(
-                Span::raw(name.as_str())
-                    .fg(self.color_theme.detail_ref_tag_fg)
+                Span::raw(name)
+                    .fg(self.ctx.color_theme.detail_ref_tag_fg)
                     .add_modifier(Modifier::BOLD),
             ),
             Ref::Stash { .. } => None,
@@ -278,22 +277,22 @@ impl CommitDetail<'_> {
             .iter()
             .map(|c| match c {
                 FileChange::Add { path } => Line::from(vec![
-                    "A".fg(self.color_theme.detail_file_change_add_fg),
+                    "A".fg(self.ctx.color_theme.detail_file_change_add_fg),
                     " ".into(),
                     path.into(),
                 ]),
                 FileChange::Modify { path } => Line::from(vec![
-                    "M".fg(self.color_theme.detail_file_change_modify_fg),
+                    "M".fg(self.ctx.color_theme.detail_file_change_modify_fg),
                     " ".into(),
                     path.into(),
                 ]),
                 FileChange::Delete { path } => Line::from(vec![
-                    "D".fg(self.color_theme.detail_file_change_delete_fg),
+                    "D".fg(self.ctx.color_theme.detail_file_change_delete_fg),
                     " ".into(),
                     path.into(),
                 ]),
                 FileChange::Move { from, to } => Line::from(vec![
-                    "R".fg(self.color_theme.detail_file_change_move_fg),
+                    "R".fg(self.ctx.color_theme.detail_file_change_move_fg),
                     " ".into(),
                     from.into(),
                     " -> ".into(),
@@ -308,7 +307,7 @@ impl CommitDetail<'_> {
     }
 
     fn divider_line(&self, width: usize) -> Line<'_> {
-        Line::from("─".repeat(width).fg(self.color_theme.divider_fg))
+        Line::from("─".repeat(width).fg(self.ctx.color_theme.divider_fg))
     }
 
     fn update_state(&self, state: &mut CommitDetailState, line_count: usize, area_height: usize) {
@@ -327,10 +326,10 @@ fn has_parent(commit: &Commit) -> bool {
     !commit.parent_commit_hashes.is_empty()
 }
 
-fn has_refs(refs: &[Rc<Ref>]) -> bool {
+fn has_refs(refs: &[Ref]) -> bool {
     refs.iter().any(|r| {
         matches!(
-            r.as_ref(),
+            r,
             Ref::Branch { .. } | Ref::RemoteBranch { .. } | Ref::Tag { .. }
         )
     })

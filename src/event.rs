@@ -10,10 +10,13 @@ use serde::{
     Deserialize,
 };
 
+use crate::view::RefreshViewContext;
+
 pub enum AppEvent {
     Key(KeyEvent),
     Resize(usize, usize),
     Quit,
+    Clear,
     OpenDetail,
     CloseDetail,
     ClearDetail,
@@ -24,24 +27,13 @@ pub enum AppEvent {
     CloseRefs,
     OpenCreateTag,
     CloseCreateTag,
-    AddTagToCommit {
-        commit_hash: crate::git::CommitHash,
-        tag_name: String,
-    },
     OpenDeleteTag,
     CloseDeleteTag,
-    RemoveTagFromCommit {
-        commit_hash: crate::git::CommitHash,
-        tag_name: String,
-    },
     OpenDeleteRef {
         ref_name: String,
         ref_type: crate::git::RefType,
     },
     CloseDeleteRef,
-    RemoveRefFromList {
-        ref_name: String,
-    },
     OpenHelp,
     CloseHelp,
     ClearHelp,
@@ -52,6 +44,7 @@ pub enum AppEvent {
         name: String,
         value: String,
     },
+    Refresh(RefreshViewContext),
     ClearStatusLine,
     UpdateStatusInput(String, Option<u16>, Option<String>),
     NotifyInfo(String),
@@ -62,7 +55,6 @@ pub enum AppEvent {
         message: String,
     },
     HidePendingOverlay,
-    Refresh,
 }
 
 #[derive(Clone)]
@@ -147,18 +139,18 @@ pub enum UserEvent {
     GoToNext,
     GoToPrevious,
     Confirm,
-    RefListToggle,
+    RefList,
     Search,
     Filter,
-    UserCommandViewToggle(usize),
+    UserCommand(usize),
     IgnoreCaseToggle,
     FuzzyToggle,
+    Refresh,
     ShortCopy,
     FullCopy,
     CreateTag,
     DeleteTag,
     RemoteRefsToggle,
-    Refresh,
     Unknown,
 }
 
@@ -180,11 +172,11 @@ impl<'de> Deserialize<'de> for UserEvent {
             where
                 E: de::Error,
             {
-                if let Some(num_str) = value.strip_prefix("user_command_view_toggle_") {
-                    if let Ok(num) = num_str.parse::<usize>() {
-                        Ok(UserEvent::UserCommandViewToggle(num))
+                if value.starts_with("user_command_") {
+                    if let Some(num) = parse_user_command_number(value) {
+                        Ok(UserEvent::UserCommand(num))
                     } else {
-                        let msg = format!("Invalid user_command_view_toggle_n format: {}", value);
+                        let msg = format!("Invalid user_command_n format: {}", value);
                         Err(de::Error::custom(msg))
                     }
                 } else {
@@ -215,17 +207,17 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "go_to_next" => Ok(UserEvent::GoToNext),
                         "go_to_previous" => Ok(UserEvent::GoToPrevious),
                         "confirm" => Ok(UserEvent::Confirm),
-                        "ref_list_toggle" => Ok(UserEvent::RefListToggle),
+                        "ref_list" | "ref_list_toggle" => Ok(UserEvent::RefList),
                         "search" => Ok(UserEvent::Search),
                         "filter" => Ok(UserEvent::Filter),
                         "ignore_case_toggle" => Ok(UserEvent::IgnoreCaseToggle),
                         "fuzzy_toggle" => Ok(UserEvent::FuzzyToggle),
+                        "refresh" => Ok(UserEvent::Refresh),
                         "short_copy" => Ok(UserEvent::ShortCopy),
                         "full_copy" => Ok(UserEvent::FullCopy),
                         "create_tag" => Ok(UserEvent::CreateTag),
                         "delete_tag" => Ok(UserEvent::DeleteTag),
                         "remote_refs_toggle" => Ok(UserEvent::RemoteRefsToggle),
-                        "refresh" => Ok(UserEvent::Refresh),
                         _ => {
                             let msg = format!("Unknown user event: {}", value);
                             Err(de::Error::custom(msg))
@@ -237,6 +229,20 @@ impl<'de> Deserialize<'de> for UserEvent {
 
         deserializer.deserialize_str(UserEventVisitor)
     }
+}
+
+fn parse_user_command_number(s: &str) -> Option<usize> {
+    if let Some(num_str) = s.strip_prefix("user_command_") {
+        if num_str.parse::<usize>().is_ok() {
+            return num_str.parse::<usize>().ok();
+        }
+        if let Some(num_str) = s.strip_prefix("user_command_view_toggle_") {
+            if num_str.parse::<usize>().is_ok() {
+                return num_str.parse::<usize>().ok();
+            }
+        }
+    }
+    None
 }
 
 impl UserEvent {

@@ -1,4 +1,4 @@
-use std::{path::PathBuf, thread};
+use std::{path::PathBuf, rc::Rc, thread};
 
 use ratatui::{
     crossterm::event::{Event, KeyEvent},
@@ -11,10 +11,10 @@ use ratatui::{
 use tui_input::{backend::crossterm::EventHandler, Input};
 
 use crate::{
-    color::ColorTheme,
-    config::UiConfig,
+    app::AppContext,
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
-    git::{create_tag, push_tag, CommitHash, Ref},
+    git::{create_tag, push_tag, CommitHash},
+    view::{ListRefreshViewContext, RefreshViewContext},
     widget::commit_list::{CommitList, CommitListState},
 };
 
@@ -27,7 +27,7 @@ enum FocusedField {
 
 #[derive(Debug)]
 pub struct CreateTagView<'a> {
-    commit_list_state: Option<CommitListState>,
+    commit_list_state: Option<CommitListState<'a>>,
     commit_hash: CommitHash,
     repo_path: PathBuf,
 
@@ -36,18 +36,16 @@ pub struct CreateTagView<'a> {
     push_to_remote: bool,
     focused_field: FocusedField,
 
-    ui_config: &'a UiConfig,
-    color_theme: &'a ColorTheme,
+    ctx: Rc<AppContext>,
     tx: Sender,
 }
 
 impl<'a> CreateTagView<'a> {
     pub fn new(
-        commit_list_state: CommitListState,
+        commit_list_state: CommitListState<'a>,
         commit_hash: CommitHash,
         repo_path: PathBuf,
-        ui_config: &'a UiConfig,
-        color_theme: &'a ColorTheme,
+        ctx: Rc<AppContext>,
         tx: Sender,
     ) -> CreateTagView<'a> {
         CreateTagView {
@@ -58,8 +56,7 @@ impl<'a> CreateTagView<'a> {
             tag_message_input: Input::default(),
             push_to_remote: true,
             focused_field: FocusedField::TagName,
-            ui_config,
-            color_theme,
+            ctx,
             tx,
         }
     }
@@ -165,6 +162,18 @@ impl<'a> CreateTagView<'a> {
         let push_to_remote = self.push_to_remote;
         let tx = self.tx.clone();
 
+        // Build refresh context before closing
+        let list_context = self
+            .commit_list_state
+            .as_ref()
+            .map(ListRefreshViewContext::from)
+            .unwrap_or(ListRefreshViewContext {
+                commit_hash: commit_hash.as_str().into(),
+                selected: 0,
+                height: 0,
+                scroll_to_top: false,
+            });
+
         // Show pending overlay and close dialog
         let pending_msg = if push_to_remote {
             format!("Creating and pushing tag '{}'...", tag_name)
@@ -191,21 +200,13 @@ impl<'a> CreateTagView<'a> {
                         "Tag created locally, but push failed: {}",
                         e
                     )));
-                    // Still add tag to UI since local creation succeeded
-                    tx.send(AppEvent::AddTagToCommit {
-                        commit_hash,
-                        tag_name,
-                    });
+                    // Still refresh to show locally created tag
+                    tx.send(AppEvent::Refresh(RefreshViewContext::List { list_context }));
                     return;
                 }
             }
 
             // Success
-            tx.send(AppEvent::AddTagToCommit {
-                commit_hash,
-                tag_name: tag_name.clone(),
-            });
-
             let msg = if push_to_remote {
                 format!("Tag '{}' created and pushed to origin", tag_name)
             } else {
@@ -213,6 +214,7 @@ impl<'a> CreateTagView<'a> {
             };
             tx.send(AppEvent::NotifySuccess(msg));
             tx.send(AppEvent::HidePendingOverlay);
+            tx.send(AppEvent::Refresh(RefreshViewContext::List { list_context }));
         });
     }
 
@@ -222,7 +224,7 @@ impl<'a> CreateTagView<'a> {
         };
 
         // Render commit list in background
-        let commit_list = CommitList::new(&self.ui_config.list, self.color_theme);
+        let commit_list = CommitList::new(self.ctx.clone());
         f.render_stateful_widget(commit_list, area, list_state);
 
         // Dialog dimensions
@@ -244,11 +246,11 @@ impl<'a> CreateTagView<'a> {
         let block = Block::default()
             .title(" Create Tag ")
             .borders(Borders::ALL)
-            .border_style(Style::default().fg(self.color_theme.divider_fg))
+            .border_style(Style::default().fg(self.ctx.color_theme.divider_fg))
             .style(
                 Style::default()
-                    .bg(self.color_theme.bg)
-                    .fg(self.color_theme.fg),
+                    .bg(self.ctx.color_theme.bg)
+                    .fg(self.ctx.color_theme.fg),
             )
             .padding(Padding::horizontal(1));
 
@@ -266,8 +268,8 @@ impl<'a> CreateTagView<'a> {
 
         // Commit hash
         let commit_line = Line::from(vec![
-            Span::raw("Commit: ").fg(self.color_theme.fg),
-            Span::raw(self.commit_hash.as_short_hash()).fg(self.color_theme.list_hash_fg),
+            Span::raw("Commit: ").fg(self.ctx.color_theme.fg),
+            Span::raw(self.commit_hash.as_short_hash()).fg(self.ctx.color_theme.list_hash_fg),
         ]);
         f.render_widget(Paragraph::new(commit_line), commit_area);
 
@@ -294,24 +296,24 @@ impl<'a> CreateTagView<'a> {
         let checkbox_style = if self.focused_field == FocusedField::PushCheckbox {
             Style::default()
                 .add_modifier(Modifier::BOLD)
-                .fg(self.color_theme.status_success_fg)
+                .fg(self.ctx.color_theme.status_success_fg)
         } else {
-            Style::default().fg(self.color_theme.fg)
+            Style::default().fg(self.ctx.color_theme.fg)
         };
         let push_line = Line::from(vec![
             Span::styled(checkbox, checkbox_style),
-            Span::raw(" Push to origin").fg(self.color_theme.fg),
+            Span::raw(" Push to origin").fg(self.ctx.color_theme.fg),
         ]);
         f.render_widget(Paragraph::new(push_line), push_area);
 
         // Hints
         let hint_line = Line::from(vec![
-            Span::raw("Enter").fg(self.color_theme.help_key_fg),
-            Span::raw(" submit  ").fg(self.color_theme.fg),
-            Span::raw("Esc").fg(self.color_theme.help_key_fg),
-            Span::raw(" cancel  ").fg(self.color_theme.fg),
-            Span::raw("Tab/↑↓").fg(self.color_theme.help_key_fg),
-            Span::raw(" nav").fg(self.color_theme.fg),
+            Span::raw("Enter").fg(self.ctx.color_theme.help_key_fg),
+            Span::raw(" submit  ").fg(self.ctx.color_theme.fg),
+            Span::raw("Esc").fg(self.ctx.color_theme.help_key_fg),
+            Span::raw(" cancel  ").fg(self.ctx.color_theme.fg),
+            Span::raw("Tab/↑↓").fg(self.ctx.color_theme.help_key_fg),
+            Span::raw(" nav").fg(self.ctx.color_theme.fg),
         ]);
         f.render_widget(Paragraph::new(hint_line).centered(), hint_area);
 
@@ -343,9 +345,9 @@ impl<'a> CreateTagView<'a> {
         let label_style = if is_focused {
             Style::default()
                 .add_modifier(Modifier::BOLD)
-                .fg(self.color_theme.status_success_fg)
+                .fg(self.ctx.color_theme.status_success_fg)
         } else {
-            Style::default().fg(self.color_theme.fg)
+            Style::default().fg(self.ctx.color_theme.fg)
         };
 
         let [label_area, input_area] =
@@ -357,7 +359,7 @@ impl<'a> CreateTagView<'a> {
         );
 
         let input_style = if is_focused {
-            Style::default().bg(self.color_theme.list_selected_bg)
+            Style::default().bg(self.ctx.color_theme.list_selected_bg)
         } else {
             Style::default()
         };
@@ -380,13 +382,16 @@ impl<'a> CreateTagView<'a> {
 }
 
 impl<'a> CreateTagView<'a> {
-    pub fn take_list_state(&mut self) -> Option<CommitListState> {
+    pub fn take_list_state(&mut self) -> Option<CommitListState<'a>> {
         self.commit_list_state.take()
     }
 
-    pub fn add_ref_to_commit(&mut self, commit_hash: &CommitHash, new_ref: Ref) {
-        if let Some(list_state) = self.commit_list_state.as_mut() {
-            list_state.add_ref_to_commit(commit_hash, new_ref);
+    pub fn refresh(&self) {
+        if let Some(list_state) = self.commit_list_state.as_ref() {
+            let list_context = ListRefreshViewContext::from(list_state);
+            let context = RefreshViewContext::List { list_context };
+            self.tx.send(AppEvent::Clear);
+            self.tx.send(AppEvent::Refresh(context));
         }
     }
 }
