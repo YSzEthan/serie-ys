@@ -56,6 +56,13 @@ impl CommitInfo {
     fn refs_to_vec(&self) -> Vec<Rc<Ref>> {
         self.refs.clone()
     }
+
+    fn has_only_remote_refs(&self) -> bool {
+        !self.refs.is_empty()
+            && self.refs
+                .iter()
+                .all(|r| matches!(r.as_ref(), Ref::RemoteBranch { .. }))
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -255,6 +262,7 @@ pub struct CommitListState {
     filter_state: FilterState,
     filter_input: Input,
     filtered_indices: Vec<usize>,
+    text_filtered_indices: Vec<usize>,
 
     selected: usize,
     offset: usize,
@@ -294,6 +302,7 @@ impl CommitListState {
             filter_state: FilterState::Inactive,
             filter_input: Input::default(),
             filtered_indices: Vec::new(),
+            text_filtered_indices: Vec::new(),
             selected: 0,
             offset: 0,
             total,
@@ -310,6 +319,35 @@ impl CommitListState {
 
     pub fn toggle_remote_refs(&mut self) {
         self.show_remote_refs = !self.show_remote_refs;
+        self.rebuild_filtered_indices();
+    }
+
+    fn rebuild_filtered_indices(&mut self) {
+        let has_text_filter = !self.filter_input.value().is_empty();
+        let has_remote_filter = !self.show_remote_refs;
+
+        if !has_text_filter && !has_remote_filter {
+            self.filtered_indices.clear();
+            self.total = self.commits.len();
+        } else {
+            let base: Box<dyn Iterator<Item = usize>> = if has_text_filter {
+                Box::new(self.text_filtered_indices.iter().copied())
+            } else {
+                Box::new(0..self.commits.len())
+            };
+
+            if has_remote_filter {
+                self.filtered_indices =
+                    base.filter(|&i| !self.commits[i].has_only_remote_refs()).collect();
+            } else {
+                self.filtered_indices = base.collect();
+            }
+
+            self.total = self.filtered_indices.len();
+        }
+
+        self.selected = self.selected.min(self.total.saturating_sub(1));
+        self.offset = self.offset.min(self.total.saturating_sub(self.height));
     }
 
     pub fn add_ref_to_commit(&mut self, commit_hash: &CommitHash, new_ref: Ref) {
@@ -933,11 +971,10 @@ impl CommitListState {
     pub fn cancel_filter(&mut self) {
         self.filter_state = FilterState::Inactive;
         self.filter_input.reset();
-        self.filtered_indices.clear();
-        // Reset to show all commits
-        self.total = self.commits.len();
+        self.text_filtered_indices.clear();
         self.selected = 0;
         self.offset = 0;
+        self.rebuild_filtered_indices();
     }
 
     pub fn apply_filter(&mut self) {
@@ -1027,31 +1064,20 @@ impl CommitListState {
     fn update_filter_matches(&mut self, ignore_case: bool, fuzzy: bool) {
         let query = self.filter_input.value().to_string();
 
-        if query.is_empty() {
-            // Show all commits when filter is empty
-            self.filtered_indices.clear();
-            self.total = self.commits.len();
-            self.selected = 0;
-            self.offset = 0;
-            return;
-        }
+        self.text_filtered_indices.clear();
 
-        let matcher = SearchMatcher::new(&query, ignore_case, fuzzy);
-        self.filtered_indices.clear();
-
-        for (i, commit_info) in self.commits.iter().enumerate() {
-            if Self::commit_quick_matches(&matcher, commit_info) {
-                self.filtered_indices.push(i);
+        if !query.is_empty() {
+            let matcher = SearchMatcher::new(&query, ignore_case, fuzzy);
+            for (i, commit_info) in self.commits.iter().enumerate() {
+                if Self::commit_quick_matches(&matcher, commit_info) {
+                    self.text_filtered_indices.push(i);
+                }
             }
         }
 
-        self.total = if self.filtered_indices.is_empty() {
-            0
-        } else {
-            self.filtered_indices.len()
-        };
         self.selected = 0;
         self.offset = 0;
+        self.rebuild_filtered_indices();
     }
 
     /// Map visible index to real commit index
