@@ -1,10 +1,25 @@
 use std::rc::Rc;
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::git::{Commit, CommitHash, Repository};
 
 type CommitPosMap = FxHashMap<CommitHash, (usize, usize)>;
+
+pub trait GraphDataSource {
+    fn children_hash(&self, hash: &CommitHash) -> Vec<&CommitHash>;
+    fn parents_hash(&self, hash: &CommitHash) -> Vec<&CommitHash>;
+}
+
+impl GraphDataSource for Repository {
+    fn children_hash(&self, hash: &CommitHash) -> Vec<&CommitHash> {
+        self.children_hash(hash)
+    }
+
+    fn parents_hash(&self, hash: &CommitHash) -> Vec<&CommitHash> {
+        self.parents_hash(hash)
+    }
+}
 
 #[derive(Debug)]
 pub struct Graph {
@@ -59,12 +74,12 @@ pub fn calc_graph(repository: &Repository) -> Graph {
     }
 }
 
-fn calc_commit_positions(commits: &[Rc<Commit>], repository: &Repository) -> CommitPosMap {
+fn calc_commit_positions(commits: &[Rc<Commit>], source: &impl GraphDataSource) -> CommitPosMap {
     let mut commit_pos_map: CommitPosMap = FxHashMap::default();
     let mut commit_line_state: Vec<Option<CommitHash>> = Vec::new();
 
     for (pos_y, commit) in commits.iter().enumerate() {
-        let filtered_children_hash = filtered_children_hash(commit, repository);
+        let filtered_children_hash = filtered_children_hash(commit, source);
         if filtered_children_hash.is_empty() {
             let pos_x = get_first_vacant_line(&commit_line_state);
             add_commit_line(commit, &mut commit_line_state, pos_x);
@@ -78,12 +93,15 @@ fn calc_commit_positions(commits: &[Rc<Commit>], repository: &Repository) -> Com
     commit_pos_map
 }
 
-fn filtered_children_hash<'a>(commit: &Commit, repository: &'a Repository) -> Vec<&'a CommitHash> {
-    repository
+fn filtered_children_hash<'a>(
+    commit: &Commit,
+    source: &'a impl GraphDataSource,
+) -> Vec<&'a CommitHash> {
+    source
         .children_hash(&commit.commit_hash)
         .into_iter()
         .filter(|child_hash| {
-            let child_parents_hash = repository.parents_hash(child_hash);
+            let child_parents_hash = source.parents_hash(child_hash);
             !child_parents_hash.is_empty() && *child_parents_hash[0] == commit.commit_hash
         })
         .collect()
@@ -153,7 +171,7 @@ impl WrappedEdge {
 fn calc_edges(
     commit_pos_map: &CommitPosMap,
     commits: &[Rc<Commit>],
-    repository: &Repository,
+    source: &impl GraphDataSource,
 ) -> (Vec<Vec<Edge>>, usize) {
     let mut max_pos_x = 0;
     let mut edges: Vec<Vec<WrappedEdge>> = vec![vec![]; commits.len()];
@@ -162,7 +180,7 @@ fn calc_edges(
         let (pos_x, pos_y) = commit_pos_map[&commit.commit_hash];
         let hash = &commit.commit_hash;
 
-        for child_hash in repository.children_hash(hash) {
+        for child_hash in source.children_hash(hash) {
             let (child_pos_x, child_pos_y) = commit_pos_map[child_hash];
 
             if pos_x == child_pos_x {
@@ -259,7 +277,7 @@ fn calc_edges(
         let (pos_x, pos_y) = commit_pos_map[&commit.commit_hash];
         let hash = &commit.commit_hash;
 
-        for child_hash in repository.children_hash(hash) {
+        for child_hash in source.children_hash(hash) {
             let (child_pos_x, child_pos_y) = commit_pos_map[child_hash];
 
             if pos_x == child_pos_x {
@@ -451,4 +469,99 @@ fn calc_edges(
         .collect();
 
     (edges, max_pos_x)
+}
+
+struct FilteredRelations {
+    children_map: FxHashMap<CommitHash, Vec<CommitHash>>,
+    parents_map: FxHashMap<CommitHash, Vec<CommitHash>>,
+}
+
+impl GraphDataSource for FilteredRelations {
+    fn children_hash(&self, hash: &CommitHash) -> Vec<&CommitHash> {
+        self.children_map
+            .get(hash)
+            .map(|hs| hs.iter().collect())
+            .unwrap_or_default()
+    }
+
+    fn parents_hash(&self, hash: &CommitHash) -> Vec<&CommitHash> {
+        self.parents_map
+            .get(hash)
+            .map(|hs| hs.iter().collect())
+            .unwrap_or_default()
+    }
+}
+
+/// Walk up ancestors to find the nearest visible parent.
+fn find_nearest_visible_parent(
+    start: &CommitHash,
+    repository: &Repository,
+    visible: &FxHashSet<CommitHash>,
+) -> Option<CommitHash> {
+    let mut stack = vec![start.clone()];
+    let mut visited: FxHashSet<CommitHash> = FxHashSet::default();
+    while let Some(current) = stack.pop() {
+        if !visited.insert(current.clone()) {
+            continue;
+        }
+        if visible.contains(&current) && current != *start {
+            return Some(current);
+        }
+        for parent in repository.parents_hash(&current) {
+            stack.push(parent.clone());
+        }
+    }
+    None
+}
+
+pub fn calc_graph_filtered(
+    repository: &Repository,
+    visible_hashes: &FxHashSet<CommitHash>,
+) -> Graph {
+    let all_commits = repository.all_commits();
+    let commits: Vec<Rc<Commit>> = all_commits
+        .into_iter()
+        .filter(|c| visible_hashes.contains(&c.commit_hash))
+        .collect();
+
+    // Build rewritten parent/children maps
+    let mut parents_map: FxHashMap<CommitHash, Vec<CommitHash>> = FxHashMap::default();
+    let mut children_map: FxHashMap<CommitHash, Vec<CommitHash>> = FxHashMap::default();
+
+    for commit in &commits {
+        let mut rewritten_parents = Vec::new();
+        for orig_parent in &commit.parent_commit_hashes {
+            if visible_hashes.contains(orig_parent) {
+                rewritten_parents.push(orig_parent.clone());
+            } else if let Some(ancestor) =
+                find_nearest_visible_parent(orig_parent, repository, visible_hashes)
+            {
+                if !rewritten_parents.contains(&ancestor) {
+                    rewritten_parents.push(ancestor);
+                }
+            }
+        }
+        for parent in &rewritten_parents {
+            children_map
+                .entry(parent.clone())
+                .or_default()
+                .push(commit.commit_hash.clone());
+        }
+        parents_map.insert(commit.commit_hash.clone(), rewritten_parents);
+    }
+
+    let source = FilteredRelations {
+        children_map,
+        parents_map,
+    };
+
+    let commit_pos_map = calc_commit_positions(&commits, &source);
+    let (graph_edges, max_pos_x) = calc_edges(&commit_pos_map, &commits, &source);
+
+    Graph {
+        commits,
+        commit_pos_map,
+        edges: graph_edges,
+        max_pos_x,
+    }
 }

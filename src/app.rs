@@ -10,8 +10,11 @@ use ratatui::{
     Frame, Terminal,
 };
 
+use rustc_hash::{FxHashMap, FxHashSet};
+
 use crate::{
     color::{ColorTheme, GraphColorSet},
+    compute_filtered_graph,
     config::{CoreConfig, CursorType, UiConfig},
     event::{AppEvent, Receiver, Sender, UserEvent, UserEventWithCount},
     external::copy_to_clipboard,
@@ -24,6 +27,7 @@ use crate::{
         commit_list::{CommitInfo, CommitListState},
         pending_overlay::PendingOverlay,
     },
+    FilteredGraphData,
 };
 
 #[derive(Debug)]
@@ -62,10 +66,13 @@ pub struct App<'a> {
 }
 
 impl<'a> App<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         repository: Repository,
         graph_image_manager: GraphImageManager,
         graph: &Graph,
+        filtered_graph: Option<FilteredGraphData>,
+        remote_only_commits: FxHashSet<CommitHash>,
         keybind: &'a KeyBind,
         core_config: &'a CoreConfig,
         ui_config: &'a UiConfig,
@@ -95,6 +102,25 @@ impl<'a> App<'a> {
             CellWidthType::Double => (graph.max_pos_x + 1) as u16 * 2,
             CellWidthType::Single => (graph.max_pos_x + 1) as u16,
         };
+
+        // Build filtered graph data
+        let (filtered_image_manager, filtered_cell_width, filtered_colors) =
+            if let Some(fg) = filtered_graph {
+                let colors: FxHashMap<CommitHash, ratatui::style::Color> = fg
+                    .graph
+                    .commits
+                    .iter()
+                    .map(|c| {
+                        let (pos_x, _) = fg.graph.commit_pos_map[&c.commit_hash];
+                        let color = graph_color_set.get(pos_x).to_ratatui_color();
+                        (c.commit_hash.clone(), color)
+                    })
+                    .collect();
+                (Some(fg.image_manager), fg.cell_width, Some(colors))
+            } else {
+                (None, 0, None)
+            };
+
         let head = repository.head();
         let mut commit_list_state = CommitListState::new(
             commits,
@@ -104,6 +130,10 @@ impl<'a> App<'a> {
             ref_name_to_commit_index_map,
             core_config.search.ignore_case,
             core_config.search.fuzzy,
+            filtered_image_manager,
+            filtered_cell_width,
+            filtered_colors,
+            remote_only_commits,
         );
         if let InitialSelection::Head = initial_selection {
             match repository.head() {
@@ -139,6 +169,12 @@ impl App<'_> {
         rx: Receiver,
     ) -> std::io::Result<()> {
         loop {
+            if self.view.take_graph_clear() {
+                for y in self.view_area.top()..self.view_area.bottom() {
+                    self.image_protocol.clear_line(y);
+                }
+                terminal.clear()?;
+            }
             terminal.draw(|f| self.render(f))?;
             match rx.recv() {
                 AppEvent::Key(key) => {
@@ -418,6 +454,7 @@ impl App<'_> {
                 (UserEvent::IgnoreCaseToggle, "case"),
                 (UserEvent::CreateTag, "tag"),
                 (UserEvent::RefListToggle, "refs"),
+                (UserEvent::RemoteRefsToggle, "remote"),
                 (UserEvent::Refresh, "refresh"),
                 (UserEvent::HelpToggle, "help"),
             ],
@@ -925,6 +962,16 @@ impl App<'_> {
             false, // don't preload
         );
 
+        // Compute filtered graph
+        let (filtered_graph, remote_only_commits) = compute_filtered_graph(
+            &repository,
+            &graph,
+            self.graph_color_set,
+            self.cell_width_type,
+            self.image_protocol,
+            false,
+        );
+
         // Build new commit list state
         let mut ref_name_to_commit_index_map = HashMap::new();
         let commits = graph
@@ -947,6 +994,23 @@ impl App<'_> {
             CellWidthType::Single => (graph.max_pos_x + 1) as u16,
         };
 
+        let (filtered_image_manager, filtered_cell_width, filtered_colors) =
+            if let Some(fg) = filtered_graph {
+                let colors: FxHashMap<CommitHash, ratatui::style::Color> = fg
+                    .graph
+                    .commits
+                    .iter()
+                    .map(|c| {
+                        let (pos_x, _) = fg.graph.commit_pos_map[&c.commit_hash];
+                        let color = self.graph_color_set.get(pos_x).to_ratatui_color();
+                        (c.commit_hash.clone(), color)
+                    })
+                    .collect();
+                (Some(fg.image_manager), fg.cell_width, Some(colors))
+            } else {
+                (None, 0, None)
+            };
+
         let head = repository.head();
         let commit_list_state = CommitListState::new(
             commits,
@@ -956,6 +1020,10 @@ impl App<'_> {
             ref_name_to_commit_index_map,
             self.core_config.search.ignore_case,
             self.core_config.search.fuzzy,
+            filtered_image_manager,
+            filtered_cell_width,
+            filtered_colors,
+            remote_only_commits,
         );
 
         // Update app state

@@ -197,7 +197,17 @@ impl<'a> ListView<'a> {
                 self.tx.send(AppEvent::OpenDeleteTag);
             }
             UserEvent::RemoteRefsToggle => {
-                self.as_mut_list_state().toggle_remote_refs();
+                let show = self.as_mut_list_state().toggle_remote_refs();
+                if show {
+                    self.tx.send(AppEvent::NotifyInfo("Remote refs: shown".into()));
+                } else {
+                    self.tx.send(AppEvent::NotifyInfo("Remote refs: hidden".into()));
+                }
+                let tx = self.tx.clone();
+                std::thread::spawn(move || {
+                    std::thread::sleep(std::time::Duration::from_secs(3));
+                    tx.send(AppEvent::ClearStatusLine);
+                });
             }
             UserEvent::Refresh => {
                 self.tx.send(AppEvent::Refresh);
@@ -233,6 +243,12 @@ impl<'a> ListView<'a> {
 impl<'a> ListView<'a> {
     pub fn take_list_state(&mut self) -> Option<CommitListState> {
         self.commit_list_state.take()
+    }
+
+    pub fn take_graph_clear(&mut self) -> bool {
+        self.commit_list_state
+            .as_mut()
+            .is_some_and(|s| s.take_graph_clear())
     }
 
     pub fn add_ref_to_commit(&mut self, commit_hash: &CommitHash, new_ref: Ref) {

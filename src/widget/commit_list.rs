@@ -11,7 +11,10 @@ use ratatui::{
     text::{Line, Span},
     widgets::{List, ListItem, StatefulWidget, Widget},
 };
+use rustc_hash::FxHashMap;
 use tui_input::{backend::crossterm::EventHandler, Input};
+
+use rustc_hash::FxHashSet;
 
 use crate::{
     color::ColorTheme,
@@ -57,12 +60,6 @@ impl CommitInfo {
         self.refs.clone()
     }
 
-    fn has_only_remote_refs(&self) -> bool {
-        !self.refs.is_empty()
-            && self.refs
-                .iter()
-                .all(|r| matches!(r.as_ref(), Ref::RemoteBranch { .. }))
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -246,6 +243,11 @@ pub struct CommitListState {
     graph_cell_width: u16,
     head: Head,
 
+    // Filtered graph data (for when remote-only commits are hidden)
+    filtered_graph_image_manager: Option<GraphImageManager>,
+    filtered_graph_cell_width: u16,
+    filtered_graph_colors: Option<FxHashMap<CommitHash, Color>>,
+
     ref_name_to_commit_index_map: HashMap<String, usize>,
 
     search_state: SearchState,
@@ -270,12 +272,15 @@ pub struct CommitListState {
     height: usize,
 
     show_remote_refs: bool,
+    remote_only_commits: FxHashSet<CommitHash>,
+    needs_graph_clear: bool,
 
     default_ignore_case: bool,
     default_fuzzy: bool,
 }
 
 impl CommitListState {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         commits: Vec<CommitInfo>,
         graph_image_manager: GraphImageManager,
@@ -284,6 +289,10 @@ impl CommitListState {
         ref_name_to_commit_index_map: HashMap<String, usize>,
         default_ignore_case: bool,
         default_fuzzy: bool,
+        filtered_graph_image_manager: Option<GraphImageManager>,
+        filtered_graph_cell_width: u16,
+        filtered_graph_colors: Option<FxHashMap<CommitHash, Color>>,
+        remote_only_commits: FxHashSet<CommitHash>,
     ) -> CommitListState {
         let total = commits.len();
         CommitListState {
@@ -291,6 +300,9 @@ impl CommitListState {
             graph_image_manager,
             graph_cell_width,
             head,
+            filtered_graph_image_manager,
+            filtered_graph_cell_width,
+            filtered_graph_colors,
             ref_name_to_commit_index_map,
             search_state: SearchState::Inactive,
             search_input: Input::default(),
@@ -308,18 +320,31 @@ impl CommitListState {
             total,
             height: 0,
             show_remote_refs: true,
+            remote_only_commits,
+            needs_graph_clear: false,
             default_ignore_case,
             default_fuzzy,
         }
     }
 
     pub fn graph_area_cell_width(&self) -> u16 {
-        self.graph_cell_width + 1 // right pad
+        let w = if !self.show_remote_refs && self.filtered_graph_image_manager.is_some() {
+            self.filtered_graph_cell_width
+        } else {
+            self.graph_cell_width
+        };
+        w + 1 // right pad
     }
 
-    pub fn toggle_remote_refs(&mut self) {
+    pub fn toggle_remote_refs(&mut self) -> bool {
         self.show_remote_refs = !self.show_remote_refs;
+        self.needs_graph_clear = true;
         self.rebuild_filtered_indices();
+        self.show_remote_refs
+    }
+
+    pub fn take_graph_clear(&mut self) -> bool {
+        std::mem::replace(&mut self.needs_graph_clear, false)
     }
 
     fn rebuild_filtered_indices(&mut self) {
@@ -337,8 +362,11 @@ impl CommitListState {
             };
 
             if has_remote_filter {
-                self.filtered_indices =
-                    base.filter(|&i| !self.commits[i].has_only_remote_refs()).collect();
+                self.filtered_indices = base
+                    .filter(|&i| {
+                        !self.remote_only_commits.contains(self.commits[i].commit_hash())
+                    })
+                    .collect();
             } else {
                 self.filtered_indices = base.collect();
             }
@@ -927,8 +955,24 @@ impl CommitListState {
     }
 
     fn encoded_image(&self, commit_info: &CommitInfo) -> &str {
+        if !self.show_remote_refs {
+            if let Some(ref mgr) = self.filtered_graph_image_manager {
+                return mgr.encoded_image(&commit_info.commit.commit_hash);
+            }
+        }
         self.graph_image_manager
             .encoded_image(&commit_info.commit.commit_hash)
+    }
+
+    fn marker_color(&self, commit_info: &CommitInfo) -> Color {
+        if !self.show_remote_refs {
+            if let Some(ref colors) = self.filtered_graph_colors {
+                if let Some(&color) = colors.get(commit_info.commit_hash()) {
+                    return color;
+                }
+            }
+        }
+        commit_info.graph_color
     }
 
     // Filter mode methods
@@ -1160,6 +1204,7 @@ impl CommitList<'_> {
 
         // Load graph images for visible commits
         let has_filter = !state.filtered_indices.is_empty();
+        let use_filtered = !state.show_remote_refs && state.filtered_graph_image_manager.is_some();
         for display_idx in 0..state.height.min(state.total.saturating_sub(state.offset)) {
             let visible_idx = state.offset + display_idx;
             let real_idx = if has_filter {
@@ -1167,9 +1212,16 @@ impl CommitList<'_> {
             } else {
                 visible_idx
             };
-            state
-                .graph_image_manager
-                .load_encoded_image(&state.commits[real_idx].commit.commit_hash);
+            let hash = &state.commits[real_idx].commit.commit_hash;
+            if use_filtered {
+                state
+                    .filtered_graph_image_manager
+                    .as_mut()
+                    .unwrap()
+                    .load_encoded_image(hash);
+            } else {
+                state.graph_image_manager.load_encoded_image(hash);
+            }
         }
     }
 
@@ -1232,7 +1284,10 @@ impl CommitList<'_> {
     fn render_marker(&self, buf: &mut Buffer, area: Rect, state: &CommitListState) {
         let items: Vec<ListItem> = self
             .rendering_commit_info_iter(state)
-            .map(|(_, _, commit_info)| ListItem::new("│".fg(commit_info.graph_color)))
+            .map(|(_, _, commit_info)| {
+                let color = state.marker_color(commit_info);
+                ListItem::new("│".fg(color))
+            })
             .collect();
         Widget::render(List::new(items), area, buf)
     }

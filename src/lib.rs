@@ -12,11 +12,12 @@ mod keybind;
 mod view;
 mod widget;
 
-use std::{path::Path, rc::Rc};
+use std::{collections::VecDeque, path::Path, rc::Rc};
 
 use app::App;
 use clap::{Parser, ValueEnum};
-use graph::GraphImageManager;
+use graph::{Graph, GraphImageManager};
+use rustc_hash::FxHashSet;
 use serde::Deserialize;
 
 /// Serie - A rich git commit graph in your terminal, like magic 📚
@@ -111,6 +112,129 @@ impl From<Option<InitialSelection>> for app::InitialSelection {
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+pub struct FilteredGraphData {
+    pub graph: Rc<Graph>,
+    pub image_manager: GraphImageManager,
+    pub cell_width: u16,
+}
+
+/// BFS from all local refs to find commits reachable only from remote branches.
+pub fn find_remote_only_commits(
+    repository: &git::Repository,
+    full_graph: &Graph,
+) -> FxHashSet<git::CommitHash> {
+    // Collect all commit hashes in the graph
+    let all_hashes: FxHashSet<git::CommitHash> =
+        full_graph.commits.iter().map(|c| c.commit_hash.clone()).collect();
+
+    // Collect BFS seeds: targets of local refs (Branch, Tag, Stash) + HEAD
+    let mut seeds: Vec<git::CommitHash> = Vec::new();
+    for commit in &full_graph.commits {
+        let refs = repository.refs(&commit.commit_hash);
+        for r in &refs {
+            match r.as_ref() {
+                git::Ref::Branch { .. }
+                | git::Ref::Tag { .. }
+                | git::Ref::Stash { .. } => {
+                    seeds.push(commit.commit_hash.clone());
+                    break;
+                }
+                git::Ref::RemoteBranch { .. } => {}
+            }
+        }
+    }
+
+    // Also add HEAD target
+    match repository.head() {
+        git::Head::Branch { name } => {
+            // Find commit for this branch
+            for commit in &full_graph.commits {
+                let refs = repository.refs(&commit.commit_hash);
+                if refs.iter().any(|r| {
+                    matches!(r.as_ref(), git::Ref::Branch { name: n, .. } if n == &name)
+                }) {
+                    seeds.push(commit.commit_hash.clone());
+                    break;
+                }
+            }
+        }
+        git::Head::Detached { target } => {
+            if all_hashes.contains(&target) {
+                seeds.push(target);
+            }
+        }
+    }
+
+    // BFS from seeds, walking parent links
+    let mut reachable: FxHashSet<git::CommitHash> = FxHashSet::default();
+    let mut queue: VecDeque<git::CommitHash> = VecDeque::new();
+    for seed in seeds {
+        if reachable.insert(seed.clone()) {
+            queue.push_back(seed);
+        }
+    }
+    while let Some(hash) = queue.pop_front() {
+        for parent in repository.parents_hash(&hash) {
+            if all_hashes.contains(parent) && reachable.insert(parent.clone()) {
+                queue.push_back(parent.clone());
+            }
+        }
+    }
+
+    // Remote-only = in graph but not reachable from local refs
+    all_hashes
+        .into_iter()
+        .filter(|h| !reachable.contains(h))
+        .collect()
+}
+
+pub fn compute_filtered_graph(
+    repository: &git::Repository,
+    full_graph: &Graph,
+    graph_color_set: &color::GraphColorSet,
+    cell_width_type: graph::CellWidthType,
+    image_protocol: protocol::ImageProtocol,
+    preload: bool,
+) -> (Option<FilteredGraphData>, FxHashSet<git::CommitHash>) {
+    let remote_only = find_remote_only_commits(repository, full_graph);
+
+    if remote_only.is_empty() {
+        return (None, remote_only);
+    }
+
+    // Build visible hash set: all commits minus remote-only
+    let visible_hashes: FxHashSet<git::CommitHash> = full_graph
+        .commits
+        .iter()
+        .map(|c| c.commit_hash.clone())
+        .filter(|h| !remote_only.contains(h))
+        .collect();
+
+    let filtered = Rc::new(graph::calc_graph_filtered(repository, &visible_hashes));
+
+    let cell_width = match cell_width_type {
+        graph::CellWidthType::Double => (filtered.max_pos_x + 1) as u16 * 2,
+        graph::CellWidthType::Single => (filtered.max_pos_x + 1) as u16,
+    };
+
+    let image_manager = GraphImageManager::new(
+        Rc::clone(&filtered),
+        graph_color_set,
+        cell_width_type,
+        image_protocol,
+        preload,
+    );
+
+    (
+        Some(FilteredGraphData {
+            graph: filtered,
+            image_manager,
+            cell_width,
+        }),
+        remote_only,
+    )
+}
+
 pub fn run() -> Result<()> {
     let args = Args::parse();
     let (core_config, ui_config, graph_config, color_theme, key_bind_patch) = config::load()?;
@@ -140,6 +264,16 @@ pub fn run() -> Result<()> {
         args.preload,
     );
 
+    // Compute filtered graph for remote-only commit hiding
+    let (filtered_graph, remote_only_commits) = compute_filtered_graph(
+        &repository,
+        &graph,
+        &graph_color_set,
+        cell_width_type,
+        image_protocol,
+        args.preload,
+    );
+
     let mut terminal = ratatui::init();
 
     let (tx, rx) = event::init();
@@ -148,6 +282,8 @@ pub fn run() -> Result<()> {
         repository,
         graph_image_manager,
         &graph,
+        filtered_graph,
+        remote_only_commits,
         &key_bind,
         &core_config,
         &ui_config,

@@ -65,6 +65,13 @@ impl<'a> View<'a> {
         }
     }
 
+    pub fn take_graph_clear(&mut self) -> bool {
+        match self {
+            View::List(view) => view.take_graph_clear(),
+            _ => false,
+        }
+    }
+
     pub fn of_list(
         commit_list_state: CommitListState,
         ui_config: &'a UiConfig,
