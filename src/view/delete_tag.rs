@@ -105,7 +105,7 @@ impl<'a> DeleteTagView<'a> {
             .as_ref()
             .map(ListRefreshViewContext::from)
             .unwrap_or(ListRefreshViewContext {
-                commit_hash: self.commit_hash.as_str().into(),
+                commit_hash: self.commit_hash.clone(),
                 selected: 0,
                 height: 0,
                 scroll_to_top: false,
@@ -268,12 +268,7 @@ impl<'a> DeleteTagView<'a> {
     }
 
     pub fn refresh(&self) {
-        if let Some(list_state) = self.commit_list_state.as_ref() {
-            let list_context = ListRefreshViewContext::from(list_state);
-            let context = RefreshViewContext::List { list_context };
-            self.tx.send(AppEvent::Clear);
-            self.tx.send(AppEvent::Refresh(context));
-        }
+        super::views::send_refresh(self.commit_list_state.as_ref(), &self.tx);
     }
 }
 

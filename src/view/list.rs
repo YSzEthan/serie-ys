@@ -5,7 +5,6 @@ use ratatui::{crossterm::event::KeyEvent, layout::Rect, Frame};
 use crate::{
     app::AppContext,
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
-    git::CommitHash,
     view::{ListRefreshViewContext, RefreshViewContext},
     widget::commit_list::{CommitList, CommitListState, FilterState, SearchState},
 };
@@ -347,7 +346,7 @@ impl<'a> ListView<'a> {
         if *scroll_to_top {
             list_state.select_first();
         } else {
-            list_state.select_commit_hash(&CommitHash::from(commit_hash.as_str()));
+            list_state.select_commit_hash(commit_hash);
             for _ in 0..*selected {
                 list_state.scroll_up();
             }

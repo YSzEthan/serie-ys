@@ -155,42 +155,25 @@ pub fn find_remote_only_commits(
         .map(|c| c.commit_hash.clone())
         .collect();
 
-    // Collect BFS seeds: targets of local refs (Branch, Tag, Stash) + HEAD
+    // Collect BFS seeds: commits with local refs (Branch, Tag, Stash) + HEAD
     let mut seeds: Vec<git::CommitHash> = Vec::new();
-    for commit in &full_graph.commits {
-        let refs = repository.refs(&commit.commit_hash);
-        for r in &refs {
-            match r {
-                git::Ref::Branch { .. } | git::Ref::Tag { .. } | git::Ref::Stash { .. } => {
-                    seeds.push(commit.commit_hash.clone());
-                    break;
-                }
-                git::Ref::RemoteBranch { .. } => {}
-            }
+    for (commit_hash, refs) in repository.refs_with_commits() {
+        if !all_hashes.contains(commit_hash) {
+            continue;
+        }
+        let has_local_ref = refs
+            .iter()
+            .any(|r| matches!(r, git::Ref::Branch { .. } | git::Ref::Tag { .. } | git::Ref::Stash { .. }));
+        if has_local_ref {
+            seeds.push(commit_hash.clone());
         }
     }
 
     // Also add HEAD target
-    match repository.head() {
-        git::Head::Branch { name } => {
-            // Find commit for this branch
-            for commit in &full_graph.commits {
-                let refs = repository.refs(&commit.commit_hash);
-                if refs
-                    .iter()
-                    .any(|r| matches!(r, git::Ref::Branch { name: n, .. } if n == name))
-                {
-                    seeds.push(commit.commit_hash.clone());
-                    break;
-                }
-            }
+    if let git::Head::Detached { target } = repository.head() {
+        if all_hashes.contains(target) {
+            seeds.push(target.clone());
         }
-        git::Head::Detached { target } => {
-            if all_hashes.contains(target) {
-                seeds.push(target.clone());
-            }
-        }
-        git::Head::None => {}
     }
 
     // BFS from seeds, walking parent links

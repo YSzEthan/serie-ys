@@ -233,13 +233,13 @@ impl<'de> Deserialize<'de> for UserEvent {
 
 fn parse_user_command_number(s: &str) -> Option<usize> {
     if let Some(num_str) = s.strip_prefix("user_command_") {
-        if num_str.parse::<usize>().is_ok() {
-            return num_str.parse::<usize>().ok();
+        if let Ok(n) = num_str.parse::<usize>() {
+            return Some(n);
         }
-        if let Some(num_str) = s.strip_prefix("user_command_view_toggle_") {
-            if num_str.parse::<usize>().is_ok() {
-                return num_str.parse::<usize>().ok();
-            }
+    }
+    if let Some(num_str) = s.strip_prefix("user_command_view_toggle_") {
+        if let Ok(n) = num_str.parse::<usize>() {
+            return Some(n);
         }
     }
     None

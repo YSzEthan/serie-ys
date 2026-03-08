@@ -14,7 +14,7 @@ use crate::{
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
     git::{
         delete_branch, delete_branch_force, delete_remote_branch, delete_remote_tag, delete_tag,
-        Ref, RefType,
+        CommitHash, Ref, RefType,
     },
     view::{ListRefreshViewContext, RefreshViewContext},
     widget::{
@@ -103,7 +103,7 @@ impl<'a> DeleteRefView<'a> {
             .as_ref()
             .map(ListRefreshViewContext::from)
             .unwrap_or(ListRefreshViewContext {
-                commit_hash: String::new(),
+                commit_hash: CommitHash::default(),
                 selected: 0,
                 height: 0,
                 scroll_to_top: true,
@@ -321,11 +321,6 @@ impl<'a> DeleteRefView<'a> {
     }
 
     pub fn refresh(&self) {
-        if let Some(list_state) = self.commit_list_state.as_ref() {
-            let list_context = ListRefreshViewContext::from(list_state);
-            let context = RefreshViewContext::List { list_context };
-            self.tx.send(AppEvent::Clear);
-            self.tx.send(AppEvent::Refresh(context));
-        }
+        super::views::send_refresh(self.commit_list_state.as_ref(), &self.tx);
     }
 }

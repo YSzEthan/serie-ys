@@ -4,7 +4,7 @@ use ratatui::{crossterm::event::KeyEvent, layout::Rect, Frame};
 
 use crate::{
     app::AppContext,
-    event::{Sender, UserEventWithCount},
+    event::{AppEvent, Sender, UserEventWithCount},
     external::ExternalCommandParameters,
     git::{Commit, CommitHash, FileChange, Ref, RefType},
     view::{
@@ -238,7 +238,7 @@ impl RefreshViewContext {
 
 #[derive(Debug, Clone)]
 pub struct ListRefreshViewContext {
-    pub commit_hash: String,
+    pub commit_hash: CommitHash,
     pub selected: usize,
     pub height: usize,
     pub scroll_to_top: bool,
@@ -246,7 +246,7 @@ pub struct ListRefreshViewContext {
 
 impl From<&CommitListState<'_>> for ListRefreshViewContext {
     fn from(list_state: &CommitListState<'_>) -> Self {
-        let commit_hash = list_state.selected_commit_hash().as_str().into();
+        let commit_hash = list_state.selected_commit_hash().clone();
         let (selected, offset, height) = list_state.current_list_status();
         // If the selected commit is the top one and there is no offset, it means the list is already scrolled to the top.
         // In this case, we set scroll_to_top to true to indicate that the view should be scrolled to the top after refresh.
@@ -257,6 +257,15 @@ impl From<&CommitListState<'_>> for ListRefreshViewContext {
             height,
             scroll_to_top,
         }
+    }
+}
+
+pub fn send_refresh(list_state: Option<&CommitListState<'_>>, tx: &Sender) {
+    if let Some(list_state) = list_state {
+        let list_context = ListRefreshViewContext::from(list_state);
+        let context = RefreshViewContext::List { list_context };
+        tx.send(AppEvent::Clear);
+        tx.send(AppEvent::Refresh(context));
     }
 }
 

@@ -227,6 +227,10 @@ impl Repository {
         self.ref_map.values().flatten().collect()
     }
 
+    pub fn refs_with_commits(&self) -> impl Iterator<Item = (&CommitHash, &[Ref])> {
+        self.ref_map.iter().map(|(k, v)| (k, v.as_slice()))
+    }
+
     pub fn head(&self) -> &Head {
         &self.head
     }
@@ -712,42 +716,34 @@ pub fn get_initial_commit_additions(path: &Path, commit_hash: &CommitHash) -> Ve
     changes
 }
 
-/// Validates a git ref name according to git-check-ref-format rules.
-/// Returns Ok(()) if valid, Err with message if invalid.
+/// Validates a git ref name using `git check-ref-format`.
 fn validate_ref_name(name: &str) -> std::result::Result<(), String> {
     if name.is_empty() {
         return Err("Ref name cannot be empty".into());
     }
-    if name.starts_with('-') {
-        return Err("Ref name cannot start with '-'".into());
+    let output = Command::new("git")
+        .args(["check-ref-format", "--allow-onelevel", name])
+        .output()
+        .map_err(|e| format!("Failed to validate ref name: {e}"))?;
+    if !output.status.success() {
+        return Err(format!("Invalid ref name: '{name}'"));
     }
-    if name.starts_with('.') || name.ends_with('.') {
-        return Err("Ref name cannot start or end with '.'".into());
-    }
-    if name.contains("..") {
-        return Err("Ref name cannot contain '..'".into());
-    }
-    if name.contains("//") {
-        return Err("Ref name cannot contain '//'".into());
-    }
-    if name.ends_with('/') {
-        return Err("Ref name cannot end with '/'".into());
-    }
-    if name.contains(|c: char| c.is_ascii_control() || c == ' ' || c == '~' || c == '^' || c == ':')
-    {
-        return Err("Ref name contains invalid characters".into());
-    }
-    if name.ends_with(".lock") {
-        return Err("Ref name cannot end with '.lock'".into());
-    }
-    if name.contains("@{") {
-        return Err("Ref name cannot contain '@{'".into());
-    }
-    if name == "@" {
-        return Err("Ref name cannot be '@'".into());
-    }
-    if name.contains('\\') {
-        return Err("Ref name cannot contain '\\'".into());
+    Ok(())
+}
+
+fn run_git_command(
+    path: &Path,
+    args: &[&str],
+    error_prefix: &str,
+) -> std::result::Result<(), String> {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(path)
+        .output()
+        .map_err(|e| format!("Failed to execute git {}: {e}", args[0]))?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("{error_prefix}: {stderr}"));
     }
     Ok(())
 }
@@ -780,107 +776,42 @@ pub fn create_tag(
 }
 
 pub fn push_tag(path: &Path, tag_name: &str) -> std::result::Result<(), String> {
-    let output = Command::new("git")
-        .arg("push")
-        .arg("origin")
-        .arg(tag_name)
-        .current_dir(path)
-        .output()
-        .map_err(|e| format!("Failed to execute git push: {e}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Failed to push tag: {stderr}"));
-    }
-    Ok(())
+    run_git_command(path, &["push", "origin", tag_name], "Failed to push tag")
 }
 
 pub fn delete_tag(path: &Path, tag_name: &str) -> std::result::Result<(), String> {
-    let output = Command::new("git")
-        .arg("tag")
-        .arg("-d")
-        .arg(tag_name)
-        .current_dir(path)
-        .output()
-        .map_err(|e| format!("Failed to execute git tag -d: {e}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Failed to delete tag: {stderr}"));
-    }
-    Ok(())
+    run_git_command(path, &["tag", "-d", tag_name], "Failed to delete tag")
 }
 
 pub fn delete_remote_tag(path: &Path, tag_name: &str) -> std::result::Result<(), String> {
-    let output = Command::new("git")
-        .arg("push")
-        .arg("origin")
-        .arg("--delete")
-        .arg(tag_name)
-        .current_dir(path)
-        .output()
-        .map_err(|e| format!("Failed to execute git push --delete: {e}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Failed to delete remote tag: {stderr}"));
-    }
-    Ok(())
+    run_git_command(
+        path,
+        &["push", "origin", "--delete", tag_name],
+        "Failed to delete remote tag",
+    )
 }
 
 pub fn delete_branch(path: &Path, branch_name: &str) -> std::result::Result<(), String> {
-    let output = Command::new("git")
-        .arg("branch")
-        .arg("-d")
-        .arg(branch_name)
-        .current_dir(path)
-        .output()
-        .map_err(|e| format!("Failed to execute git branch -d: {e}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Failed to delete branch: {stderr}"));
-    }
-    Ok(())
+    run_git_command(path, &["branch", "-d", branch_name], "Failed to delete branch")
 }
 
 pub fn delete_branch_force(path: &Path, branch_name: &str) -> std::result::Result<(), String> {
-    let output = Command::new("git")
-        .arg("branch")
-        .arg("-D")
-        .arg(branch_name)
-        .current_dir(path)
-        .output()
-        .map_err(|e| format!("Failed to execute git branch -D: {e}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Failed to force delete branch: {stderr}"));
-    }
-    Ok(())
+    run_git_command(
+        path,
+        &["branch", "-D", branch_name],
+        "Failed to force delete branch",
+    )
 }
 
 pub fn delete_remote_branch(path: &Path, branch_name: &str) -> std::result::Result<(), String> {
-    // branch_name for remote branches is like "origin/feature" - we need to split
     let parts: Vec<&str> = branch_name.splitn(2, '/').collect();
     if parts.len() != 2 {
         return Err(format!("Invalid remote branch name format: {branch_name}"));
     }
-    let remote = parts[0];
-    let branch = parts[1];
-
-    let output = Command::new("git")
-        .arg("push")
-        .arg(remote)
-        .arg("--delete")
-        .arg(branch)
-        .current_dir(path)
-        .output()
-        .map_err(|e| format!("Failed to execute git push --delete: {e}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Failed to delete remote branch: {stderr}"));
-    }
-    Ok(())
+    let (remote, branch) = (parts[0], parts[1]);
+    run_git_command(
+        path,
+        &["push", remote, "--delete", branch],
+        "Failed to delete remote branch",
+    )
 }

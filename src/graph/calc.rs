@@ -519,15 +519,15 @@ fn find_nearest_visible_parent(
 ) -> Option<CommitHash> {
     let mut stack = vec![start.clone()];
     let mut visited: FxHashSet<CommitHash> = FxHashSet::default();
+    visited.insert(start.clone());
     while let Some(current) = stack.pop() {
-        if !visited.insert(current.clone()) {
-            continue;
-        }
         if visible.contains(&current) && current != *start {
             return Some(current);
         }
         for parent in repository.parents_hash(&current) {
-            stack.push(parent.clone());
+            if visited.insert(parent.clone()) {
+                stack.push(parent.clone());
+            }
         }
     }
     None
