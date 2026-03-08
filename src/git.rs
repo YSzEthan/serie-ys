@@ -792,7 +792,11 @@ pub fn delete_remote_tag(path: &Path, tag_name: &str) -> std::result::Result<(),
 }
 
 pub fn delete_branch(path: &Path, branch_name: &str) -> std::result::Result<(), String> {
-    run_git_command(path, &["branch", "-d", branch_name], "Failed to delete branch")
+    run_git_command(
+        path,
+        &["branch", "-d", branch_name],
+        "Failed to delete branch",
+    )
 }
 
 pub fn delete_branch_force(path: &Path, branch_name: &str) -> std::result::Result<(), String> {

@@ -161,9 +161,12 @@ pub fn find_remote_only_commits(
         if !all_hashes.contains(commit_hash) {
             continue;
         }
-        let has_local_ref = refs
-            .iter()
-            .any(|r| matches!(r, git::Ref::Branch { .. } | git::Ref::Tag { .. } | git::Ref::Stash { .. }));
+        let has_local_ref = refs.iter().any(|r| {
+            matches!(
+                r,
+                git::Ref::Branch { .. } | git::Ref::Tag { .. } | git::Ref::Stash { .. }
+            )
+        });
         if has_local_ref {
             seeds.push(commit_hash.clone());
         }
