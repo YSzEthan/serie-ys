@@ -196,6 +196,9 @@ impl<'a> ListView<'a> {
             UserEvent::DeleteTag => {
                 self.tx.send(AppEvent::OpenDeleteTag);
             }
+            UserEvent::RemoteRefsToggle => {
+                self.as_mut_list_state().toggle_remote_refs();
+            }
             UserEvent::Refresh => {
                 self.tx.send(AppEvent::Refresh);
             }

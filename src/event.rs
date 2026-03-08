@@ -157,6 +157,7 @@ pub enum UserEvent {
     FullCopy,
     CreateTag,
     DeleteTag,
+    RemoteRefsToggle,
     Refresh,
     Unknown,
 }
@@ -223,6 +224,7 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "full_copy" => Ok(UserEvent::FullCopy),
                         "create_tag" => Ok(UserEvent::CreateTag),
                         "delete_tag" => Ok(UserEvent::DeleteTag),
+                        "remote_refs_toggle" => Ok(UserEvent::RemoteRefsToggle),
                         "refresh" => Ok(UserEvent::Refresh),
                         _ => {
                             let msg = format!("Unknown user event: {}", value);

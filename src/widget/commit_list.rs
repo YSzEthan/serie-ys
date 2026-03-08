@@ -261,6 +261,8 @@ pub struct CommitListState {
     total: usize,
     height: usize,
 
+    show_remote_refs: bool,
+
     default_ignore_case: bool,
     default_fuzzy: bool,
 }
@@ -296,6 +298,7 @@ impl CommitListState {
             offset: 0,
             total,
             height: 0,
+            show_remote_refs: true,
             default_ignore_case,
             default_fuzzy,
         }
@@ -303,6 +306,10 @@ impl CommitListState {
 
     pub fn graph_area_cell_width(&self) -> u16 {
         self.graph_cell_width + 1 // right pad
+    }
+
+    pub fn toggle_remote_refs(&mut self) {
+        self.show_remote_refs = !self.show_remote_refs;
     }
 
     pub fn add_ref_to_commit(&mut self, commit_hash: &CommitHash, new_ref: Ref) {
@@ -1217,6 +1224,7 @@ impl CommitList<'_> {
                     &state.head,
                     &state.search_matches[real_i].refs,
                     self.color_theme,
+                    state.show_remote_refs,
                 );
                 let ref_spans_width: usize = spans.iter().map(|s| s.width()).sum();
                 let max_width = max_width.saturating_sub(ref_spans_width);
@@ -1386,6 +1394,7 @@ fn refs_spans<'a>(
     head: &'a Head,
     refs_matches: &'a HashMap<String, SearchMatchPosition>,
     color_theme: &'a ColorTheme,
+    show_remote_refs: bool,
 ) -> Vec<Span<'a>> {
     let refs = &commit_info.refs;
 
@@ -1408,6 +1417,9 @@ fn refs_spans<'a>(
                 Some((name, fg))
             }
             Ref::RemoteBranch { name, .. } => {
+                if !show_remote_refs {
+                    return None;
+                }
                 let fg = color_theme.list_ref_remote_branch_fg;
                 Some((name, fg))
             }

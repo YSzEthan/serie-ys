@@ -276,6 +276,7 @@ fn build_lines(
         (vec![UserEvent::FullCopy], "Copy commit hash".into()),
         (vec![UserEvent::CreateTag], "Create tag on commit".into()),
         (vec![UserEvent::DeleteTag], "Delete tag from commit".into()),
+        (vec![UserEvent::RemoteRefsToggle], "Toggle remote refs".into()),
     ];
     list_helps.extend(user_command_view_toggle_helps.clone());
     let (list_key_lines, list_value_lines) = build_block_lines("Commit List:", list_helps, color_theme, keybind);
