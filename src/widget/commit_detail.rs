@@ -11,7 +11,7 @@ use ratatui::{
 
 use crate::{
     app::AppContext,
-    git::{Commit, FileChange, Ref},
+    git::{Commit, FileChange, Ref, WorkingChanges},
 };
 
 #[derive(Debug, Default)]
@@ -333,4 +333,118 @@ fn has_refs(refs: &[Ref]) -> bool {
             Ref::Branch { .. } | Ref::RemoteBranch { .. } | Ref::Tag { .. }
         )
     })
+}
+
+pub struct WorkingChangesDetail<'a> {
+    working_changes: &'a WorkingChanges,
+    ctx: Rc<AppContext>,
+}
+
+impl<'a> WorkingChangesDetail<'a> {
+    pub fn new(working_changes: &'a WorkingChanges, ctx: Rc<AppContext>) -> Self {
+        Self {
+            working_changes,
+            ctx,
+        }
+    }
+}
+
+impl StatefulWidget for WorkingChangesDetail<'_> {
+    type State = CommitDetailState;
+
+    fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
+        let value_area = area;
+        let value_lines = self.contents(area);
+
+        let content_area_height = area.height as usize - 1;
+        state.height = content_area_height;
+        state.offset = state
+            .offset
+            .min(value_lines.len().saturating_sub(content_area_height));
+
+        let value_lines: Vec<Line> = value_lines.into_iter().skip(state.offset).collect();
+
+        let paragraph = Paragraph::new(value_lines)
+            .style(Style::default().fg(self.ctx.color_theme.fg))
+            .block(
+                Block::default()
+                    .borders(Borders::TOP)
+                    .style(Style::default().fg(self.ctx.color_theme.divider_fg))
+                    .padding(Padding::new(2, 2, 0, 0)),
+            );
+        paragraph.render(value_area, buf);
+    }
+}
+
+impl WorkingChangesDetail<'_> {
+    fn contents(&self, area: Rect) -> Vec<Line<'_>> {
+        let mut lines: Vec<Line> = Vec::new();
+
+        lines.push(
+            Line::from("Uncommitted Changes")
+                .style(Style::default().fg(self.ctx.color_theme.fg).bold()),
+        );
+        lines.push(Line::raw(""));
+
+        if !self.working_changes.staged.is_empty() {
+            lines.push(
+                Line::from(format!(
+                    "Staged Changes ({})",
+                    self.working_changes.staged.len()
+                ))
+                .style(Style::default().fg(self.ctx.color_theme.fg).bold()),
+            );
+            lines.extend(self.changes_lines(&self.working_changes.staged));
+            lines.push(Line::raw(""));
+        }
+
+        if !self.working_changes.unstaged.is_empty() {
+            lines.push(
+                Line::from(format!(
+                    "Unstaged Changes ({})",
+                    self.working_changes.unstaged.len()
+                ))
+                .style(Style::default().fg(self.ctx.color_theme.fg).bold()),
+            );
+            lines.extend(self.changes_lines(&self.working_changes.unstaged));
+        }
+
+        lines.push(self.divider_line(area.width as usize));
+
+        lines
+    }
+
+    fn changes_lines<'a>(&'a self, changes: &'a [FileChange]) -> Vec<Line<'a>> {
+        changes
+            .iter()
+            .map(|c| match c {
+                FileChange::Add { path } => Line::from(vec![
+                    "A".fg(self.ctx.color_theme.detail_file_change_add_fg),
+                    " ".into(),
+                    path.into(),
+                ]),
+                FileChange::Modify { path } => Line::from(vec![
+                    "M".fg(self.ctx.color_theme.detail_file_change_modify_fg),
+                    " ".into(),
+                    path.into(),
+                ]),
+                FileChange::Delete { path } => Line::from(vec![
+                    "D".fg(self.ctx.color_theme.detail_file_change_delete_fg),
+                    " ".into(),
+                    path.into(),
+                ]),
+                FileChange::Move { from, to } => Line::from(vec![
+                    "R".fg(self.ctx.color_theme.detail_file_change_move_fg),
+                    " ".into(),
+                    from.into(),
+                    " -> ".into(),
+                    to.into(),
+                ]),
+            })
+            .collect()
+    }
+
+    fn divider_line(&self, width: usize) -> Line<'_> {
+        Line::from("─".repeat(width).fg(self.ctx.color_theme.divider_fg))
+    }
 }

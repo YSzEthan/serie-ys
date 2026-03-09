@@ -316,11 +316,17 @@ impl<'a> ListView<'a> {
     }
 
     fn copy_commit_short_hash(&self) {
+        if self.as_list_state().is_virtual_row_selected() {
+            return;
+        }
         let selected = self.as_list_state().selected_commit_hash();
         self.copy_to_clipboard("Commit SHA (short)".into(), selected.as_short_hash());
     }
 
     fn copy_commit_hash(&self) {
+        if self.as_list_state().is_virtual_row_selected() {
+            return;
+        }
         let selected = self.as_list_state().selected_commit_hash();
         self.copy_to_clipboard("Commit SHA".into(), selected.as_str().into());
     }

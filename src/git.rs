@@ -137,6 +137,7 @@ pub struct Repository {
     head: Head,
     // to preserve order of the original commits from `git log`, we store the commit hashes
     commit_hashes: Vec<CommitHash>,
+    working_changes: WorkingChanges,
 }
 
 impl Repository {
@@ -160,6 +161,8 @@ impl Repository {
         let stash_ref_map = load_stashes_as_refs(path);
         merge_ref_maps(&mut ref_map, stash_ref_map);
 
+        let working_changes = load_working_changes(path);
+
         Ok(Self::new(
             path.to_path_buf(),
             commit_map,
@@ -168,6 +171,7 @@ impl Repository {
             ref_map,
             head,
             commit_hashes,
+            working_changes,
         ))
     }
 
@@ -179,6 +183,7 @@ impl Repository {
         ref_map: RefMap,
         head: Head,
         commit_hashes: Vec<CommitHash>,
+        working_changes: WorkingChanges,
     ) -> Self {
         Self {
             path,
@@ -188,6 +193,7 @@ impl Repository {
             ref_map,
             head,
             commit_hashes,
+            working_changes,
         }
     }
 
@@ -237,6 +243,10 @@ impl Repository {
 
     pub fn path(&self) -> &Path {
         &self.path
+    }
+
+    pub fn working_changes(&self) -> &WorkingChanges {
+        &self.working_changes
     }
 
     pub fn commit_detail(&self, commit_hash: &CommitHash) -> (Commit, Vec<FileChange>) {
@@ -635,12 +645,97 @@ fn get_current_branch(path: &Path) -> Option<String> {
     branch
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum FileChange {
     Add { path: String },
     Modify { path: String },
     Delete { path: String },
     Move { from: String, to: String },
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct WorkingChanges {
+    pub staged: Vec<FileChange>,
+    pub unstaged: Vec<FileChange>,
+}
+
+impl WorkingChanges {
+    pub fn is_empty(&self) -> bool {
+        self.staged.is_empty() && self.unstaged.is_empty()
+    }
+
+    pub fn file_count(&self) -> usize {
+        self.staged.len() + self.unstaged.len()
+    }
+}
+
+pub fn load_working_changes(path: &Path) -> WorkingChanges {
+    let mut cmd = Command::new("git")
+        .arg("status")
+        .arg("--porcelain=v1")
+        .current_dir(path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+
+    let stdout = cmd.stdout.take().expect("failed to open stdout");
+    let reader = BufReader::new(stdout);
+
+    let mut staged = Vec::new();
+    let mut unstaged = Vec::new();
+
+    for line in reader.lines() {
+        let line = line.unwrap();
+        if line.len() < 4 {
+            continue;
+        }
+        let x = line.as_bytes()[0]; // staged status
+        let y = line.as_bytes()[1]; // unstaged status
+        let file_path = &line[3..];
+
+        // Parse staged changes (X column)
+        if let Some(change) = parse_status_char(x, file_path) {
+            staged.push(change);
+        }
+
+        // Parse unstaged changes (Y column)
+        if let Some(change) = parse_status_char(y, file_path) {
+            unstaged.push(change);
+        }
+    }
+
+    cmd.wait().unwrap();
+
+    WorkingChanges { staged, unstaged }
+}
+
+fn parse_status_char(status: u8, file_path: &str) -> Option<FileChange> {
+    match status {
+        b'A' => Some(FileChange::Add {
+            path: file_path.into(),
+        }),
+        b'M' => Some(FileChange::Modify {
+            path: file_path.into(),
+        }),
+        b'D' => Some(FileChange::Delete {
+            path: file_path.into(),
+        }),
+        b'R' => {
+            let parts: Vec<&str> = file_path.splitn(2, " -> ").collect();
+            if parts.len() == 2 {
+                Some(FileChange::Move {
+                    from: parts[0].into(),
+                    to: parts[1].into(),
+                })
+            } else {
+                Some(FileChange::Modify {
+                    path: file_path.into(),
+                })
+            }
+        }
+        _ => None,
+    }
 }
 
 pub fn get_diff_summary(path: &Path, commit_hash: &CommitHash) -> Vec<FileChange> {

@@ -148,6 +148,12 @@ impl<'a> App<'a> {
             };
 
         let head = repository.head().clone();
+        let working_changes = repository.working_changes().clone();
+        let working_changes_opt = if working_changes.is_empty() {
+            None
+        } else {
+            Some(working_changes)
+        };
         let mut commit_list_state = CommitListState::new(
             commits,
             graph_image_manager,
@@ -160,6 +166,7 @@ impl<'a> App<'a> {
             filtered_cell_width,
             filtered_colors,
             remote_only_commits,
+            working_changes_opt,
         );
         if let InitialSelection::Head = initial_selection {
             match repository.head() {
@@ -588,6 +595,21 @@ impl App<'_> {
         let Some(commit_list_state) = commit_list_state else {
             return;
         };
+
+        if commit_list_state.is_virtual_row_selected() {
+            if let Some(wc) = commit_list_state.working_changes().cloned() {
+                self.view = View::of_working_changes_detail(
+                    commit_list_state,
+                    wc,
+                    self.ctx.clone(),
+                    self.tx.clone(),
+                );
+            } else {
+                self.view = View::of_list(commit_list_state, self.ctx.clone(), self.tx.clone());
+            }
+            return;
+        }
+
         let selected = commit_list_state.selected_commit_hash().clone();
         let (commit, changes) = self.repository.commit_detail(&selected);
         let refs = self
@@ -636,6 +658,16 @@ impl App<'_> {
     }
 
     fn open_user_command_inline(&mut self, user_command_number: usize) {
+        // Guard: skip virtual row
+        let is_virtual = match &self.view {
+            View::List(view) => view.as_list_state().is_virtual_row_selected(),
+            View::Detail(view) => view.as_list_state().is_virtual_row_selected(),
+            View::UserCommand(view) => view.as_list_state().is_virtual_row_selected(),
+            _ => false,
+        };
+        if is_virtual {
+            return;
+        }
         let commit_list_state = match self.view {
             View::List(ref mut view) => view.take_list_state(),
             View::Detail(ref mut view) => view.take_list_state(),
@@ -749,6 +781,9 @@ impl App<'_> {
 
     fn open_create_tag(&mut self) {
         if let View::List(ref mut view) = self.view {
+            if view.as_list_state().is_virtual_row_selected() {
+                return;
+            }
             let Some(commit_list_state) = view.take_list_state() else {
                 return;
             };
@@ -774,6 +809,9 @@ impl App<'_> {
 
     fn open_delete_tag(&mut self) {
         if let View::List(ref mut view) = self.view {
+            if view.as_list_state().is_virtual_row_selected() {
+                return;
+            }
             let Some(commit_list_state) = view.take_list_state() else {
                 return;
             };

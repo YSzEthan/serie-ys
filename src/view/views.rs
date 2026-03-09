@@ -9,7 +9,7 @@ use crate::{
     app::AppContext,
     event::{AppEvent, Sender, UserEventWithCount},
     external::ExternalCommandParameters,
-    git::{Commit, CommitHash, FileChange, Ref, RefType},
+    git::{Commit, CommitHash, FileChange, Ref, RefType, WorkingChanges},
     view::{
         create_tag::CreateTagView, delete_ref::DeleteRefView, delete_tag::DeleteTagView,
         detail::DetailView, github::GitHubView, help::HelpView, list::ListView, refs::RefsView,
@@ -92,6 +92,20 @@ impl<'a> View<'a> {
             commit,
             changes,
             refs,
+            ctx,
+            tx,
+        )))
+    }
+
+    pub fn of_working_changes_detail(
+        commit_list_state: CommitListState<'a>,
+        working_changes: WorkingChanges,
+        ctx: Rc<AppContext>,
+        tx: Sender,
+    ) -> Self {
+        View::Detail(Box::new(DetailView::new_working_changes(
+            commit_list_state,
+            working_changes,
             ctx,
             tx,
         )))

@@ -18,7 +18,7 @@ use crate::{
     app::AppContext,
     color::ColorTheme,
     config::UserListColumnType,
-    git::{Commit, CommitHash, Head, Ref},
+    git::{Commit, CommitHash, Head, Ref, WorkingChanges},
     graph::GraphImageManager,
 };
 
@@ -269,6 +269,8 @@ pub struct CommitListState<'a> {
 
     default_ignore_case: bool,
     default_fuzzy: bool,
+
+    working_changes: Option<WorkingChanges>,
 }
 
 impl<'a> CommitListState<'a> {
@@ -285,8 +287,12 @@ impl<'a> CommitListState<'a> {
         filtered_graph_cell_width: u16,
         filtered_graph_colors: Option<FxHashMap<CommitHash, Color>>,
         remote_only_commits: FxHashSet<CommitHash>,
+        working_changes: Option<WorkingChanges>,
     ) -> CommitListState<'a> {
-        let total = commits.len();
+        let commit_count = commits.len();
+        let has_virtual_row = working_changes.as_ref().is_some_and(|wc| !wc.is_empty());
+        let vr_offset = if has_virtual_row { 1 } else { 0 };
+        let total = commit_count + vr_offset;
         let name_cell_width = commits
             .iter()
             .map(|c| console::measure_text_width(&c.commit.author_name) as u16)
@@ -308,7 +314,7 @@ impl<'a> CommitListState<'a> {
             ref_name_to_commit_index_map,
             search_state: SearchState::Inactive,
             search_input: Input::default(),
-            search_matches: vec![SearchMatch::default(); total],
+            search_matches: vec![SearchMatch::default(); commit_count],
             last_search_query: String::new(),
             last_matched_indices: Vec::new(),
             last_search_ignore_case: false,
@@ -327,6 +333,7 @@ impl<'a> CommitListState<'a> {
             name_cell_width,
             default_ignore_case,
             default_fuzzy,
+            working_changes,
         }
     }
 
@@ -354,13 +361,36 @@ impl<'a> CommitListState<'a> {
         std::mem::replace(&mut self.needs_graph_clear, false)
     }
 
+    pub fn has_virtual_row(&self) -> bool {
+        self.working_changes
+            .as_ref()
+            .is_some_and(|wc| !wc.is_empty())
+    }
+
+    fn virtual_row_offset(&self) -> usize {
+        if self.has_virtual_row() {
+            1
+        } else {
+            0
+        }
+    }
+
+    pub fn is_virtual_row_selected(&self) -> bool {
+        self.has_virtual_row() && self.offset + self.selected == 0
+    }
+
+    pub fn working_changes(&self) -> Option<&WorkingChanges> {
+        self.working_changes.as_ref()
+    }
+
     fn rebuild_filtered_indices(&mut self) {
         let has_text_filter = !self.filter_input.value().is_empty();
         let has_remote_filter = !self.show_remote_refs;
+        let vr = self.virtual_row_offset();
 
         if !has_text_filter && !has_remote_filter {
             self.filtered_indices.clear();
-            self.total = self.commits.len();
+            self.total = self.commits.len() + vr;
         } else {
             let base: Box<dyn Iterator<Item = usize>> = if has_text_filter {
                 Box::new(self.text_filtered_indices.iter().copied())
@@ -380,7 +410,7 @@ impl<'a> CommitListState<'a> {
                 self.filtered_indices = base.collect();
             }
 
-            self.total = self.filtered_indices.len();
+            self.total = self.filtered_indices.len() + vr;
         }
 
         self.selected = self.selected.min(self.total.saturating_sub(1));
@@ -399,7 +429,7 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn select_parent(&mut self) {
-        if self.total == 0 {
+        if self.total == 0 || self.is_virtual_row_selected() {
             return;
         }
         if let Some(target_commit) = self.selected_commit_parent_hash().cloned() {
@@ -412,7 +442,7 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn selected_commit_parent_hash(&self) -> Option<&CommitHash> {
-        if self.total == 0 {
+        if self.total == 0 || self.is_virtual_row_selected() {
             return None;
         }
         self.commits[self.current_selected_index()]
@@ -562,19 +592,24 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn selected_commit_hash(&self) -> &CommitHash {
-        &self.commits[self.current_selected_index()]
-            .commit
-            .commit_hash
+        // When virtual row is selected, return first commit hash as fallback
+        let idx = self.current_selected_index();
+        &self.commits[idx].commit.commit_hash
     }
 
     pub fn selected_commit_refs(&self) -> &[&'a Ref] {
+        if self.is_virtual_row_selected() {
+            return &[];
+        }
         self.commits[self.current_selected_index()].refs()
     }
 
-    /// Returns the real commit index (in commits Vec) for the currently selected item
+    /// Returns the real commit index (in commits Vec) for the currently selected item.
+    /// When virtual row is selected, returns 0 (first commit) as fallback.
     fn current_selected_index(&self) -> usize {
         let visible_idx = self.offset + self.selected;
-        self.real_commit_index(visible_idx)
+        let adjusted = visible_idx.saturating_sub(self.virtual_row_offset());
+        self.real_commit_index(adjusted)
     }
 
     pub fn current_list_status(&self) -> (usize, usize, usize) {
@@ -587,11 +622,12 @@ impl<'a> CommitListState<'a> {
 
     pub fn select_ref(&mut self, ref_name: &str) {
         if let Some(&index) = self.ref_name_to_commit_index_map.get(ref_name) {
+            let visible_index = index + self.virtual_row_offset();
             if self.total > self.height {
                 self.selected = 0;
-                self.offset = index;
+                self.offset = visible_index;
             } else {
-                self.selected = index;
+                self.selected = visible_index;
             }
         }
     }
@@ -600,13 +636,15 @@ impl<'a> CommitListState<'a> {
         if !self.commit_hash_set.contains(commit_hash) {
             return;
         }
+        let vr = self.virtual_row_offset();
         for (i, commit_info) in self.commits.iter().enumerate() {
             if commit_info.commit.commit_hash == *commit_hash {
+                let visible_i = i + vr;
                 if self.total > self.height {
                     self.selected = 0;
-                    self.offset = i;
+                    self.offset = visible_i;
                 } else {
-                    self.selected = i;
+                    self.selected = visible_i;
                 }
                 break;
             }
@@ -946,12 +984,13 @@ impl<'a> CommitListState<'a> {
 
     /// Select a commit by its real index (in commits Vec), converting to visible index
     fn select_real_index(&mut self, real_index: usize) {
+        let vr = self.virtual_row_offset();
         if self.filtered_indices.is_empty() {
-            self.select_index(real_index);
+            self.select_index(real_index + vr);
         } else if let Some(visible_idx) =
             self.filtered_indices.iter().position(|&i| i == real_index)
         {
-            self.select_index(visible_idx);
+            self.select_index(visible_idx + vr);
         }
     }
 
@@ -1243,12 +1282,17 @@ impl CommitList<'_> {
         // Load graph images for visible commits
         let has_filter = !state.filtered_indices.is_empty();
         let use_filtered = !state.show_remote_refs && state.filtered_graph_image_manager.is_some();
+        let vr_offset = state.virtual_row_offset();
         for display_idx in 0..state.height.min(state.total.saturating_sub(state.offset)) {
             let visible_idx = state.offset + display_idx;
+            if visible_idx < vr_offset {
+                continue; // skip virtual row
+            }
+            let commit_visible_idx = visible_idx - vr_offset;
             let real_idx = if has_filter {
-                state.filtered_indices[visible_idx]
+                state.filtered_indices[commit_visible_idx]
             } else {
-                visible_idx
+                commit_visible_idx
             };
             let hash = &state.commits[real_idx].commit.commit_hash;
             if use_filtered {
@@ -1267,6 +1311,24 @@ impl CommitList<'_> {
         if area.is_empty() {
             return;
         }
+        // Virtual row: render a simple * in the graph area
+        if state.has_virtual_row() && state.offset == 0 {
+            let y = area.top();
+            let style = if state.selected == 0 {
+                Style::default()
+                    .fg(Color::Yellow)
+                    .bg(self.ctx.color_theme.list_selected_bg)
+            } else {
+                Style::default().fg(Color::Yellow)
+            };
+            buf[(area.left(), y)].set_symbol(" ").set_style(style);
+            if area.width > 1 {
+                buf[(area.left() + 1, y)].set_symbol("*").set_style(style);
+            }
+            for w in 2..area.width {
+                buf[(area.left() + w, y)].set_symbol(" ").set_style(style);
+            }
+        }
         self.rendering_commit_info_iter(state)
             .for_each(|(display_i, _real_i, commit_info)| {
                 buf[(area.left(), area.top() + display_i as u16)]
@@ -1283,13 +1345,23 @@ impl CommitList<'_> {
         if area.is_empty() {
             return;
         }
-        let items: Vec<ListItem> = self
-            .rendering_commit_info_iter(state)
-            .map(|(_, _, commit_info)| {
-                let color = state.marker_color(commit_info);
-                ListItem::new("│".fg(color))
-            })
-            .collect();
+        let mut items: Vec<ListItem> = Vec::new();
+        if state.has_virtual_row() && state.offset == 0 {
+            let mut line = Line::from("│".fg(Color::Yellow));
+            if state.selected == 0 {
+                line = line
+                    .bg(self.ctx.color_theme.list_selected_bg)
+                    .fg(self.ctx.color_theme.list_selected_fg);
+            }
+            items.push(ListItem::new(line));
+        }
+        items.extend(
+            self.rendering_commit_info_iter(state)
+                .map(|(_, _, commit_info)| {
+                    let color = state.marker_color(commit_info);
+                    ListItem::new("│".fg(color))
+                }),
+        );
         Widget::render(List::new(items), area, buf)
     }
 
@@ -1298,9 +1370,21 @@ impl CommitList<'_> {
         if area.is_empty() || max_width == 0 {
             return;
         }
-        let items: Vec<ListItem> = self
-            .rendering_commit_info_iter(state)
-            .map(|(display_i, real_i, commit_info)| {
+        let mut items: Vec<ListItem> = Vec::new();
+        // Virtual row
+        if state.has_virtual_row() && state.offset == 0 {
+            let count = state.working_changes().map_or(0, |wc| wc.file_count());
+            let text = format!("Uncommitted Changes ({})", count);
+            let spans = vec![Span::styled(
+                text,
+                Style::default()
+                    .fg(Color::Yellow)
+                    .add_modifier(Modifier::ITALIC),
+            )];
+            items.push(self.to_commit_list_item(0, spans, state));
+        }
+        items.extend(self.rendering_commit_info_iter(state).map(
+            |(display_i, real_i, commit_info)| {
                 let mut spans = refs_spans(
                     commit_info,
                     &state.head,
@@ -1336,8 +1420,8 @@ impl CommitList<'_> {
                     spans.extend(sub_spans)
                 }
                 self.to_commit_list_item(display_i, spans, state)
-            })
-            .collect();
+            },
+        ));
         Widget::render(List::new(items), area, buf);
     }
 
@@ -1346,30 +1430,39 @@ impl CommitList<'_> {
         if area.is_empty() || max_width == 0 {
             return;
         }
-        let items: Vec<ListItem> = self
-            .rendering_commit_iter(state)
-            .map(|(display_i, real_i, commit)| {
-                let truncate = console::measure_text_width(&commit.author_name) > max_width;
-                let name = if truncate {
-                    console::truncate_str(&commit.author_name, max_width, ELLIPSIS).to_string()
-                } else {
-                    commit.author_name.to_string()
-                };
-                let spans = if let Some(pos) = state.search_matches[real_i].author_name.clone() {
-                    highlighted_spans(
-                        name.into(),
-                        pos,
-                        self.ctx.color_theme.list_name_fg,
-                        Modifier::empty(),
-                        &self.ctx.color_theme,
-                        truncate,
-                    )
-                } else {
-                    vec![name.fg(self.ctx.color_theme.list_name_fg)]
-                };
-                self.to_commit_list_item(display_i, spans, state)
-            })
-            .collect();
+        let mut items: Vec<ListItem> = Vec::new();
+        if state.has_virtual_row() && state.offset == 0 {
+            items.push(self.to_commit_list_item(
+                0,
+                vec!["-".fg(self.ctx.color_theme.list_hash_fg)],
+                state,
+            ));
+        }
+        items.extend(
+            self.rendering_commit_iter(state)
+                .map(|(display_i, real_i, commit)| {
+                    let truncate = console::measure_text_width(&commit.author_name) > max_width;
+                    let name = if truncate {
+                        console::truncate_str(&commit.author_name, max_width, ELLIPSIS).to_string()
+                    } else {
+                        commit.author_name.to_string()
+                    };
+                    let spans = if let Some(pos) = state.search_matches[real_i].author_name.clone()
+                    {
+                        highlighted_spans(
+                            name.into(),
+                            pos,
+                            self.ctx.color_theme.list_name_fg,
+                            Modifier::empty(),
+                            &self.ctx.color_theme,
+                            truncate,
+                        )
+                    } else {
+                        vec![name.fg(self.ctx.color_theme.list_name_fg)]
+                    };
+                    self.to_commit_list_item(display_i, spans, state)
+                }),
+        );
         Widget::render(List::new(items), area, buf);
     }
 
@@ -1377,25 +1470,34 @@ impl CommitList<'_> {
         if area.is_empty() {
             return;
         }
-        let items: Vec<ListItem> = self
-            .rendering_commit_iter(state)
-            .map(|(display_i, real_i, commit)| {
-                let hash = commit.commit_hash.as_short_hash();
-                let spans = if let Some(pos) = state.search_matches[real_i].commit_hash.clone() {
-                    highlighted_spans(
-                        hash.into(),
-                        pos,
-                        self.ctx.color_theme.list_hash_fg,
-                        Modifier::empty(),
-                        &self.ctx.color_theme,
-                        false,
-                    )
-                } else {
-                    vec![hash.fg(self.ctx.color_theme.list_hash_fg)]
-                };
-                self.to_commit_list_item(display_i, spans, state)
-            })
-            .collect();
+        let mut items: Vec<ListItem> = Vec::new();
+        if state.has_virtual_row() && state.offset == 0 {
+            items.push(self.to_commit_list_item(
+                0,
+                vec!["-".fg(self.ctx.color_theme.list_hash_fg)],
+                state,
+            ));
+        }
+        items.extend(
+            self.rendering_commit_iter(state)
+                .map(|(display_i, real_i, commit)| {
+                    let hash = commit.commit_hash.as_short_hash();
+                    let spans = if let Some(pos) = state.search_matches[real_i].commit_hash.clone()
+                    {
+                        highlighted_spans(
+                            hash.into(),
+                            pos,
+                            self.ctx.color_theme.list_hash_fg,
+                            Modifier::empty(),
+                            &self.ctx.color_theme,
+                            false,
+                        )
+                    } else {
+                        vec![hash.fg(self.ctx.color_theme.list_hash_fg)]
+                    };
+                    self.to_commit_list_item(display_i, spans, state)
+                }),
+        );
         Widget::render(List::new(items), area, buf);
     }
 
@@ -1403,43 +1505,56 @@ impl CommitList<'_> {
         if area.is_empty() {
             return;
         }
-        let items: Vec<ListItem> = self
-            .rendering_commit_iter(state)
-            .map(|(display_i, _real_i, commit)| {
-                let date = &commit.author_date;
-                let date_str = if self.ctx.ui_config.list.date_local {
-                    let local = date.with_timezone(&chrono::Local);
-                    local
-                        .format(&self.ctx.ui_config.list.date_format)
-                        .to_string()
-                } else {
-                    date.format(&self.ctx.ui_config.list.date_format)
-                        .to_string()
-                };
-                self.to_commit_list_item(
-                    display_i,
-                    vec![date_str.fg(self.ctx.color_theme.list_date_fg)],
-                    state,
-                )
-            })
-            .collect();
+        let mut items: Vec<ListItem> = Vec::new();
+        if state.has_virtual_row() && state.offset == 0 {
+            items.push(self.to_commit_list_item(
+                0,
+                vec!["-".fg(self.ctx.color_theme.list_date_fg)],
+                state,
+            ));
+        }
+        items.extend(
+            self.rendering_commit_iter(state)
+                .map(|(display_i, _real_i, commit)| {
+                    let date = &commit.author_date;
+                    let date_str = if self.ctx.ui_config.list.date_local {
+                        let local = date.with_timezone(&chrono::Local);
+                        local
+                            .format(&self.ctx.ui_config.list.date_format)
+                            .to_string()
+                    } else {
+                        date.format(&self.ctx.ui_config.list.date_format)
+                            .to_string()
+                    };
+                    self.to_commit_list_item(
+                        display_i,
+                        vec![date_str.fg(self.ctx.color_theme.list_date_fg)],
+                        state,
+                    )
+                }),
+        );
         Widget::render(List::new(items), area, buf);
     }
 
     /// Returns iterator of (display_idx, real_idx, &CommitInfo)
     /// display_idx: position on screen (0, 1, 2, ...)
     /// real_idx: actual index in commits Vec (for search_matches access)
+    /// Skips the virtual row (if present and visible).
     fn rendering_commit_info_iter<'b>(
         &'b self,
         state: &'b CommitListState<'_>,
     ) -> impl Iterator<Item = (usize, usize, &'b CommitInfo<'b>)> {
         let has_filter = !state.filtered_indices.is_empty();
-        (0..state.height.min(state.total.saturating_sub(state.offset))).map(move |display_idx| {
+        let vr_offset = state.virtual_row_offset();
+        let total_visible = state.height.min(state.total.saturating_sub(state.offset));
+        let start = if state.offset == 0 { vr_offset } else { 0 };
+        (start..total_visible).map(move |display_idx| {
             let visible_idx = state.offset + display_idx;
+            let commit_visible_idx = visible_idx - vr_offset;
             let real_idx = if has_filter {
-                state.filtered_indices[visible_idx]
+                state.filtered_indices[commit_visible_idx]
             } else {
-                visible_idx
+                commit_visible_idx
             };
             (display_idx, real_idx, &state.commits[real_idx])
         })

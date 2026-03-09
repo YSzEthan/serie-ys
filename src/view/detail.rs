@@ -10,22 +10,30 @@ use ratatui::{
 use crate::{
     app::AppContext,
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
-    git::{Commit, FileChange, Ref, Repository},
+    git::{Commit, FileChange, Ref, Repository, WorkingChanges},
     view::{ListRefreshViewContext, RefreshViewContext},
     widget::{
-        commit_detail::{CommitDetail, CommitDetailState},
+        commit_detail::{CommitDetail, CommitDetailState, WorkingChangesDetail},
         commit_list::{CommitList, CommitListState},
     },
 };
+
+#[derive(Debug)]
+enum DetailContent {
+    Commit {
+        commit: Box<Commit>,
+        changes: Vec<FileChange>,
+        refs: Vec<Ref>,
+    },
+    WorkingChanges(WorkingChanges),
+}
 
 #[derive(Debug)]
 pub struct DetailView<'a> {
     commit_list_state: Option<CommitListState<'a>>,
     commit_detail_state: CommitDetailState,
 
-    commit: Commit,
-    changes: Vec<FileChange>,
-    refs: Vec<Ref>,
+    content: DetailContent,
 
     ctx: Rc<AppContext>,
     tx: Sender,
@@ -44,9 +52,27 @@ impl<'a> DetailView<'a> {
         DetailView {
             commit_list_state: Some(commit_list_state),
             commit_detail_state: CommitDetailState::default(),
-            commit,
-            changes,
-            refs,
+            content: DetailContent::Commit {
+                commit: Box::new(commit),
+                changes,
+                refs,
+            },
+            ctx,
+            tx,
+            clear: false,
+        }
+    }
+
+    pub fn new_working_changes(
+        commit_list_state: CommitListState<'a>,
+        working_changes: WorkingChanges,
+        ctx: Rc<AppContext>,
+        tx: Sender,
+    ) -> DetailView<'a> {
+        DetailView {
+            commit_list_state: Some(commit_list_state),
+            commit_detail_state: CommitDetailState::default(),
+            content: DetailContent::WorkingChanges(working_changes),
             ctx,
             tx,
             clear: false,
@@ -145,9 +171,20 @@ impl<'a> DetailView<'a> {
             return;
         }
 
-        let commit_detail =
-            CommitDetail::new(&self.commit, &self.changes, &self.refs, self.ctx.clone());
-        f.render_stateful_widget(commit_detail, detail_area, &mut self.commit_detail_state);
+        match &self.content {
+            DetailContent::Commit {
+                commit,
+                changes,
+                refs,
+            } => {
+                let commit_detail = CommitDetail::new(commit, changes, refs, self.ctx.clone());
+                f.render_stateful_widget(commit_detail, detail_area, &mut self.commit_detail_state);
+            }
+            DetailContent::WorkingChanges(wc) => {
+                let wc_detail = WorkingChangesDetail::new(wc, self.ctx.clone());
+                f.render_stateful_widget(wc_detail, detail_area, &mut self.commit_detail_state);
+            }
+        }
 
         // clear the image area if needed
         for y in detail_area.top()..detail_area.bottom() {
@@ -185,12 +222,21 @@ impl<'a> DetailView<'a> {
             return;
         };
         update_commit_list_state(commit_list_state);
-        let selected = commit_list_state.selected_commit_hash().clone();
-        let (commit, changes) = repository.commit_detail(&selected);
-        let refs = repository.refs(&selected).into_iter().cloned().collect();
-        self.commit = commit;
-        self.changes = changes;
-        self.refs = refs;
+
+        if commit_list_state.is_virtual_row_selected() {
+            if let Some(wc) = commit_list_state.working_changes() {
+                self.content = DetailContent::WorkingChanges(wc.clone());
+            }
+        } else {
+            let selected = commit_list_state.selected_commit_hash().clone();
+            let (commit, changes) = repository.commit_detail(&selected);
+            let refs = repository.refs(&selected).into_iter().cloned().collect();
+            self.content = DetailContent::Commit {
+                commit: Box::new(commit),
+                changes,
+                refs,
+            };
+        }
 
         self.commit_detail_state.select_first();
     }
@@ -200,13 +246,18 @@ impl<'a> DetailView<'a> {
     }
 
     fn copy_commit_short_hash(&self) {
-        let selected = &self.commit.commit_hash;
-        self.copy_to_clipboard("Commit SHA (short)".into(), selected.as_short_hash());
+        if let DetailContent::Commit { commit, .. } = &self.content {
+            self.copy_to_clipboard(
+                "Commit SHA (short)".into(),
+                commit.commit_hash.as_short_hash(),
+            );
+        }
     }
 
     fn copy_commit_hash(&self) {
-        let selected = &self.commit.commit_hash;
-        self.copy_to_clipboard("Commit SHA".into(), selected.as_str().into());
+        if let DetailContent::Commit { commit, .. } = &self.content {
+            self.copy_to_clipboard("Commit SHA".into(), commit.commit_hash.as_str().into());
+        }
     }
 
     fn copy_to_clipboard(&self, name: String, value: String) {
