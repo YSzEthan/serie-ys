@@ -44,25 +44,6 @@ impl<'a> GraphImageManager<'a> {
         graph_style: GraphStyle,
         image_protocol: ImageProtocol,
         preload: bool,
-    ) -> Self {
-        Self::with_head(
-            graph,
-            graph_color_set,
-            cell_width_type,
-            graph_style,
-            image_protocol,
-            preload,
-            None,
-        )
-    }
-
-    pub fn with_head(
-        graph: Rc<Graph<'a>>,
-        graph_color_set: &GraphColorSet,
-        cell_width_type: CellWidthType,
-        graph_style: GraphStyle,
-        image_protocol: ImageProtocol,
-        preload: bool,
         head_commit_hash: Option<CommitHash>,
     ) -> Self {
         let image_params = ImageParams::new(graph_color_set, cell_width_type);
@@ -89,13 +70,11 @@ impl<'a> GraphImageManager<'a> {
     }
 
     pub fn load_all_encoded_image(&mut self) {
-        let head_hash = self.head_commit_hash.clone();
         let graph_image = build_graph_image(
             &self.graph,
             &self.image_params,
             &self.drawing_pixels,
             self.graph_style,
-            head_hash.as_ref(),
         );
         self.encoded_image_map = self
             .graph
@@ -103,10 +82,25 @@ impl<'a> GraphImageManager<'a> {
             .iter()
             .enumerate()
             .map(|(i, commit)| {
-                let is_head = head_hash.as_ref().is_some_and(|h| *h == commit.commit_hash);
-                let key = (is_head, self.graph.edges[i].clone());
-                let image =
-                    graph_image.images[&key].encode(self.cell_width_type, self.image_protocol);
+                let is_head = self
+                    .head_commit_hash
+                    .as_ref()
+                    .is_some_and(|h| *h == commit.commit_hash);
+                let image = if is_head {
+                    // HEAD gets a separate render with the outer ring
+                    build_single_graph_row_image(
+                        &self.graph,
+                        &self.image_params,
+                        &self.drawing_pixels,
+                        self.graph_style,
+                        &commit.commit_hash,
+                        true,
+                    )
+                    .encode(self.cell_width_type, self.image_protocol)
+                } else {
+                    let edges = &self.graph.edges[i];
+                    graph_image.images[edges].encode(self.cell_width_type, self.image_protocol)
+                };
                 (commit.commit_hash.clone(), image)
             })
             .collect()
@@ -135,7 +129,7 @@ impl<'a> GraphImageManager<'a> {
 
 #[derive(Debug, Default)]
 pub struct GraphImage {
-    pub images: FxHashMap<(bool, Vec<Edge>), GraphRowImage>,
+    pub images: FxHashMap<Vec<Edge>, GraphRowImage>,
 }
 
 pub struct GraphRowImage {
@@ -250,16 +244,14 @@ pub fn build_graph_image(
     image_params: &ImageParams,
     drawing_pixels: &DrawingPixels,
     graph_style: GraphStyle,
-    head_commit_hash: Option<&CommitHash>,
 ) -> GraphImage {
-    let graph_row_sources: FxHashSet<(bool, usize, &Vec<Edge>)> = graph
+    let graph_row_sources: FxHashSet<(usize, &Vec<Edge>)> = graph
         .commits
         .iter()
         .map(|commit| {
-            let is_head = head_commit_hash.is_some_and(|h| *h == commit.commit_hash);
             let (pos_x, pos_y) = graph.commit_pos_map[&commit.commit_hash];
             let edges = &graph.edges[pos_y];
-            (is_head, pos_x, edges)
+            (pos_x, edges)
         })
         .collect();
 
@@ -267,7 +259,7 @@ pub fn build_graph_image(
 
     let images = graph_row_sources
         .into_par_iter()
-        .map(|(is_head, pos_x, edges)| {
+        .map(|(pos_x, edges)| {
             let graph_row_image = calc_graph_row_image(
                 pos_x,
                 cell_count,
@@ -275,9 +267,9 @@ pub fn build_graph_image(
                 image_params,
                 drawing_pixels,
                 graph_style,
-                is_head,
+                false,
             );
-            ((is_head, edges.clone()), graph_row_image)
+            (edges.clone(), graph_row_image)
         })
         .collect();
 
@@ -290,7 +282,6 @@ type Pixels = FxHashSet<(i32, i32)>;
 pub struct DrawingPixels {
     circle: Pixels,
     circle_edge: Pixels,
-    head_outer_ring: Pixels,
     vertical_edge: Pixels,
     horizontal_edge: Pixels,
     up_edge: Pixels,
@@ -307,7 +298,6 @@ impl DrawingPixels {
     pub fn new(image_params: &ImageParams) -> Self {
         let circle = calc_commit_circle_drawing_pixels(image_params);
         let circle_edge = calc_circle_edge_drawing_pixels(image_params);
-        let head_outer_ring = calc_head_outer_ring_drawing_pixels(image_params);
         let vertical_edge = calc_vertical_edge_drawing_pixels(image_params);
         let horizontal_edge = calc_horizontal_edge_drawing_pixels(image_params);
         let up_edge = calc_up_edge_drawing_pixels(image_params);
@@ -322,7 +312,6 @@ impl DrawingPixels {
         Self {
             circle,
             circle_edge,
-            head_outer_ring,
             vertical_edge,
             horizontal_edge,
             up_edge,
@@ -339,18 +328,6 @@ impl DrawingPixels {
 
 fn calc_commit_circle_drawing_pixels(image_params: &ImageParams) -> Pixels {
     calc_circle_drawing_pixels(image_params, image_params.circle_inner_radius as i32)
-}
-
-fn calc_head_outer_ring_drawing_pixels(image_params: &ImageParams) -> Pixels {
-    // ⦿ effect: an extra ring outside the circle_outer_radius with a gap
-    let gap = image_params.line_width.max(2);
-    let ring_inner_radius = image_params.circle_outer_radius + gap;
-    let ring_outer_radius = ring_inner_radius + image_params.line_width;
-
-    let inner = calc_circle_drawing_pixels(image_params, ring_inner_radius as i32);
-    let outer = calc_circle_drawing_pixels(image_params, ring_outer_radius as i32);
-
-    outer.difference(&inner).cloned().collect()
 }
 
 fn calc_circle_edge_drawing_pixels(image_params: &ImageParams) -> Pixels {
@@ -732,6 +709,18 @@ fn draw_commit_circle(
     let x_offset = (circle_pos_x * image_params.width as usize) as i32;
     let color = image_params.edge_color(circle_pos_x);
 
+    if is_head {
+        // ○ effect: hollow circle — draw only the edge ring, skip interior fill
+        for (x, y) in &drawing_pixels.circle_edge {
+            let x = (*x + x_offset) as u32;
+            let y = *y as u32;
+
+            let pixel = img_buf.get_pixel_mut(x, y);
+            *pixel = color;
+        }
+        return;
+    }
+
     for (x, y) in &drawing_pixels.circle {
         let x = (*x + x_offset) as u32;
         let y = *y as u32;
@@ -741,11 +730,6 @@ fn draw_commit_circle(
     }
 
     if image_params.circle_edge_color[3] == 0 {
-        // If the alpha value is 0, the circle edge is transparent, so we don't need to draw it.
-        if is_head {
-            // Still draw head outer ring even if circle edge is transparent
-            draw_head_outer_ring(img_buf, x_offset, color, drawing_pixels);
-        }
         return;
     }
 
@@ -755,28 +739,6 @@ fn draw_commit_circle(
 
         let pixel = img_buf.get_pixel_mut(x, y);
         *pixel = image_params.circle_edge_color;
-    }
-
-    if is_head {
-        draw_head_outer_ring(img_buf, x_offset, color, drawing_pixels);
-    }
-}
-
-fn draw_head_outer_ring(
-    img_buf: &mut image::ImageBuffer<image::Rgba<u8>, Vec<u8>>,
-    x_offset: i32,
-    color: image::Rgba<u8>,
-    drawing_pixels: &DrawingPixels,
-) {
-    let img_width = img_buf.width();
-    let img_height = img_buf.height();
-    for (x, y) in &drawing_pixels.head_outer_ring {
-        let px = (*x + x_offset) as u32;
-        let py = *y as u32;
-        if px < img_width && py < img_height {
-            let pixel = img_buf.get_pixel_mut(px, py);
-            *pixel = color;
-        }
     }
 }
 

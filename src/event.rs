@@ -132,7 +132,6 @@ pub fn start_git_watcher(tx: Sender, git_dir: &Path) {
 
     let git_dir = git_dir.to_path_buf();
     thread::spawn(move || {
-        let event_tx = tx;
         let (debounce_tx, debounce_rx) = std::sync::mpsc::channel();
 
         let mut debouncer = match new_debouncer(Duration::from_millis(500), debounce_tx) {
@@ -151,15 +150,12 @@ pub fn start_git_watcher(tx: Sender, git_dir: &Path) {
         loop {
             match debounce_rx.recv() {
                 Ok(Ok(events)) => {
-                    let dominated_by_lock = events
-                        .iter()
-                        .all(|e| e.path.to_string_lossy().contains(".lock"));
-                    if dominated_by_lock {
-                        continue;
-                    }
-                    let has_relevant = events.iter().any(|e| e.kind == DebouncedEventKind::Any);
+                    let has_relevant = events.iter().any(|e| {
+                        e.kind == DebouncedEventKind::Any
+                            && e.path.extension() != Some(std::ffi::OsStr::new("lock"))
+                    });
                     if has_relevant {
-                        event_tx.send(AppEvent::AutoRefresh);
+                        tx.send(AppEvent::AutoRefresh);
                     }
                 }
                 Ok(Err(_)) => {}

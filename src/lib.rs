@@ -234,7 +234,7 @@ pub fn compute_filtered_graph<'a>(
         graph::CellWidthType::Single => (filtered.max_pos_x + 1) as u16,
     };
 
-    let image_manager = GraphImageManager::with_head(
+    let image_manager = GraphImageManager::new(
         Rc::clone(&filtered),
         graph_color_set,
         cell_width_type,
@@ -318,7 +318,7 @@ pub fn run() -> Result<()> {
 
         let head_commit_hash = resolve_head_commit_hash(&repository);
 
-        let graph_image_manager = GraphImageManager::with_head(
+        let graph_image_manager = GraphImageManager::new(
             Rc::clone(&graph),
             &graph_color_set,
             cell_width_type,

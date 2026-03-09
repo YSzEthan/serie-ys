@@ -1449,37 +1449,83 @@ fn refs_spans<'a>(
         .iter()
         .filter_map(|r| match r {
             Ref::Branch { name, .. } => {
+                // 如果存在對應的 remote branch，隱藏本地分支
+                let has_remote = refs.iter().any(|r| {
+                    matches!(r, Ref::RemoteBranch { name: rn, .. } if rn.ends_with(&format!("/{}", name)))
+                });
+                if has_remote && show_remote_refs {
+                    return None;
+                }
                 let fg = color_theme.list_ref_branch_fg;
-                Some((name, fg))
+                let spans = refs_matches
+                    .get(name)
+                    .map(|pos| {
+                        highlighted_spans(
+                            name.into(),
+                            pos.clone(),
+                            fg,
+                            Modifier::BOLD,
+                            color_theme,
+                            false,
+                        )
+                    })
+                    .unwrap_or_else(|| vec![Span::raw(name).fg(fg).bold()]);
+                Some((spans, name))
             }
             Ref::RemoteBranch { name, .. } => {
                 if !show_remote_refs {
                     return None;
                 }
-                let fg = color_theme.list_ref_remote_branch_fg;
-                Some((name, fg))
+                // 三段分色：remote(紅) + /(paren色) + branch_name
+                // 有對應本地分支 → branch_name 綠色，否則紅色
+                let spans = if let Some(slash_pos) = name.find('/') {
+                    let remote_part = &name[..slash_pos];
+                    let branch_part = &name[slash_pos + 1..];
+                    let has_local = refs.iter().any(|r| {
+                        matches!(r, Ref::Branch { name: ln, .. } if ln == branch_part)
+                    });
+                    if has_local {
+                        vec![
+                            Span::raw(remote_part.to_string())
+                                .fg(color_theme.list_ref_remote_branch_fg)
+                                .bold(),
+                            Span::raw("/")
+                                .fg(color_theme.list_ref_paren_fg)
+                                .bold(),
+                            Span::raw(branch_part.to_string())
+                                .fg(color_theme.list_ref_branch_fg)
+                                .bold(),
+                        ]
+                    } else {
+                        vec![Span::raw(name)
+                            .fg(color_theme.list_ref_remote_branch_fg)
+                            .bold()]
+                    }
+                } else {
+                    vec![Span::raw(name)
+                        .fg(color_theme.list_ref_remote_branch_fg)
+                        .bold()]
+                };
+                Some((spans, name))
             }
             Ref::Tag { name, .. } => {
                 let fg = color_theme.list_ref_tag_fg;
-                Some((name, fg))
+                let spans = refs_matches
+                    .get(name)
+                    .map(|pos| {
+                        highlighted_spans(
+                            name.into(),
+                            pos.clone(),
+                            fg,
+                            Modifier::BOLD,
+                            color_theme,
+                            false,
+                        )
+                    })
+                    .unwrap_or_else(|| vec![Span::raw(name).fg(fg).bold()]);
+                Some((spans, name))
             }
             Ref::Stash { .. } => None,
-        })
-        .map(|(name, fg)| {
-            let spans = refs_matches
-                .get(name)
-                .map(|pos| {
-                    highlighted_spans(
-                        name.into(),
-                        pos.clone(),
-                        fg,
-                        Modifier::BOLD,
-                        color_theme,
-                        false,
-                    )
-                })
-                .unwrap_or_else(|| vec![Span::raw(name).fg(fg).bold()]);
-            (spans, name)
         })
         .collect();
 
@@ -1494,14 +1540,9 @@ fn refs_spans<'a>(
         }
     }
 
-    let refs_len = refs.len();
+    let refs_len = ref_spans.len();
     for (i, ss) in ref_spans.into_iter().enumerate() {
-        let (ref_spans, ref_name) = ss;
-        if let Head::Branch { name } = head {
-            if ref_name == name {
-                spans.push(Span::raw("HEAD -> ").fg(color_theme.list_head_fg).bold());
-            }
-        }
+        let (ref_spans, _ref_name) = ss;
         spans.extend(ref_spans);
         if i < refs_len - 1 {
             spans.push(Span::raw(", ").fg(color_theme.list_ref_paren_fg).bold());
