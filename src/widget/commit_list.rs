@@ -9,7 +9,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{List, ListItem, StatefulWidget, Widget},
+    widgets::{List, ListItem, Paragraph, StatefulWidget, Widget},
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 use tui_input::{backend::crossterm::EventHandler, Input};
@@ -265,6 +265,8 @@ pub struct CommitListState<'a> {
     remote_only_commits: FxHashSet<CommitHash>,
     needs_graph_clear: bool,
 
+    name_cell_width: u16,
+
     default_ignore_case: bool,
     default_fuzzy: bool,
 }
@@ -285,6 +287,11 @@ impl<'a> CommitListState<'a> {
         remote_only_commits: FxHashSet<CommitHash>,
     ) -> CommitListState<'a> {
         let total = commits.len();
+        let name_cell_width = commits
+            .iter()
+            .map(|c| console::measure_text_width(&c.commit.author_name) as u16)
+            .max()
+            .unwrap_or(0);
         let commit_hash_set = commits
             .iter()
             .map(|c| c.commit.commit_hash.clone())
@@ -317,6 +324,7 @@ impl<'a> CommitListState<'a> {
             show_remote_refs: true,
             remote_only_commits,
             needs_graph_clear: false,
+            name_cell_width,
             default_ignore_case,
             default_fuzzy,
         }
@@ -329,6 +337,10 @@ impl<'a> CommitListState<'a> {
             self.graph_cell_width
         };
         w + 1 // right pad
+    }
+
+    pub fn name_cell_width(&self) -> u16 {
+        self.name_cell_width
     }
 
     pub fn toggle_remote_refs(&mut self) -> bool {
@@ -1141,37 +1153,72 @@ impl<'a> StatefulWidget for CommitList<'a> {
     type State = CommitListState<'a>;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
-        self.update_state(area, state);
+        if area.height < 2 {
+            return;
+        }
 
+        let [header_area, content_area] =
+            Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
+
+        self.update_state(content_area, state);
+
+        let name_width = if state.name_cell_width() > 0 {
+            state.name_cell_width()
+        } else {
+            self.ctx.ui_config.list.name_width
+        };
         let constraints = calc_cell_widths(
             area.width,
             self.ctx.ui_config.list.subject_min_width,
             state.graph_area_cell_width(),
-            self.ctx.ui_config.list.name_width,
+            name_width,
             self.ctx.ui_config.list.date_width,
             &self.ctx.ui_config.list.columns,
         );
-        let chunks = Layout::horizontal(constraints).split(area);
+
+        let header_chunks = Layout::horizontal(constraints.clone()).split(header_area);
+        let header_style = Style::default()
+            .fg(Color::White)
+            .add_modifier(Modifier::BOLD);
+        for (i, col) in self.ctx.ui_config.list.columns.iter().enumerate() {
+            let title = match col {
+                UserListColumnType::Graph => "Graph",
+                UserListColumnType::Marker => "",
+                UserListColumnType::Subject => "Description",
+                UserListColumnType::Name => "Author",
+                UserListColumnType::Hash => "Commit",
+                UserListColumnType::Date => "Date",
+            };
+            if !title.is_empty() {
+                Paragraph::new(Line::from(vec![
+                    Span::raw(" "),
+                    Span::styled(title, header_style),
+                ]))
+                .render(header_chunks[i], buf);
+            }
+        }
+
+        let content_chunks = Layout::horizontal(constraints).split(content_area);
 
         for (i, col) in self.ctx.ui_config.list.columns.iter().enumerate() {
             match col {
                 UserListColumnType::Graph => {
-                    self.render_graph(buf, chunks[i], state);
+                    self.render_graph(buf, content_chunks[i], state);
                 }
                 UserListColumnType::Marker => {
-                    self.render_marker(buf, chunks[i], state);
+                    self.render_marker(buf, content_chunks[i], state);
                 }
                 UserListColumnType::Subject => {
-                    self.render_subject(buf, chunks[i], state);
+                    self.render_subject(buf, content_chunks[i], state);
                 }
                 UserListColumnType::Name => {
-                    self.render_name(buf, chunks[i], state);
+                    self.render_name(buf, content_chunks[i], state);
                 }
                 UserListColumnType::Hash => {
-                    self.render_hash(buf, chunks[i], state);
+                    self.render_hash(buf, content_chunks[i], state);
                 }
                 UserListColumnType::Date => {
-                    self.render_date(buf, chunks[i], state);
+                    self.render_date(buf, content_chunks[i], state);
                 }
             }
         }
@@ -1679,9 +1726,9 @@ mod tests {
             UserListColumnType::Graph,
             UserListColumnType::Marker,
             UserListColumnType::Subject,
+            UserListColumnType::Date,
             UserListColumnType::Name,
             UserListColumnType::Hash,
-            UserListColumnType::Date,
         ];
 
         let actual = calc_cell_widths(
@@ -1697,9 +1744,9 @@ mod tests {
             Constraint::Length(6),  // Graph
             Constraint::Length(1),  // Marker
             Constraint::Min(0),     // Subject
+            Constraint::Length(17), // Date (15 + 2 pad)
             Constraint::Length(12), // Name (10 + 2 pad)
             Constraint::Length(9),  // Hash (7 + 2 pad)
-            Constraint::Length(17), // Date (15 + 2 pad)
         ];
         assert_eq!(actual, expected);
     }
@@ -1715,9 +1762,9 @@ mod tests {
             UserListColumnType::Graph,
             UserListColumnType::Marker,
             UserListColumnType::Subject,
+            UserListColumnType::Date,
             UserListColumnType::Name,
             UserListColumnType::Hash,
-            UserListColumnType::Date,
         ];
 
         let actual = calc_cell_widths(
@@ -1735,9 +1782,9 @@ mod tests {
             Constraint::Length(6), // Graph
             Constraint::Length(1), // Marker
             Constraint::Min(0),    // Subject
+            Constraint::Length(0), // Date removed
             Constraint::Length(0), // Name removed
             Constraint::Length(0), // Hash removed
-            Constraint::Length(0), // Date removed
         ];
         assert_eq!(actual, expected);
     }
@@ -1753,9 +1800,9 @@ mod tests {
             UserListColumnType::Graph,
             UserListColumnType::Marker,
             UserListColumnType::Subject,
+            UserListColumnType::Date,
             UserListColumnType::Name,
             UserListColumnType::Hash,
-            UserListColumnType::Date,
         ];
 
         let actual = calc_cell_widths(
@@ -1774,9 +1821,9 @@ mod tests {
             Constraint::Length(6), // Graph
             Constraint::Length(1), // Marker
             Constraint::Min(0),    // Subject
+            Constraint::Length(0), // Date removed
             Constraint::Length(0), // Name removed
             Constraint::Length(9), // Hash (7 + 2 pad)
-            Constraint::Length(0), // Date removed
         ];
         assert_eq!(actual, expected);
     }
@@ -1792,9 +1839,9 @@ mod tests {
             UserListColumnType::Graph,
             UserListColumnType::Marker,
             UserListColumnType::Subject,
+            UserListColumnType::Date,
             UserListColumnType::Name,
             UserListColumnType::Hash,
-            UserListColumnType::Date,
         ];
 
         let actual = calc_cell_widths(
@@ -1813,9 +1860,9 @@ mod tests {
             Constraint::Length(6),  // Graph
             Constraint::Length(1),  // Marker
             Constraint::Min(0),     // Subject
+            Constraint::Length(17), // Date (15 + 2 pad)
             Constraint::Length(0),  // Name removed
             Constraint::Length(9),  // Hash (7 + 2 pad)
-            Constraint::Length(17), // Date (15 + 2 pad)
         ];
         assert_eq!(actual, expected);
     }
