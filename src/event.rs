@@ -40,7 +40,9 @@ pub enum AppEvent {
     OpenGitHub,
     CloseGitHub,
     ClearGitHub,
-    RefreshGitHub,
+    RefreshGitHub {
+        state: String,
+    },
     GitHubDataLoaded {
         issues: Vec<crate::github::GhIssue>,
         pull_requests: Vec<crate::github::GhPullRequest>,

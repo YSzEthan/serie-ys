@@ -91,6 +91,7 @@ struct GitHubCache {
     pull_requests: Vec<crate::github::GhPullRequest>,
     issue_details: FxHashMap<u64, Vec<Line<'static>>>,
     pr_details: FxHashMap<u64, Vec<Line<'static>>>,
+    state_filter: String,
 }
 
 impl<'a> App<'a> {
@@ -348,8 +349,8 @@ impl App<'_> {
                 AppEvent::ClearGitHub => {
                     self.clear_github();
                 }
-                AppEvent::RefreshGitHub => {
-                    self.refresh_github();
+                AppEvent::RefreshGitHub { state } => {
+                    self.refresh_github(&state);
                 }
                 AppEvent::GitHubDataLoaded {
                     issues,
@@ -867,8 +868,8 @@ impl App<'_> {
         std::thread::spawn(move || {
             let mut first_run = true;
             loop {
-                let issues_result = crate::github::list_issues(&repo_path);
-                let prs_result = crate::github::list_pull_requests(&repo_path);
+                let issues_result = crate::github::list_issues(&repo_path, "open");
+                let prs_result = crate::github::list_pull_requests(&repo_path, "open");
 
                 match (issues_result, prs_result) {
                     (Err(_), _) | (_, Err(_)) => {}
@@ -880,9 +881,7 @@ impl App<'_> {
 
                         if first_run {
                             first_run = false;
-                            Self::fetch_all_details(
-                                &repo_path, &issues, &pull_requests, &tx,
-                            );
+                            Self::fetch_all_details(&repo_path, &issues, &pull_requests, &tx);
                         }
                     }
                 }
@@ -957,8 +956,7 @@ impl App<'_> {
 
         // 偵測新增的 issue/PR number（用於差量抓取詳情）
         let new_issue_numbers: Vec<u64> = if let Some(ref cache) = self.github_cache {
-            let existing: FxHashSet<u64> =
-                cache.issues.iter().map(|i| i.number).collect();
+            let existing: FxHashSet<u64> = cache.issues.iter().map(|i| i.number).collect();
             issues
                 .iter()
                 .filter(|i| !existing.contains(&i.number))
@@ -968,8 +966,7 @@ impl App<'_> {
             Vec::new()
         };
         let new_pr_numbers: Vec<u64> = if let Some(ref cache) = self.github_cache {
-            let existing: FxHashSet<u64> =
-                cache.pull_requests.iter().map(|p| p.number).collect();
+            let existing: FxHashSet<u64> = cache.pull_requests.iter().map(|p| p.number).collect();
             pull_requests
                 .iter()
                 .filter(|p| !existing.contains(&p.number))
@@ -989,6 +986,7 @@ impl App<'_> {
                 pull_requests: pull_requests.clone(),
                 issue_details: FxHashMap::default(),
                 pr_details: FxHashMap::default(),
+                state_filter: "open".to_string(),
             });
         }
 
@@ -1032,8 +1030,7 @@ impl App<'_> {
             self.github_awaiting_view = false;
             self.pending_message = None;
 
-            let (issue_details, pr_details) = if let Some(ref cache) = self.github_cache
-            {
+            let (issue_details, pr_details) = if let Some(ref cache) = self.github_cache {
                 (cache.issue_details.clone(), cache.pr_details.clone())
             } else {
                 (FxHashMap::default(), FxHashMap::default())
@@ -1070,10 +1067,8 @@ impl App<'_> {
             .iter()
             .map(|(n, s)| (*n, convert(s)))
             .collect();
-        let pr_map: FxHashMap<u64, Vec<Line<'static>>> = pr_details
-            .iter()
-            .map(|(n, s)| (*n, convert(s)))
-            .collect();
+        let pr_map: FxHashMap<u64, Vec<Line<'static>>> =
+            pr_details.iter().map(|(n, s)| (*n, convert(s))).collect();
 
         if let Some(ref mut cache) = self.github_cache {
             cache.issue_details.extend(issue_map.clone());
@@ -1085,16 +1080,21 @@ impl App<'_> {
         }
     }
 
-    fn refresh_github(&mut self) {
+    fn refresh_github(&mut self, state: &str) {
+        if let Some(ref mut cache) = self.github_cache {
+            cache.state_filter = state.to_string();
+        }
+
         self.tx
             .send(AppEvent::NotifyInfo("Refreshing GitHub data...".into()));
 
         let repo_path = self.repository.path().to_path_buf();
         let tx = self.tx.clone();
+        let state = state.to_string();
 
         std::thread::spawn(move || {
-            let issues_result = crate::github::list_issues(&repo_path);
-            let prs_result = crate::github::list_pull_requests(&repo_path);
+            let issues_result = crate::github::list_issues(&repo_path, &state);
+            let prs_result = crate::github::list_pull_requests(&repo_path, &state);
 
             match (issues_result, prs_result) {
                 (Err(e), _) | (_, Err(e)) => {
@@ -1106,9 +1106,7 @@ impl App<'_> {
                         pull_requests: pull_requests.clone(),
                     });
                     // R 刷新：全量重抓詳情
-                    Self::fetch_all_details(
-                        &repo_path, &issues, &pull_requests, &tx,
-                    );
+                    Self::fetch_all_details(&repo_path, &issues, &pull_requests, &tx);
                 }
             }
         });

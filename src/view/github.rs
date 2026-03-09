@@ -20,6 +20,39 @@ use crate::{
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum StateFilter {
+    Open,
+    Closed,
+    All,
+}
+
+impl StateFilter {
+    fn next(self) -> Self {
+        match self {
+            StateFilter::Open => StateFilter::Closed,
+            StateFilter::Closed => StateFilter::All,
+            StateFilter::All => StateFilter::Open,
+        }
+    }
+
+    fn as_str(&self) -> &'static str {
+        match self {
+            StateFilter::Open => "open",
+            StateFilter::Closed => "closed",
+            StateFilter::All => "all",
+        }
+    }
+
+    fn label(&self) -> &'static str {
+        match self {
+            StateFilter::Open => "open",
+            StateFilter::Closed => "closed",
+            StateFilter::All => "all",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GitHubTab {
     Issues,
     PullRequests,
@@ -41,6 +74,8 @@ pub struct GitHubView<'a> {
 
     issue_detail_cache: FxHashMap<u64, Vec<Line<'static>>>,
     pr_detail_cache: FxHashMap<u64, Vec<Line<'static>>>,
+
+    state_filter: StateFilter,
 
     ctx: Rc<AppContext>,
     tx: Sender,
@@ -71,6 +106,7 @@ impl<'a> GitHubView<'a> {
             detail_offset: 0,
             issue_detail_cache,
             pr_detail_cache,
+            state_filter: StateFilter::Open,
             ctx,
             tx,
             clear: false,
@@ -219,8 +255,18 @@ impl<'a> GitHubView<'a> {
                 self.selected_index = self.selected_index.saturating_sub(half);
                 self.adjust_scroll();
             }
+            UserEvent::Filter => {
+                self.state_filter = self.state_filter.next();
+                self.selected_index = 0;
+                self.offset = 0;
+                self.tx.send(AppEvent::RefreshGitHub {
+                    state: self.state_filter.as_str().to_string(),
+                });
+            }
             UserEvent::Refresh => {
-                self.tx.send(AppEvent::RefreshGitHub);
+                self.tx.send(AppEvent::RefreshGitHub {
+                    state: self.state_filter.as_str().to_string(),
+                });
             }
             _ => {}
         }
@@ -312,8 +358,9 @@ impl<'a> GitHubView<'a> {
         }
 
         // ── 頁籤列 ──
-        let issues_label = format!(" Issues ({}) ", self.issues.len());
-        let prs_label = format!(" PRs ({}) ", self.pull_requests.len());
+        let filter_label = self.state_filter.label();
+        let issues_label = format!(" Issues ({}) [{}] ", self.issues.len(), filter_label);
+        let prs_label = format!(" PRs ({}) [{}] ", self.pull_requests.len(), filter_label);
 
         let tab_line = Line::from(vec![
             Span::styled(
@@ -394,6 +441,39 @@ impl<'a> GitHubView<'a> {
 
 // ── 渲染輔助函數 ──
 
+fn hex_to_color(hex: &str) -> Color {
+    let hex = hex.trim_start_matches('#');
+    if hex.len() == 6 {
+        let r = u8::from_str_radix(&hex[0..2], 16);
+        let g = u8::from_str_radix(&hex[2..4], 16);
+        let b = u8::from_str_radix(&hex[4..6], 16);
+        if let (Ok(r), Ok(g), Ok(b)) = (r, g, b) {
+            return Color::Rgb(r, g, b);
+        }
+    }
+    Color::Yellow
+}
+
+fn label_spans(labels: &[crate::github::GhLabel]) -> Vec<Span<'static>> {
+    if labels.is_empty() {
+        return vec![];
+    }
+    let mut spans = vec![Span::raw(" [")];
+    for (i, label) in labels.iter().enumerate() {
+        let color = label
+            .color
+            .as_deref()
+            .map(hex_to_color)
+            .unwrap_or(Color::Yellow);
+        spans.push(Span::styled(label.name.clone(), Style::default().fg(color)));
+        if i < labels.len() - 1 {
+            spans.push(Span::raw(", "));
+        }
+    }
+    spans.push(Span::raw("]"));
+    spans
+}
+
 fn render_issue_line(issue: &GhIssue, selected: bool) -> Line<'static> {
     let indicator = if selected { "▸ " } else { "  " };
     let state_color = match issue.state.as_str() {
@@ -401,19 +481,13 @@ fn render_issue_line(issue: &GhIssue, selected: bool) -> Line<'static> {
         "CLOSED" => Color::Red,
         _ => Color::Gray,
     };
-    let labels: String = issue
-        .labels
-        .iter()
-        .map(|l| l.name.clone())
-        .collect::<Vec<_>>()
-        .join(", ");
     let style = if selected {
         Style::default().fg(Color::Cyan).bold()
     } else {
         Style::default()
     };
 
-    Line::from(vec![
+    let mut spans = vec![
         Span::styled(indicator.to_string(), style),
         Span::styled(
             format!("#{:<5} ", issue.number),
@@ -424,16 +498,14 @@ fn render_issue_line(issue: &GhIssue, selected: bool) -> Line<'static> {
             Style::default().fg(state_color),
         ),
         Span::styled(issue.title.clone(), style),
-        if !labels.is_empty() {
-            Span::styled(format!(" [{labels}]"), Style::default().fg(Color::Yellow))
-        } else {
-            Span::raw("")
-        },
-        Span::styled(
-            format!("  @{}", issue.author.login),
-            Style::default().fg(Color::DarkGray),
-        ),
-    ])
+    ];
+    spans.extend(label_spans(&issue.labels));
+    spans.push(Span::styled(
+        format!("  @{}", issue.author.login),
+        Style::default().fg(Color::DarkGray),
+    ));
+
+    Line::from(spans)
 }
 
 fn render_pr_line(pr: &GhPullRequest, selected: bool) -> Line<'static> {
@@ -455,7 +527,7 @@ fn render_pr_line(pr: &GhPullRequest, selected: bool) -> Line<'static> {
         Style::default()
     };
 
-    Line::from(vec![
+    let mut spans = vec![
         Span::styled(indicator.to_string(), style),
         Span::styled(
             format!("#{:<5} ", pr.number),
@@ -466,13 +538,16 @@ fn render_pr_line(pr: &GhPullRequest, selected: bool) -> Line<'static> {
             Style::default().fg(state_color),
         ),
         Span::styled(pr.title.clone(), style),
-        Span::styled(
-            format!("  ← {}", pr.head_ref_name),
-            Style::default().fg(Color::Blue),
-        ),
-        Span::styled(
-            format!("  @{}", pr.author.login),
-            Style::default().fg(Color::DarkGray),
-        ),
-    ])
+    ];
+    spans.extend(label_spans(&pr.labels));
+    spans.push(Span::styled(
+        format!("  ← {}", pr.head_ref_name),
+        Style::default().fg(Color::Blue),
+    ));
+    spans.push(Span::styled(
+        format!("  @{}", pr.author.login),
+        Style::default().fg(Color::DarkGray),
+    ));
+
+    Line::from(spans)
 }

@@ -8,6 +8,7 @@ use serde::Deserialize;
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct GhLabel {
     pub name: String,
+    pub color: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -73,14 +74,14 @@ fn run_gh_rendered(path: &Path, args: &[&str]) -> Result<String, String> {
     String::from_utf8(output.stdout).map_err(|e| format!("Invalid UTF-8: {e}"))
 }
 
-pub fn list_issues(path: &Path) -> Result<Vec<GhIssue>, String> {
+pub fn list_issues(path: &Path, state: &str) -> Result<Vec<GhIssue>, String> {
     let json = run_gh(
         path,
         &[
             "issue",
             "list",
             "--state",
-            "open",
+            state,
             "--limit",
             "50",
             "--json",
@@ -90,14 +91,14 @@ pub fn list_issues(path: &Path) -> Result<Vec<GhIssue>, String> {
     serde_json::from_str(&json).map_err(|e| format!("JSON parse error: {e}"))
 }
 
-pub fn list_pull_requests(path: &Path) -> Result<Vec<GhPullRequest>, String> {
+pub fn list_pull_requests(path: &Path, state: &str) -> Result<Vec<GhPullRequest>, String> {
     let json = run_gh(
         path,
         &[
             "pr",
             "list",
             "--state",
-            "open",
+            state,
             "--limit",
             "50",
             "--json",
@@ -108,10 +109,8 @@ pub fn list_pull_requests(path: &Path) -> Result<Vec<GhPullRequest>, String> {
 }
 
 pub fn view_issue_rendered(path: &Path, number: u64) -> Result<String, String> {
-    let mut rendered = run_gh_rendered(
-        path,
-        &["issue", "view", &number.to_string(), "--comments"],
-    )?;
+    let mut rendered =
+        run_gh_rendered(path, &["issue", "view", &number.to_string(), "--comments"])?;
 
     // 從 JSON 取得原始 body + comments，提取圖片 URL
     if let Ok(json) = run_gh(
@@ -131,21 +130,12 @@ pub fn view_issue_rendered(path: &Path, number: u64) -> Result<String, String> {
 }
 
 pub fn view_pr_rendered(path: &Path, number: u64) -> Result<String, String> {
-    let mut rendered = run_gh_rendered(
-        path,
-        &["pr", "view", &number.to_string(), "--comments"],
-    )?;
+    let mut rendered = run_gh_rendered(path, &["pr", "view", &number.to_string(), "--comments"])?;
 
     // 從 JSON 取得原始 body + comments，提取圖片 URL
     if let Ok(json) = run_gh(
         path,
-        &[
-            "pr",
-            "view",
-            &number.to_string(),
-            "--json",
-            "body,comments",
-        ],
+        &["pr", "view", &number.to_string(), "--json", "body,comments"],
     ) {
         append_image_urls_from_json(&mut rendered, &json);
     }
