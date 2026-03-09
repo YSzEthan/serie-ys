@@ -37,6 +37,18 @@ pub enum AppEvent {
     OpenHelp,
     CloseHelp,
     ClearHelp,
+    OpenGitHub,
+    CloseGitHub,
+    ClearGitHub,
+    RefreshGitHub,
+    GitHubDataLoaded {
+        issues: Vec<crate::github::GhIssue>,
+        pull_requests: Vec<crate::github::GhPullRequest>,
+    },
+    GitHubDetailsLoaded {
+        issue_details: Vec<(u64, String)>,
+        pr_details: Vec<(u64, String)>,
+    },
     SelectNewerCommit,
     SelectOlderCommit,
     SelectParentCommit,
@@ -151,6 +163,7 @@ pub enum UserEvent {
     CreateTag,
     DeleteTag,
     RemoteRefsToggle,
+    GitHubToggle,
     Unknown,
 }
 
@@ -218,6 +231,7 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "create_tag" => Ok(UserEvent::CreateTag),
                         "delete_tag" => Ok(UserEvent::DeleteTag),
                         "remote_refs_toggle" => Ok(UserEvent::RemoteRefsToggle),
+                        "github_toggle" => Ok(UserEvent::GitHubToggle),
                         _ => {
                             let msg = format!("Unknown user event: {}", value);
                             Err(de::Error::custom(msg))

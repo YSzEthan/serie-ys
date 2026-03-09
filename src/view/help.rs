@@ -274,6 +274,7 @@ fn build_lines(
         (vec![UserEvent::CreateTag], "Create tag on commit".into()),
         (vec![UserEvent::DeleteTag], "Delete tag from commit".into()),
         (vec![UserEvent::RemoteRefsToggle], "Toggle remote refs".into()),
+        (vec![UserEvent::GitHubToggle], "Open GitHub issues/PRs".into()),
     ];
     list_helps.extend(user_command_help_items.clone());
     let (list_key_lines, list_value_lines) = build_block_lines("Commit List:", list_helps, color_theme, keybind);

@@ -2,6 +2,9 @@ use std::{path::PathBuf, rc::Rc};
 
 use ratatui::{crossterm::event::KeyEvent, layout::Rect, Frame};
 
+use ratatui::text::Line;
+use rustc_hash::FxHashMap;
+
 use crate::{
     app::AppContext,
     event::{AppEvent, Sender, UserEventWithCount},
@@ -9,7 +12,7 @@ use crate::{
     git::{Commit, CommitHash, FileChange, Ref, RefType},
     view::{
         create_tag::CreateTagView, delete_ref::DeleteRefView, delete_tag::DeleteTagView,
-        detail::DetailView, help::HelpView, list::ListView, refs::RefsView,
+        detail::DetailView, github::GitHubView, help::HelpView, list::ListView, refs::RefsView,
         user_command::UserCommandView,
     },
     widget::{commit_list::CommitListState, ref_list::RefListState},
@@ -27,6 +30,7 @@ pub enum View<'a> {
     DeleteTag(Box<DeleteTagView<'a>>),
     DeleteRef(Box<DeleteRefView<'a>>),
     Help(Box<HelpView<'a>>),
+    GitHub(Box<GitHubView<'a>>),
 }
 
 impl<'a> View<'a> {
@@ -41,6 +45,7 @@ impl<'a> View<'a> {
             View::DeleteTag(view) => view.handle_event(event_with_count, key_event),
             View::DeleteRef(view) => view.handle_event(event_with_count, key_event),
             View::Help(view) => view.handle_event(event_with_count, key_event),
+            View::GitHub(view) => view.handle_event(event_with_count, key_event),
         }
     }
 
@@ -55,6 +60,7 @@ impl<'a> View<'a> {
             View::DeleteTag(view) => view.render(f, area),
             View::DeleteRef(view) => view.render(f, area),
             View::Help(view) => view.render(f, area),
+            View::GitHub(view) => view.render(f, area),
         }
     }
 
@@ -192,6 +198,28 @@ impl<'a> View<'a> {
         View::Help(Box::new(HelpView::new(before, ctx, tx)))
     }
 
+    pub fn of_github(
+        before: View<'a>,
+        issues: Vec<crate::github::GhIssue>,
+        pull_requests: Vec<crate::github::GhPullRequest>,
+        issue_detail_cache: FxHashMap<u64, Vec<Line<'static>>>,
+        pr_detail_cache: FxHashMap<u64, Vec<Line<'static>>>,
+        ctx: Rc<AppContext>,
+        tx: Sender,
+        repo_path: std::path::PathBuf,
+    ) -> Self {
+        View::GitHub(Box::new(GitHubView::new(
+            before,
+            issues,
+            pull_requests,
+            issue_detail_cache,
+            pr_detail_cache,
+            ctx,
+            tx,
+            repo_path,
+        )))
+    }
+
     pub fn refresh(&mut self) {
         match self {
             View::Default => {}
@@ -203,6 +231,7 @@ impl<'a> View<'a> {
             View::DeleteTag(view) => view.refresh(),
             View::DeleteRef(view) => view.refresh(),
             View::Help(_) => {}
+            View::GitHub(_) => {}
         }
     }
 }

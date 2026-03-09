@@ -1,5 +1,6 @@
 use std::rc::Rc;
 
+use ansi_to_tui::IntoText as _;
 use ratatui::{
     backend::Backend,
     crossterm::event::{KeyCode, KeyEvent},
@@ -78,8 +79,18 @@ pub struct App<'a> {
     view: View<'a>,
     app_status: AppStatus,
     pending_message: Option<String>,
+    github_cache: Option<GitHubCache>,
+    github_awaiting_view: bool,
     ctx: Rc<AppContext>,
     tx: Sender,
+}
+
+#[derive(Debug)]
+struct GitHubCache {
+    issues: Vec<crate::github::GhIssue>,
+    pull_requests: Vec<crate::github::GhPullRequest>,
+    issue_details: FxHashMap<u64, Vec<Line<'static>>>,
+    pr_details: FxHashMap<u64, Vec<Line<'static>>>,
 }
 
 impl<'a> App<'a> {
@@ -163,6 +174,8 @@ impl<'a> App<'a> {
             view,
             app_status: AppStatus::default(),
             pending_message: None,
+            github_cache: None,
+            github_awaiting_view: false,
             ctx,
             tx,
         };
@@ -170,6 +183,9 @@ impl<'a> App<'a> {
         if let Some(context) = refresh_view_context {
             app.init_with_context(context);
         }
+
+        // 啟動時背景預載 GitHub 資料
+        app.prefetch_github();
 
         app
     }
@@ -323,6 +339,30 @@ impl App<'_> {
                 AppEvent::ClearHelp => {
                     self.clear_help();
                 }
+                AppEvent::OpenGitHub => {
+                    self.open_github();
+                }
+                AppEvent::CloseGitHub => {
+                    self.close_github();
+                }
+                AppEvent::ClearGitHub => {
+                    self.clear_github();
+                }
+                AppEvent::RefreshGitHub => {
+                    self.refresh_github();
+                }
+                AppEvent::GitHubDataLoaded {
+                    issues,
+                    pull_requests,
+                } => {
+                    self.on_github_data_loaded(issues, pull_requests);
+                }
+                AppEvent::GitHubDetailsLoaded {
+                    issue_details,
+                    pr_details,
+                } => {
+                    self.on_github_details_loaded(issue_details, pr_details);
+                }
                 AppEvent::SelectOlderCommit => {
                     self.select_older_commit();
                 }
@@ -472,6 +512,7 @@ impl App<'_> {
                 (UserEvent::CreateTag, "tag"),
                 (UserEvent::RefList, "refs"),
                 (UserEvent::RemoteRefsToggle, "remote"),
+                (UserEvent::GitHubToggle, "github"),
                 (UserEvent::Refresh, "refresh"),
                 (UserEvent::HelpToggle, "help"),
             ],
@@ -491,6 +532,12 @@ impl App<'_> {
                 (UserEvent::Cancel, "cancel"),
             ],
             View::Help(_) => vec![(UserEvent::Close, "close")],
+            View::GitHub(_) => vec![
+                (UserEvent::RefList, "switch tab"),
+                (UserEvent::Confirm, "detail"),
+                (UserEvent::Refresh, "refresh"),
+                (UserEvent::GitHubToggle, "close"),
+            ],
             _ => vec![],
         };
 
@@ -809,6 +856,272 @@ impl App<'_> {
 
     fn clear_help(&mut self) {
         if let View::Help(ref mut view) = self.view {
+            view.clear();
+        }
+    }
+
+    fn prefetch_github(&self) {
+        let repo_path = self.repository.path().to_path_buf();
+        let tx = self.tx.clone();
+
+        std::thread::spawn(move || {
+            let mut first_run = true;
+            loop {
+                let issues_result = crate::github::list_issues(&repo_path);
+                let prs_result = crate::github::list_pull_requests(&repo_path);
+
+                match (issues_result, prs_result) {
+                    (Err(_), _) | (_, Err(_)) => {}
+                    (Ok(issues), Ok(pull_requests)) => {
+                        tx.send(AppEvent::GitHubDataLoaded {
+                            issues: issues.clone(),
+                            pull_requests: pull_requests.clone(),
+                        });
+
+                        if first_run {
+                            first_run = false;
+                            Self::fetch_all_details(
+                                &repo_path, &issues, &pull_requests, &tx,
+                            );
+                        }
+                    }
+                }
+
+                std::thread::sleep(std::time::Duration::from_secs(30));
+            }
+        });
+    }
+
+    fn fetch_all_details(
+        repo_path: &std::path::Path,
+        issues: &[crate::github::GhIssue],
+        pull_requests: &[crate::github::GhPullRequest],
+        tx: &Sender,
+    ) {
+        let issue_details: Vec<(u64, String)> = issues
+            .iter()
+            .filter_map(|i| {
+                crate::github::view_issue_rendered(repo_path, i.number)
+                    .ok()
+                    .map(|s| (i.number, s))
+            })
+            .collect();
+
+        let pr_details: Vec<(u64, String)> = pull_requests
+            .iter()
+            .filter_map(|p| {
+                crate::github::view_pr_rendered(repo_path, p.number)
+                    .ok()
+                    .map(|s| (p.number, s))
+            })
+            .collect();
+
+        tx.send(AppEvent::GitHubDetailsLoaded {
+            issue_details,
+            pr_details,
+        });
+    }
+
+    fn open_github(&mut self) {
+        if let Some(ref cache) = self.github_cache {
+            // 有快取：立即顯示
+            let before_view = std::mem::take(&mut self.view);
+            let repo_path = self.repository.path().to_path_buf();
+            self.view = View::of_github(
+                before_view,
+                cache.issues.clone(),
+                cache.pull_requests.clone(),
+                cache.issue_details.clone(),
+                cache.pr_details.clone(),
+                self.ctx.clone(),
+                self.tx.clone(),
+                repo_path,
+            );
+        } else {
+            // 預載尚未完成：顯示 loading，等待資料到達後建立視圖
+            self.pending_message = Some("Loading GitHub data...".to_string());
+            self.github_awaiting_view = true;
+        }
+    }
+
+    fn on_github_data_loaded(
+        &mut self,
+        issues: Vec<crate::github::GhIssue>,
+        pull_requests: Vec<crate::github::GhPullRequest>,
+    ) {
+        // 檢查是否與快取相同
+        let changed = match &self.github_cache {
+            Some(cache) => cache.issues != issues || cache.pull_requests != pull_requests,
+            None => true,
+        };
+
+        // 偵測新增的 issue/PR number（用於差量抓取詳情）
+        let new_issue_numbers: Vec<u64> = if let Some(ref cache) = self.github_cache {
+            let existing: FxHashSet<u64> =
+                cache.issues.iter().map(|i| i.number).collect();
+            issues
+                .iter()
+                .filter(|i| !existing.contains(&i.number))
+                .map(|i| i.number)
+                .collect()
+        } else {
+            Vec::new()
+        };
+        let new_pr_numbers: Vec<u64> = if let Some(ref cache) = self.github_cache {
+            let existing: FxHashSet<u64> =
+                cache.pull_requests.iter().map(|p| p.number).collect();
+            pull_requests
+                .iter()
+                .filter(|p| !existing.contains(&p.number))
+                .map(|p| p.number)
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        // 更新快取（保留既有 detail cache）
+        if let Some(ref mut cache) = self.github_cache {
+            cache.issues = issues.clone();
+            cache.pull_requests = pull_requests.clone();
+        } else {
+            self.github_cache = Some(GitHubCache {
+                issues: issues.clone(),
+                pull_requests: pull_requests.clone(),
+                issue_details: FxHashMap::default(),
+                pr_details: FxHashMap::default(),
+            });
+        }
+
+        // 背景補抓新增項目的詳情
+        if !new_issue_numbers.is_empty() || !new_pr_numbers.is_empty() {
+            let repo_path = self.repository.path().to_path_buf();
+            let tx = self.tx.clone();
+            std::thread::spawn(move || {
+                let issue_details: Vec<(u64, String)> = new_issue_numbers
+                    .iter()
+                    .filter_map(|&n| {
+                        crate::github::view_issue_rendered(&repo_path, n)
+                            .ok()
+                            .map(|s| (n, s))
+                    })
+                    .collect();
+                let pr_details: Vec<(u64, String)> = new_pr_numbers
+                    .iter()
+                    .filter_map(|&n| {
+                        crate::github::view_pr_rendered(&repo_path, n)
+                            .ok()
+                            .map(|s| (n, s))
+                    })
+                    .collect();
+                if !issue_details.is_empty() || !pr_details.is_empty() {
+                    tx.send(AppEvent::GitHubDetailsLoaded {
+                        issue_details,
+                        pr_details,
+                    });
+                }
+            });
+        }
+
+        if let View::GitHub(ref mut view) = self.view {
+            // 已在 GitHub 視圖：有變更才就地更新
+            if changed {
+                view.update_data(issues, pull_requests);
+            }
+        } else if self.github_awaiting_view {
+            // 使用者按了 Space 且在等待資料：建立視圖
+            self.github_awaiting_view = false;
+            self.pending_message = None;
+
+            let (issue_details, pr_details) = if let Some(ref cache) = self.github_cache
+            {
+                (cache.issue_details.clone(), cache.pr_details.clone())
+            } else {
+                (FxHashMap::default(), FxHashMap::default())
+            };
+
+            let before_view = std::mem::take(&mut self.view);
+            let repo_path = self.repository.path().to_path_buf();
+            self.view = View::of_github(
+                before_view,
+                issues,
+                pull_requests,
+                issue_details,
+                pr_details,
+                self.ctx.clone(),
+                self.tx.clone(),
+                repo_path,
+            );
+        }
+        // 否則：啟動預載完成，只快取不建立視圖
+    }
+
+    fn on_github_details_loaded(
+        &mut self,
+        issue_details: Vec<(u64, String)>,
+        pr_details: Vec<(u64, String)>,
+    ) {
+        let convert = |s: &str| -> Vec<Line<'static>> {
+            s.into_text()
+                .map(|t| t.into_iter().collect())
+                .unwrap_or_else(|_| vec![Line::raw(s.to_string())])
+        };
+
+        let issue_map: FxHashMap<u64, Vec<Line<'static>>> = issue_details
+            .iter()
+            .map(|(n, s)| (*n, convert(s)))
+            .collect();
+        let pr_map: FxHashMap<u64, Vec<Line<'static>>> = pr_details
+            .iter()
+            .map(|(n, s)| (*n, convert(s)))
+            .collect();
+
+        if let Some(ref mut cache) = self.github_cache {
+            cache.issue_details.extend(issue_map.clone());
+            cache.pr_details.extend(pr_map.clone());
+        }
+
+        if let View::GitHub(ref mut view) = self.view {
+            view.update_detail_cache(issue_map, pr_map);
+        }
+    }
+
+    fn refresh_github(&mut self) {
+        self.tx
+            .send(AppEvent::NotifyInfo("Refreshing GitHub data...".into()));
+
+        let repo_path = self.repository.path().to_path_buf();
+        let tx = self.tx.clone();
+
+        std::thread::spawn(move || {
+            let issues_result = crate::github::list_issues(&repo_path);
+            let prs_result = crate::github::list_pull_requests(&repo_path);
+
+            match (issues_result, prs_result) {
+                (Err(e), _) | (_, Err(e)) => {
+                    tx.send(AppEvent::NotifyError(format!("GitHub refresh: {e}")));
+                }
+                (Ok(issues), Ok(pull_requests)) => {
+                    tx.send(AppEvent::GitHubDataLoaded {
+                        issues: issues.clone(),
+                        pull_requests: pull_requests.clone(),
+                    });
+                    // R 刷新：全量重抓詳情
+                    Self::fetch_all_details(
+                        &repo_path, &issues, &pull_requests, &tx,
+                    );
+                }
+            }
+        });
+    }
+
+    fn close_github(&mut self) {
+        if let View::GitHub(ref mut view) = self.view {
+            self.view = view.take_before_view();
+        }
+    }
+
+    fn clear_github(&mut self) {
+        if let View::GitHub(ref mut view) = self.view {
             view.clear();
         }
     }
