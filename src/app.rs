@@ -404,6 +404,9 @@ impl App<'_> {
                 AppEvent::HidePendingOverlay => {
                     self.pending_message = None;
                 }
+                AppEvent::AutoRefresh => {
+                    self.view.refresh();
+                }
             }
         }
     }

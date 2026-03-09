@@ -211,6 +211,7 @@ pub fn compute_filtered_graph<'a>(
     image_protocol: protocol::ImageProtocol,
     preload: bool,
     graph_style: graph::GraphStyle,
+    head_commit_hash: Option<git::CommitHash>,
 ) -> (Option<FilteredGraphData<'a>>, FxHashSet<git::CommitHash>) {
     let remote_only = find_remote_only_commits(repository, full_graph);
 
@@ -233,13 +234,14 @@ pub fn compute_filtered_graph<'a>(
         graph::CellWidthType::Single => (filtered.max_pos_x + 1) as u16,
     };
 
-    let image_manager = GraphImageManager::new(
+    let image_manager = GraphImageManager::with_head(
         Rc::clone(&filtered),
         graph_color_set,
         cell_width_type,
         graph_style,
         image_protocol,
         preload,
+        head_commit_hash,
     );
 
     (
@@ -250,6 +252,24 @@ pub fn compute_filtered_graph<'a>(
         }),
         remote_only,
     )
+}
+
+fn resolve_head_commit_hash(repository: &git::Repository) -> Option<git::CommitHash> {
+    match repository.head() {
+        git::Head::Branch { name } => {
+            for (commit_hash, refs) in repository.refs_with_commits() {
+                if refs
+                    .iter()
+                    .any(|r| matches!(r, git::Ref::Branch { name: n, .. } if n == name))
+                {
+                    return Some(commit_hash.clone());
+                }
+            }
+            None
+        }
+        git::Head::Detached { target } => Some(target.clone()),
+        git::Head::None => None,
+    }
 }
 
 pub fn run() -> Result<()> {
@@ -281,6 +301,12 @@ pub fn run() -> Result<()> {
     let mut refresh_view_context = None;
     let mut terminal = None;
 
+    // Start file watcher on .git directory for auto-refresh
+    let git_dir = Path::new(&args.path).join(".git");
+    if git_dir.is_dir() {
+        event::start_git_watcher(tx.clone(), &git_dir);
+    }
+
     let ret = loop {
         let repository = git::Repository::load(Path::new(&args.path), order, max_count)?;
 
@@ -290,13 +316,16 @@ pub fn run() -> Result<()> {
 
         let graph = Rc::new(graph);
 
-        let graph_image_manager = GraphImageManager::new(
+        let head_commit_hash = resolve_head_commit_hash(&repository);
+
+        let graph_image_manager = GraphImageManager::with_head(
             Rc::clone(&graph),
             &graph_color_set,
             cell_width_type,
             graph_style,
             image_protocol,
             args.preload,
+            head_commit_hash.clone(),
         );
 
         // Compute filtered graph for remote-only commit hiding
@@ -308,6 +337,7 @@ pub fn run() -> Result<()> {
             image_protocol,
             args.preload,
             graph_style,
+            head_commit_hash,
         );
 
         if terminal.is_none() {

@@ -1396,7 +1396,7 @@ fn generate_and_output_graph_image<P: AsRef<Path>>(path: P, option: &GenerateGra
     let image_params = graph::ImageParams::new(&graph_color_set, cell_width_type);
     let drawing_pixels = graph::DrawingPixels::new(&image_params);
     let graph_image =
-        graph::build_graph_image(&graph, &image_params, &drawing_pixels, option.style);
+        graph::build_graph_image(&graph, &image_params, &drawing_pixels, option.style, None);
 
     // Create concatenated image
     let (width, height) = (50, 50);
@@ -1412,7 +1412,7 @@ fn generate_and_output_graph_image<P: AsRef<Path>>(path: P, option: &GenerateGra
         let y = (height * i) as u32;
 
         // write graph
-        let graph_row_image = &graph_image.images[edges];
+        let graph_row_image = &graph_image.images[&(false, edges.clone())];
         let image = image::load_from_memory(&graph_row_image.bytes).unwrap();
         img_buf.copy_from(&image, 0, y).unwrap();
 

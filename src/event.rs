@@ -1,7 +1,9 @@
 use std::{
     fmt::{self, Debug, Formatter},
+    path::Path,
     sync::mpsc,
     thread,
+    time::Duration,
 };
 
 use ratatui::crossterm::event::KeyEvent;
@@ -69,6 +71,7 @@ pub enum AppEvent {
         message: String,
     },
     HidePendingOverlay,
+    AutoRefresh,
 }
 
 #[derive(Clone)]
@@ -122,6 +125,48 @@ pub fn init() -> (Sender, Receiver) {
     });
 
     (tx, rx)
+}
+
+pub fn start_git_watcher(tx: Sender, git_dir: &Path) {
+    use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
+
+    let git_dir = git_dir.to_path_buf();
+    thread::spawn(move || {
+        let event_tx = tx;
+        let (debounce_tx, debounce_rx) = std::sync::mpsc::channel();
+
+        let mut debouncer = match new_debouncer(Duration::from_millis(500), debounce_tx) {
+            Ok(d) => d,
+            Err(_) => return,
+        };
+
+        if debouncer
+            .watcher()
+            .watch(&git_dir, notify::RecursiveMode::Recursive)
+            .is_err()
+        {
+            return;
+        }
+
+        loop {
+            match debounce_rx.recv() {
+                Ok(Ok(events)) => {
+                    let dominated_by_lock = events
+                        .iter()
+                        .all(|e| e.path.to_string_lossy().contains(".lock"));
+                    if dominated_by_lock {
+                        continue;
+                    }
+                    let has_relevant = events.iter().any(|e| e.kind == DebouncedEventKind::Any);
+                    if has_relevant {
+                        event_tx.send(AppEvent::AutoRefresh);
+                    }
+                }
+                Ok(Err(_)) => {}
+                Err(_) => break,
+            }
+        }
+    });
 }
 
 // The event triggered by user's key input
