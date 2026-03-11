@@ -257,19 +257,8 @@ pub fn compute_filtered_graph<'a>(
 }
 
 fn ratatui_color_to_rgba(color: ratatui::style::Color) -> image::Rgba<u8> {
-    use ratatui::style::Color;
-    match color {
-        Color::Rgb(r, g, b) => image::Rgba([r, g, b, 255]),
-        Color::Black => image::Rgba([0, 0, 0, 255]),
-        Color::DarkGray => image::Rgba([80, 80, 80, 255]),
-        Color::Gray => image::Rgba([128, 128, 128, 255]),
-        Color::White => image::Rgba([255, 255, 255, 255]),
-        Color::Red => image::Rgba([255, 0, 0, 255]),
-        Color::Green => image::Rgba([0, 128, 0, 255]),
-        Color::Blue => image::Rgba([0, 0, 255, 255]),
-        Color::Yellow => image::Rgba([255, 255, 0, 255]),
-        Color::Cyan => image::Rgba([0, 255, 255, 255]),
-        Color::Magenta => image::Rgba([255, 0, 255, 255]),
+    match color::ratatui_color_to_rgb(color) {
+        ratatui::style::Color::Rgb(r, g, b) => image::Rgba([r, g, b, 255]),
         _ => image::Rgba([0, 0, 0, 255]),
     }
 }

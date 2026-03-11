@@ -234,6 +234,11 @@ impl<'a> DetailView<'a> {
         if let Some(detail_rect) =
             commit_list_state.inline_detail_rect(content_area, graph_marker_width)
         {
+            // Clear terminal protocol images in the gap rows
+            for y in detail_rect.top()..detail_rect.bottom() {
+                self.ctx.image_protocol.clear_line(y);
+            }
+
             // Clear the detail area text content
             f.render_widget(Clear, detail_rect);
 

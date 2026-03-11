@@ -28,9 +28,14 @@ pub struct GraphImageManager<'a> {
     encoded_image_map: FxHashMap<CommitHash, String>,
     spacer_image_map: FxHashMap<CommitHash, String>,
 
-    gray_spacer_image: Option<String>,
     selected_image: Option<(CommitHash, String)>,
     selected_bg_color: image::Rgba<u8>,
+
+    virtual_row_image: Option<String>,
+    selected_virtual_row_image: Option<String>,
+    gray_spacer_image: Option<String>,
+    first_commit_with_up_image: Option<(CommitHash, String)>,
+    selected_first_commit_with_up_image: Option<(CommitHash, String)>,
 
     graph: Rc<Graph<'a>>,
     cell_width_type: CellWidthType,
@@ -58,9 +63,13 @@ impl<'a> GraphImageManager<'a> {
         let mut m = GraphImageManager {
             encoded_image_map: FxHashMap::default(),
             spacer_image_map: FxHashMap::default(),
-            gray_spacer_image: None,
             selected_image: None,
             selected_bg_color,
+            virtual_row_image: None,
+            selected_virtual_row_image: None,
+            gray_spacer_image: None,
+            first_commit_with_up_image: None,
+            selected_first_commit_with_up_image: None,
             graph,
             cell_width_type,
             graph_style,
@@ -153,27 +162,6 @@ impl<'a> GraphImageManager<'a> {
         self.spacer_image_map.get(commit_hash).unwrap()
     }
 
-    pub fn load_gray_spacer_image(&mut self, commit_hash: &CommitHash) {
-        if self.gray_spacer_image.is_some() {
-            return;
-        }
-        let (_, pos_y) = self.graph.commit_pos_map[commit_hash];
-        let edges = &self.graph.edges[pos_y];
-        let cell_count = self.graph.max_pos_x + 1;
-        let spacer_image = calc_graph_gray_spacer_image(
-            cell_count,
-            edges,
-            &self.image_params,
-            &self.drawing_pixels,
-        );
-        let image = spacer_image.encode(self.cell_width_type, self.image_protocol);
-        self.gray_spacer_image = Some(image);
-    }
-
-    pub fn gray_spacer_image(&self) -> Option<&str> {
-        self.gray_spacer_image.as_deref()
-    }
-
     pub fn load_selected_image(&mut self, commit_hash: &CommitHash) {
         if let Some((ref hash, _)) = self.selected_image {
             if hash == commit_hash {
@@ -199,6 +187,146 @@ impl<'a> GraphImageManager<'a> {
 
     pub fn selected_image(&self) -> Option<&str> {
         self.selected_image.as_ref().map(|(_, s)| s.as_str())
+    }
+
+    pub fn load_virtual_row_image(&mut self, commit_hash: &CommitHash) {
+        if self.virtual_row_image.is_some() {
+            return;
+        }
+        let (pos_x, pos_y) = self.graph.commit_pos_map[commit_hash];
+        let edges = filtered_edges_with(&self.graph.edges[pos_y], pos_x, EdgeType::Down);
+        let cell_count = self.graph.max_pos_x + 1;
+        let gray_params = self.image_params.with_gray_colors();
+        let row_image = calc_graph_row_image(
+            pos_x,
+            cell_count,
+            &edges,
+            &gray_params,
+            &self.drawing_pixels,
+            self.graph_style,
+            false, // is_head=false for filled circle + outer ring (◎ effect)
+        );
+        self.virtual_row_image =
+            Some(row_image.encode(self.cell_width_type, self.image_protocol));
+    }
+
+    pub fn virtual_row_image(&self) -> Option<&str> {
+        self.virtual_row_image.as_deref()
+    }
+
+    pub fn load_selected_virtual_row_image(&mut self, commit_hash: &CommitHash) {
+        if self.selected_virtual_row_image.is_some() {
+            return;
+        }
+        let (pos_x, pos_y) = self.graph.commit_pos_map[commit_hash];
+        let edges = filtered_edges_with(&self.graph.edges[pos_y], pos_x, EdgeType::Down);
+        let cell_count = self.graph.max_pos_x + 1;
+        let gray_params = self
+            .image_params
+            .with_gray_colors()
+            .with_background_color(self.selected_bg_color);
+        let row_image = calc_graph_row_image(
+            pos_x,
+            cell_count,
+            &edges,
+            &gray_params,
+            &self.drawing_pixels,
+            self.graph_style,
+            false,
+        );
+        self.selected_virtual_row_image =
+            Some(row_image.encode(self.cell_width_type, self.image_protocol));
+    }
+
+    pub fn selected_virtual_row_image(&self) -> Option<&str> {
+        self.selected_virtual_row_image.as_deref()
+    }
+
+    pub fn load_gray_spacer_image(&mut self, commit_hash: &CommitHash) {
+        if self.gray_spacer_image.is_some() {
+            return;
+        }
+        let (pos_x, pos_y) = self.graph.commit_pos_map[commit_hash];
+        let edges = filtered_edges_with(&self.graph.edges[pos_y], pos_x, EdgeType::Vertical);
+        let cell_count = self.graph.max_pos_x + 1;
+        let gray_params = self.image_params.with_gray_colors();
+        let spacer_image =
+            calc_graph_spacer_image(cell_count, &edges, &gray_params, &self.drawing_pixels);
+        self.gray_spacer_image =
+            Some(spacer_image.encode(self.cell_width_type, self.image_protocol));
+    }
+
+    pub fn gray_spacer_image(&self) -> Option<&str> {
+        self.gray_spacer_image.as_deref()
+    }
+
+    pub fn load_first_commit_with_up_image(&mut self, commit_hash: &CommitHash) {
+        if let Some((ref hash, _)) = self.first_commit_with_up_image {
+            if hash == commit_hash {
+                return;
+            }
+        }
+        let (pos_x, pos_y) = self.graph.commit_pos_map[commit_hash];
+        let edges = &self.graph.edges[pos_y];
+        let cell_count = self.graph.max_pos_x + 1;
+        let is_head = self
+            .head_commit_hash
+            .as_ref()
+            .is_some_and(|h| h == commit_hash);
+        let mut edges_with_up: Vec<Edge> = edges.clone();
+        edges_with_up.push(Edge::new(EdgeType::Up, pos_x, pos_x));
+        let row_image = calc_graph_row_image(
+            pos_x,
+            cell_count,
+            &edges_with_up,
+            &self.image_params,
+            &self.drawing_pixels,
+            self.graph_style,
+            is_head,
+        );
+        let image = row_image.encode(self.cell_width_type, self.image_protocol);
+        self.first_commit_with_up_image = Some((commit_hash.clone(), image));
+    }
+
+    pub fn load_selected_first_commit_with_up_image(&mut self, commit_hash: &CommitHash) {
+        if let Some((ref hash, _)) = self.selected_first_commit_with_up_image {
+            if hash == commit_hash {
+                return;
+            }
+        }
+        let (pos_x, pos_y) = self.graph.commit_pos_map[commit_hash];
+        let edges = &self.graph.edges[pos_y];
+        let cell_count = self.graph.max_pos_x + 1;
+        let is_head = self
+            .head_commit_hash
+            .as_ref()
+            .is_some_and(|h| h == commit_hash);
+        let params = self.image_params.with_background_color(self.selected_bg_color);
+        let mut edges_with_up: Vec<Edge> = edges.clone();
+        edges_with_up.push(Edge::new(EdgeType::Up, pos_x, pos_x));
+        let row_image = calc_graph_row_image(
+            pos_x,
+            cell_count,
+            &edges_with_up,
+            &params,
+            &self.drawing_pixels,
+            self.graph_style,
+            is_head,
+        );
+        let image = row_image.encode(self.cell_width_type, self.image_protocol);
+        self.selected_first_commit_with_up_image = Some((commit_hash.clone(), image));
+    }
+
+    pub fn first_commit_with_up_image(&self) -> Option<&str> {
+        self.first_commit_with_up_image
+            .as_ref()
+            .map(|(_, s)| s.as_str())
+    }
+
+    pub fn selected_first_commit_with_up_image(&self) -> Option<&str> {
+        self.selected_first_commit_with_up_image
+            .as_ref()
+            .map(|(_, s)| s.as_str())
     }
 }
 
@@ -287,6 +415,16 @@ impl ImageParams {
             edge_colors: self.edge_colors.clone(),
             circle_edge_color: self.circle_edge_color,
             background_color: bg,
+        }
+    }
+
+    fn with_gray_colors(&self) -> Self {
+        let gray = image::Rgba([150, 150, 150, 255]);
+        let light_gray = image::Rgba([250, 250, 250, 255]);
+        Self {
+            edge_colors: vec![gray; self.edge_colors.len()],
+            circle_edge_color: light_gray,
+            ..self.clone()
         }
     }
 
@@ -720,6 +858,22 @@ fn calc_corner_edge_drawing_pixels(
     pixels
 }
 
+/// Filter edges for the virtual/spacer rows: keep only pass-through Vertical lines
+/// (other branches) and add an edge of `commit_edge_type` at the commit's x position.
+fn filtered_edges_with(
+    edges: &[Edge],
+    commit_pos_x: usize,
+    commit_edge_type: EdgeType,
+) -> Vec<Edge> {
+    let mut filtered: Vec<Edge> = edges
+        .iter()
+        .filter(|e| e.edge_type == EdgeType::Vertical && e.pos_x != commit_pos_x)
+        .copied()
+        .collect();
+    filtered.push(Edge::new(commit_edge_type, commit_pos_x, commit_pos_x));
+    filtered
+}
+
 fn calc_graph_row_image(
     commit_pos_x: usize,
     cell_count: usize,
@@ -774,35 +928,11 @@ fn calc_graph_row_image(
     GraphRowImage { bytes, cell_count }
 }
 
-enum SpacerStyle {
-    Colored,
-    Gray,
-}
-
 fn calc_graph_spacer_image(
     cell_count: usize,
     edges: &[Edge],
     image_params: &ImageParams,
     drawing_pixels: &DrawingPixels,
-) -> GraphRowImage {
-    calc_graph_spacer_image_inner(cell_count, edges, image_params, drawing_pixels, SpacerStyle::Colored)
-}
-
-fn calc_graph_gray_spacer_image(
-    cell_count: usize,
-    edges: &[Edge],
-    image_params: &ImageParams,
-    drawing_pixels: &DrawingPixels,
-) -> GraphRowImage {
-    calc_graph_spacer_image_inner(cell_count, edges, image_params, drawing_pixels, SpacerStyle::Gray)
-}
-
-fn calc_graph_spacer_image_inner(
-    cell_count: usize,
-    edges: &[Edge],
-    image_params: &ImageParams,
-    drawing_pixels: &DrawingPixels,
-    style: SpacerStyle,
 ) -> GraphRowImage {
     let image_width = (image_params.width as usize * cell_count) as u32;
     let image_height = image_params.height as u32;
@@ -818,43 +948,25 @@ fn calc_graph_spacer_image_inner(
         EdgeType::LeftTop,
     ];
 
-    match style {
-        SpacerStyle::Colored => {
-            // Two-pass drawing to ensure native-color lines win over merge/detour lines.
-            // Pass 1: draw edges where associated != pos_x (merge/detour lines)
-            for edge in edges {
-                if spacer_edge_types.contains(&edge.edge_type)
-                    && edge.associated_line_pos_x != edge.pos_x
-                {
-                    let full_edge =
-                        Edge::new(EdgeType::Vertical, edge.pos_x, edge.associated_line_pos_x);
-                    draw_edge(&mut img_buf, &full_edge, image_params, drawing_pixels);
-                }
-            }
-            // Pass 2: draw edges where associated == pos_x (native lines, win over merge)
-            for edge in edges {
-                if spacer_edge_types.contains(&edge.edge_type)
-                    && edge.associated_line_pos_x == edge.pos_x
-                {
-                    let full_edge =
-                        Edge::new(EdgeType::Vertical, edge.pos_x, edge.associated_line_pos_x);
-                    draw_edge(&mut img_buf, &full_edge, image_params, drawing_pixels);
-                }
-            }
+    // Two-pass drawing to ensure native-color lines win over merge/detour lines.
+    // Pass 1: draw edges where associated != pos_x (merge/detour lines)
+    for edge in edges {
+        if spacer_edge_types.contains(&edge.edge_type)
+            && edge.associated_line_pos_x != edge.pos_x
+        {
+            let full_edge =
+                Edge::new(EdgeType::Vertical, edge.pos_x, edge.associated_line_pos_x);
+            draw_edge(&mut img_buf, &full_edge, image_params, drawing_pixels);
         }
-        SpacerStyle::Gray => {
-            let gray = image::Rgba([128u8, 128, 128, 255]);
-            for edge in edges {
-                if spacer_edge_types.contains(&edge.edge_type) {
-                    let x_offset = (edge.pos_x * image_params.width as usize) as i32;
-                    for (x, y) in &drawing_pixels.vertical_edge {
-                        let x = (*x + x_offset) as u32;
-                        let y = *y as u32;
-                        let pixel = img_buf.get_pixel_mut(x, y);
-                        *pixel = gray;
-                    }
-                }
-            }
+    }
+    // Pass 2: draw edges where associated == pos_x (native lines, win over merge)
+    for edge in edges {
+        if spacer_edge_types.contains(&edge.edge_type)
+            && edge.associated_line_pos_x == edge.pos_x
+        {
+            let full_edge =
+                Edge::new(EdgeType::Vertical, edge.pos_x, edge.associated_line_pos_x);
+            draw_edge(&mut img_buf, &full_edge, image_params, drawing_pixels);
         }
     }
 

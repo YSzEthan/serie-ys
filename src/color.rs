@@ -178,6 +178,26 @@ fn parse_rgba_color(s: &str) -> Option<GraphColor> {
     }
 }
 
+/// Convert ANSI color names to `Color::Rgb(r,g,b)` using the same mapping as
+/// `ratatui_color_to_rgba` in `lib.rs`, so that terminal text background matches
+/// the PNG graph background pixel-for-pixel.
+pub fn ratatui_color_to_rgb(color: RatatuiColor) -> RatatuiColor {
+    match color {
+        RatatuiColor::Rgb(r, g, b) => RatatuiColor::Rgb(r, g, b),
+        RatatuiColor::Black => RatatuiColor::Rgb(0, 0, 0),
+        RatatuiColor::DarkGray => RatatuiColor::Rgb(80, 80, 80),
+        RatatuiColor::Gray => RatatuiColor::Rgb(128, 128, 128),
+        RatatuiColor::White => RatatuiColor::Rgb(255, 255, 255),
+        RatatuiColor::Red => RatatuiColor::Rgb(255, 0, 0),
+        RatatuiColor::Green => RatatuiColor::Rgb(0, 128, 0),
+        RatatuiColor::Blue => RatatuiColor::Rgb(0, 0, 255),
+        RatatuiColor::Yellow => RatatuiColor::Rgb(255, 255, 0),
+        RatatuiColor::Cyan => RatatuiColor::Rgb(0, 255, 255),
+        RatatuiColor::Magenta => RatatuiColor::Rgb(255, 0, 255),
+        _ => RatatuiColor::Rgb(0, 0, 0),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use rstest::rstest;
