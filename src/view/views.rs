@@ -67,6 +67,7 @@ impl<'a> View<'a> {
     pub fn take_graph_clear(&mut self) -> bool {
         match self {
             View::List(view) => view.take_graph_clear(),
+            View::Detail(view) => view.take_graph_clear(),
             _ => false,
         }
     }

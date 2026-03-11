@@ -207,6 +207,7 @@ pub enum UserEvent {
     DeleteTag,
     RemoteRefsToggle,
     GitHubToggle,
+    DetailPaneToggle,
     Unknown,
 }
 
@@ -275,6 +276,7 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "delete_tag" => Ok(UserEvent::DeleteTag),
                         "remote_refs_toggle" => Ok(UserEvent::RemoteRefsToggle),
                         "github_toggle" => Ok(UserEvent::GitHubToggle),
+                        "detail_pane_toggle" => Ok(UserEvent::DetailPaneToggle),
                         _ => {
                             let msg = format!("Unknown user event: {}", value);
                             Err(de::Error::custom(msg))

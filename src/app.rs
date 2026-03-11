@@ -269,8 +269,9 @@ impl App<'_> {
                             let is_input_mode =
                                 matches!(self.app_status.status_line, StatusLine::Input(_, _, _))
                                     || matches!(self.view, View::CreateTag(_));
-                            if is_input_mode {
-                                // In input mode, pass all key events to the view
+                            let is_detail_mode = matches!(self.view, View::Detail(_));
+                            if is_input_mode || is_detail_mode {
+                                // In input/detail mode, pass all key events to the view
                                 self.app_status.numeric_prefix.clear();
                                 self.view.handle_event(
                                     UserEventWithCount::from_event(UserEvent::Unknown),

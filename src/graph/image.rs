@@ -26,6 +26,11 @@ pub enum GraphStyle {
 #[derive(Debug)]
 pub struct GraphImageManager<'a> {
     encoded_image_map: FxHashMap<CommitHash, String>,
+    spacer_image_map: FxHashMap<CommitHash, String>,
+
+    gray_spacer_image: Option<String>,
+    selected_image: Option<(CommitHash, String)>,
+    selected_bg_color: image::Rgba<u8>,
 
     graph: Rc<Graph<'a>>,
     cell_width_type: CellWidthType,
@@ -45,12 +50,17 @@ impl<'a> GraphImageManager<'a> {
         image_protocol: ImageProtocol,
         preload: bool,
         head_commit_hash: Option<CommitHash>,
+        selected_bg_color: image::Rgba<u8>,
     ) -> Self {
         let image_params = ImageParams::new(graph_color_set, cell_width_type);
         let drawing_pixels = DrawingPixels::new(&image_params);
 
         let mut m = GraphImageManager {
             encoded_image_map: FxHashMap::default(),
+            spacer_image_map: FxHashMap::default(),
+            gray_spacer_image: None,
+            selected_image: None,
+            selected_bg_color,
             graph,
             cell_width_type,
             graph_style,
@@ -125,6 +135,71 @@ impl<'a> GraphImageManager<'a> {
         let image = graph_row_image.encode(self.cell_width_type, self.image_protocol);
         self.encoded_image_map.insert(commit_hash.clone(), image);
     }
+
+    pub fn load_spacer_image(&mut self, commit_hash: &CommitHash) {
+        if self.spacer_image_map.contains_key(commit_hash) {
+            return;
+        }
+        let (_, pos_y) = self.graph.commit_pos_map[commit_hash];
+        let edges = &self.graph.edges[pos_y];
+        let cell_count = self.graph.max_pos_x + 1;
+        let spacer_image =
+            calc_graph_spacer_image(cell_count, edges, &self.image_params, &self.drawing_pixels);
+        let image = spacer_image.encode(self.cell_width_type, self.image_protocol);
+        self.spacer_image_map.insert(commit_hash.clone(), image);
+    }
+
+    pub fn spacer_image(&self, commit_hash: &CommitHash) -> &str {
+        self.spacer_image_map.get(commit_hash).unwrap()
+    }
+
+    pub fn load_gray_spacer_image(&mut self, commit_hash: &CommitHash) {
+        if self.gray_spacer_image.is_some() {
+            return;
+        }
+        let (_, pos_y) = self.graph.commit_pos_map[commit_hash];
+        let edges = &self.graph.edges[pos_y];
+        let cell_count = self.graph.max_pos_x + 1;
+        let spacer_image = calc_graph_gray_spacer_image(
+            cell_count,
+            edges,
+            &self.image_params,
+            &self.drawing_pixels,
+        );
+        let image = spacer_image.encode(self.cell_width_type, self.image_protocol);
+        self.gray_spacer_image = Some(image);
+    }
+
+    pub fn gray_spacer_image(&self) -> Option<&str> {
+        self.gray_spacer_image.as_deref()
+    }
+
+    pub fn load_selected_image(&mut self, commit_hash: &CommitHash) {
+        if let Some((ref hash, _)) = self.selected_image {
+            if hash == commit_hash {
+                return;
+            }
+        }
+        let params = self.image_params.with_background_color(self.selected_bg_color);
+        let is_head = self
+            .head_commit_hash
+            .as_ref()
+            .is_some_and(|h| h == commit_hash);
+        let graph_row_image = build_single_graph_row_image(
+            &self.graph,
+            &params,
+            &self.drawing_pixels,
+            self.graph_style,
+            commit_hash,
+            is_head,
+        );
+        let image = graph_row_image.encode(self.cell_width_type, self.image_protocol);
+        self.selected_image = Some((commit_hash.clone(), image));
+    }
+
+    pub fn selected_image(&self) -> Option<&str> {
+        self.selected_image.as_ref().map(|(_, s)| s.as_str())
+    }
 }
 
 #[derive(Debug, Default)]
@@ -158,7 +233,7 @@ impl GraphRowImage {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ImageParams {
     width: u16,
     height: u16,
@@ -199,6 +274,19 @@ impl ImageParams {
             edge_colors,
             circle_edge_color,
             background_color,
+        }
+    }
+
+    fn with_background_color(&self, bg: image::Rgba<u8>) -> Self {
+        Self {
+            width: self.width,
+            height: self.height,
+            line_width: self.line_width,
+            circle_inner_radius: self.circle_inner_radius,
+            circle_outer_radius: self.circle_outer_radius,
+            edge_colors: self.edge_colors.clone(),
+            circle_edge_color: self.circle_edge_color,
+            background_color: bg,
         }
     }
 
@@ -677,6 +765,95 @@ fn calc_graph_row_image(
             }
             for edges in horizontal_edges_map.values() {
                 draw_diagonal_connected_edge(&mut img_buf, edges, image_params);
+            }
+        }
+    }
+
+    let bytes = build_image(&img_buf, image_width, image_height);
+
+    GraphRowImage { bytes, cell_count }
+}
+
+enum SpacerStyle {
+    Colored,
+    Gray,
+}
+
+fn calc_graph_spacer_image(
+    cell_count: usize,
+    edges: &[Edge],
+    image_params: &ImageParams,
+    drawing_pixels: &DrawingPixels,
+) -> GraphRowImage {
+    calc_graph_spacer_image_inner(cell_count, edges, image_params, drawing_pixels, SpacerStyle::Colored)
+}
+
+fn calc_graph_gray_spacer_image(
+    cell_count: usize,
+    edges: &[Edge],
+    image_params: &ImageParams,
+    drawing_pixels: &DrawingPixels,
+) -> GraphRowImage {
+    calc_graph_spacer_image_inner(cell_count, edges, image_params, drawing_pixels, SpacerStyle::Gray)
+}
+
+fn calc_graph_spacer_image_inner(
+    cell_count: usize,
+    edges: &[Edge],
+    image_params: &ImageParams,
+    drawing_pixels: &DrawingPixels,
+    style: SpacerStyle,
+) -> GraphRowImage {
+    let image_width = (image_params.width as usize * cell_count) as u32;
+    let image_height = image_params.height as u32;
+
+    let mut img_buf = image::ImageBuffer::new(image_width, image_height);
+
+    draw_background(&mut img_buf, image_params);
+
+    let spacer_edge_types = [
+        EdgeType::Vertical,
+        EdgeType::Down,
+        EdgeType::RightTop,
+        EdgeType::LeftTop,
+    ];
+
+    match style {
+        SpacerStyle::Colored => {
+            // Two-pass drawing to ensure native-color lines win over merge/detour lines.
+            // Pass 1: draw edges where associated != pos_x (merge/detour lines)
+            for edge in edges {
+                if spacer_edge_types.contains(&edge.edge_type)
+                    && edge.associated_line_pos_x != edge.pos_x
+                {
+                    let full_edge =
+                        Edge::new(EdgeType::Vertical, edge.pos_x, edge.associated_line_pos_x);
+                    draw_edge(&mut img_buf, &full_edge, image_params, drawing_pixels);
+                }
+            }
+            // Pass 2: draw edges where associated == pos_x (native lines, win over merge)
+            for edge in edges {
+                if spacer_edge_types.contains(&edge.edge_type)
+                    && edge.associated_line_pos_x == edge.pos_x
+                {
+                    let full_edge =
+                        Edge::new(EdgeType::Vertical, edge.pos_x, edge.associated_line_pos_x);
+                    draw_edge(&mut img_buf, &full_edge, image_params, drawing_pixels);
+                }
+            }
+        }
+        SpacerStyle::Gray => {
+            let gray = image::Rgba([128u8, 128, 128, 255]);
+            for edge in edges {
+                if spacer_edge_types.contains(&edge.edge_type) {
+                    let x_offset = (edge.pos_x * image_params.width as usize) as i32;
+                    for (x, y) in &drawing_pixels.vertical_edge {
+                        let x = (*x + x_offset) as u32;
+                        let y = *y as u32;
+                        let pixel = img_buf.get_pixel_mut(x, y);
+                        *pixel = gray;
+                    }
+                }
             }
         }
     }

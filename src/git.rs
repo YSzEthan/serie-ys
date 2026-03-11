@@ -11,6 +11,8 @@ use rustc_hash::FxHashMap;
 
 use crate::Result;
 
+const GIT_EMPTY_TREE_HASH: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
 /// Arc<str> for cheap cloning and Send trait (required by mpsc::Sender<AppEvent>)
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CommitHash(Arc<str>);
@@ -647,10 +649,36 @@ fn get_current_branch(path: &Path) -> Option<String> {
 
 #[derive(Debug, Clone)]
 pub enum FileChange {
-    Add { path: String },
-    Modify { path: String },
-    Delete { path: String },
-    Move { from: String, to: String },
+    Add {
+        path: String,
+        stats: Option<(usize, usize)>,
+    },
+    Modify {
+        path: String,
+        stats: Option<(usize, usize)>,
+    },
+    Delete {
+        path: String,
+        stats: Option<(usize, usize)>,
+    },
+}
+
+impl FileChange {
+    pub fn path(&self) -> &str {
+        match self {
+            FileChange::Add { path, .. }
+            | FileChange::Modify { path, .. }
+            | FileChange::Delete { path, .. } => path,
+        }
+    }
+
+    pub fn stats(&self) -> Option<(usize, usize)> {
+        match self {
+            FileChange::Add { stats, .. }
+            | FileChange::Modify { stats, .. }
+            | FileChange::Delete { stats, .. } => *stats,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Default)]
@@ -695,54 +723,123 @@ pub fn load_working_changes(path: &Path) -> WorkingChanges {
         let file_path = &line[3..];
 
         // Parse staged changes (X column)
-        if let Some(change) = parse_status_char(x, file_path) {
-            staged.push(change);
-        }
+        staged.extend(parse_status_char(x, file_path));
 
         // Parse unstaged changes (Y column)
-        if let Some(change) = parse_status_char(y, file_path) {
-            unstaged.push(change);
+        unstaged.extend(parse_status_char(y, file_path));
+    }
+
+    cmd.wait().unwrap();
+
+    // Get numstat for unstaged changes
+    let unstaged_stats = get_diff_numstat(path, &[]);
+    apply_numstat(&mut unstaged, &unstaged_stats);
+
+    // Get numstat for staged changes
+    let staged_stats = get_diff_numstat(path, &["--cached"]);
+    apply_numstat(&mut staged, &staged_stats);
+
+    WorkingChanges { staged, unstaged }
+}
+
+fn rename_to_changes(old_path: &str, new_path: &str) -> Vec<FileChange> {
+    vec![
+        FileChange::Delete {
+            path: old_path.into(),
+            stats: None,
+        },
+        FileChange::Add {
+            path: new_path.into(),
+            stats: None,
+        },
+    ]
+}
+
+fn parse_status_char(status: u8, file_path: &str) -> Vec<FileChange> {
+    match status {
+        b'A' => vec![FileChange::Add {
+            path: file_path.into(),
+            stats: None,
+        }],
+        b'M' => vec![FileChange::Modify {
+            path: file_path.into(),
+            stats: None,
+        }],
+        b'D' => vec![FileChange::Delete {
+            path: file_path.into(),
+            stats: None,
+        }],
+        b'R' => {
+            let parts: Vec<&str> = file_path.splitn(2, " -> ").collect();
+            if parts.len() == 2 {
+                rename_to_changes(parts[0], parts[1])
+            } else {
+                vec![FileChange::Modify {
+                    path: file_path.into(),
+                    stats: None,
+                }]
+            }
+        }
+        _ => vec![],
+    }
+}
+
+fn get_diff_numstat(path: &Path, args: &[&str]) -> FxHashMap<String, (usize, usize)> {
+    let mut cmd_args = vec!["diff", "--numstat"];
+    cmd_args.extend_from_slice(args);
+
+    let mut cmd = Command::new("git")
+        .args(&cmd_args)
+        .current_dir(path)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap();
+
+    let stdout = cmd.stdout.take().expect("failed to open stdout");
+    let reader = BufReader::new(stdout);
+
+    let mut stats = FxHashMap::default();
+
+    for line in reader.lines() {
+        let line = line.unwrap();
+        let parts: Vec<&str> = line.split('\t').collect();
+        if parts.len() >= 3 {
+            let additions = parts[0].parse::<usize>().unwrap_or(0);
+            let deletions = parts[1].parse::<usize>().unwrap_or(0);
+            // For renames, numstat shows the destination path
+            // Handle "from => to" format in numstat
+            let file_path = parts[2..].join("\t");
+            stats.insert(file_path, (additions, deletions));
         }
     }
 
     cmd.wait().unwrap();
 
-    WorkingChanges { staged, unstaged }
+    stats
 }
 
-fn parse_status_char(status: u8, file_path: &str) -> Option<FileChange> {
-    match status {
-        b'A' => Some(FileChange::Add {
-            path: file_path.into(),
-        }),
-        b'M' => Some(FileChange::Modify {
-            path: file_path.into(),
-        }),
-        b'D' => Some(FileChange::Delete {
-            path: file_path.into(),
-        }),
-        b'R' => {
-            let parts: Vec<&str> = file_path.splitn(2, " -> ").collect();
-            if parts.len() == 2 {
-                Some(FileChange::Move {
-                    from: parts[0].into(),
-                    to: parts[1].into(),
-                })
-            } else {
-                Some(FileChange::Modify {
-                    path: file_path.into(),
-                })
+fn apply_numstat(changes: &mut [FileChange], stats: &FxHashMap<String, (usize, usize)>) {
+    for change in changes.iter_mut() {
+        let key = change.path();
+        if let Some(&s) = stats.get(key) {
+            match change {
+                FileChange::Add { stats: st, .. }
+                | FileChange::Modify { stats: st, .. }
+                | FileChange::Delete { stats: st, .. } => {
+                    *st = Some(s);
+                }
             }
         }
-        _ => None,
     }
 }
 
 pub fn get_diff_summary(path: &Path, commit_hash: &CommitHash) -> Vec<FileChange> {
+    let parent_arg = format!("{}^", commit_hash.as_str());
     let mut cmd = Command::new("git")
         .arg("diff")
         .arg("--name-status")
-        .arg(format!("{}^", commit_hash.as_str()))
+        .arg(&parent_arg)
         .arg(commit_hash.as_str())
         .current_dir(path)
         .stdout(Stdio::piped())
@@ -763,22 +860,27 @@ pub fn get_diff_summary(path: &Path, commit_hash: &CommitHash) -> Vec<FileChange
         match &parts[0][0..1] {
             "A" => changes.push(FileChange::Add {
                 path: parts[1].into(),
+                stats: None,
             }),
             "M" => changes.push(FileChange::Modify {
                 path: parts[1].into(),
+                stats: None,
             }),
             "D" => changes.push(FileChange::Delete {
                 path: parts[1].into(),
+                stats: None,
             }),
-            "R" => changes.push(FileChange::Move {
-                from: parts[1].into(),
-                to: parts[2].into(),
-            }),
+            "R" => {
+                changes.extend(rename_to_changes(parts[1], parts[2]));
+            }
             _ => {}
         }
     }
 
     cmd.wait().unwrap();
+
+    let numstat = get_diff_numstat(path, &[&parent_arg, commit_hash.as_str()]);
+    apply_numstat(&mut changes, &numstat);
 
     changes
 }
@@ -787,7 +889,7 @@ pub fn get_initial_commit_additions(path: &Path, commit_hash: &CommitHash) -> Ve
     let mut cmd = Command::new("git")
         .arg("ls-tree")
         .arg("--name-status")
-        .arg("-r") // the empty tree hash
+        .arg("-r")
         .arg(commit_hash.as_str())
         .current_dir(path)
         .stdout(Stdio::piped())
@@ -803,10 +905,17 @@ pub fn get_initial_commit_additions(path: &Path, commit_hash: &CommitHash) -> Ve
 
     for line in reader.lines() {
         let line = line.unwrap();
-        changes.push(FileChange::Add { path: line });
+        changes.push(FileChange::Add {
+            path: line,
+            stats: None,
+        });
     }
 
     cmd.wait().unwrap();
+
+    // Use empty tree hash to get numstat for initial commit
+    let numstat = get_diff_numstat(path, &[GIT_EMPTY_TREE_HASH, commit_hash.as_str()]);
+    apply_numstat(&mut changes, &numstat);
 
     changes
 }

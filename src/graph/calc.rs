@@ -62,6 +62,13 @@ impl EdgeType {
     pub fn is_vertically_related(&self) -> bool {
         matches!(self, EdgeType::Vertical | EdgeType::Up | EdgeType::Down)
     }
+
+    pub fn has_downward_continuation(&self) -> bool {
+        matches!(
+            self,
+            EdgeType::Vertical | EdgeType::Down | EdgeType::RightTop | EdgeType::LeftTop
+        )
+    }
 }
 
 pub fn calc_graph<'a>(repository: &'a Repository) -> Graph<'a> {

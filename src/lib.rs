@@ -212,6 +212,7 @@ pub fn compute_filtered_graph<'a>(
     preload: bool,
     graph_style: graph::GraphStyle,
     head_commit_hash: Option<git::CommitHash>,
+    selected_bg_color: image::Rgba<u8>,
 ) -> (Option<FilteredGraphData<'a>>, FxHashSet<git::CommitHash>) {
     let remote_only = find_remote_only_commits(repository, full_graph);
 
@@ -242,6 +243,7 @@ pub fn compute_filtered_graph<'a>(
         image_protocol,
         preload,
         head_commit_hash,
+        selected_bg_color,
     );
 
     (
@@ -252,6 +254,24 @@ pub fn compute_filtered_graph<'a>(
         }),
         remote_only,
     )
+}
+
+fn ratatui_color_to_rgba(color: ratatui::style::Color) -> image::Rgba<u8> {
+    use ratatui::style::Color;
+    match color {
+        Color::Rgb(r, g, b) => image::Rgba([r, g, b, 255]),
+        Color::Black => image::Rgba([0, 0, 0, 255]),
+        Color::DarkGray => image::Rgba([80, 80, 80, 255]),
+        Color::Gray => image::Rgba([128, 128, 128, 255]),
+        Color::White => image::Rgba([255, 255, 255, 255]),
+        Color::Red => image::Rgba([255, 0, 0, 255]),
+        Color::Green => image::Rgba([0, 128, 0, 255]),
+        Color::Blue => image::Rgba([0, 0, 255, 255]),
+        Color::Yellow => image::Rgba([255, 255, 0, 255]),
+        Color::Cyan => image::Rgba([0, 255, 255, 255]),
+        Color::Magenta => image::Rgba([255, 0, 255, 255]),
+        _ => image::Rgba([0, 0, 0, 255]),
+    }
 }
 
 fn resolve_head_commit_hash(repository: &git::Repository) -> Option<git::CommitHash> {
@@ -318,6 +338,8 @@ pub fn run() -> Result<()> {
 
         let head_commit_hash = resolve_head_commit_hash(&repository);
 
+        let selected_bg_color = ratatui_color_to_rgba(ctx.color_theme.list_selected_bg);
+
         let graph_image_manager = GraphImageManager::new(
             Rc::clone(&graph),
             &graph_color_set,
@@ -326,6 +348,7 @@ pub fn run() -> Result<()> {
             image_protocol,
             args.preload,
             head_commit_hash.clone(),
+            selected_bg_color,
         );
 
         // Compute filtered graph for remote-only commit hiding
@@ -338,6 +361,7 @@ pub fn run() -> Result<()> {
             args.preload,
             graph_style,
             head_commit_hash,
+            selected_bg_color,
         );
 
         if terminal.is_none() {

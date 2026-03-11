@@ -1,14 +1,15 @@
 use std::rc::Rc;
 
 use ratatui::{
-    crossterm::event::KeyEvent,
-    layout::{Constraint, Layout, Rect},
+    crossterm::event::{KeyCode, KeyEvent},
+    layout::Rect,
     widgets::Clear,
     Frame,
 };
 
 use crate::{
     app::AppContext,
+    config::UserListColumnType,
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
     git::{Commit, FileChange, Ref, Repository, WorkingChanges},
     view::{ListRefreshViewContext, RefreshViewContext},
@@ -79,11 +80,21 @@ impl<'a> DetailView<'a> {
         }
     }
 
-    pub fn handle_event(&mut self, event_with_count: UserEventWithCount, _: KeyEvent) {
+    pub fn handle_event(&mut self, event_with_count: UserEventWithCount, key: KeyEvent) {
+        // 'y' as alias for Close (backspace)
+        if key.code == KeyCode::Char('y') {
+            self.tx.send(AppEvent::ClearDetail);
+            self.tx.send(AppEvent::CloseDetail);
+            return;
+        }
+
         let event = event_with_count.event;
         let count = event_with_count.count;
 
         match event {
+            UserEvent::DetailPaneToggle => {
+                self.commit_detail_state.toggle_pane();
+            }
             UserEvent::NavigateDown => {
                 for _ in 0..count {
                     self.commit_detail_state.scroll_down();
@@ -93,6 +104,12 @@ impl<'a> DetailView<'a> {
                 for _ in 0..count {
                     self.commit_detail_state.scroll_up();
                 }
+            }
+            UserEvent::NavigateRight => {
+                self.tx.send(AppEvent::SelectOlderCommit);
+            }
+            UserEvent::NavigateLeft => {
+                self.tx.send(AppEvent::SelectNewerCommit);
             }
             UserEvent::PageDown => {
                 for _ in 0..count {
@@ -138,11 +155,28 @@ impl<'a> DetailView<'a> {
             UserEvent::UserCommand(n) => {
                 self.tx.send(AppEvent::OpenUserCommand(n));
             }
+            UserEvent::RemoteRefsToggle => {
+                if let Some(ref mut cls) = self.commit_list_state {
+                    let show = cls.toggle_remote_refs();
+                    if show {
+                        self.tx
+                            .send(AppEvent::NotifyInfo("Remote refs: shown".into()));
+                    } else {
+                        self.tx
+                            .send(AppEvent::NotifyInfo("Remote refs: hidden".into()));
+                    }
+                    let tx = self.tx.clone();
+                    std::thread::spawn(move || {
+                        std::thread::sleep(std::time::Duration::from_secs(3));
+                        tx.send(AppEvent::ClearStatusLine);
+                    });
+                }
+            }
             UserEvent::HelpToggle => {
                 self.tx.send(AppEvent::OpenHelp);
             }
             UserEvent::Confirm | UserEvent::Cancel | UserEvent::Close => {
-                self.tx.send(AppEvent::ClearDetail); // hack: reset the rendering of the image area
+                self.tx.send(AppEvent::ClearDetail);
                 self.tx.send(AppEvent::CloseDetail);
             }
             UserEvent::Refresh => {
@@ -153,49 +187,108 @@ impl<'a> DetailView<'a> {
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect) {
-        let detail_height = (area.height - 1).min(self.ctx.ui_config.detail.height);
-        let [list_area, detail_area] =
-            Layout::vertical([Constraint::Min(0), Constraint::Length(detail_height)]).areas(area);
-
-        let commit_list = CommitList::new(self.ctx.clone());
-        f.render_stateful_widget(
-            commit_list,
-            list_area,
-            self.commit_list_state
-                .as_mut()
-                .expect("commit_list_state already taken"),
-        );
-
-        if self.clear {
-            f.render_widget(Clear, detail_area);
-            return;
-        }
-
-        match &self.content {
+        let max_height = (area.height.saturating_sub(2)).min(self.ctx.ui_config.detail.height);
+        let content_height = match &self.content {
             DetailContent::Commit {
                 commit,
                 changes,
                 refs,
-            } => {
-                let commit_detail = CommitDetail::new(commit, changes, refs, self.ctx.clone());
-                f.render_stateful_widget(commit_detail, detail_area, &mut self.commit_detail_state);
-            }
+            } => CommitDetail::new(commit, changes, refs, self.ctx.clone()).content_height(),
             DetailContent::WorkingChanges(wc) => {
-                let wc_detail = WorkingChangesDetail::new(wc, self.ctx.clone());
-                f.render_stateful_widget(wc_detail, detail_area, &mut self.commit_detail_state);
+                WorkingChangesDetail::new(wc, self.ctx.clone()).content_height()
             }
+        };
+        let detail_height = max_height.min(content_height);
+
+        let commit_list_state = self
+            .commit_list_state
+            .as_mut()
+            .expect("commit_list_state already taken");
+
+        // Set inline detail height so CommitList renders the gap
+        if self.clear {
+            commit_list_state.set_inline_detail_height(0);
+        } else {
+            commit_list_state.set_inline_detail_height(detail_height);
         }
 
-        // clear the image area if needed
-        for y in detail_area.top()..detail_area.bottom() {
-            self.ctx.image_protocol.clear_line(y);
+        // Render CommitList using the full area — it handles the gap internally
+        let commit_list = CommitList::new(self.ctx.clone());
+        f.render_stateful_widget(commit_list, area, commit_list_state);
+
+        if self.clear {
+            return;
+        }
+
+        // Calculate the graph+marker width for inline detail positioning
+        let graph_marker_width = calc_graph_marker_width(commit_list_state, &self.ctx);
+
+        // Get the content area (below header)
+        let content_area = Rect::new(
+            area.left(),
+            area.top() + 1, // skip header row
+            area.width,
+            area.height.saturating_sub(1),
+        );
+
+        if let Some(detail_rect) =
+            commit_list_state.inline_detail_rect(content_area, graph_marker_width)
+        {
+            // Clear the detail area text content
+            f.render_widget(Clear, detail_rect);
+
+            match &self.content {
+                DetailContent::Commit {
+                    commit,
+                    changes,
+                    refs,
+                } => {
+                    let commit_detail = CommitDetail::new(commit, changes, refs, self.ctx.clone());
+                    f.render_stateful_widget(
+                        commit_detail,
+                        detail_rect,
+                        &mut self.commit_detail_state,
+                    );
+                }
+                DetailContent::WorkingChanges(wc) => {
+                    let wc_detail = WorkingChangesDetail::new(wc, self.ctx.clone());
+                    f.render_stateful_widget(wc_detail, detail_rect, &mut self.commit_detail_state);
+                }
+            }
         }
     }
 }
 
+/// Calculate the combined width of Graph + Marker columns.
+fn calc_graph_marker_width(state: &CommitListState<'_>, ctx: &AppContext) -> u16 {
+    let mut width: u16 = 0;
+    for col in &ctx.ui_config.list.columns {
+        match col {
+            UserListColumnType::Graph => {
+                width += state.graph_area_cell_width();
+            }
+            UserListColumnType::Marker => {
+                width += 1;
+            }
+            _ => {}
+        }
+    }
+    width
+}
+
 impl<'a> DetailView<'a> {
+    pub fn take_graph_clear(&mut self) -> bool {
+        self.commit_list_state
+            .as_mut()
+            .is_some_and(|s| s.take_graph_clear())
+    }
+
     pub fn take_list_state(&mut self) -> Option<CommitListState<'a>> {
-        self.commit_list_state.take()
+        let mut state = self.commit_list_state.take();
+        if let Some(ref mut s) = state {
+            s.set_inline_detail_height(0);
+        }
+        state
     }
 
     pub fn as_list_state(&self) -> &CommitListState<'_> {
@@ -268,7 +361,7 @@ impl<'a> DetailView<'a> {
         let list_state = self.as_list_state();
         let list_context = ListRefreshViewContext::from(list_state);
         let context = RefreshViewContext::Detail { list_context };
-        self.tx.send(AppEvent::Clear); // hack: reset the rendering of the image area
+        self.tx.send(AppEvent::Clear);
         self.tx.send(AppEvent::Refresh(context));
     }
 }

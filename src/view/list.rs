@@ -185,7 +185,7 @@ impl<'a> ListView<'a> {
                 self.as_mut_list_state().cancel_filter();
                 self.clear_search_query();
             }
-            UserEvent::Confirm => {
+            UserEvent::Confirm | UserEvent::NavigateRight => {
                 self.tx.send(AppEvent::OpenDetail);
             }
             UserEvent::RefList => {

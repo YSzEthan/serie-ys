@@ -25,6 +25,7 @@ use crate::{
 static FUZZY_MATCHER: Lazy<SkimMatcherV2> = Lazy::new(|| SkimMatcherV2::default().respect_case());
 
 const ELLIPSIS: &str = "...";
+const VIRTUAL_ROW_COLOR: Color = Color::Gray;
 
 #[derive(Debug)]
 pub struct CommitInfo<'a> {
@@ -261,6 +262,8 @@ pub struct CommitListState<'a> {
     total: usize,
     height: usize,
 
+    inline_detail_height: u16,
+
     show_remote_refs: bool,
     remote_only_commits: FxHashSet<CommitHash>,
     needs_graph_clear: bool,
@@ -327,6 +330,7 @@ impl<'a> CommitListState<'a> {
             offset: 0,
             total,
             height: 0,
+            inline_detail_height: 0,
             show_remote_refs: true,
             remote_only_commits,
             needs_graph_clear: false,
@@ -348,6 +352,29 @@ impl<'a> CommitListState<'a> {
 
     pub fn name_cell_width(&self) -> u16 {
         self.name_cell_width
+    }
+
+    pub fn set_inline_detail_height(&mut self, h: u16) {
+        self.inline_detail_height = h;
+    }
+
+    /// Calculate the Rect for inline detail content (right of graph+marker columns).
+    /// `content_area` is the commit list content area (below header).
+    /// `graph_marker_width` is the combined width of graph + marker columns.
+    pub fn inline_detail_rect(&self, content_area: Rect, graph_marker_width: u16) -> Option<Rect> {
+        if self.inline_detail_height == 0 {
+            return None;
+        }
+        let y = content_area.top() + self.selected as u16 + 1;
+        let x = content_area.left() + graph_marker_width;
+        let w = content_area.width.saturating_sub(graph_marker_width);
+        if w == 0 || y >= content_area.bottom() {
+            return None;
+        }
+        let h = self
+            .inline_detail_height
+            .min(content_area.bottom().saturating_sub(y));
+        Some(Rect::new(x, y, w, h))
     }
 
     pub fn toggle_remote_refs(&mut self) -> bool {
@@ -606,7 +633,7 @@ impl<'a> CommitListState<'a> {
 
     /// Returns the real commit index (in commits Vec) for the currently selected item.
     /// When virtual row is selected, returns 0 (first commit) as fallback.
-    fn current_selected_index(&self) -> usize {
+    pub fn current_selected_index(&self) -> usize {
         let visible_idx = self.offset + self.selected;
         let adjusted = visible_idx.saturating_sub(self.virtual_row_offset());
         self.real_commit_index(adjusted)
@@ -994,14 +1021,31 @@ impl<'a> CommitListState<'a> {
         }
     }
 
-    fn encoded_image(&self, commit_info: &CommitInfo<'_>) -> &str {
+    fn current_image_manager(&self) -> &GraphImageManager<'_> {
         if !self.show_remote_refs {
             if let Some(ref mgr) = self.filtered_graph_image_manager {
-                return mgr.encoded_image(&commit_info.commit.commit_hash);
+                return mgr;
             }
         }
-        self.graph_image_manager
+        &self.graph_image_manager
+    }
+
+    fn encoded_image(&self, commit_info: &CommitInfo<'_>) -> &str {
+        self.current_image_manager()
             .encoded_image(&commit_info.commit.commit_hash)
+    }
+
+    fn spacer_image(&self, commit_info: &CommitInfo<'_>) -> &str {
+        self.current_image_manager()
+            .spacer_image(&commit_info.commit.commit_hash)
+    }
+
+    fn gray_spacer_image(&self) -> Option<&str> {
+        self.current_image_manager().gray_spacer_image()
+    }
+
+    fn selected_image(&self) -> Option<&str> {
+        self.current_image_manager().selected_image()
     }
 
     fn marker_color(&self, commit_info: &CommitInfo<'_>) -> Color {
@@ -1266,7 +1310,7 @@ impl<'a> StatefulWidget for CommitList<'a> {
 
 impl CommitList<'_> {
     fn update_state(&self, area: Rect, state: &mut CommitListState<'_>) {
-        state.height = area.height as usize;
+        state.height = (area.height as usize).saturating_sub(state.inline_detail_height as usize);
 
         if state.total > state.height && state.total - state.height < state.offset {
             let diff = state.offset - (state.total - state.height);
@@ -1305,25 +1349,54 @@ impl CommitList<'_> {
                 state.graph_image_manager.load_encoded_image(hash);
             }
         }
+
+        // Load spacer image for selected commit when inline detail is active
+        // When virtual row is selected, use the first commit's spacer for gap continuation
+        if state.inline_detail_height > 0 {
+            let is_vr = state.is_virtual_row_selected();
+            let hash = if is_vr {
+                &state.commits[0].commit.commit_hash
+            } else {
+                let selected_idx = state.current_selected_index();
+                &state.commits[selected_idx].commit.commit_hash
+            };
+            if use_filtered {
+                let mgr = state.filtered_graph_image_manager.as_mut().unwrap();
+                mgr.load_spacer_image(hash);
+                if is_vr {
+                    mgr.load_gray_spacer_image(hash);
+                } else {
+                    mgr.load_selected_image(hash);
+                }
+            } else {
+                state.graph_image_manager.load_spacer_image(hash);
+                if is_vr {
+                    state.graph_image_manager.load_gray_spacer_image(hash);
+                } else {
+                    state.graph_image_manager.load_selected_image(hash);
+                }
+            }
+        }
     }
 
     fn render_graph(&self, buf: &mut Buffer, area: Rect, state: &CommitListState<'_>) {
         if area.is_empty() {
             return;
         }
+        let gap = state.inline_detail_height;
         // Virtual row: render a simple * in the graph area
         if state.has_virtual_row() && state.offset == 0 {
             let y = area.top();
             let style = if state.selected == 0 {
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(VIRTUAL_ROW_COLOR)
                     .bg(self.ctx.color_theme.list_selected_bg)
             } else {
-                Style::default().fg(Color::Yellow)
+                Style::default().fg(VIRTUAL_ROW_COLOR)
             };
             buf[(area.left(), y)].set_symbol(" ").set_style(style);
             if area.width > 1 {
-                buf[(area.left() + 1, y)].set_symbol("*").set_style(style);
+                buf[(area.left() + 1, y)].set_symbol("◎").set_style(style);
             }
             for w in 2..area.width {
                 buf[(area.left() + w, y)].set_symbol(" ").set_style(style);
@@ -1331,38 +1404,126 @@ impl CommitList<'_> {
         }
         self.rendering_commit_info_iter(state)
             .for_each(|(display_i, _real_i, commit_info)| {
-                buf[(area.left(), area.top() + display_i as u16)]
-                    .set_symbol(state.encoded_image(commit_info));
-
-                // width - 1 for right pad
-                for w in 1..area.width - 1 {
-                    buf[(area.left() + w, area.top() + display_i as u16)].set_skip(true);
+                let y_offset = if gap > 0 && display_i > state.selected {
+                    gap
+                } else {
+                    0
+                };
+                let y = area.top() + display_i as u16 + y_offset;
+                if y < area.bottom() {
+                    // Use selected image for the selected row when gap is active
+                    let image = if gap > 0 && display_i == state.selected {
+                        state
+                            .selected_image()
+                            .unwrap_or_else(|| state.encoded_image(commit_info))
+                    } else {
+                        state.encoded_image(commit_info)
+                    };
+                    buf[(area.left(), y)].set_symbol(image);
+                    for w in 1..area.width - 1 {
+                        buf[(area.left() + w, y)].set_skip(true);
+                    }
                 }
             });
+
+        // Render spacer images in the gap rows
+        if gap > 0 {
+            if state.is_virtual_row_selected() {
+                // Virtual row: render gray spacer without background
+                let spacer = state.gray_spacer_image();
+                for gap_row in 0..gap {
+                    let y = area.top() + state.selected as u16 + 1 + gap_row;
+                    if y < area.bottom() {
+                        if let Some(spacer) = spacer {
+                            buf[(area.left(), y)].set_symbol(spacer);
+                            for w in 1..area.width - 1 {
+                                buf[(area.left() + w, y)].set_skip(true);
+                            }
+                        } else {
+                            for w in 0..area.width {
+                                buf[(area.left() + w, y)].set_symbol(" ");
+                            }
+                        }
+                    }
+                }
+            } else {
+                // Normal commit: use plain spacer without background
+                let selected_idx = state.current_selected_index();
+                let spacer_commit = &state.commits[selected_idx];
+                let spacer = state.spacer_image(spacer_commit);
+                for gap_row in 0..gap {
+                    let y = area.top() + state.selected as u16 + 1 + gap_row;
+                    if y < area.bottom() {
+                        buf[(area.left(), y)].set_symbol(spacer);
+                        for w in 1..area.width - 1 {
+                            buf[(area.left() + w, y)].set_skip(true);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     fn render_marker(&self, buf: &mut Buffer, area: Rect, state: &CommitListState<'_>) {
         if area.is_empty() {
             return;
         }
+        let gap = state.inline_detail_height;
         let mut items: Vec<ListItem> = Vec::new();
         if state.has_virtual_row() && state.offset == 0 {
-            let mut line = Line::from("│".fg(Color::Yellow));
+            let mut line = Line::from("│".fg(VIRTUAL_ROW_COLOR));
             if state.selected == 0 {
                 line = line
                     .bg(self.ctx.color_theme.list_selected_bg)
                     .fg(self.ctx.color_theme.list_selected_fg);
             }
             items.push(ListItem::new(line));
+            // Insert marker gap when virtual row is selected
+            if gap > 0 && state.selected == 0 {
+                for _ in 0..gap {
+                    items.push(ListItem::new("│".fg(VIRTUAL_ROW_COLOR)));
+                }
+            }
         }
-        items.extend(
-            self.rendering_commit_info_iter(state)
-                .map(|(_, _, commit_info)| {
-                    let color = state.marker_color(commit_info);
-                    ListItem::new("│".fg(color))
-                }),
-        );
+        self.rendering_commit_info_iter(state)
+            .for_each(|(display_i, _, commit_info)| {
+                let color = state.marker_color(commit_info);
+                let mut line = Line::from("│".fg(color));
+                if display_i == state.selected && gap > 0 {
+                    line = line.bg(self.ctx.color_theme.list_selected_bg);
+                }
+                items.push(ListItem::new(line));
+                if gap > 0 && display_i == state.selected && !state.is_virtual_row_selected() {
+                    let selected_idx = state.current_selected_index();
+                    let sel_color = state.marker_color(&state.commits[selected_idx]);
+                    for _ in 0..gap {
+                        items.push(ListItem::new("│".fg(sel_color)));
+                    }
+                }
+            });
         Widget::render(List::new(items), area, buf)
+    }
+
+    fn insert_gap<'b>(
+        items: &mut Vec<ListItem<'b>>,
+        state: &CommitListState<'_>,
+        is_virtual: bool,
+        display_i: usize,
+    ) {
+        let gap = state.inline_detail_height;
+        if gap == 0 {
+            return;
+        }
+        let should_insert = if is_virtual {
+            state.is_virtual_row_selected()
+        } else {
+            display_i == state.selected && !state.is_virtual_row_selected()
+        };
+        if should_insert {
+            for _ in 0..gap {
+                items.push(ListItem::new(Line::raw("")));
+            }
+        }
     }
 
     fn render_subject(&self, buf: &mut Buffer, area: Rect, state: &CommitListState<'_>) {
@@ -1378,13 +1539,14 @@ impl CommitList<'_> {
             let spans = vec![Span::styled(
                 text,
                 Style::default()
-                    .fg(Color::Yellow)
+                    .fg(VIRTUAL_ROW_COLOR)
                     .add_modifier(Modifier::ITALIC),
             )];
             items.push(self.to_commit_list_item(0, spans, state));
+            Self::insert_gap(&mut items, state, true, 0);
         }
-        items.extend(self.rendering_commit_info_iter(state).map(
-            |(display_i, real_i, commit_info)| {
+        self.rendering_commit_info_iter(state)
+            .for_each(|(display_i, real_i, commit_info)| {
                 let mut spans = refs_spans(
                     commit_info,
                     &state.head,
@@ -1419,9 +1581,9 @@ impl CommitList<'_> {
 
                     spans.extend(sub_spans)
                 }
-                self.to_commit_list_item(display_i, spans, state)
-            },
-        ));
+                items.push(self.to_commit_list_item(display_i, spans, state));
+                Self::insert_gap(&mut items, state, false, display_i);
+            });
         Widget::render(List::new(items), area, buf);
     }
 
@@ -1434,35 +1596,34 @@ impl CommitList<'_> {
         if state.has_virtual_row() && state.offset == 0 {
             items.push(self.to_commit_list_item(
                 0,
-                vec!["-".fg(self.ctx.color_theme.list_hash_fg)],
+                vec!["-".fg(VIRTUAL_ROW_COLOR)],
                 state,
             ));
+            Self::insert_gap(&mut items, state, true, 0);
         }
-        items.extend(
-            self.rendering_commit_iter(state)
-                .map(|(display_i, real_i, commit)| {
-                    let truncate = console::measure_text_width(&commit.author_name) > max_width;
-                    let name = if truncate {
-                        console::truncate_str(&commit.author_name, max_width, ELLIPSIS).to_string()
-                    } else {
-                        commit.author_name.to_string()
-                    };
-                    let spans = if let Some(pos) = state.search_matches[real_i].author_name.clone()
-                    {
-                        highlighted_spans(
-                            name.into(),
-                            pos,
-                            self.ctx.color_theme.list_name_fg,
-                            Modifier::empty(),
-                            &self.ctx.color_theme,
-                            truncate,
-                        )
-                    } else {
-                        vec![name.fg(self.ctx.color_theme.list_name_fg)]
-                    };
-                    self.to_commit_list_item(display_i, spans, state)
-                }),
-        );
+        self.rendering_commit_iter(state)
+            .for_each(|(display_i, real_i, commit)| {
+                let truncate = console::measure_text_width(&commit.author_name) > max_width;
+                let name = if truncate {
+                    console::truncate_str(&commit.author_name, max_width, ELLIPSIS).to_string()
+                } else {
+                    commit.author_name.to_string()
+                };
+                let spans = if let Some(pos) = state.search_matches[real_i].author_name.clone() {
+                    highlighted_spans(
+                        name.into(),
+                        pos,
+                        self.ctx.color_theme.list_name_fg,
+                        Modifier::empty(),
+                        &self.ctx.color_theme,
+                        truncate,
+                    )
+                } else {
+                    vec![name.fg(self.ctx.color_theme.list_name_fg)]
+                };
+                items.push(self.to_commit_list_item(display_i, spans, state));
+                Self::insert_gap(&mut items, state, false, display_i);
+            });
         Widget::render(List::new(items), area, buf);
     }
 
@@ -1474,30 +1635,29 @@ impl CommitList<'_> {
         if state.has_virtual_row() && state.offset == 0 {
             items.push(self.to_commit_list_item(
                 0,
-                vec!["-".fg(self.ctx.color_theme.list_hash_fg)],
+                vec!["-".fg(VIRTUAL_ROW_COLOR)],
                 state,
             ));
+            Self::insert_gap(&mut items, state, true, 0);
         }
-        items.extend(
-            self.rendering_commit_iter(state)
-                .map(|(display_i, real_i, commit)| {
-                    let hash = commit.commit_hash.as_short_hash();
-                    let spans = if let Some(pos) = state.search_matches[real_i].commit_hash.clone()
-                    {
-                        highlighted_spans(
-                            hash.into(),
-                            pos,
-                            self.ctx.color_theme.list_hash_fg,
-                            Modifier::empty(),
-                            &self.ctx.color_theme,
-                            false,
-                        )
-                    } else {
-                        vec![hash.fg(self.ctx.color_theme.list_hash_fg)]
-                    };
-                    self.to_commit_list_item(display_i, spans, state)
-                }),
-        );
+        self.rendering_commit_iter(state)
+            .for_each(|(display_i, real_i, commit)| {
+                let hash = commit.commit_hash.as_short_hash();
+                let spans = if let Some(pos) = state.search_matches[real_i].commit_hash.clone() {
+                    highlighted_spans(
+                        hash.into(),
+                        pos,
+                        self.ctx.color_theme.list_hash_fg,
+                        Modifier::empty(),
+                        &self.ctx.color_theme,
+                        false,
+                    )
+                } else {
+                    vec![hash.fg(self.ctx.color_theme.list_hash_fg)]
+                };
+                items.push(self.to_commit_list_item(display_i, spans, state));
+                Self::insert_gap(&mut items, state, false, display_i);
+            });
         Widget::render(List::new(items), area, buf);
     }
 
@@ -1509,30 +1669,30 @@ impl CommitList<'_> {
         if state.has_virtual_row() && state.offset == 0 {
             items.push(self.to_commit_list_item(
                 0,
-                vec!["-".fg(self.ctx.color_theme.list_date_fg)],
+                vec!["-".fg(VIRTUAL_ROW_COLOR)],
                 state,
             ));
+            Self::insert_gap(&mut items, state, true, 0);
         }
-        items.extend(
-            self.rendering_commit_iter(state)
-                .map(|(display_i, _real_i, commit)| {
-                    let date = &commit.author_date;
-                    let date_str = if self.ctx.ui_config.list.date_local {
-                        let local = date.with_timezone(&chrono::Local);
-                        local
-                            .format(&self.ctx.ui_config.list.date_format)
-                            .to_string()
-                    } else {
-                        date.format(&self.ctx.ui_config.list.date_format)
-                            .to_string()
-                    };
-                    self.to_commit_list_item(
-                        display_i,
-                        vec![date_str.fg(self.ctx.color_theme.list_date_fg)],
-                        state,
-                    )
-                }),
-        );
+        self.rendering_commit_iter(state)
+            .for_each(|(display_i, _real_i, commit)| {
+                let date = &commit.author_date;
+                let date_str = if self.ctx.ui_config.list.date_local {
+                    let local = date.with_timezone(&chrono::Local);
+                    local
+                        .format(&self.ctx.ui_config.list.date_format)
+                        .to_string()
+                } else {
+                    date.format(&self.ctx.ui_config.list.date_format)
+                        .to_string()
+                };
+                items.push(self.to_commit_list_item(
+                    display_i,
+                    vec![date_str.fg(self.ctx.color_theme.list_date_fg)],
+                    state,
+                ));
+                Self::insert_gap(&mut items, state, false, display_i);
+            });
         Widget::render(List::new(items), area, buf);
     }
 
