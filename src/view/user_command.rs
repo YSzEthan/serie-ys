@@ -283,5 +283,5 @@ fn build_user_command_output_lines(
                 .map(|t| t.into_iter().collect())
                 .map_err(|e| e.to_string())
         })
-        .map_err(|err| format!("Failed to execute command: {}", err))
+        .map_err(|err| format!("Failed to execute command: {err}"))
 }
