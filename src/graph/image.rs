@@ -80,7 +80,7 @@ impl<'a> GraphImageManager<'a> {
         };
         let mut m = GraphImageManager {
             encoded_image_map: LruCache::new(cache_cap),
-            spacer_image_map: LruCache::new(cache_cap),
+            spacer_image_map: LruCache::new(NonZeroUsize::new(4).unwrap()),
             selected_image: None,
             selected_bg_color,
             virtual_row_image: None,
@@ -138,7 +138,7 @@ impl<'a> GraphImageManager<'a> {
     }
 
     pub fn load_encoded_image(&mut self, commit_hash: &CommitHash) {
-        if self.encoded_image_map.contains(commit_hash) {
+        if self.encoded_image_map.get(commit_hash).is_some() {
             return;
         }
         let is_head = self
@@ -158,7 +158,7 @@ impl<'a> GraphImageManager<'a> {
     }
 
     pub fn load_spacer_image(&mut self, commit_hash: &CommitHash) {
-        if self.spacer_image_map.contains(commit_hash) {
+        if self.spacer_image_map.get(commit_hash).is_some() {
             return;
         }
         let (_, pos_y) = self.graph.commit_pos_map[commit_hash];

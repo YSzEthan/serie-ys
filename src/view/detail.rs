@@ -328,7 +328,7 @@ impl<'a> DetailView<'a> {
         } else {
             let selected = commit_list_state.selected_commit_hash().clone();
             let (commit, changes) = repository.commit_detail(&selected);
-            let refs = repository.refs(&selected).into_iter().cloned().collect();
+            let (_, refs) = repository.commit_refs(&selected);
             self.content = DetailContent::Commit {
                 commit: Box::new(commit.clone()),
                 changes,

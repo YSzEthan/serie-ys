@@ -72,7 +72,7 @@ impl EdgeType {
 }
 
 pub fn calc_graph<'a>(repository: &'a Repository) -> Graph<'a> {
-    let commits = repository.all_commits();
+    let commits: Vec<&Commit> = repository.all_commits().iter().collect();
 
     let commit_pos_map = calc_commit_positions(&commits, repository);
     let (graph_edges, max_pos_x) = calc_edges(&commit_pos_map, &commits, repository);
@@ -524,9 +524,9 @@ pub fn calc_graph_filtered<'a>(
     repository: &'a Repository,
     visible_hashes: &FxHashSet<CommitHash>,
 ) -> Graph<'a> {
-    let all_commits = repository.all_commits();
-    let commits: Vec<&Commit> = all_commits
-        .into_iter()
+    let commits: Vec<&Commit> = repository
+        .all_commits()
+        .iter()
         .filter(|c| visible_hashes.contains(&c.commit_hash))
         .collect();
 

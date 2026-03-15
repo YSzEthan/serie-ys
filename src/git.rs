@@ -199,8 +199,8 @@ impl Repository {
             .map(|&i| &self.commits[i])
     }
 
-    pub fn all_commits(&self) -> Vec<&Commit> {
-        self.commits.iter().collect()
+    pub fn all_commits(&self) -> &[Commit] {
+        &self.commits
     }
 
     pub fn parents_hash(&self, commit_hash: &CommitHash) -> Vec<&CommitHash> {
