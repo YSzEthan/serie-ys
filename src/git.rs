@@ -415,7 +415,7 @@ fn load_commits_format() -> String {
 }
 
 fn parse_iso_date(s: &str) -> DateTime<FixedOffset> {
-    DateTime::parse_from_rfc3339(s).unwrap()
+    DateTime::parse_from_rfc3339(s).expect("git --format=%aI should always produce valid RFC3339")
 }
 
 fn parse_parent_commit_hashes(s: &str) -> Vec<CommitHash> {

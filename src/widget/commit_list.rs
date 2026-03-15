@@ -2,7 +2,6 @@ use std::rc::Rc;
 
 use fuzzy_matcher::{skim::SkimMatcherV2, FuzzyMatcher};
 use laurier::highlight::highlight_matched_text;
-use once_cell::sync::Lazy;
 use ratatui::{
     buffer::Buffer,
     crossterm::event::{Event, KeyEvent},
@@ -12,6 +11,7 @@ use ratatui::{
     widgets::{List, ListItem, Paragraph, StatefulWidget, Widget},
 };
 use rustc_hash::{FxHashMap, FxHashSet};
+use std::sync::LazyLock;
 use tui_input::{backend::crossterm::EventHandler, Input};
 
 use crate::{
@@ -22,7 +22,8 @@ use crate::{
     graph::GraphImageManager,
 };
 
-static FUZZY_MATCHER: Lazy<SkimMatcherV2> = Lazy::new(|| SkimMatcherV2::default().respect_case());
+static FUZZY_MATCHER: LazyLock<SkimMatcherV2> =
+    LazyLock::new(|| SkimMatcherV2::default().respect_case());
 
 const ELLIPSIS: &str = "...";
 const VIRTUAL_ROW_COLOR: Color = Color::Gray;
