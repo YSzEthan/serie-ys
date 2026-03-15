@@ -306,14 +306,14 @@ pub fn run() -> Result<()> {
         image_protocol,
     });
 
-    let ec = event::EventController::init();
+    let mut ec = event::EventController::init();
     let mut refresh_view_context = None;
     let mut terminal = None;
 
     // Start file watcher on .git directory for auto-refresh
     let git_dir = Path::new(&args.path).join(".git");
     if git_dir.is_dir() {
-        event::start_git_watcher(ec.sender(), &git_dir);
+        ec.start_git_watcher(&git_dir);
     }
 
     let ret = loop {

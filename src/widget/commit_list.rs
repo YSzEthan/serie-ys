@@ -1624,11 +1624,7 @@ impl CommitList<'_> {
         }
         let mut items: Vec<ListItem> = Vec::new();
         if state.has_virtual_row() && state.offset == 0 {
-            items.push(self.to_commit_list_item(
-                0,
-                vec!["-".fg(VIRTUAL_ROW_COLOR)],
-                state,
-            ));
+            items.push(self.to_commit_list_item(0, vec!["-".fg(VIRTUAL_ROW_COLOR)], state));
             Self::insert_gap(&mut items, state, true, 0);
         }
         self.rendering_commit_iter(state)
@@ -1663,11 +1659,7 @@ impl CommitList<'_> {
         }
         let mut items: Vec<ListItem> = Vec::new();
         if state.has_virtual_row() && state.offset == 0 {
-            items.push(self.to_commit_list_item(
-                0,
-                vec!["-".fg(VIRTUAL_ROW_COLOR)],
-                state,
-            ));
+            items.push(self.to_commit_list_item(0, vec!["-".fg(VIRTUAL_ROW_COLOR)], state));
             Self::insert_gap(&mut items, state, true, 0);
         }
         self.rendering_commit_iter(state)
@@ -1697,11 +1689,7 @@ impl CommitList<'_> {
         }
         let mut items: Vec<ListItem> = Vec::new();
         if state.has_virtual_row() && state.offset == 0 {
-            items.push(self.to_commit_list_item(
-                0,
-                vec!["-".fg(VIRTUAL_ROW_COLOR)],
-                state,
-            ));
+            items.push(self.to_commit_list_item(0, vec!["-".fg(VIRTUAL_ROW_COLOR)], state));
             Self::insert_gap(&mut items, state, true, 0);
         }
         self.rendering_commit_iter(state)

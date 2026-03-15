@@ -88,15 +88,22 @@ pub fn calc_graph<'a>(repository: &'a Repository) -> Graph<'a> {
 fn calc_commit_positions(commits: &[&Commit], source: &impl GraphDataSource) -> CommitPosMap {
     let mut commit_pos_map: CommitPosMap = FxHashMap::default();
     let mut commit_line_state: Vec<Option<CommitHash>> = Vec::new();
+    // Reverse index: hash → pos_x for O(1) lookup instead of linear scan
+    let mut hash_to_pos: FxHashMap<CommitHash, usize> = FxHashMap::default();
 
     for (pos_y, commit) in commits.iter().enumerate() {
         let filtered_children_hash = filtered_children_hash(commit, source);
         if filtered_children_hash.is_empty() {
             let pos_x = get_first_vacant_line(&commit_line_state);
-            add_commit_line(commit, &mut commit_line_state, pos_x);
+            add_commit_line(commit, &mut commit_line_state, &mut hash_to_pos, pos_x);
             commit_pos_map.insert(commit.commit_hash.clone(), (pos_x, pos_y));
         } else {
-            let pos_x = update_commit_line(commit, &mut commit_line_state, &filtered_children_hash);
+            let pos_x = update_commit_line(
+                commit,
+                &mut commit_line_state,
+                &mut hash_to_pos,
+                &filtered_children_hash,
+            );
             commit_pos_map.insert(commit.commit_hash.clone(), (pos_x, pos_y));
         }
     }
@@ -125,17 +132,24 @@ fn get_first_vacant_line(commit_line_state: &[Option<CommitHash>]) -> usize {
         .unwrap_or(commit_line_state.len())
 }
 
-fn add_commit_line(commit: &Commit, commit_line_state: &mut Vec<Option<CommitHash>>, pos_x: usize) {
+fn add_commit_line(
+    commit: &Commit,
+    commit_line_state: &mut Vec<Option<CommitHash>>,
+    hash_to_pos: &mut FxHashMap<CommitHash, usize>,
+    pos_x: usize,
+) {
     if commit_line_state.len() <= pos_x {
         commit_line_state.push(Some(commit.commit_hash.clone()));
     } else {
         commit_line_state[pos_x] = Some(commit.commit_hash.clone());
     }
+    hash_to_pos.insert(commit.commit_hash.clone(), pos_x);
 }
 
 fn update_commit_line(
     commit: &Commit,
     commit_line_state: &mut [Option<CommitHash>],
+    hash_to_pos: &mut FxHashMap<CommitHash, usize>,
     target_commit_hashes: &[&CommitHash],
 ) -> usize {
     if commit_line_state.is_empty() {
@@ -143,34 +157,30 @@ fn update_commit_line(
     }
     let mut min_pos_x = commit_line_state.len().saturating_sub(1);
     for target_hash in target_commit_hashes {
-        for (pos_x, commit_hash) in commit_line_state.iter().enumerate() {
-            if let Some(hash) = commit_hash {
-                if hash == *target_hash {
-                    commit_line_state[pos_x] = None;
-                    if min_pos_x > pos_x {
-                        min_pos_x = pos_x;
-                    }
-                    break;
-                }
+        if let Some(pos_x) = hash_to_pos.remove(*target_hash) {
+            commit_line_state[pos_x] = None;
+            if min_pos_x > pos_x {
+                min_pos_x = pos_x;
             }
         }
     }
     commit_line_state[min_pos_x] = Some(commit.commit_hash.clone());
+    hash_to_pos.insert(commit.commit_hash.clone(), min_pos_x);
     min_pos_x
 }
 
 #[derive(Debug, Clone)]
-struct WrappedEdge {
+struct WrappedEdge<'a> {
     edge: Edge,
-    edge_parent_hash: CommitHash,
+    edge_parent_hash: &'a CommitHash,
 }
 
-impl WrappedEdge {
+impl<'a> WrappedEdge<'a> {
     fn new(
         edge_type: EdgeType,
         pos_x: usize,
         line_pos_x: usize,
-        edge_parent_hash: CommitHash,
+        edge_parent_hash: &'a CommitHash,
     ) -> Self {
         Self {
             edge: Edge::new(edge_type, pos_x, line_pos_x),
@@ -196,21 +206,11 @@ fn calc_edges(
 
             if pos_x == child_pos_x {
                 // commit
-                edges[pos_y].push(WrappedEdge::new(EdgeType::Up, pos_x, pos_x, hash.clone()));
+                edges[pos_y].push(WrappedEdge::new(EdgeType::Up, pos_x, pos_x, hash));
                 for y in ((child_pos_y + 1)..pos_y).rev() {
-                    edges[y].push(WrappedEdge::new(
-                        EdgeType::Vertical,
-                        pos_x,
-                        pos_x,
-                        hash.clone(),
-                    ));
+                    edges[y].push(WrappedEdge::new(EdgeType::Vertical, pos_x, pos_x, hash));
                 }
-                edges[child_pos_y].push(WrappedEdge::new(
-                    EdgeType::Down,
-                    pos_x,
-                    pos_x,
-                    hash.clone(),
-                ));
+                edges[child_pos_y].push(WrappedEdge::new(EdgeType::Down, pos_x, pos_x, hash));
             } else {
                 let child_first_parent_hash = &commits[child_pos_y].parent_commit_hashes[0];
                 if *child_first_parent_hash == *hash {
@@ -220,42 +220,42 @@ fn calc_edges(
                             EdgeType::Right,
                             pos_x,
                             child_pos_x,
-                            hash.clone(),
+                            hash,
                         ));
                         for x in (pos_x + 1)..child_pos_x {
                             edges[pos_y].push(WrappedEdge::new(
                                 EdgeType::Horizontal,
                                 x,
                                 child_pos_x,
-                                hash.clone(),
+                                hash,
                             ));
                         }
                         edges[pos_y].push(WrappedEdge::new(
                             EdgeType::RightBottom,
                             child_pos_x,
                             child_pos_x,
-                            hash.clone(),
+                            hash,
                         ));
                     } else {
                         edges[pos_y].push(WrappedEdge::new(
                             EdgeType::Left,
                             pos_x,
                             child_pos_x,
-                            hash.clone(),
+                            hash,
                         ));
                         for x in (child_pos_x + 1)..pos_x {
                             edges[pos_y].push(WrappedEdge::new(
                                 EdgeType::Horizontal,
                                 x,
                                 child_pos_x,
-                                hash.clone(),
+                                hash,
                             ));
                         }
                         edges[pos_y].push(WrappedEdge::new(
                             EdgeType::LeftBottom,
                             child_pos_x,
                             child_pos_x,
-                            hash.clone(),
+                            hash,
                         ));
                     }
                     for y in ((child_pos_y + 1)..pos_y).rev() {
@@ -263,14 +263,14 @@ fn calc_edges(
                             EdgeType::Vertical,
                             child_pos_x,
                             child_pos_x,
-                            hash.clone(),
+                            hash,
                         ));
                     }
                     edges[child_pos_y].push(WrappedEdge::new(
                         EdgeType::Down,
                         child_pos_x,
                         child_pos_x,
-                        hash.clone(),
+                        hash,
                     ));
                 } else {
                     // merge
@@ -287,14 +287,9 @@ fn calc_edges(
         if !commit.parent_commit_hashes.is_empty()
             && !commit_pos_map.contains_key(&commit.parent_commit_hashes[0])
         {
-            edges[pos_y].push(WrappedEdge::new(EdgeType::Down, pos_x, pos_x, hash.clone()));
+            edges[pos_y].push(WrappedEdge::new(EdgeType::Down, pos_x, pos_x, hash));
             ((pos_y + 1)..commits.len()).for_each(|y| {
-                edges[y].push(WrappedEdge::new(
-                    EdgeType::Vertical,
-                    pos_x,
-                    pos_x,
-                    hash.clone(),
-                ));
+                edges[y].push(WrappedEdge::new(EdgeType::Vertical, pos_x, pos_x, hash));
             });
         }
     }
@@ -331,7 +326,7 @@ fn calc_edges(
                             .iter()
                             .filter(|e| e.edge.pos_x == pos_x)
                             .filter(|e| matches!(e.edge.edge_type, EdgeType::Vertical))
-                            .any(|e| &e.edge_parent_hash != hash)
+                            .any(|e| e.edge_parent_hash != hash)
                         {
                             skip_judge_overlap = false;
                             break;
@@ -350,7 +345,7 @@ fn calc_edges(
                             }
                             for edge in &edges[y] {
                                 if edge.edge.pos_x >= new_pos_x
-                                    && &edge.edge_parent_hash != hash
+                                    && edge.edge_parent_hash != hash
                                     && matches!(edge.edge.edge_type, EdgeType::Vertical)
                                 {
                                     overlap = true;
@@ -364,114 +359,99 @@ fn calc_edges(
 
                     if overlap {
                         // detour
-                        edges[pos_y].push(WrappedEdge::new(
-                            EdgeType::Right,
-                            pos_x,
-                            pos_x,
-                            hash.clone(),
-                        ));
+                        edges[pos_y].push(WrappedEdge::new(EdgeType::Right, pos_x, pos_x, hash));
                         for x in (pos_x + 1)..new_pos_x {
                             edges[pos_y].push(WrappedEdge::new(
                                 EdgeType::Horizontal,
                                 x,
                                 pos_x,
-                                hash.clone(),
+                                hash,
                             ));
                         }
                         edges[pos_y].push(WrappedEdge::new(
                             EdgeType::RightBottom,
                             new_pos_x,
                             pos_x,
-                            hash.clone(),
+                            hash,
                         ));
                         for y in ((child_pos_y + 1)..pos_y).rev() {
                             edges[y].push(WrappedEdge::new(
                                 EdgeType::Vertical,
                                 new_pos_x,
                                 pos_x,
-                                hash.clone(),
+                                hash,
                             ));
                         }
                         edges[child_pos_y].push(WrappedEdge::new(
                             EdgeType::RightTop,
                             new_pos_x,
                             pos_x,
-                            hash.clone(),
+                            hash,
                         ));
                         for x in (child_pos_x + 1)..new_pos_x {
                             edges[child_pos_y].push(WrappedEdge::new(
                                 EdgeType::Horizontal,
                                 x,
                                 pos_x,
-                                hash.clone(),
+                                hash,
                             ));
                         }
                         edges[child_pos_y].push(WrappedEdge::new(
                             EdgeType::Right,
                             child_pos_x,
                             pos_x,
-                            hash.clone(),
+                            hash,
                         ));
 
                         if max_pos_x < new_pos_x {
                             max_pos_x = new_pos_x;
                         }
                     } else {
-                        edges[pos_y].push(WrappedEdge::new(
-                            EdgeType::Up,
-                            pos_x,
-                            pos_x,
-                            hash.clone(),
-                        ));
+                        edges[pos_y].push(WrappedEdge::new(EdgeType::Up, pos_x, pos_x, hash));
                         for y in ((child_pos_y + 1)..pos_y).rev() {
-                            edges[y].push(WrappedEdge::new(
-                                EdgeType::Vertical,
-                                pos_x,
-                                pos_x,
-                                hash.clone(),
-                            ));
+                            edges[y].push(WrappedEdge::new(EdgeType::Vertical, pos_x, pos_x, hash));
                         }
                         if pos_x < child_pos_x {
                             edges[child_pos_y].push(WrappedEdge::new(
                                 EdgeType::LeftTop,
                                 pos_x,
                                 pos_x,
-                                hash.clone(),
+                                hash,
                             ));
                             for x in (pos_x + 1)..child_pos_x {
                                 edges[child_pos_y].push(WrappedEdge::new(
                                     EdgeType::Horizontal,
                                     x,
                                     pos_x,
-                                    hash.clone(),
+                                    hash,
                                 ));
                             }
                             edges[child_pos_y].push(WrappedEdge::new(
                                 EdgeType::Left,
                                 child_pos_x,
                                 pos_x,
-                                hash.clone(),
+                                hash,
                             ));
                         } else {
                             edges[child_pos_y].push(WrappedEdge::new(
                                 EdgeType::RightTop,
                                 pos_x,
                                 pos_x,
-                                hash.clone(),
+                                hash,
                             ));
                             for x in (child_pos_x + 1)..pos_x {
                                 edges[child_pos_y].push(WrappedEdge::new(
                                     EdgeType::Horizontal,
                                     x,
                                     pos_x,
-                                    hash.clone(),
+                                    hash,
                                 ));
                             }
                             edges[child_pos_y].push(WrappedEdge::new(
                                 EdgeType::Right,
                                 child_pos_x,
                                 pos_x,
-                                hash.clone(),
+                                hash,
                             ));
                         }
                     }

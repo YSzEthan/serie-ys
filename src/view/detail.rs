@@ -330,7 +330,7 @@ impl<'a> DetailView<'a> {
             let (commit, changes) = repository.commit_detail(&selected);
             let refs = repository.refs(&selected).into_iter().cloned().collect();
             self.content = DetailContent::Commit {
-                commit: Box::new(commit),
+                commit: Box::new(commit.clone()),
                 changes,
                 refs,
             };

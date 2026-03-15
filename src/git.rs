@@ -122,7 +122,7 @@ pub enum SortCommit {
     Topological,
 }
 
-type CommitMap = FxHashMap<CommitHash, Commit>;
+type CommitIndex = FxHashMap<CommitHash, usize>;
 type CommitsMap = FxHashMap<CommitHash, Vec<CommitHash>>;
 
 type RefMap = FxHashMap<CommitHash, Vec<Ref>>;
@@ -130,15 +130,13 @@ type RefMap = FxHashMap<CommitHash, Vec<Ref>>;
 #[derive(Debug)]
 pub struct Repository {
     path: PathBuf,
-    commit_map: CommitMap,
+    commits: Vec<Commit>,
+    commit_index: CommitIndex,
 
-    parents_map: CommitsMap,
     children_map: CommitsMap,
 
     ref_map: RefMap,
     head: Head,
-    // to preserve order of the original commits from `git log`, we store the commit hashes
-    commit_hashes: Vec<CommitHash>,
     working_changes: WorkingChanges,
 }
 
@@ -155,10 +153,9 @@ impl Repository {
         }
 
         let commits = merge_stashes_to_commits(commits, stashes);
-        let commit_hashes = commits.iter().map(|c| c.commit_hash.clone()).collect();
 
-        let (parents_map, children_map) = build_commits_maps(&commits);
-        let commit_map = to_commit_map(commits);
+        let children_map = build_children_map(&commits);
+        let commit_index = build_commit_index(&commits);
 
         let stash_ref_map = load_stashes_as_refs(path);
         merge_ref_maps(&mut ref_map, stash_ref_map);
@@ -167,53 +164,48 @@ impl Repository {
 
         Ok(Self::new(
             path.to_path_buf(),
-            commit_map,
-            parents_map,
+            commits,
+            commit_index,
             children_map,
             ref_map,
             head,
-            commit_hashes,
             working_changes,
         ))
     }
 
     pub fn new(
         path: PathBuf,
-        commit_map: CommitMap,
-        parents_map: CommitsMap,
+        commits: Vec<Commit>,
+        commit_index: CommitIndex,
         children_map: CommitsMap,
         ref_map: RefMap,
         head: Head,
-        commit_hashes: Vec<CommitHash>,
         working_changes: WorkingChanges,
     ) -> Self {
         Self {
             path,
-            commit_map,
-            parents_map,
+            commits,
+            commit_index,
             children_map,
             ref_map,
             head,
-            commit_hashes,
             working_changes,
         }
     }
 
     pub fn commit(&self, commit_hash: &CommitHash) -> Option<&Commit> {
-        self.commit_map.get(commit_hash)
+        self.commit_index
+            .get(commit_hash)
+            .map(|&i| &self.commits[i])
     }
 
     pub fn all_commits(&self) -> Vec<&Commit> {
-        self.commit_hashes
-            .iter()
-            .filter_map(|hash| self.commit(hash))
-            .collect()
+        self.commits.iter().collect()
     }
 
     pub fn parents_hash(&self, commit_hash: &CommitHash) -> Vec<&CommitHash> {
-        self.parents_map
-            .get(commit_hash)
-            .map(|hs| hs.iter().collect::<Vec<&CommitHash>>())
+        self.commit(commit_hash)
+            .map(|c| c.parent_commit_hashes.iter().collect())
             .unwrap_or_default()
     }
 
@@ -251,14 +243,21 @@ impl Repository {
         &self.working_changes
     }
 
-    pub fn commit_detail(&self, commit_hash: &CommitHash) -> (Commit, Vec<FileChange>) {
-        let commit = self.commit(commit_hash).unwrap().clone();
+    pub fn commit_detail(&self, commit_hash: &CommitHash) -> (&Commit, Vec<FileChange>) {
+        let commit = self.commit(commit_hash).unwrap();
         let changes = if commit.parent_commit_hashes.is_empty() {
             get_initial_commit_additions(&self.path, commit_hash)
         } else {
             get_diff_summary(&self.path, commit_hash)
         };
         (commit, changes)
+    }
+
+    /// Returns the commit and its refs without spawning git subprocesses for file changes.
+    pub fn commit_refs(&self, commit_hash: &CommitHash) -> (&Commit, Vec<Ref>) {
+        let commit = self.commit(commit_hash).unwrap();
+        let refs = self.refs(commit_hash).into_iter().cloned().collect();
+        (commit, refs)
     }
 }
 
@@ -338,31 +337,41 @@ fn load_all_commits(
         let bytes = bytes.unwrap();
         let s = String::from_utf8_lossy(&bytes);
 
-        let parts: Vec<&str> = s.split('\x1f').collect();
-        if parts.len() != 10 {
-            panic!("unexpected number of parts: {} [{}]", parts.len(), s);
+        if let Some(commit) = parse_commit_line(&s, CommitType::Commit) {
+            commits.push(commit);
         }
-
-        let commit = Commit {
-            commit_hash: parts[0].into(),
-            author_name: parts[1].into(),
-            author_email: parts[2].into(),
-            author_date: parse_iso_date(parts[3]),
-            committer_name: parts[4].into(),
-            committer_email: parts[5].into(),
-            committer_date: parse_iso_date(parts[6]),
-            subject: parts[7].into(),
-            body: parts[8].into(),
-            parent_commit_hashes: parse_parent_commit_hashes(parts[9]),
-            commit_type: CommitType::Commit,
-        };
-
-        commits.push(commit);
     }
 
     process.wait().unwrap();
 
     commits
+}
+
+fn parse_commit_line(s: &str, commit_type: CommitType) -> Option<Commit> {
+    let mut parts = s.splitn(10, '\x1f');
+    let commit_hash = parts.next()?;
+    let author_name = parts.next()?;
+    let author_email = parts.next()?;
+    let author_date = parts.next()?;
+    let committer_name = parts.next()?;
+    let committer_email = parts.next()?;
+    let committer_date = parts.next()?;
+    let subject = parts.next()?;
+    let body = parts.next()?;
+    let parents = parts.next()?;
+    Some(Commit {
+        commit_hash: commit_hash.into(),
+        author_name: author_name.into(),
+        author_email: author_email.into(),
+        author_date: parse_iso_date(author_date),
+        committer_name: committer_name.into(),
+        committer_email: committer_email.into(),
+        committer_date: parse_iso_date(committer_date),
+        subject: subject.into(),
+        body: body.into(),
+        parent_commit_hashes: parse_parent_commit_hashes(parents),
+        commit_type,
+    })
 }
 
 fn load_all_stashes(path: &Path) -> Vec<Commit> {
@@ -388,26 +397,9 @@ fn load_all_stashes(path: &Path) -> Vec<Commit> {
         let bytes = bytes.unwrap();
         let s = String::from_utf8_lossy(&bytes);
 
-        let parts: Vec<&str> = s.split('\x1f').collect();
-        if parts.len() != 10 {
-            panic!("unexpected number of parts: {} [{}]", parts.len(), s);
+        if let Some(commit) = parse_commit_line(&s, CommitType::Stash) {
+            commits.push(commit);
         }
-
-        let commit = Commit {
-            commit_hash: parts[0].into(),
-            author_name: parts[1].into(),
-            author_email: parts[2].into(),
-            author_date: parse_iso_date(parts[3]),
-            committer_name: parts[4].into(),
-            committer_email: parts[5].into(),
-            committer_date: parse_iso_date(parts[6]),
-            subject: parts[7].into(),
-            body: parts[8].into(),
-            parent_commit_hashes: parse_parent_commit_hashes(parts[9]),
-            commit_type: CommitType::Stash,
-        };
-
-        commits.push(commit);
     }
 
     cmd.wait().unwrap();
@@ -433,30 +425,25 @@ fn parse_parent_commit_hashes(s: &str) -> Vec<CommitHash> {
     s.split(' ').map(|s| s.into()).collect()
 }
 
-fn build_commits_maps(commits: &Vec<Commit>) -> (CommitsMap, CommitsMap) {
-    let mut parents_map: CommitsMap = FxHashMap::default();
+fn build_children_map(commits: &[Commit]) -> CommitsMap {
     let mut children_map: CommitsMap = FxHashMap::default();
     for commit in commits {
         let hash = &commit.commit_hash;
         for parent_hash in &commit.parent_commit_hashes {
-            parents_map
-                .entry(hash.clone())
-                .or_default()
-                .push(parent_hash.clone());
             children_map
                 .entry(parent_hash.clone())
                 .or_default()
                 .push(hash.clone());
         }
     }
-
-    (parents_map, children_map)
+    children_map
 }
 
-fn to_commit_map(commits: Vec<Commit>) -> CommitMap {
+fn build_commit_index(commits: &[Commit]) -> CommitIndex {
     commits
-        .into_iter()
-        .map(|commit| (commit.commit_hash.clone(), commit))
+        .iter()
+        .enumerate()
+        .map(|(i, commit)| (commit.commit_hash.clone(), i))
         .collect()
 }
 
@@ -505,13 +492,9 @@ fn load_refs(path: &Path) -> (RefMap, Head) {
     for line in reader.lines() {
         let line = line.unwrap();
 
-        let parts: Vec<&str> = line.split(' ').collect();
-        if parts.len() != 2 {
-            panic!("unexpected number of parts: {} [{}]", parts.len(), line);
-        }
-
-        let hash = parts[0];
-        let refs = parts[1];
+        let Some((hash, refs)) = line.split_once(' ') else {
+            panic!("unexpected format: [{}]", line);
+        };
 
         if refs == "HEAD" {
             head = if let Some(branch) = get_current_branch(path) {
@@ -562,14 +545,12 @@ fn load_stashes_as_refs(path: &Path) -> RefMap {
     for line in reader.lines() {
         let line = line.unwrap();
 
-        let parts: Vec<&str> = line.split('\x1f').collect();
-        if parts.len() != 3 {
-            panic!("unexpected number of parts: {} [{}]", parts.len(), line);
-        }
-
-        let name = parts[0];
-        let hash = parts[1];
-        let subject = parts[2];
+        let mut parts = line.splitn(3, '\x1f');
+        let Some(name) = parts.next() else { continue };
+        let Some(hash) = parts.next() else { continue };
+        let Some(subject) = parts.next() else {
+            continue;
+        };
 
         let r = Ref::Stash {
             name: name.into(),

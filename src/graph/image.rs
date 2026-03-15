@@ -1,9 +1,11 @@
 use std::{
     fmt::{self, Debug, Formatter},
     io::Cursor,
+    num::NonZeroUsize,
     rc::Rc,
 };
 
+use lru::LruCache;
 use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use rustc_hash::{FxHashMap, FxHashSet};
 
@@ -23,10 +25,11 @@ pub enum GraphStyle {
     Angular,
 }
 
-#[derive(Debug)]
+const IMAGE_CACHE_CAPACITY: usize = 512;
+
 pub struct GraphImageManager<'a> {
-    encoded_image_map: FxHashMap<CommitHash, String>,
-    spacer_image_map: FxHashMap<CommitHash, String>,
+    encoded_image_map: LruCache<CommitHash, String>,
+    spacer_image_map: LruCache<CommitHash, String>,
 
     selected_image: Option<(CommitHash, String)>,
     selected_bg_color: image::Rgba<u8>,
@@ -46,6 +49,15 @@ pub struct GraphImageManager<'a> {
     head_commit_hash: Option<CommitHash>,
 }
 
+impl Debug for GraphImageManager<'_> {
+    fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
+        f.debug_struct("GraphImageManager")
+            .field("encoded_image_map_len", &self.encoded_image_map.len())
+            .field("spacer_image_map_len", &self.spacer_image_map.len())
+            .finish_non_exhaustive()
+    }
+}
+
 impl<'a> GraphImageManager<'a> {
     pub fn new(
         graph: Rc<Graph<'a>>,
@@ -60,9 +72,15 @@ impl<'a> GraphImageManager<'a> {
         let image_params = ImageParams::new(graph_color_set, cell_width_type);
         let drawing_pixels = DrawingPixels::new(&image_params);
 
+        let cache_cap = if preload {
+            // Preload mode: size cache to fit all commits
+            NonZeroUsize::new(graph.commits.len().max(1)).unwrap()
+        } else {
+            NonZeroUsize::new(IMAGE_CACHE_CAPACITY).unwrap()
+        };
         let mut m = GraphImageManager {
-            encoded_image_map: FxHashMap::default(),
-            spacer_image_map: FxHashMap::default(),
+            encoded_image_map: LruCache::new(cache_cap),
+            spacer_image_map: LruCache::new(cache_cap),
             selected_image: None,
             selected_bg_color,
             virtual_row_image: None,
@@ -85,7 +103,7 @@ impl<'a> GraphImageManager<'a> {
     }
 
     pub fn encoded_image(&self, commit_hash: &CommitHash) -> &str {
-        self.encoded_image_map.get(commit_hash).unwrap()
+        self.encoded_image_map.peek(commit_hash).unwrap()
     }
 
     pub fn load_all_encoded_image(&mut self) {
@@ -95,38 +113,32 @@ impl<'a> GraphImageManager<'a> {
             &self.drawing_pixels,
             self.graph_style,
         );
-        self.encoded_image_map = self
-            .graph
-            .commits
-            .iter()
-            .enumerate()
-            .map(|(i, commit)| {
-                let is_head = self
-                    .head_commit_hash
-                    .as_ref()
-                    .is_some_and(|h| *h == commit.commit_hash);
-                let image = if is_head {
-                    // HEAD gets a separate render with the outer ring
-                    build_single_graph_row_image(
-                        &self.graph,
-                        &self.image_params,
-                        &self.drawing_pixels,
-                        self.graph_style,
-                        &commit.commit_hash,
-                        true,
-                    )
-                    .encode(self.cell_width_type, self.image_protocol)
-                } else {
-                    let edges = &self.graph.edges[i];
-                    graph_image.images[edges].encode(self.cell_width_type, self.image_protocol)
-                };
-                (commit.commit_hash.clone(), image)
-            })
-            .collect()
+        for (i, commit) in self.graph.commits.iter().enumerate() {
+            let is_head = self
+                .head_commit_hash
+                .as_ref()
+                .is_some_and(|h| *h == commit.commit_hash);
+            let image = if is_head {
+                build_single_graph_row_image(
+                    &self.graph,
+                    &self.image_params,
+                    &self.drawing_pixels,
+                    self.graph_style,
+                    &commit.commit_hash,
+                    true,
+                )
+                .encode(self.cell_width_type, self.image_protocol)
+            } else {
+                let edges = &self.graph.edges[i];
+                graph_image.images[edges].encode(self.cell_width_type, self.image_protocol)
+            };
+            self.encoded_image_map
+                .put(commit.commit_hash.clone(), image);
+        }
     }
 
     pub fn load_encoded_image(&mut self, commit_hash: &CommitHash) {
-        if self.encoded_image_map.contains_key(commit_hash) {
+        if self.encoded_image_map.contains(commit_hash) {
             return;
         }
         let is_head = self
@@ -142,11 +154,11 @@ impl<'a> GraphImageManager<'a> {
             is_head,
         );
         let image = graph_row_image.encode(self.cell_width_type, self.image_protocol);
-        self.encoded_image_map.insert(commit_hash.clone(), image);
+        self.encoded_image_map.put(commit_hash.clone(), image);
     }
 
     pub fn load_spacer_image(&mut self, commit_hash: &CommitHash) {
-        if self.spacer_image_map.contains_key(commit_hash) {
+        if self.spacer_image_map.contains(commit_hash) {
             return;
         }
         let (_, pos_y) = self.graph.commit_pos_map[commit_hash];
@@ -155,11 +167,11 @@ impl<'a> GraphImageManager<'a> {
         let spacer_image =
             calc_graph_spacer_image(cell_count, edges, &self.image_params, &self.drawing_pixels);
         let image = spacer_image.encode(self.cell_width_type, self.image_protocol);
-        self.spacer_image_map.insert(commit_hash.clone(), image);
+        self.spacer_image_map.put(commit_hash.clone(), image);
     }
 
     pub fn spacer_image(&self, commit_hash: &CommitHash) -> &str {
-        self.spacer_image_map.get(commit_hash).unwrap()
+        self.spacer_image_map.peek(commit_hash).unwrap()
     }
 
     pub fn load_selected_image(&mut self, commit_hash: &CommitHash) {
@@ -168,7 +180,9 @@ impl<'a> GraphImageManager<'a> {
                 return;
             }
         }
-        let params = self.image_params.with_background_color(self.selected_bg_color);
+        let params = self
+            .image_params
+            .with_background_color(self.selected_bg_color);
         let is_head = self
             .head_commit_hash
             .as_ref()
@@ -206,8 +220,7 @@ impl<'a> GraphImageManager<'a> {
             self.graph_style,
             false, // is_head=false for filled circle + outer ring (◎ effect)
         );
-        self.virtual_row_image =
-            Some(row_image.encode(self.cell_width_type, self.image_protocol));
+        self.virtual_row_image = Some(row_image.encode(self.cell_width_type, self.image_protocol));
     }
 
     pub fn virtual_row_image(&self) -> Option<&str> {
@@ -273,8 +286,7 @@ impl<'a> GraphImageManager<'a> {
             .head_commit_hash
             .as_ref()
             .is_some_and(|h| h == commit_hash);
-        let mut edges_with_up: Vec<Edge> = edges.clone();
-        edges_with_up.push(Edge::new(EdgeType::Up, pos_x, pos_x));
+        let edges_with_up = edges_appending_up(edges, pos_x);
         let row_image = calc_graph_row_image(
             pos_x,
             cell_count,
@@ -301,9 +313,10 @@ impl<'a> GraphImageManager<'a> {
             .head_commit_hash
             .as_ref()
             .is_some_and(|h| h == commit_hash);
-        let params = self.image_params.with_background_color(self.selected_bg_color);
-        let mut edges_with_up: Vec<Edge> = edges.clone();
-        edges_with_up.push(Edge::new(EdgeType::Up, pos_x, pos_x));
+        let params = self
+            .image_params
+            .with_background_color(self.selected_bg_color);
+        let edges_with_up = edges_appending_up(edges, pos_x);
         let row_image = calc_graph_row_image(
             pos_x,
             cell_count,
@@ -951,21 +964,15 @@ fn calc_graph_spacer_image(
     // Two-pass drawing to ensure native-color lines win over merge/detour lines.
     // Pass 1: draw edges where associated != pos_x (merge/detour lines)
     for edge in edges {
-        if spacer_edge_types.contains(&edge.edge_type)
-            && edge.associated_line_pos_x != edge.pos_x
-        {
-            let full_edge =
-                Edge::new(EdgeType::Vertical, edge.pos_x, edge.associated_line_pos_x);
+        if spacer_edge_types.contains(&edge.edge_type) && edge.associated_line_pos_x != edge.pos_x {
+            let full_edge = Edge::new(EdgeType::Vertical, edge.pos_x, edge.associated_line_pos_x);
             draw_edge(&mut img_buf, &full_edge, image_params, drawing_pixels);
         }
     }
     // Pass 2: draw edges where associated == pos_x (native lines, win over merge)
     for edge in edges {
-        if spacer_edge_types.contains(&edge.edge_type)
-            && edge.associated_line_pos_x == edge.pos_x
-        {
-            let full_edge =
-                Edge::new(EdgeType::Vertical, edge.pos_x, edge.associated_line_pos_x);
+        if spacer_edge_types.contains(&edge.edge_type) && edge.associated_line_pos_x == edge.pos_x {
+            let full_edge = Edge::new(EdgeType::Vertical, edge.pos_x, edge.associated_line_pos_x);
             draw_edge(&mut img_buf, &full_edge, image_params, drawing_pixels);
         }
     }
@@ -1255,6 +1262,13 @@ fn build_image(img_buf: &[u8], image_width: u32, image_height: u32) -> Vec<u8> {
     )
     .unwrap();
     bytes.into_inner()
+}
+
+fn edges_appending_up(edges: &[Edge], pos_x: usize) -> Vec<Edge> {
+    let mut v = Vec::with_capacity(edges.len() + 1);
+    v.extend_from_slice(edges);
+    v.push(Edge::new(EdgeType::Up, pos_x, pos_x));
+    v
 }
 
 #[cfg(test)]

@@ -155,8 +155,16 @@ impl StatefulWidget for CommitDetail<'_> {
 
         let left_lines: Vec<Line> = left_lines.into_iter().skip(state.left_offset).collect();
         let right_lines: Vec<Line> = right_lines.into_iter().skip(state.right_offset).collect();
-        let left_lines = if left_active { left_lines } else { dim_lines(left_lines) };
-        let right_lines = if right_active { right_lines } else { dim_lines(right_lines) };
+        let left_lines = if left_active {
+            left_lines
+        } else {
+            dim_lines(left_lines)
+        };
+        let right_lines = if right_active {
+            right_lines
+        } else {
+            dim_lines(right_lines)
+        };
 
         let left_paragraph = Paragraph::new(left_lines)
             .style(Style::default().fg(self.ctx.color_theme.fg))
@@ -444,8 +452,16 @@ impl StatefulWidget for WorkingChangesDetail<'_> {
 
         let left_lines: Vec<Line> = left_lines.into_iter().skip(state.left_offset).collect();
         let right_lines: Vec<Line> = right_lines.into_iter().skip(state.right_offset).collect();
-        let left_lines = if left_active { left_lines } else { dim_lines(left_lines) };
-        let right_lines = if right_active { right_lines } else { dim_lines(right_lines) };
+        let left_lines = if left_active {
+            left_lines
+        } else {
+            dim_lines(left_lines)
+        };
+        let right_lines = if right_active {
+            right_lines
+        } else {
+            dim_lines(right_lines)
+        };
 
         let left_paragraph = Paragraph::new(left_lines)
             .style(Style::default().fg(self.ctx.color_theme.fg))
@@ -637,10 +653,7 @@ fn flatten_tree_to_lines(
 
             let mut spans: Vec<Span> = vec![
                 indent.clone().into(),
-                Span::styled(
-                    ICON_FILE,
-                    Style::default().fg(ratatui::style::Color::Gray),
-                ),
+                Span::styled(ICON_FILE, Style::default().fg(ratatui::style::Color::Gray)),
                 Span::styled(node.name, Style::default().fg(color)),
             ];
 

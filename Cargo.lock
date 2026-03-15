@@ -2606,6 +2606,7 @@ dependencies = [
  "garde",
  "image",
  "laurier",
+ "lru",
  "notify",
  "notify-debouncer-mini",
  "once_cell",

@@ -409,6 +409,7 @@ impl App<'_> {
                     self.pending_message = None;
                 }
                 AppEvent::AutoRefresh => {
+                    self.ec.clear_pending_refresh();
                     self.view.refresh();
                 }
             }
@@ -602,8 +603,7 @@ impl App<'_> {
                     self.ec.sender(),
                 );
             } else {
-                self.view =
-                    View::of_list(commit_list_state, self.ctx.clone(), self.ec.sender());
+                self.view = View::of_list(commit_list_state, self.ctx.clone(), self.ec.sender());
             }
             return;
         }
@@ -681,7 +681,7 @@ impl App<'_> {
         let Some(commit_list_state) = commit_list_state else {
             return;
         };
-        let (commit, _, refs) = selected_commit_details(self.repository, &commit_list_state);
+        let (commit, refs) = selected_commit_refs(self.repository, &commit_list_state);
         match build_external_command_parameters(
             &commit,
             &refs,
@@ -714,7 +714,7 @@ impl App<'_> {
         if commit_list_state.is_virtual_row_selected() {
             return;
         }
-        let (commit, _, refs) = selected_commit_details(self.repository, commit_list_state);
+        let (commit, refs) = selected_commit_refs(self.repository, commit_list_state);
         let result = build_external_command_parameters(
             &commit,
             &refs,
@@ -745,7 +745,7 @@ impl App<'_> {
         if commit_list_state.is_virtual_row_selected() {
             return;
         }
-        let (commit, _, refs) = selected_commit_details(self.repository, commit_list_state);
+        let (commit, refs) = selected_commit_refs(self.repository, commit_list_state);
         match build_external_command_parameters(
             &commit,
             &refs,
@@ -791,8 +791,7 @@ impl App<'_> {
                 return;
             };
             let refs: Vec<Ref> = self.repository.all_refs().into_iter().cloned().collect();
-            self.view =
-                View::of_refs(commit_list_state, refs, self.ctx.clone(), self.ec.sender());
+            self.view = View::of_refs(commit_list_state, refs, self.ctx.clone(), self.ec.sender());
         }
     }
 
@@ -1300,7 +1299,16 @@ fn selected_commit_details(
     let selected = commit_list_state.selected_commit_hash().clone();
     let (commit, changes) = repository.commit_detail(&selected);
     let refs: Vec<Ref> = repository.refs(&selected).into_iter().cloned().collect();
-    (commit, changes, refs)
+    (commit.clone(), changes, refs)
+}
+
+fn selected_commit_refs(
+    repository: &Repository,
+    commit_list_state: &CommitListState,
+) -> (Commit, Vec<Ref>) {
+    let selected = commit_list_state.selected_commit_hash().clone();
+    let (commit, refs) = repository.commit_refs(&selected);
+    (commit.clone(), refs)
 }
 
 fn process_numeric_prefix(

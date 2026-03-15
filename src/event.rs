@@ -117,6 +117,7 @@ pub struct EventController {
     rx: Receiver,
     stop: Arc<AtomicBool>,
     handle: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
+    pending_refresh: Option<Arc<AtomicBool>>,
 }
 
 impl EventController {
@@ -130,6 +131,7 @@ impl EventController {
             rx,
             stop: Arc::new(AtomicBool::new(false)),
             handle: Arc::new(Mutex::new(None)),
+            pending_refresh: None,
         };
         controller.start();
 
@@ -137,11 +139,11 @@ impl EventController {
     }
 
     pub fn start(&self) {
-        self.stop.store(false, Ordering::Relaxed);
+        self.stop.store(false, Ordering::Release);
         let stop = self.stop.clone();
         let tx = self.tx.clone();
         let handle = thread::spawn(move || loop {
-            if stop.load(Ordering::Relaxed) {
+            if stop.load(Ordering::Acquire) {
                 break;
             }
             match ratatui::crossterm::event::poll(std::time::Duration::from_millis(100)) {
@@ -194,7 +196,7 @@ impl EventController {
     }
 
     fn stop(&self) {
-        self.stop.store(true, Ordering::Relaxed);
+        self.stop.store(true, Ordering::Release);
         if let Some(handle) = self.handle.lock().unwrap().take() {
             handle.join().unwrap();
         }
@@ -217,10 +219,24 @@ impl EventController {
     pub fn recv(&self) -> AppEvent {
         self.rx.recv()
     }
+
+    pub fn start_git_watcher(&mut self, git_dir: &Path) {
+        let flag = start_git_watcher(self.tx.clone(), git_dir);
+        self.pending_refresh = Some(flag);
+    }
+
+    pub fn clear_pending_refresh(&self) {
+        if let Some(ref flag) = self.pending_refresh {
+            flag.store(false, Ordering::Release);
+        }
+    }
 }
 
-pub fn start_git_watcher(tx: Sender, git_dir: &Path) {
+pub fn start_git_watcher(tx: Sender, git_dir: &Path) -> Arc<AtomicBool> {
     use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
+
+    let pending_refresh = Arc::new(AtomicBool::new(false));
+    let pending = pending_refresh.clone();
 
     let git_dir = git_dir.to_path_buf();
     thread::spawn(move || {
@@ -246,7 +262,8 @@ pub fn start_git_watcher(tx: Sender, git_dir: &Path) {
                         e.kind == DebouncedEventKind::Any
                             && e.path.extension() != Some(std::ffi::OsStr::new("lock"))
                     });
-                    if has_relevant {
+                    // Only send if no pending refresh is already queued
+                    if has_relevant && !pending.swap(true, Ordering::AcqRel) {
                         tx.send(AppEvent::AutoRefresh);
                     }
                 }
@@ -255,6 +272,8 @@ pub fn start_git_watcher(tx: Sender, git_dir: &Path) {
             }
         }
     });
+
+    pending_refresh
 }
 
 // The event triggered by user's key input
