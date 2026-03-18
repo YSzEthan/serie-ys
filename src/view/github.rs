@@ -1,21 +1,18 @@
-use std::path::PathBuf;
 use std::rc::Rc;
 
-use ansi_to_tui::IntoText as _;
 use ratatui::{
     crossterm::event::KeyEvent,
     layout::{Constraint, Layout, Rect},
-    style::{Color, Style},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Clear, Padding, Paragraph},
+    widgets::{Block, Borders, Clear, Padding, Paragraph},
     Frame,
 };
-use rustc_hash::FxHashMap;
 
 use crate::{
     app::AppContext,
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
-    github::{self, GhIssue, GhPullRequest},
+    github::{self, CheckboxItem, GhIssue, GhItemKind, GhPullRequest},
     view::View,
 };
 
@@ -42,20 +39,20 @@ impl StateFilter {
             StateFilter::All => "all",
         }
     }
-
-    fn label(&self) -> &'static str {
-        match self {
-            StateFilter::Open => "open",
-            StateFilter::Closed => "closed",
-            StateFilter::All => "all",
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum GitHubTab {
     Issues,
     PullRequests,
+}
+
+#[derive(Debug)]
+struct TaskListPanel {
+    number: u64,
+    kind: GhItemKind,
+    items: Vec<CheckboxItem>,
+    selected: usize,
 }
 
 #[derive(Debug)]
@@ -70,17 +67,16 @@ pub struct GitHubView<'a> {
     height: usize,
 
     detail: Option<Vec<Line<'static>>>,
+    detail_number: Option<(u64, GhItemKind)>,
     detail_offset: usize,
 
-    issue_detail_cache: FxHashMap<u64, Vec<Line<'static>>>,
-    pr_detail_cache: FxHashMap<u64, Vec<Line<'static>>>,
-
     state_filter: StateFilter,
+
+    task_panel: Option<TaskListPanel>,
 
     ctx: Rc<AppContext>,
     tx: Sender,
     clear: bool,
-    repo_path: PathBuf,
 }
 
 impl<'a> GitHubView<'a> {
@@ -88,11 +84,8 @@ impl<'a> GitHubView<'a> {
         before: View<'a>,
         issues: Vec<GhIssue>,
         pull_requests: Vec<GhPullRequest>,
-        issue_detail_cache: FxHashMap<u64, Vec<Line<'static>>>,
-        pr_detail_cache: FxHashMap<u64, Vec<Line<'static>>>,
         ctx: Rc<AppContext>,
         tx: Sender,
-        repo_path: PathBuf,
     ) -> GitHubView<'a> {
         GitHubView {
             before,
@@ -103,14 +96,13 @@ impl<'a> GitHubView<'a> {
             offset: 0,
             height: 0,
             detail: None,
+            detail_number: None,
             detail_offset: 0,
-            issue_detail_cache,
-            pr_detail_cache,
             state_filter: StateFilter::Open,
+            task_panel: None,
             ctx,
             tx,
             clear: false,
-            repo_path,
         }
     }
 
@@ -132,27 +124,103 @@ impl<'a> GitHubView<'a> {
         }
         // 如果在看詳情，清除掉（內容可能已過時）
         self.detail = None;
+        self.detail_number = None;
         self.detail_offset = 0;
     }
 
-    pub fn update_detail_cache(
-        &mut self,
-        issue_details: FxHashMap<u64, Vec<Line<'static>>>,
-        pr_details: FxHashMap<u64, Vec<Line<'static>>>,
-    ) {
-        self.issue_detail_cache.extend(issue_details);
-        self.pr_detail_cache.extend(pr_details);
+    pub fn set_detail(&mut self, number: u64, kind: GhItemKind, lines: Vec<Line<'static>>) {
+        self.detail = Some(lines);
+        self.detail_number = Some((number, kind));
+        self.detail_offset = 0;
+    }
+
+    pub fn invalidate_detail_cache(&mut self, number: u64, kind: GhItemKind) {
+        if self.detail_number == Some((number, kind)) {
+            self.detail = None;
+            self.detail_number = None;
+            self.detail_offset = 0;
+        }
+    }
+
+    pub fn update_task_panel(&mut self, number: u64, kind: GhItemKind, new_body: &str) {
+        if let Some(ref mut panel) = self.task_panel {
+            if panel.number == number && panel.kind == kind {
+                let items = github::parse_checkboxes(new_body);
+                let selected = panel.selected.min(items.len().saturating_sub(1));
+                panel.items = items;
+                panel.selected = selected;
+            }
+        }
+    }
+
+    pub fn set_task_panel(&mut self, number: u64, kind: GhItemKind, items: Vec<CheckboxItem>) {
+        if items.is_empty() {
+            self.tx
+                .send(AppEvent::NotifyInfo("No tasks found".to_string()));
+            return;
+        }
+        self.task_panel = Some(TaskListPanel {
+            number,
+            kind,
+            items,
+            selected: 0,
+        });
     }
 
     pub fn handle_event(&mut self, event_with_count: UserEventWithCount, _: KeyEvent) {
         let event = event_with_count.event;
         let count = event_with_count.count;
 
+        // Task list panel 事件（最高優先級）
+        if let Some(ref mut panel) = self.task_panel {
+            match event {
+                UserEvent::Cancel | UserEvent::Close => {
+                    self.task_panel = None;
+                    return;
+                }
+                UserEvent::NavigateDown | UserEvent::SelectDown => {
+                    let max = panel.items.len().saturating_sub(1);
+                    for _ in 0..count {
+                        if panel.selected < max {
+                            panel.selected += 1;
+                        }
+                    }
+                    return;
+                }
+                UserEvent::NavigateUp | UserEvent::SelectUp => {
+                    for _ in 0..count {
+                        panel.selected = panel.selected.saturating_sub(1);
+                    }
+                    return;
+                }
+                UserEvent::GoToTop => {
+                    panel.selected = 0;
+                    return;
+                }
+                UserEvent::GoToBottom => {
+                    panel.selected = panel.items.len().saturating_sub(1);
+                    return;
+                }
+                UserEvent::Confirm => {
+                    if let Some(item) = panel.items.get(panel.selected) {
+                        self.tx.send(AppEvent::ToggleCheckbox {
+                            number: panel.number,
+                            kind: panel.kind,
+                            checkbox_index: item.index,
+                        });
+                    }
+                    return;
+                }
+                _ => return,
+            }
+        }
+
         // 詳情模式事件
         if self.detail.is_some() {
             match event {
                 UserEvent::Cancel | UserEvent::Close => {
                     self.detail = None;
+                    self.detail_number = None;
                     self.detail_offset = 0;
                 }
                 UserEvent::NavigateDown | UserEvent::SelectDown => {
@@ -183,6 +251,9 @@ impl<'a> GitHubView<'a> {
                 }
                 UserEvent::GoToTop => {
                     self.detail_offset = 0;
+                }
+                UserEvent::TaskListToggle => {
+                    self.request_task_panel();
                 }
                 _ => {}
             }
@@ -272,6 +343,25 @@ impl<'a> GitHubView<'a> {
         }
     }
 
+    fn selected_number_and_kind(&self) -> Option<(u64, GhItemKind)> {
+        match self.active_tab {
+            GitHubTab::Issues => self
+                .issues
+                .get(self.selected_index)
+                .map(|i| (i.number, GhItemKind::Issue)),
+            GitHubTab::PullRequests => self
+                .pull_requests
+                .get(self.selected_index)
+                .map(|p| (p.number, GhItemKind::PullRequest)),
+        }
+    }
+
+    fn request_task_panel(&self) {
+        if let Some((number, kind)) = self.selected_number_and_kind() {
+            self.tx.send(AppEvent::LoadTaskPanel { number, kind });
+        }
+    }
+
     fn current_list_len(&self) -> usize {
         match self.active_tab {
             GitHubTab::Issues => self.issues.len(),
@@ -291,56 +381,9 @@ impl<'a> GitHubView<'a> {
         }
     }
 
-    fn load_detail(&mut self) {
-        let number = match self.active_tab {
-            GitHubTab::Issues => self.issues.get(self.selected_index).map(|i| i.number),
-            GitHubTab::PullRequests => self
-                .pull_requests
-                .get(self.selected_index)
-                .map(|p| p.number),
-        };
-        let Some(number) = number else { return };
-
-        // 先查 cache
-        let cached = match self.active_tab {
-            GitHubTab::Issues => self.issue_detail_cache.get(&number).cloned(),
-            GitHubTab::PullRequests => self.pr_detail_cache.get(&number).cloned(),
-        };
-
-        if let Some(lines) = cached {
-            self.detail = Some(lines);
-            self.detail_offset = 0;
-            return;
-        }
-
-        // Fallback：即時抓取
-        let result = match self.active_tab {
-            GitHubTab::Issues => github::view_issue_rendered(&self.repo_path, number),
-            GitHubTab::PullRequests => github::view_pr_rendered(&self.repo_path, number),
-        };
-
-        match result {
-            Ok(rendered) => {
-                let lines: Vec<Line<'static>> = rendered
-                    .into_text()
-                    .map(|t| t.into_iter().collect())
-                    .unwrap_or_else(|_| vec![Line::raw("Failed to parse ANSI output")]);
-                // 存入 cache
-                match self.active_tab {
-                    GitHubTab::Issues => {
-                        self.issue_detail_cache.insert(number, lines.clone());
-                    }
-                    GitHubTab::PullRequests => {
-                        self.pr_detail_cache.insert(number, lines.clone());
-                    }
-                }
-                self.detail = Some(lines);
-                self.detail_offset = 0;
-            }
-            Err(e) => {
-                self.tx
-                    .send(AppEvent::NotifyError(format!("Failed to load detail: {e}")));
-            }
+    fn load_detail(&self) {
+        if let Some((number, kind)) = self.selected_number_and_kind() {
+            self.tx.send(AppEvent::LoadDetail { number, kind });
         }
     }
 
@@ -354,11 +397,14 @@ impl<'a> GitHubView<'a> {
 
         if let Some(ref detail) = self.detail {
             self.render_detail(f, area, detail.clone());
+            if self.task_panel.is_some() {
+                self.render_task_panel(f, area);
+            }
             return;
         }
 
         // ── 頁籤列 ──
-        let filter_label = self.state_filter.label();
+        let filter_label = self.state_filter.as_str();
         let issues_label = format!(" Issues ({}) [{}] ", self.issues.len(), filter_label);
         let prs_label = format!(" PRs ({}) [{}] ", self.pull_requests.len(), filter_label);
 
@@ -436,6 +482,91 @@ impl<'a> GitHubView<'a> {
         for y in area.top()..area.bottom() {
             self.ctx.image_protocol.clear_line(y);
         }
+    }
+
+    fn render_task_panel(&self, f: &mut Frame, area: Rect) {
+        let Some(ref panel) = self.task_panel else {
+            return;
+        };
+
+        // 計算 overlay 尺寸
+        let max_label_width = panel
+            .items
+            .iter()
+            .map(|item| item.label.len() + 5) // "  ☑ " prefix
+            .max()
+            .unwrap_or(20);
+        let dialog_width = (max_label_width as u16 + 4)
+            .max(28)
+            .min(area.width.saturating_sub(4));
+        // items + title(1) + borders(2) + footer(1)
+        let dialog_height = (panel.items.len() as u16 + 4).min(area.height.saturating_sub(2));
+
+        let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
+        let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
+        let dialog_area = Rect::new(x, y, dialog_width, dialog_height);
+
+        f.render_widget(Clear, dialog_area);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Cyan))
+            .title(" Tasks ");
+
+        let inner = block.inner(dialog_area);
+        f.render_widget(block, dialog_area);
+
+        // 可用高度（扣除 footer 行）
+        let content_height = inner.height.saturating_sub(1) as usize;
+
+        // 計算滾動 offset
+        let offset = if panel.selected >= content_height {
+            panel.selected - content_height + 1
+        } else {
+            0
+        };
+
+        let mut lines: Vec<Line> = panel
+            .items
+            .iter()
+            .enumerate()
+            .skip(offset)
+            .take(content_height)
+            .map(|(i, item)| {
+                let selected = i == panel.selected;
+                let indicator = if selected { "▸ " } else { "  " };
+                let checkbox = if item.checked { "☑ " } else { "☐ " };
+                let checkbox_color = if item.checked {
+                    Color::Green
+                } else {
+                    Color::DarkGray
+                };
+                let label_style = if selected {
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+
+                Line::from(vec![
+                    Span::styled(indicator.to_string(), label_style),
+                    Span::styled(checkbox.to_string(), Style::default().fg(checkbox_color)),
+                    Span::styled(item.label.clone(), label_style),
+                ])
+            })
+            .collect();
+
+        // Footer
+        let footer = Line::from(Span::styled(
+            " Enter:toggle  Esc:close",
+            Style::default().fg(Color::DarkGray),
+        ));
+        lines.push(footer);
+
+        let paragraph =
+            Paragraph::new(lines).block(Block::default().padding(Padding::horizontal(1)));
+        f.render_widget(paragraph, inner);
     }
 }
 

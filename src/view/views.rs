@@ -2,9 +2,6 @@ use std::{path::PathBuf, rc::Rc};
 
 use ratatui::{crossterm::event::KeyEvent, layout::Rect, Frame};
 
-use ratatui::text::Line;
-use rustc_hash::FxHashMap;
-
 use crate::{
     app::AppContext,
     event::{AppEvent, Sender, UserEventWithCount},
@@ -217,21 +214,15 @@ impl<'a> View<'a> {
         before: View<'a>,
         issues: Vec<crate::github::GhIssue>,
         pull_requests: Vec<crate::github::GhPullRequest>,
-        issue_detail_cache: FxHashMap<u64, Vec<Line<'static>>>,
-        pr_detail_cache: FxHashMap<u64, Vec<Line<'static>>>,
         ctx: Rc<AppContext>,
         tx: Sender,
-        repo_path: std::path::PathBuf,
     ) -> Self {
         View::GitHub(Box::new(GitHubView::new(
             before,
             issues,
             pull_requests,
-            issue_detail_cache,
-            pr_detail_cache,
             ctx,
             tx,
-            repo_path,
         )))
     }
 

@@ -1,7 +1,24 @@
 use std::path::Path;
-use std::process::Command;
+use std::process::{Command, Stdio};
 
 use serde::Deserialize;
+
+// ── Item Kind ──
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GhItemKind {
+    Issue,
+    PullRequest,
+}
+
+impl GhItemKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            GhItemKind::Issue => "issue",
+            GhItemKind::PullRequest => "pr",
+        }
+    }
+}
 
 // ── 列表項目 ──
 
@@ -43,26 +60,14 @@ pub struct GhPullRequest {
 
 // ── CLI 包裝 ──
 
-fn run_gh(path: &Path, args: &[&str]) -> Result<String, String> {
-    let output = Command::new("gh")
-        .args(args)
-        .current_dir(path)
-        .output()
-        .map_err(|e| format!("Failed to execute gh: {e}"))?;
-
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("gh command failed: {stderr}"));
+fn run_gh(path: &Path, args: &[&str], force_tty: bool) -> Result<String, String> {
+    let mut cmd = Command::new("gh");
+    cmd.args(args).current_dir(path);
+    if force_tty {
+        cmd.env("GH_FORCE_TTY", "200");
     }
 
-    String::from_utf8(output.stdout).map_err(|e| format!("Invalid UTF-8: {e}"))
-}
-
-fn run_gh_rendered(path: &Path, args: &[&str]) -> Result<String, String> {
-    let output = Command::new("gh")
-        .args(args)
-        .current_dir(path)
-        .env("GH_FORCE_TTY", "200")
+    let output = cmd
         .output()
         .map_err(|e| format!("Failed to execute gh: {e}"))?;
 
@@ -87,6 +92,7 @@ pub fn list_issues(path: &Path, state: &str) -> Result<Vec<GhIssue>, String> {
             "--json",
             "number,title,state,labels,author,createdAt",
         ],
+        false,
     )?;
     serde_json::from_str(&json).map_err(|e| format!("JSON parse error: {e}"))
 }
@@ -104,39 +110,18 @@ pub fn list_pull_requests(path: &Path, state: &str) -> Result<Vec<GhPullRequest>
             "--json",
             "number,title,state,labels,author,headRefName,isDraft",
         ],
+        false,
     )?;
     serde_json::from_str(&json).map_err(|e| format!("JSON parse error: {e}"))
 }
 
-pub fn view_issue_rendered(path: &Path, number: u64) -> Result<String, String> {
-    let mut rendered =
-        run_gh_rendered(path, &["issue", "view", &number.to_string(), "--comments"])?;
+pub fn view_item_rendered(path: &Path, number: u64, kind: GhItemKind) -> Result<String, String> {
+    let cmd = kind.as_str();
+    let num = number.to_string();
+    let mut rendered = run_gh(path, &[cmd, "view", &num, "--comments"], true)?;
 
     // 從 JSON 取得原始 body + comments，提取圖片 URL
-    if let Ok(json) = run_gh(
-        path,
-        &[
-            "issue",
-            "view",
-            &number.to_string(),
-            "--json",
-            "body,comments",
-        ],
-    ) {
-        append_image_urls_from_json(&mut rendered, &json);
-    }
-
-    Ok(rendered)
-}
-
-pub fn view_pr_rendered(path: &Path, number: u64) -> Result<String, String> {
-    let mut rendered = run_gh_rendered(path, &["pr", "view", &number.to_string(), "--comments"])?;
-
-    // 從 JSON 取得原始 body + comments，提取圖片 URL
-    if let Ok(json) = run_gh(
-        path,
-        &["pr", "view", &number.to_string(), "--json", "body,comments"],
-    ) {
+    if let Ok(json) = run_gh(path, &[cmd, "view", &num, "--json", "body,comments"], false) {
         append_image_urls_from_json(&mut rendered, &json);
     }
 
@@ -169,6 +154,110 @@ fn append_image_urls_from_json(rendered: &mut String, json: &str) {
             rendered.push('\n');
         }
     }
+}
+
+// ── Checkbox / Task List ──
+
+#[derive(Debug, Clone)]
+pub struct CheckboxItem {
+    pub index: usize,
+    pub checked: bool,
+    pub label: String,
+    pub(crate) byte_offset: usize,
+}
+
+pub fn get_body(path: &Path, number: u64, kind: GhItemKind) -> Result<String, String> {
+    run_gh(
+        path,
+        &[
+            kind.as_str(),
+            "view",
+            &number.to_string(),
+            "--json",
+            "body",
+            "--jq",
+            ".body",
+        ],
+        false,
+    )
+}
+
+pub fn parse_checkboxes(body: &str) -> Vec<CheckboxItem> {
+    let mut items = Vec::new();
+    let mut idx = 0usize;
+    let mut byte_pos = 0usize;
+
+    for line in body.lines() {
+        let trimmed = line.trim_start();
+        let has_unchecked = trimmed.starts_with("- [ ] ");
+        let has_checked = trimmed.starts_with("- [x] ") || trimmed.starts_with("- [X] ");
+
+        if has_unchecked || has_checked {
+            let leading = line.len() - trimmed.len();
+            // '[' 位於 "- " (2 bytes) 之後
+            let byte_offset = byte_pos + leading + 2;
+
+            let label = trimmed[6..].to_string();
+
+            items.push(CheckboxItem {
+                index: idx,
+                checked: has_checked,
+                label,
+                byte_offset,
+            });
+            idx += 1;
+        }
+
+        // 跳過該行內容
+        byte_pos += line.len();
+        // 跳過行分隔符號
+        let rest = body.as_bytes();
+        if byte_pos < rest.len() && rest[byte_pos] == b'\r' {
+            byte_pos += 1;
+        }
+        if byte_pos < rest.len() && rest[byte_pos] == b'\n' {
+            byte_pos += 1;
+        }
+    }
+
+    items
+}
+
+pub fn toggle_checkbox(body: &str, item: &CheckboxItem) -> String {
+    let mut result = String::with_capacity(body.len());
+    result.push_str(&body[..item.byte_offset]);
+    if item.checked {
+        result.push_str("[ ]");
+    } else {
+        result.push_str("[x]");
+    }
+    result.push_str(&body[item.byte_offset + 3..]);
+    result
+}
+
+pub fn update_body(path: &Path, number: u64, kind: GhItemKind, body: &str) -> Result<(), String> {
+    let num_str = number.to_string();
+    let output = Command::new("gh")
+        .args([kind.as_str(), "edit", &num_str, "--body-file", "-"])
+        .current_dir(path)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .and_then(|mut child| {
+            use std::io::Write;
+            if let Some(ref mut stdin) = child.stdin {
+                stdin.write_all(body.as_bytes())?;
+            }
+            child.wait_with_output()
+        })
+        .map_err(|e| format!("Failed to execute gh: {e}"))?;
+
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        return Err(format!("gh edit failed: {stderr}"));
+    }
+    Ok(())
 }
 
 /// 從 markdown 文字中提取圖片 URL（支援 `![alt](url)` 和 `<img src="...">` 格式）

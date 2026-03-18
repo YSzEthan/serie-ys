@@ -57,6 +57,34 @@ pub enum AppEvent {
         issue_details: Vec<(u64, String)>,
         pr_details: Vec<(u64, String)>,
     },
+    ToggleCheckbox {
+        number: u64,
+        kind: crate::github::GhItemKind,
+        checkbox_index: usize,
+    },
+    CheckboxToggled {
+        number: u64,
+        kind: crate::github::GhItemKind,
+        new_body: String,
+    },
+    LoadDetail {
+        number: u64,
+        kind: crate::github::GhItemKind,
+    },
+    DetailFetched {
+        number: u64,
+        kind: crate::github::GhItemKind,
+        rendered: String,
+    },
+    LoadTaskPanel {
+        number: u64,
+        kind: crate::github::GhItemKind,
+    },
+    TaskPanelLoaded {
+        number: u64,
+        kind: crate::github::GhItemKind,
+        items: Vec<crate::github::CheckboxItem>,
+    },
     SelectNewerCommit,
     SelectOlderCommit,
     SelectParentCommit,
@@ -318,6 +346,7 @@ pub enum UserEvent {
     DeleteTag,
     RemoteRefsToggle,
     GitHubToggle,
+    TaskListToggle,
     DetailPaneToggle,
     Unknown,
 }
@@ -387,6 +416,7 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "delete_tag" => Ok(UserEvent::DeleteTag),
                         "remote_refs_toggle" => Ok(UserEvent::RemoteRefsToggle),
                         "github_toggle" => Ok(UserEvent::GitHubToggle),
+                        "task_list_toggle" => Ok(UserEvent::TaskListToggle),
                         "detail_pane_toggle" => Ok(UserEvent::DetailPaneToggle),
                         _ => {
                             let msg = format!("Unknown user event: {value}");
