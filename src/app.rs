@@ -81,7 +81,6 @@ pub struct App<'a> {
     app_status: AppStatus,
     pending_message: Option<String>,
     github_cache: Option<GitHubCache>,
-    github_awaiting_view: bool,
     ctx: Rc<AppContext>,
     ec: &'a EventController,
 }
@@ -184,7 +183,6 @@ impl<'a> App<'a> {
             app_status: AppStatus::default(),
             pending_message: None,
             github_cache: None,
-            github_awaiting_view: false,
             ctx,
             ec,
         };
@@ -974,19 +972,47 @@ impl App<'_> {
                 let issues_result = crate::github::list_issues(&repo_path, "open");
                 let prs_result = crate::github::list_pull_requests(&repo_path, "open");
 
-                match (issues_result, prs_result) {
-                    (Err(_), _) | (_, Err(_)) => {}
-                    (Ok(issues), Ok(pull_requests)) => {
-                        tx.send(AppEvent::GitHubDataLoaded {
-                            issues: issues.clone(),
-                            pull_requests: pull_requests.clone(),
-                        });
+                let mut any_ok = false;
 
-                        if first_run {
-                            first_run = false;
-                            Self::fetch_all_details(&repo_path, &issues, &pull_requests, &tx);
-                        }
+                let issues = match issues_result {
+                    Ok(v) => {
+                        any_ok = true;
+                        v
                     }
+                    Err(e) => {
+                        if first_run {
+                            tx.send(AppEvent::NotifyWarn(format!(
+                                "GitHub issues unavailable: {e}"
+                            )));
+                        }
+                        Vec::new()
+                    }
+                };
+                let pull_requests = match prs_result {
+                    Ok(v) => {
+                        any_ok = true;
+                        v
+                    }
+                    Err(e) => {
+                        if first_run {
+                            tx.send(AppEvent::NotifyWarn(format!("GitHub PRs unavailable: {e}")));
+                        }
+                        Vec::new()
+                    }
+                };
+
+                if any_ok {
+                    if first_run {
+                        Self::fetch_all_details(&repo_path, &issues, &pull_requests, &tx);
+                    }
+                    tx.send(AppEvent::GitHubDataLoaded {
+                        issues,
+                        pull_requests,
+                    });
+                }
+
+                if first_run {
+                    first_run = false;
                 }
 
                 std::thread::sleep(std::time::Duration::from_secs(30));
@@ -1025,21 +1051,16 @@ impl App<'_> {
     }
 
     fn open_github(&mut self) {
-        if let Some(ref cache) = self.github_cache {
-            // 有快取：立即顯示
-            let before_view = std::mem::take(&mut self.view);
-            self.view = View::of_github(
-                before_view,
-                cache.issues.clone(),
-                cache.pull_requests.clone(),
-                self.ctx.clone(),
-                self.ec.sender(),
-            );
+        let (issues, prs) = if let Some(ref cache) = self.github_cache {
+            (cache.issues.clone(), cache.pull_requests.clone())
         } else {
-            // 預載尚未完成：顯示 loading，等待資料到達後建立視圖
-            self.pending_message = Some("Loading GitHub data...".to_string());
-            self.github_awaiting_view = true;
-        }
+            self.ec
+                .send(AppEvent::NotifyInfo("Loading GitHub data...".into()));
+            (Vec::new(), Vec::new())
+        };
+
+        let before_view = std::mem::take(&mut self.view);
+        self.view = View::of_github(before_view, issues, prs, self.ctx.clone(), self.ec.sender());
     }
 
     fn on_github_data_loaded(
@@ -1124,21 +1145,7 @@ impl App<'_> {
             if changed {
                 view.update_data(issues, pull_requests);
             }
-        } else if self.github_awaiting_view {
-            // 使用者按了 Space 且在等待資料：建立視圖
-            self.github_awaiting_view = false;
-            self.pending_message = None;
-
-            let before_view = std::mem::take(&mut self.view);
-            self.view = View::of_github(
-                before_view,
-                issues,
-                pull_requests,
-                self.ctx.clone(),
-                self.ec.sender(),
-            );
         }
-        // 否則：啟動預載完成，只快取不建立視圖
     }
 
     fn on_github_details_loaded(

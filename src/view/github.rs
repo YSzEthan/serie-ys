@@ -74,6 +74,8 @@ pub struct GitHubView<'a> {
 
     task_panel: Option<TaskListPanel>,
 
+    loading: bool,
+
     ctx: Rc<AppContext>,
     tx: Sender,
     clear: bool,
@@ -87,6 +89,7 @@ impl<'a> GitHubView<'a> {
         ctx: Rc<AppContext>,
         tx: Sender,
     ) -> GitHubView<'a> {
+        let loading = issues.is_empty() && pull_requests.is_empty();
         GitHubView {
             before,
             active_tab: GitHubTab::Issues,
@@ -100,6 +103,7 @@ impl<'a> GitHubView<'a> {
             detail_offset: 0,
             state_filter: StateFilter::Open,
             task_panel: None,
+            loading,
             ctx,
             tx,
             clear: false,
@@ -115,6 +119,7 @@ impl<'a> GitHubView<'a> {
     }
 
     pub fn update_data(&mut self, issues: Vec<GhIssue>, pull_requests: Vec<GhPullRequest>) {
+        self.loading = false;
         self.issues = issues;
         self.pull_requests = pull_requests;
         // 修正選取索引避免越界
@@ -435,6 +440,22 @@ impl<'a> GitHubView<'a> {
             Paragraph::new(tab_line).block(Block::default().padding(Padding::new(2, 2, 1, 0))),
             tab_area,
         );
+
+        // ── Loading 提示 ──
+        if self.loading && self.current_list_len() == 0 {
+            let loading_text = Paragraph::new(Line::from(Span::styled(
+                "Loading GitHub data...",
+                Style::default().fg(Color::DarkGray),
+            )))
+            .alignment(ratatui::layout::Alignment::Center)
+            .block(Block::default().padding(Padding::vertical(list_area.height / 3)));
+            f.render_widget(loading_text, list_area);
+
+            for y in area.top()..area.bottom() {
+                self.ctx.image_protocol.clear_line(y);
+            }
+            return;
+        }
 
         // ── 列表 ──
         let visible_height = list_area.height as usize;
