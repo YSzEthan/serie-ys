@@ -1,7 +1,7 @@
 # CLAUDE.md
-**一律使用正體中文**
 本文件為 Claude Code (claude.ai/code) 使用此儲存庫中的程式碼時提供指導。
 
+**一律使用正體中文**
 ## 專案概覽
 
 Serie 是一個 Rust TUI 應用程式，用於在支援圖片協議的終端機（iTerm2、Kitty）中視覺化 git commit 圖。使用 Ratatui 和 crossterm 建構。MSRV: 1.87.0。
