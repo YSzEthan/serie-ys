@@ -52,6 +52,14 @@ pub enum AppEvent {
     GitHubDataLoaded {
         issues: Vec<crate::github::GhIssue>,
         pull_requests: Vec<crate::github::GhPullRequest>,
+        warnings: Vec<String>,
+    },
+    GitHubFlash {
+        message: String,
+        is_error: bool,
+    },
+    GitHubLoadFailed {
+        error: String,
     },
     GitHubDetailsLoaded {
         issue_details: Vec<(u64, String)>,

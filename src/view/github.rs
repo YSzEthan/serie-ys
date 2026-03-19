@@ -55,6 +55,14 @@ struct TaskListPanel {
     selected: usize,
 }
 
+#[derive(Debug, Default)]
+enum LoadState {
+    #[default]
+    Idle,
+    Loading,
+    Error(String),
+}
+
 #[derive(Debug)]
 pub struct GitHubView<'a> {
     before: View<'a>,
@@ -74,7 +82,9 @@ pub struct GitHubView<'a> {
 
     task_panel: Option<TaskListPanel>,
 
-    loading: bool,
+    load_state: LoadState,
+
+    flash_message: Option<(String, bool)>,
 
     ctx: Rc<AppContext>,
     tx: Sender,
@@ -89,7 +99,11 @@ impl<'a> GitHubView<'a> {
         ctx: Rc<AppContext>,
         tx: Sender,
     ) -> GitHubView<'a> {
-        let loading = issues.is_empty() && pull_requests.is_empty();
+        let load_state = if issues.is_empty() && pull_requests.is_empty() {
+            LoadState::Loading
+        } else {
+            LoadState::Idle
+        };
         GitHubView {
             before,
             active_tab: GitHubTab::Issues,
@@ -103,7 +117,8 @@ impl<'a> GitHubView<'a> {
             detail_offset: 0,
             state_filter: StateFilter::Open,
             task_panel: None,
-            loading,
+            load_state,
+            flash_message: None,
             ctx,
             tx,
             clear: false,
@@ -118,8 +133,18 @@ impl<'a> GitHubView<'a> {
         self.clear = true;
     }
 
+    pub fn set_flash(&mut self, msg: String, is_error: bool) {
+        self.flash_message = Some((msg, is_error));
+    }
+
+    pub fn set_error(&mut self, msg: String) {
+        if matches!(self.load_state, LoadState::Loading) {
+            self.load_state = LoadState::Error(msg);
+        }
+    }
+
     pub fn update_data(&mut self, issues: Vec<GhIssue>, pull_requests: Vec<GhPullRequest>) {
-        self.loading = false;
+        self.load_state = LoadState::Idle;
         self.issues = issues;
         self.pull_requests = pull_requests;
         // 修正選取索引避免越界
@@ -160,8 +185,7 @@ impl<'a> GitHubView<'a> {
 
     pub fn set_task_panel(&mut self, number: u64, kind: GhItemKind, items: Vec<CheckboxItem>) {
         if items.is_empty() {
-            self.tx
-                .send(AppEvent::NotifyInfo("No tasks found".to_string()));
+            self.set_flash("No tasks found".to_string(), false);
             return;
         }
         self.task_panel = Some(TaskListPanel {
@@ -172,9 +196,42 @@ impl<'a> GitHubView<'a> {
         });
     }
 
+    pub fn status_hints(&self) -> Vec<(UserEvent, &'static str)> {
+        if self.task_panel.is_some() {
+            return vec![(UserEvent::Confirm, "toggle"), (UserEvent::Cancel, "close")];
+        }
+        if self.detail.is_some() {
+            return vec![
+                (UserEvent::TaskListToggle, "tasks"),
+                (UserEvent::Cancel, "back"),
+            ];
+        }
+        if self.current_list_len() == 0 {
+            return match &self.load_state {
+                LoadState::Loading => vec![(UserEvent::Cancel, "close")],
+                LoadState::Error(_) => {
+                    vec![(UserEvent::Refresh, "retry"), (UserEvent::Cancel, "close")]
+                }
+                LoadState::Idle => vec![
+                    (UserEvent::Refresh, "refresh"),
+                    (UserEvent::Cancel, "close"),
+                ],
+            };
+        }
+        vec![
+            (UserEvent::RefList, "switch tab"),
+            (UserEvent::Confirm, "detail"),
+            (UserEvent::Refresh, "refresh"),
+            (UserEvent::Filter, "filter"),
+            (UserEvent::GitHubToggle, "close"),
+        ]
+    }
+
     pub fn handle_event(&mut self, event_with_count: UserEventWithCount, _: KeyEvent) {
         let event = event_with_count.event;
         let count = event_with_count.count;
+
+        self.flash_message = None;
 
         // Task list panel 事件（最高優先級）
         if let Some(ref mut panel) = self.task_panel {
@@ -335,11 +392,13 @@ impl<'a> GitHubView<'a> {
                 self.state_filter = self.state_filter.next();
                 self.selected_index = 0;
                 self.offset = 0;
+                self.load_state = LoadState::Loading;
                 self.tx.send(AppEvent::RefreshGitHub {
                     state: self.state_filter.as_str().to_string(),
                 });
             }
             UserEvent::Refresh => {
+                self.load_state = LoadState::Loading;
                 self.tx.send(AppEvent::RefreshGitHub {
                     state: self.state_filter.as_str().to_string(),
                 });
@@ -441,19 +500,15 @@ impl<'a> GitHubView<'a> {
             tab_area,
         );
 
-        // ── Loading 提示 ──
-        if self.loading && self.current_list_len() == 0 {
-            let loading_text = Paragraph::new(Line::from(Span::styled(
-                "Loading GitHub data...",
-                Style::default().fg(Color::DarkGray),
-            )))
-            .alignment(ratatui::layout::Alignment::Center)
-            .block(Block::default().padding(Padding::vertical(list_area.height / 3)));
-            f.render_widget(loading_text, list_area);
-
-            for y in area.top()..area.bottom() {
-                self.ctx.image_protocol.clear_line(y);
-            }
+        // ── Loading / 錯誤提示 ──
+        if self.current_list_len() == 0 {
+            let (text, color) = match &self.load_state {
+                LoadState::Loading => ("Loading GitHub data...".to_string(), Color::DarkGray),
+                LoadState::Error(err) => (err.clone(), Color::Red),
+                LoadState::Idle => ("No items".to_string(), Color::DarkGray),
+            };
+            render_centered_message(f, list_area, text, color);
+            self.clear_image_area(area);
             return;
         }
 
@@ -482,7 +537,31 @@ impl<'a> GitHubView<'a> {
             Paragraph::new(items).block(Block::default().padding(Padding::horizontal(2)));
         f.render_widget(list_paragraph, list_area);
 
-        // 清除圖片協定行（避免殘影）
+        // ── Flash message ──
+        if let Some((ref msg, is_error)) = self.flash_message {
+            let color = if is_error {
+                Color::Red
+            } else {
+                Color::DarkGray
+            };
+            let flash_area = Rect::new(
+                list_area.x,
+                list_area.bottom().saturating_sub(1),
+                list_area.width,
+                1,
+            );
+            let flash = Paragraph::new(Line::from(Span::styled(
+                msg.clone(),
+                Style::default().fg(color),
+            )))
+            .alignment(ratatui::layout::Alignment::Center);
+            f.render_widget(flash, flash_area);
+        }
+
+        self.clear_image_area(area);
+    }
+
+    fn clear_image_area(&self, area: Rect) {
         for y in area.top()..area.bottom() {
             self.ctx.image_protocol.clear_line(y);
         }
@@ -498,11 +577,7 @@ impl<'a> GitHubView<'a> {
         let paragraph =
             Paragraph::new(visible).block(Block::default().padding(Padding::new(3, 3, 1, 0)));
         f.render_widget(paragraph, area);
-
-        // 清除圖片協定行
-        for y in area.top()..area.bottom() {
-            self.ctx.image_protocol.clear_line(y);
-        }
+        self.clear_image_area(area);
     }
 
     fn render_task_panel(&self, f: &mut Frame, area: Rect) {
@@ -592,6 +667,13 @@ impl<'a> GitHubView<'a> {
 }
 
 // ── 渲染輔助函數 ──
+
+fn render_centered_message(f: &mut Frame, list_area: Rect, text: String, color: Color) {
+    let msg = Paragraph::new(Line::from(Span::styled(text, Style::default().fg(color))))
+        .alignment(ratatui::layout::Alignment::Center)
+        .block(Block::default().padding(Padding::vertical(list_area.height.saturating_sub(1) / 2)));
+    f.render_widget(msg, list_area);
+}
 
 fn hex_to_color(hex: &str) -> Color {
     let hex = hex.trim_start_matches('#');

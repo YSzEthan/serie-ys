@@ -1,4 +1,6 @@
 use std::rc::Rc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Arc;
 
 use ansi_to_tui::IntoText as _;
 use ratatui::{
@@ -81,6 +83,7 @@ pub struct App<'a> {
     app_status: AppStatus,
     pending_message: Option<String>,
     github_cache: Option<GitHubCache>,
+    github_timer_cancel: Option<Arc<AtomicBool>>,
     ctx: Rc<AppContext>,
     ec: &'a EventController,
 }
@@ -183,6 +186,7 @@ impl<'a> App<'a> {
             app_status: AppStatus::default(),
             pending_message: None,
             github_cache: None,
+            github_timer_cancel: None,
             ctx,
             ec,
         };
@@ -358,8 +362,19 @@ impl App<'_> {
                 AppEvent::GitHubDataLoaded {
                     issues,
                     pull_requests,
+                    warnings,
                 } => {
-                    self.on_github_data_loaded(issues, pull_requests);
+                    self.on_github_data_loaded(issues, pull_requests, warnings);
+                }
+                AppEvent::GitHubFlash { message, is_error } => {
+                    if let View::GitHub(ref mut view) = self.view {
+                        view.set_flash(message, is_error);
+                    }
+                }
+                AppEvent::GitHubLoadFailed { error } => {
+                    if let View::GitHub(ref mut view) = self.view {
+                        view.set_error(error);
+                    }
                 }
                 AppEvent::GitHubDetailsLoaded {
                     issue_details,
@@ -576,12 +591,7 @@ impl App<'_> {
                 (UserEvent::Cancel, "cancel"),
             ],
             View::Help(_) => vec![(UserEvent::Close, "close")],
-            View::GitHub(_) => vec![
-                (UserEvent::RefList, "switch tab"),
-                (UserEvent::Confirm, "detail"),
-                (UserEvent::Refresh, "refresh"),
-                (UserEvent::GitHubToggle, "close"),
-            ],
+            View::GitHub(ref view) => view.status_hints(),
             _ => vec![],
         };
 
@@ -973,6 +983,7 @@ impl App<'_> {
                 let prs_result = crate::github::list_pull_requests(&repo_path, "open");
 
                 let mut any_ok = false;
+                let mut warnings = Vec::new();
 
                 let issues = match issues_result {
                     Ok(v) => {
@@ -980,11 +991,7 @@ impl App<'_> {
                         v
                     }
                     Err(e) => {
-                        if first_run {
-                            tx.send(AppEvent::NotifyWarn(format!(
-                                "GitHub issues unavailable: {e}"
-                            )));
-                        }
+                        warnings.push(format!("GitHub issues unavailable: {e}"));
                         Vec::new()
                     }
                 };
@@ -994,9 +1001,7 @@ impl App<'_> {
                         v
                     }
                     Err(e) => {
-                        if first_run {
-                            tx.send(AppEvent::NotifyWarn(format!("GitHub PRs unavailable: {e}")));
-                        }
+                        warnings.push(format!("GitHub PRs unavailable: {e}"));
                         Vec::new()
                     }
                 };
@@ -1008,7 +1013,11 @@ impl App<'_> {
                     tx.send(AppEvent::GitHubDataLoaded {
                         issues,
                         pull_requests,
+                        warnings,
                     });
+                } else if first_run {
+                    let err = warnings.remove(0);
+                    tx.send(AppEvent::GitHubLoadFailed { error: err });
                 }
 
                 if first_run {
@@ -1054,8 +1063,24 @@ impl App<'_> {
         let (issues, prs) = if let Some(ref cache) = self.github_cache {
             (cache.issues.clone(), cache.pull_requests.clone())
         } else {
-            self.ec
-                .send(AppEvent::NotifyInfo("Loading GitHub data...".into()));
+            // 取消前一個 stale 計時器
+            if let Some(ref prev) = self.github_timer_cancel {
+                prev.store(true, Ordering::Relaxed);
+            }
+
+            // 3 秒計時器：若資料遲遲未到達，發送失敗事件作為保底
+            let cancel = Arc::new(AtomicBool::new(false));
+            self.github_timer_cancel = Some(cancel.clone());
+            let tx = self.ec.sender();
+            std::thread::spawn(move || {
+                std::thread::sleep(std::time::Duration::from_secs(3));
+                if !cancel.load(Ordering::Relaxed) {
+                    tx.send(AppEvent::GitHubLoadFailed {
+                        error: "GitHub data not available".into(),
+                    });
+                }
+            });
+
             (Vec::new(), Vec::new())
         };
 
@@ -1067,7 +1092,13 @@ impl App<'_> {
         &mut self,
         issues: Vec<crate::github::GhIssue>,
         pull_requests: Vec<crate::github::GhPullRequest>,
+        warnings: Vec<String>,
     ) {
+        // 資料到達，取消 stale 計時器
+        if let Some(ref cancel) = self.github_timer_cancel {
+            cancel.store(true, Ordering::Relaxed);
+        }
+
         // 檢查是否與快取相同
         let changed = match &self.github_cache {
             Some(cache) => cache.issues != issues || cache.pull_requests != pull_requests,
@@ -1145,6 +1176,9 @@ impl App<'_> {
             if changed {
                 view.update_data(issues, pull_requests);
             }
+            if !warnings.is_empty() {
+                view.set_flash(warnings.join("; "), false);
+            }
         }
     }
 
@@ -1174,9 +1208,6 @@ impl App<'_> {
             cache.state_filter = state.to_string();
         }
 
-        self.ec
-            .send(AppEvent::NotifyInfo("Refreshing GitHub data...".into()));
-
         let repo_path = self.repository.path().to_path_buf();
         let tx = self.ec.sender();
         let state = state.to_string();
@@ -1187,12 +1218,15 @@ impl App<'_> {
 
             match (issues_result, prs_result) {
                 (Err(e), _) | (_, Err(e)) => {
-                    tx.send(AppEvent::NotifyError(format!("GitHub refresh: {e}")));
+                    tx.send(AppEvent::GitHubLoadFailed {
+                        error: e.to_string(),
+                    });
                 }
                 (Ok(issues), Ok(pull_requests)) => {
                     tx.send(AppEvent::GitHubDataLoaded {
                         issues: issues.clone(),
                         pull_requests: pull_requests.clone(),
+                        warnings: Vec::new(),
                     });
                     // R 刷新：全量重抓詳情
                     Self::fetch_all_details(&repo_path, &issues, &pull_requests, &tx);
@@ -1236,7 +1270,10 @@ impl App<'_> {
 
             match result {
                 Ok(new_body) => {
-                    tx.send(AppEvent::NotifySuccess("Checkbox updated".to_string()));
+                    tx.send(AppEvent::GitHubFlash {
+                        message: "Checkbox updated".to_string(),
+                        is_error: false,
+                    });
                     tx.send(AppEvent::CheckboxToggled {
                         number,
                         kind,
@@ -1244,7 +1281,10 @@ impl App<'_> {
                     });
                 }
                 Err(e) => {
-                    tx.send(AppEvent::NotifyError(format!("Toggle failed: {e}")));
+                    tx.send(AppEvent::GitHubFlash {
+                        message: format!("Toggle failed: {e}"),
+                        is_error: true,
+                    });
                 }
             }
         });
@@ -1307,7 +1347,10 @@ impl App<'_> {
                     });
                 }
                 Err(e) => {
-                    tx.send(AppEvent::NotifyError(format!("Failed to load detail: {e}")));
+                    tx.send(AppEvent::GitHubFlash {
+                        message: format!("Failed to load detail: {e}"),
+                        is_error: true,
+                    });
                 }
             }
         });
@@ -1347,7 +1390,10 @@ impl App<'_> {
                     });
                 }
                 Err(e) => {
-                    tx.send(AppEvent::NotifyError(format!("Failed to load body: {e}")));
+                    tx.send(AppEvent::GitHubFlash {
+                        message: format!("Failed to load body: {e}"),
+                        is_error: true,
+                    });
                 }
             },
         );
