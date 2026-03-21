@@ -407,6 +407,15 @@ impl<'a> CommitListState<'a> {
         self.has_virtual_row() && self.offset + self.selected == 0
     }
 
+    fn first_visible_commit_hash(&self) -> Option<&CommitHash> {
+        let idx = if self.filtered_indices.is_empty() {
+            0
+        } else {
+            *self.filtered_indices.first()?
+        };
+        self.commits.get(idx).map(|c| &c.commit.commit_hash)
+    }
+
     pub fn working_changes(&self) -> Option<&WorkingChanges> {
         self.working_changes.as_ref()
     }
@@ -1347,18 +1356,22 @@ impl CommitList<'_> {
             }
         }
 
+        // Cache first visible commit hash to avoid repeated Arc refcount bumps
+        let first_hash_opt = state.first_visible_commit_hash().cloned();
+
         // Load virtual row images
         if state.has_virtual_row() {
-            let first_hash = &state.commits[0].commit.commit_hash;
-            let mgr = if use_filtered {
-                state.filtered_graph_image_manager.as_mut().unwrap()
-            } else {
-                &mut state.graph_image_manager
-            };
-            mgr.load_virtual_row_image(first_hash);
-            mgr.load_selected_virtual_row_image(first_hash);
-            mgr.load_first_commit_with_up_image(first_hash);
-            mgr.load_selected_first_commit_with_up_image(first_hash);
+            if let Some(ref first_hash) = first_hash_opt {
+                let mgr = if use_filtered {
+                    state.filtered_graph_image_manager.as_mut().unwrap()
+                } else {
+                    &mut state.graph_image_manager
+                };
+                mgr.load_virtual_row_image(first_hash);
+                mgr.load_selected_virtual_row_image(first_hash);
+                mgr.load_first_commit_with_up_image(first_hash);
+                mgr.load_selected_first_commit_with_up_image(first_hash);
+            }
         }
 
         // Load spacer image for selected commit when inline detail is active
@@ -1366,25 +1379,25 @@ impl CommitList<'_> {
         if state.inline_detail_height > 0 {
             let is_vr = state.is_virtual_row_selected();
             let hash = if is_vr {
-                &state.commits[0].commit.commit_hash
+                first_hash_opt
             } else {
                 let selected_idx = state.current_selected_index();
-                &state.commits[selected_idx].commit.commit_hash
+                Some(state.commits[selected_idx].commit.commit_hash.clone())
             };
-            if use_filtered {
-                let mgr = state.filtered_graph_image_manager.as_mut().unwrap();
-                if is_vr {
-                    mgr.load_gray_spacer_image(hash);
+            if let Some(hash) = hash {
+                if use_filtered {
+                    let mgr = state.filtered_graph_image_manager.as_mut().unwrap();
+                    if is_vr {
+                        mgr.load_gray_spacer_image(&hash);
+                    } else {
+                        mgr.load_spacer_image(&hash);
+                        mgr.load_selected_image(&hash);
+                    }
+                } else if is_vr {
+                    state.graph_image_manager.load_gray_spacer_image(&hash);
                 } else {
-                    mgr.load_spacer_image(hash);
-                    mgr.load_selected_image(hash);
-                }
-            } else {
-                if is_vr {
-                    state.graph_image_manager.load_gray_spacer_image(hash);
-                } else {
-                    state.graph_image_manager.load_spacer_image(hash);
-                    state.graph_image_manager.load_selected_image(hash);
+                    state.graph_image_manager.load_spacer_image(&hash);
+                    state.graph_image_manager.load_selected_image(&hash);
                 }
             }
         }
