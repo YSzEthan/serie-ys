@@ -80,6 +80,17 @@ impl<'a> CreateTagView<'a> {
             return;
         }
 
+        // In text fields, y/n are text input, not confirm/cancel
+        if matches!(
+            self.focused_field,
+            FocusedField::TagName | FocusedField::Message
+        ) {
+            if let KeyCode::Char('y') | KeyCode::Char('n') = key.code {
+                self.handle_input(key);
+                return;
+            }
+        }
+
         let event = event_with_count.event;
 
         match event {
@@ -308,9 +319,9 @@ impl<'a> CreateTagView<'a> {
 
         // Hints
         let hint_line = Line::from(vec![
-            Span::raw("Enter").fg(self.ctx.color_theme.help_key_fg),
+            Span::raw("Enter/y").fg(self.ctx.color_theme.help_key_fg),
             Span::raw(" submit  ").fg(self.ctx.color_theme.fg),
-            Span::raw("Esc").fg(self.ctx.color_theme.help_key_fg),
+            Span::raw("Esc/n").fg(self.ctx.color_theme.help_key_fg),
             Span::raw(" cancel  ").fg(self.ctx.color_theme.fg),
             Span::raw("Tab/↑↓").fg(self.ctx.color_theme.help_key_fg),
             Span::raw(" nav").fg(self.ctx.color_theme.fg),

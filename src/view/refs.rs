@@ -65,10 +65,7 @@ impl<'a> RefsView<'a> {
         let count = event_with_count.count;
 
         match event {
-            UserEvent::Quit => {
-                self.tx.send(AppEvent::Quit);
-            }
-            UserEvent::Cancel | UserEvent::Close | UserEvent::RefList => {
+            UserEvent::Cancel => {
                 self.tx.send(AppEvent::CloseRefs);
             }
             UserEvent::NavigateDown | UserEvent::SelectDown => {
@@ -83,27 +80,17 @@ impl<'a> RefsView<'a> {
                 }
                 self.update_commit_list_selected();
             }
-            UserEvent::GoToTop => {
-                self.ref_list_state.select_first();
-                self.update_commit_list_selected();
-            }
-            UserEvent::GoToBottom => {
-                self.ref_list_state.select_last();
-                self.update_commit_list_selected();
-            }
             UserEvent::NavigateRight => {
                 self.ref_list_state.open_node();
                 self.update_commit_list_selected();
             }
             UserEvent::NavigateLeft => {
-                self.ref_list_state.close_node();
-                self.update_commit_list_selected();
-            }
-            UserEvent::ShortCopy | UserEvent::FullCopy => {
-                self.copy_ref_name();
-            }
-            UserEvent::HelpToggle => {
-                self.tx.send(AppEvent::OpenHelp);
+                if self.ref_list_state.is_at_root_level() {
+                    self.tx.send(AppEvent::CloseRefs);
+                } else {
+                    self.ref_list_state.close_node();
+                    self.update_commit_list_selected();
+                }
             }
             UserEvent::UserCommand(_) | UserEvent::DeleteTag => {
                 self.open_delete_ref();
@@ -185,18 +172,6 @@ impl<'a> RefsView<'a> {
                 list_state.select_ref(&selected);
             }
         }
-    }
-
-    fn copy_ref_name(&self) {
-        if let Some(selected) = self.ref_list_state.selected_branch() {
-            self.copy_to_clipboard("Branch Name".into(), selected);
-        } else if let Some(selected) = self.ref_list_state.selected_tag() {
-            self.copy_to_clipboard("Tag Name".into(), selected);
-        }
-    }
-
-    fn copy_to_clipboard(&self, name: String, value: String) {
-        self.tx.send(AppEvent::CopyToClipboard { name, value });
     }
 
     pub fn refresh(&self) {

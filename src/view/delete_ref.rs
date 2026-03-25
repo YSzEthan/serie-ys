@@ -296,9 +296,9 @@ impl<'a> DeleteRefView<'a> {
         f.render_widget(Paragraph::new(checkbox_line), checkbox_area);
 
         let hint_line = Line::from(vec![
-            Span::raw("Enter").fg(self.ctx.color_theme.help_key_fg),
+            Span::raw("Enter/y").fg(self.ctx.color_theme.help_key_fg),
             Span::raw(" delete  ").fg(self.ctx.color_theme.fg),
-            Span::raw("Esc").fg(self.ctx.color_theme.help_key_fg),
+            Span::raw("Esc/n").fg(self.ctx.color_theme.help_key_fg),
             Span::raw(" cancel  ").fg(self.ctx.color_theme.fg),
             Span::raw("←→").fg(self.ctx.color_theme.help_key_fg),
             Span::raw(" toggle").fg(self.ctx.color_theme.fg),

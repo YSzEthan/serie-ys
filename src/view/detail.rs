@@ -1,11 +1,6 @@
 use std::rc::Rc;
 
-use ratatui::{
-    crossterm::event::{KeyCode, KeyEvent},
-    layout::Rect,
-    widgets::Clear,
-    Frame,
-};
+use ratatui::{crossterm::event::KeyEvent, layout::Rect, widgets::Clear, Frame};
 
 use crate::{
     app::AppContext,
@@ -80,14 +75,7 @@ impl<'a> DetailView<'a> {
         }
     }
 
-    pub fn handle_event(&mut self, event_with_count: UserEventWithCount, key: KeyEvent) {
-        // 'y' as alias for Close (backspace)
-        if key.code == KeyCode::Char('y') {
-            self.tx.send(AppEvent::ClearDetail);
-            self.tx.send(AppEvent::CloseDetail);
-            return;
-        }
-
+    pub fn handle_event(&mut self, event_with_count: UserEventWithCount, _key: KeyEvent) {
         let event = event_with_count.event;
         let count = event_with_count.count;
 
@@ -111,38 +99,6 @@ impl<'a> DetailView<'a> {
             UserEvent::NavigateLeft => {
                 self.tx.send(AppEvent::SelectNewerCommit);
             }
-            UserEvent::PageDown => {
-                for _ in 0..count {
-                    self.commit_detail_state.scroll_page_down();
-                }
-            }
-            UserEvent::PageUp => {
-                for _ in 0..count {
-                    self.commit_detail_state.scroll_page_up();
-                }
-            }
-            UserEvent::HalfPageDown => {
-                for _ in 0..count {
-                    self.commit_detail_state.scroll_half_page_down();
-                }
-            }
-            UserEvent::HalfPageUp => {
-                for _ in 0..count {
-                    self.commit_detail_state.scroll_half_page_up();
-                }
-            }
-            UserEvent::GoToTop => {
-                self.commit_detail_state.select_first();
-            }
-            UserEvent::GoToBottom => {
-                self.commit_detail_state.select_last();
-            }
-            UserEvent::SelectDown => {
-                self.tx.send(AppEvent::SelectOlderCommit);
-            }
-            UserEvent::SelectUp => {
-                self.tx.send(AppEvent::SelectNewerCommit);
-            }
             UserEvent::GoToParent => {
                 self.tx.send(AppEvent::SelectParentCommit);
             }
@@ -151,9 +107,6 @@ impl<'a> DetailView<'a> {
             }
             UserEvent::FullCopy => {
                 self.copy_commit_hash();
-            }
-            UserEvent::UserCommand(n) => {
-                self.tx.send(AppEvent::OpenUserCommand(n));
             }
             UserEvent::RemoteRefsToggle => {
                 if let Some(ref mut cls) = self.commit_list_state {
@@ -165,11 +118,8 @@ impl<'a> DetailView<'a> {
                         self.tx
                             .send(AppEvent::NotifyInfo("Remote refs: hidden".into()));
                     }
-                    let tx = self.tx.clone();
-                    std::thread::spawn(move || {
-                        std::thread::sleep(std::time::Duration::from_secs(3));
-                        tx.send(AppEvent::ClearStatusLine);
-                    });
+                    self.tx
+                        .send_after(AppEvent::ClearStatusLine, std::time::Duration::from_secs(3));
                 }
             }
             UserEvent::HelpToggle => {

@@ -44,14 +44,6 @@ impl RefListState {
         self.tree_state.key_up();
     }
 
-    pub fn select_first(&mut self) {
-        self.tree_state.select_first();
-    }
-
-    pub fn select_last(&mut self) {
-        self.tree_state.select_last();
-    }
-
     pub fn open_node(&mut self) {
         self.tree_state.key_right();
     }
@@ -60,19 +52,12 @@ impl RefListState {
         self.tree_state.key_left();
     }
 
-    pub fn selected_ref_name(&self) -> Option<String> {
-        self.tree_state.selected().last().cloned()
+    pub fn is_at_root_level(&self) -> bool {
+        self.tree_state.selected().len() <= 1
     }
 
-    pub fn selected_branch(&self) -> Option<String> {
-        let selected = self.tree_state.selected();
-        if selected.len() > 1
-            && (selected[0] == TREE_BRANCH_ROOT_IDENT || selected[0] == TREE_REMOTE_ROOT_IDENT)
-        {
-            selected.last().cloned()
-        } else {
-            None
-        }
+    pub fn selected_ref_name(&self) -> Option<String> {
+        self.tree_state.selected().last().cloned()
     }
 
     pub fn selected_tag(&self) -> Option<String> {

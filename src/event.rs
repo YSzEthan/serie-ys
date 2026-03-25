@@ -123,6 +123,15 @@ impl Sender {
     pub fn send(&self, event: AppEvent) {
         let _ = self.tx.send(event);
     }
+
+    /// Send an event after a delay, on a background thread.
+    pub fn send_after(&self, event: AppEvent, delay: std::time::Duration) {
+        let tx = self.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(delay);
+            tx.send(event);
+        });
+    }
 }
 
 impl Debug for Sender {

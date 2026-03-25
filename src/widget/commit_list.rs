@@ -501,16 +501,6 @@ impl<'a> CommitListState<'a> {
         self.offset = 0;
     }
 
-    pub fn select_last(&mut self) {
-        if self.total == 0 || self.height == 0 {
-            return;
-        }
-        self.selected = (self.height - 1).min(self.total - 1);
-        if self.height < self.total {
-            self.offset = self.total - self.height;
-        }
-    }
-
     pub fn scroll_down(&mut self) {
         if self.offset + self.height < self.total {
             self.offset += 1;
@@ -529,77 +519,6 @@ impl<'a> CommitListState<'a> {
             if self.selected < self.height - 1 {
                 self.selected += 1;
             }
-        }
-    }
-
-    pub fn scroll_down_page(&mut self) {
-        self.scroll_down_height(self.height);
-    }
-
-    pub fn scroll_up_page(&mut self) {
-        self.scroll_up_height(self.height);
-    }
-
-    pub fn scroll_down_half(&mut self) {
-        self.scroll_down_height(self.height / 2);
-    }
-
-    pub fn scroll_up_half(&mut self) {
-        self.scroll_up_height(self.height / 2);
-    }
-
-    fn scroll_down_height(&mut self, scroll_height: usize) {
-        if self.total == 0 || self.height == 0 {
-            return;
-        }
-        if self.offset + self.height + scroll_height < self.total {
-            self.offset += scroll_height;
-        } else {
-            let old_offset = self.offset;
-            let size = self.height.min(self.total);
-            self.offset = self.total - size;
-            self.selected += scroll_height - (self.offset - old_offset);
-            if self.selected >= size {
-                self.selected = size - 1;
-            }
-        }
-    }
-
-    fn scroll_up_height(&mut self, scroll_height: usize) {
-        if self.offset > scroll_height {
-            self.offset -= scroll_height;
-        } else {
-            let old_offset = self.offset;
-            self.offset = 0;
-            self.selected = self
-                .selected
-                .saturating_sub(scroll_height - (old_offset - self.offset));
-        }
-    }
-
-    pub fn select_high(&mut self) {
-        self.selected = 0;
-    }
-
-    pub fn select_middle(&mut self) {
-        if self.total == 0 {
-            return;
-        }
-        if self.total > self.height && self.height > 0 {
-            self.selected = self.height / 2;
-        } else {
-            self.selected = self.total / 2;
-        }
-    }
-
-    pub fn select_low(&mut self) {
-        if self.total == 0 || self.height == 0 {
-            return;
-        }
-        if self.total > self.height {
-            self.selected = self.height - 1;
-        } else {
-            self.selected = self.total - 1;
         }
     }
 

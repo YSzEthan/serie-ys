@@ -1,6 +1,10 @@
 use std::rc::Rc;
 
-use ratatui::{crossterm::event::KeyEvent, layout::Rect, Frame};
+use ratatui::{
+    crossterm::event::{KeyCode, KeyEvent},
+    layout::Rect,
+    Frame,
+};
 
 use crate::{
     app::AppContext,
@@ -40,24 +44,24 @@ impl<'a> ListView<'a> {
 
         // Handle filter mode input
         if let FilterState::Filtering { .. } = self.as_list_state().filter_state() {
-            match event {
-                UserEvent::Confirm => {
+            match resolve_input_action(event, key) {
+                InputAction::Confirm => {
                     self.as_mut_list_state().apply_filter();
                     self.clear_filter_query();
                 }
-                UserEvent::Cancel => {
+                InputAction::Cancel => {
                     self.as_mut_list_state().cancel_filter();
                     self.clear_filter_query();
                 }
-                UserEvent::IgnoreCaseToggle => {
+                InputAction::IgnoreCaseToggle => {
                     self.as_mut_list_state().toggle_filter_ignore_case();
                     self.update_filter_query();
                 }
-                UserEvent::FuzzyToggle => {
+                InputAction::FuzzyToggle => {
                     self.as_mut_list_state().toggle_filter_fuzzy();
                     self.update_filter_query();
                 }
-                _ => {
+                InputAction::TextInput => {
                     self.as_mut_list_state().handle_filter_input(key);
                     self.update_filter_query();
                 }
@@ -67,24 +71,24 @@ impl<'a> ListView<'a> {
 
         // Handle search mode input
         if let SearchState::Searching { .. } = self.as_list_state().search_state() {
-            match event {
-                UserEvent::Confirm => {
+            match resolve_input_action(event, key) {
+                InputAction::Confirm => {
                     self.as_mut_list_state().apply_search();
                     self.update_matched_message();
                 }
-                UserEvent::Cancel => {
+                InputAction::Cancel => {
                     self.as_mut_list_state().cancel_search();
                     self.clear_search_query();
                 }
-                UserEvent::IgnoreCaseToggle => {
+                InputAction::IgnoreCaseToggle => {
                     self.as_mut_list_state().toggle_ignore_case();
                     self.update_search_query();
                 }
-                UserEvent::FuzzyToggle => {
+                InputAction::FuzzyToggle => {
                     self.as_mut_list_state().toggle_fuzzy();
                     self.update_search_query();
                 }
-                _ => {
+                InputAction::TextInput => {
                     self.as_mut_list_state().handle_search_input(key);
                     self.update_search_query();
                 }
@@ -94,9 +98,6 @@ impl<'a> ListView<'a> {
 
         // Normal mode
         match event {
-            UserEvent::Quit => {
-                self.tx.send(AppEvent::Quit);
-            }
             UserEvent::NavigateDown | UserEvent::SelectDown => {
                 for _ in 0..count {
                     self.as_mut_list_state().select_next();
@@ -107,61 +108,18 @@ impl<'a> ListView<'a> {
                     self.as_mut_list_state().select_prev();
                 }
             }
-            UserEvent::GoToParent => {
-                for _ in 0..count {
-                    self.as_mut_list_state().select_parent();
-                }
-            }
-            UserEvent::GoToTop => {
-                self.as_mut_list_state().select_first();
-            }
-            UserEvent::GoToBottom => {
-                self.as_mut_list_state().select_last();
-            }
             UserEvent::ScrollDown => {
                 for _ in 0..count {
                     self.as_mut_list_state().scroll_down();
                 }
             }
-            UserEvent::ScrollUp => {
+            UserEvent::GoToParent => {
                 for _ in 0..count {
                     self.as_mut_list_state().scroll_up();
                 }
             }
-            UserEvent::PageDown => {
-                for _ in 0..count {
-                    self.as_mut_list_state().scroll_down_page();
-                }
-            }
-            UserEvent::PageUp => {
-                for _ in 0..count {
-                    self.as_mut_list_state().scroll_up_page();
-                }
-            }
-            UserEvent::HalfPageDown => {
-                for _ in 0..count {
-                    self.as_mut_list_state().scroll_down_half();
-                }
-            }
-            UserEvent::HalfPageUp => {
-                for _ in 0..count {
-                    self.as_mut_list_state().scroll_up_half();
-                }
-            }
-            UserEvent::SelectTop => {
-                self.as_mut_list_state().select_high();
-            }
-            UserEvent::SelectMiddle => {
-                self.as_mut_list_state().select_middle();
-            }
-            UserEvent::SelectBottom => {
-                self.as_mut_list_state().select_low();
-            }
             UserEvent::ShortCopy => {
                 self.copy_commit_short_hash();
-            }
-            UserEvent::FullCopy => {
-                self.copy_commit_hash();
             }
             UserEvent::Search => {
                 self.as_mut_list_state().start_search();
@@ -170,12 +128,6 @@ impl<'a> ListView<'a> {
             UserEvent::Filter => {
                 self.as_mut_list_state().start_filter();
                 self.update_filter_query();
-            }
-            UserEvent::UserCommand(n) => {
-                self.tx.send(AppEvent::OpenUserCommand(n));
-            }
-            UserEvent::HelpToggle => {
-                self.tx.send(AppEvent::OpenHelp);
             }
             UserEvent::GitHubToggle => {
                 self.tx.send(AppEvent::OpenGitHub);
@@ -206,11 +158,8 @@ impl<'a> ListView<'a> {
                     self.tx
                         .send(AppEvent::NotifyInfo("Remote refs: hidden".into()));
                 }
-                let tx = self.tx.clone();
-                std::thread::spawn(move || {
-                    std::thread::sleep(std::time::Duration::from_secs(3));
-                    tx.send(AppEvent::ClearStatusLine);
-                });
+                self.tx
+                    .send_after(AppEvent::ClearStatusLine, std::time::Duration::from_secs(3));
             }
             UserEvent::Refresh => {
                 self.refresh();
@@ -323,14 +272,6 @@ impl<'a> ListView<'a> {
         self.copy_to_clipboard("Commit SHA (short)".into(), selected.as_short_hash());
     }
 
-    fn copy_commit_hash(&self) {
-        if self.as_list_state().is_virtual_row_selected() {
-            return;
-        }
-        let selected = self.as_list_state().selected_commit_hash();
-        self.copy_to_clipboard("Commit SHA".into(), selected.as_str().into());
-    }
-
     fn copy_to_clipboard(&self, name: String, value: String) {
         self.tx.send(AppEvent::CopyToClipboard { name, value });
     }
@@ -360,5 +301,29 @@ impl<'a> ListView<'a> {
                 list_state.scroll_up();
             }
         }
+    }
+}
+
+/// Resolved action for text input modes (search/filter).
+///
+/// When y/n keys are bound to Confirm/Cancel, they should be treated as text
+/// input rather than as control actions. This enum captures that decision.
+enum InputAction {
+    Confirm,
+    Cancel,
+    IgnoreCaseToggle,
+    FuzzyToggle,
+    TextInput,
+}
+
+fn resolve_input_action(event: UserEvent, key: KeyEvent) -> InputAction {
+    match event {
+        UserEvent::Confirm if key.code == KeyCode::Char('y') => InputAction::TextInput,
+        UserEvent::Confirm => InputAction::Confirm,
+        UserEvent::Cancel if key.code == KeyCode::Char('n') => InputAction::TextInput,
+        UserEvent::Cancel => InputAction::Cancel,
+        UserEvent::IgnoreCaseToggle => InputAction::IgnoreCaseToggle,
+        UserEvent::FuzzyToggle => InputAction::FuzzyToggle,
+        _ => InputAction::TextInput,
     }
 }

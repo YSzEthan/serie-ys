@@ -61,11 +61,11 @@ impl HelpView<'_> {
         let count = event_with_count.count;
 
         match event {
-            UserEvent::Quit => {
-                self.tx.send(AppEvent::Quit);
-            }
-            UserEvent::HelpToggle | UserEvent::Cancel | UserEvent::Close => {
-                self.tx.send(AppEvent::ClearHelp); // hack: reset the rendering of the image area
+            UserEvent::HelpToggle
+            | UserEvent::Cancel
+            | UserEvent::Close
+            | UserEvent::NavigateLeft => {
+                self.tx.send(AppEvent::ClearHelp);
                 self.tx.send(AppEvent::CloseHelp);
             }
             UserEvent::NavigateDown | UserEvent::SelectDown => {
@@ -77,32 +77,6 @@ impl HelpView<'_> {
                 for _ in 0..count {
                     self.scroll_up();
                 }
-            }
-            UserEvent::PageDown => {
-                for _ in 0..count {
-                    self.scroll_page_down();
-                }
-            }
-            UserEvent::PageUp => {
-                for _ in 0..count {
-                    self.scroll_page_up();
-                }
-            }
-            UserEvent::HalfPageDown => {
-                for _ in 0..count {
-                    self.scroll_half_page_down();
-                }
-            }
-            UserEvent::HalfPageUp => {
-                for _ in 0..count {
-                    self.scroll_half_page_up();
-                }
-            }
-            UserEvent::GoToTop => {
-                self.select_first();
-            }
-            UserEvent::GoToBottom => {
-                self.select_last();
             }
             _ => {}
         }
@@ -177,30 +151,6 @@ impl<'a> HelpView<'a> {
         self.offset = self.offset.saturating_sub(1);
     }
 
-    fn scroll_page_down(&mut self) {
-        self.offset = self.offset.saturating_add(self.height);
-    }
-
-    fn scroll_page_up(&mut self) {
-        self.offset = self.offset.saturating_sub(self.height);
-    }
-
-    fn scroll_half_page_down(&mut self) {
-        self.offset = self.offset.saturating_add(self.height / 2);
-    }
-
-    fn scroll_half_page_up(&mut self) {
-        self.offset = self.offset.saturating_sub(self.height / 2);
-    }
-
-    fn select_first(&mut self) {
-        self.offset = 0;
-    }
-
-    fn select_last(&mut self) {
-        self.offset = usize::MAX;
-    }
-
     fn update_state(&mut self, area: Rect) {
         self.height = area.height as usize;
         self.offset = self.offset.min(self.help_key_lines.len() - 1)
@@ -227,94 +177,70 @@ fn build_lines(
         .collect::<Vec<_>>();
 
     let common_helps = vec![
-        (vec![UserEvent::ForceQuit, UserEvent::Quit], "Quit app".into()),
+        (vec![UserEvent::ForceQuit], "Force quit".into()),
+        (vec![UserEvent::Quit], "Quit (press twice)".into()),
         (vec![UserEvent::HelpToggle], "Open help".into()),
     ];
     let (common_key_lines, common_value_lines) = build_block_lines("Common:", common_helps, color_theme, keybind);
 
     let help_helps = vec![
-        (vec![UserEvent::HelpToggle, UserEvent::Cancel, UserEvent::Close], "Close help".into()),
+        (vec![UserEvent::HelpToggle, UserEvent::Cancel, UserEvent::Close, UserEvent::NavigateLeft], "Close help".into()),
         (vec![UserEvent::NavigateDown, UserEvent::SelectDown], "Scroll down".into()),
         (vec![UserEvent::NavigateUp, UserEvent::SelectUp], "Scroll up".into()),
-        (vec![UserEvent::PageDown], "Scroll page down".into()),
-        (vec![UserEvent::PageUp], "Scroll page up".into()),
-        (vec![UserEvent::HalfPageDown], "Scroll half page down".into()),
-        (vec![UserEvent::HalfPageUp], "Scroll half page up".into()),
-        (vec![UserEvent::GoToTop], "Go to top".into()),
-        (vec![UserEvent::GoToBottom], "Go to bottom".into()),
     ];
     let (help_key_lines, help_value_lines) = build_block_lines("Help:", help_helps, color_theme, keybind);
 
-    let mut list_helps = vec![
-        (vec![UserEvent::NavigateDown, UserEvent::SelectDown], "Move down".into()),
-        (vec![UserEvent::NavigateUp, UserEvent::SelectUp], "Move up".into()),
-        (vec![UserEvent::GoToParent], "Go to parent".into()),
-        (vec![UserEvent::GoToTop], "Go to top".into()),
-        (vec![UserEvent::GoToBottom], "Go to bottom".into()),
-        (vec![UserEvent::PageDown], "Scroll page down".into()),
-        (vec![UserEvent::PageUp], "Scroll page up".into()),
-        (vec![UserEvent::HalfPageDown], "Scroll half page down".into()),
-        (vec![UserEvent::HalfPageUp], "Scroll half page up".into()),
+    let list_helps = vec![
+        (vec![UserEvent::NavigateDown], "Move down".into()),
+        (vec![UserEvent::NavigateUp], "Move up".into()),
         (vec![UserEvent::ScrollDown], "Scroll down".into()),
-        (vec![UserEvent::ScrollUp], "Scroll up".into()),
-        (vec![UserEvent::SelectTop], "Select top of the screen".into()),
-        (vec![UserEvent::SelectMiddle], "Select middle of the screen".into()),
-        (vec![UserEvent::SelectBottom], "Select bottom of the screen".into()),
-        (vec![UserEvent::Confirm], "Show commit details".into()),
+        (vec![UserEvent::GoToParent], "Scroll up".into()),
+        (vec![UserEvent::Confirm, UserEvent::NavigateRight], "Show commit details".into()),
         (vec![UserEvent::RefList], "Open refs list".into()),
         (vec![UserEvent::Search], "Start search".into()),
-        (vec![UserEvent::Cancel], "Cancel search".into()),
+        (vec![UserEvent::Filter], "Start filter".into()),
+        (vec![UserEvent::Cancel], "Cancel search/filter".into()),
         (vec![UserEvent::GoToNext], "Go to next search match".into()),
         (vec![UserEvent::GoToPrevious], "Go to previous search match".into()),
-        (vec![UserEvent::IgnoreCaseToggle], "Toggle ignore case".into()),
         (vec![UserEvent::FuzzyToggle], "Toggle fuzzy match".into()),
-        (vec![UserEvent::Refresh], "Refresh".into()),
         (vec![UserEvent::ShortCopy], "Copy commit short hash".into()),
-        (vec![UserEvent::FullCopy], "Copy commit hash".into()),
         (vec![UserEvent::CreateTag], "Create tag on commit".into()),
         (vec![UserEvent::DeleteTag], "Delete tag from commit".into()),
         (vec![UserEvent::RemoteRefsToggle], "Toggle remote refs".into()),
         (vec![UserEvent::GitHubToggle], "Open GitHub issues/PRs".into()),
+        (vec![UserEvent::Refresh], "Refresh".into()),
     ];
-    list_helps.extend(user_command_help_items.clone());
     let (list_key_lines, list_value_lines) = build_block_lines("Commit List:", list_helps, color_theme, keybind);
 
-    let mut detail_helps = vec![
+    let detail_helps = vec![
         (vec![UserEvent::Cancel, UserEvent::Close, UserEvent::Confirm], "Close commit details".into()),
+        (vec![UserEvent::DetailPaneToggle], "Toggle detail pane".into()),
         (vec![UserEvent::NavigateDown], "Scroll down".into()),
         (vec![UserEvent::NavigateUp], "Scroll up".into()),
-        (vec![UserEvent::PageDown], "Scroll page down".into()),
-        (vec![UserEvent::PageUp], "Scroll page up".into()),
-        (vec![UserEvent::HalfPageDown], "Scroll half page down".into()),
-        (vec![UserEvent::HalfPageUp], "Scroll half page up".into()),
-        (vec![UserEvent::GoToTop], "Go to top".into()),
-        (vec![UserEvent::GoToBottom], "Go to bottom".into()),
-        (vec![UserEvent::SelectDown], "Select older commit".into()),
-        (vec![UserEvent::SelectUp], "Select newer commit".into()),
+        (vec![UserEvent::NavigateRight], "Select older commit".into()),
+        (vec![UserEvent::NavigateLeft], "Select newer commit".into()),
         (vec![UserEvent::GoToParent], "Select parent commit".into()),
-        (vec![UserEvent::Refresh], "Refresh".into()),
         (vec![UserEvent::ShortCopy], "Copy commit short hash".into()),
         (vec![UserEvent::FullCopy], "Copy commit hash".into()),
+        (vec![UserEvent::RemoteRefsToggle], "Toggle remote refs".into()),
+        (vec![UserEvent::HelpToggle], "Open help".into()),
+        (vec![UserEvent::Refresh], "Refresh".into()),
     ];
-    detail_helps.extend(user_command_help_items.clone());
     let (detail_key_lines, detail_value_lines) = build_block_lines("Commit Detail:", detail_helps, color_theme, keybind);
 
     let refs_helps = vec![
-        (vec![UserEvent::Cancel, UserEvent::Close, UserEvent::RefList], "Close refs list".into()),
-        (vec![UserEvent::NavigateDown, UserEvent::SelectDown], "Move down".into()),
-        (vec![UserEvent::NavigateUp, UserEvent::SelectUp], "Move up".into()),
-        (vec![UserEvent::GoToTop], "Go to top".into()),
-        (vec![UserEvent::GoToBottom], "Go to bottom".into()),
+        (vec![UserEvent::Cancel], "Close refs list".into()),
+        (vec![UserEvent::NavigateDown], "Move down".into()),
+        (vec![UserEvent::NavigateUp], "Move up".into()),
         (vec![UserEvent::NavigateRight], "Open node".into()),
-        (vec![UserEvent::NavigateLeft], "Close node".into()),
+        (vec![UserEvent::NavigateLeft], "Close node / Close refs".into()),
+        (vec![UserEvent::UserCommand(1)], "Delete ref".into()),
         (vec![UserEvent::Refresh], "Refresh".into()),
-        (vec![UserEvent::ShortCopy], "Copy ref name".into()),
     ];
     let (refs_key_lines, refs_value_lines) = build_block_lines("Refs List:", refs_helps, color_theme, keybind);
 
     let mut user_command_helps = vec![
         (vec![UserEvent::Cancel, UserEvent::Close], "Close user command".into()),
-        (vec![UserEvent::CreateTag], "Create tag dialog".into()),
         (vec![UserEvent::NavigateDown], "Scroll down".into()),
         (vec![UserEvent::NavigateUp], "Scroll up".into()),
         (vec![UserEvent::PageDown], "Scroll page down".into()),

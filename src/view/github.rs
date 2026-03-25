@@ -198,13 +198,13 @@ impl<'a> GitHubView<'a> {
 
     pub fn status_hints(&self) -> Vec<(UserEvent, &'static str)> {
         if self.task_panel.is_some() {
-            return vec![(UserEvent::Confirm, "toggle"), (UserEvent::Cancel, "close")];
+            return vec![
+                (UserEvent::NavigateLeft, "toggle"),
+                (UserEvent::Cancel, "close"),
+            ];
         }
         if self.detail.is_some() {
-            return vec![
-                (UserEvent::TaskListToggle, "tasks"),
-                (UserEvent::Cancel, "back"),
-            ];
+            return vec![(UserEvent::Confirm, "tasks"), (UserEvent::Cancel, "back")];
         }
         if self.current_list_len() == 0 {
             return match &self.load_state {
@@ -236,7 +236,7 @@ impl<'a> GitHubView<'a> {
         // Task list panel 事件（最高優先級）
         if let Some(ref mut panel) = self.task_panel {
             match event {
-                UserEvent::Cancel | UserEvent::Close => {
+                UserEvent::Cancel => {
                     self.task_panel = None;
                     return;
                 }
@@ -255,15 +255,7 @@ impl<'a> GitHubView<'a> {
                     }
                     return;
                 }
-                UserEvent::GoToTop => {
-                    panel.selected = 0;
-                    return;
-                }
-                UserEvent::GoToBottom => {
-                    panel.selected = panel.items.len().saturating_sub(1);
-                    return;
-                }
-                UserEvent::Confirm => {
+                UserEvent::NavigateLeft | UserEvent::NavigateRight => {
                     if let Some(item) = panel.items.get(panel.selected) {
                         self.tx.send(AppEvent::ToggleCheckbox {
                             number: panel.number,
@@ -314,7 +306,7 @@ impl<'a> GitHubView<'a> {
                 UserEvent::GoToTop => {
                     self.detail_offset = 0;
                 }
-                UserEvent::TaskListToggle => {
+                UserEvent::Confirm => {
                     self.request_task_panel();
                 }
                 _ => {}
@@ -324,9 +316,6 @@ impl<'a> GitHubView<'a> {
 
         // 列表模式事件
         match event {
-            UserEvent::Quit => {
-                self.tx.send(AppEvent::Quit);
-            }
             UserEvent::GitHubToggle | UserEvent::Cancel | UserEvent::Close => {
                 self.tx.send(AppEvent::ClearGitHub);
                 self.tx.send(AppEvent::CloseGitHub);

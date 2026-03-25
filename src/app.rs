@@ -1,6 +1,7 @@
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use ansi_to_tui::IntoText as _;
 use ratatui::{
@@ -74,6 +75,7 @@ struct AppStatus {
     numeric_prefix: String,
     view_area: Rect,
     clear: bool,
+    last_quit_press: Option<Instant>,
 }
 
 #[derive(Debug)]
@@ -258,26 +260,46 @@ impl App<'_> {
                         Some(UserEvent::ForceQuit) => {
                             self.ec.send(AppEvent::Quit);
                         }
+                        Some(UserEvent::Quit) => {
+                            if self.is_input_mode() {
+                                self.view.handle_event(
+                                    UserEventWithCount::from_event(UserEvent::Unknown),
+                                    key,
+                                );
+                            } else if self
+                                .app_status
+                                .last_quit_press
+                                .is_some_and(|t| t.elapsed() < Duration::from_millis(500))
+                            {
+                                self.ec.send(AppEvent::Quit);
+                                self.app_status.last_quit_press = None;
+                                continue;
+                            } else {
+                                self.app_status.last_quit_press = Some(Instant::now());
+                                self.info_notification("Press q again to quit".into());
+                                self.ec.sender().send_after(
+                                    AppEvent::ClearStatusLine,
+                                    Duration::from_millis(600),
+                                );
+                            }
+                            self.app_status.numeric_prefix.clear();
+                        }
                         Some(ue) => {
+                            self.app_status.last_quit_press = None;
                             let event_with_count =
                                 process_numeric_prefix(&self.app_status.numeric_prefix, *ue, key);
                             self.view.handle_event(event_with_count, key);
                             self.app_status.numeric_prefix.clear();
                         }
                         None => {
-                            let is_input_mode =
-                                matches!(self.app_status.status_line, StatusLine::Input(_, _, _))
-                                    || matches!(self.view, View::CreateTag(_));
-                            let is_detail_mode = matches!(self.view, View::Detail(_));
-                            if is_input_mode || is_detail_mode {
-                                // In input/detail mode, pass all key events to the view
+                            self.app_status.last_quit_press = None;
+                            if self.is_input_mode() || matches!(self.view, View::Detail(_)) {
                                 self.app_status.numeric_prefix.clear();
                                 self.view.handle_event(
                                     UserEventWithCount::from_event(UserEvent::Unknown),
                                     key,
                                 );
                             } else if let KeyCode::Char(c) = key.code {
-                                // Accumulate numeric prefix
                                 if c.is_ascii_digit()
                                     && (c != '0' || !self.app_status.numeric_prefix.is_empty())
                                 {
@@ -627,6 +649,11 @@ impl App<'_> {
 
     fn reset_clear(&mut self) {
         self.app_status.clear = false;
+    }
+
+    fn is_input_mode(&self) -> bool {
+        matches!(self.app_status.status_line, StatusLine::Input(_, _, _))
+            || matches!(self.view, View::CreateTag(_))
     }
 
     fn open_detail(&mut self) {
@@ -1024,7 +1051,7 @@ impl App<'_> {
                     first_run = false;
                 }
 
-                std::thread::sleep(std::time::Duration::from_secs(30));
+                std::thread::sleep(Duration::from_secs(30));
             }
         });
     }
@@ -1073,7 +1100,7 @@ impl App<'_> {
             self.github_timer_cancel = Some(cancel.clone());
             let tx = self.ec.sender();
             std::thread::spawn(move || {
-                std::thread::sleep(std::time::Duration::from_secs(3));
+                std::thread::sleep(Duration::from_secs(3));
                 if !cancel.load(Ordering::Relaxed) {
                     tx.send(AppEvent::GitHubLoadFailed {
                         error: "GitHub data not available".into(),

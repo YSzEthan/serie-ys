@@ -47,48 +47,9 @@ impl CommitDetailState {
         }
     }
 
-    pub fn scroll_page_down(&mut self) {
-        match self.active_pane() {
-            DetailPane::Left => self.left_offset = self.left_offset.saturating_add(self.height),
-            DetailPane::Right => self.right_offset = self.right_offset.saturating_add(self.height),
-        }
-    }
-
-    pub fn scroll_page_up(&mut self) {
-        match self.active_pane() {
-            DetailPane::Left => self.left_offset = self.left_offset.saturating_sub(self.height),
-            DetailPane::Right => self.right_offset = self.right_offset.saturating_sub(self.height),
-        }
-    }
-
-    pub fn scroll_half_page_down(&mut self) {
-        match self.active_pane() {
-            DetailPane::Left => self.left_offset = self.left_offset.saturating_add(self.height / 2),
-            DetailPane::Right => {
-                self.right_offset = self.right_offset.saturating_add(self.height / 2)
-            }
-        }
-    }
-
-    pub fn scroll_half_page_up(&mut self) {
-        match self.active_pane() {
-            DetailPane::Left => self.left_offset = self.left_offset.saturating_sub(self.height / 2),
-            DetailPane::Right => {
-                self.right_offset = self.right_offset.saturating_sub(self.height / 2)
-            }
-        }
-    }
-
     pub fn select_first(&mut self) {
         self.left_offset = 0;
         self.right_offset = 0;
-    }
-
-    pub fn select_last(&mut self) {
-        match self.active_pane() {
-            DetailPane::Left => self.left_offset = usize::MAX,
-            DetailPane::Right => self.right_offset = usize::MAX,
-        }
     }
 
     pub fn active_pane(&self) -> DetailPane {
