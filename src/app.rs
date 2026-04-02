@@ -404,12 +404,12 @@ impl App<'_> {
                 } => {
                     self.on_github_details_loaded(issue_details, pr_details);
                 }
-                AppEvent::ToggleCheckbox {
+                AppEvent::BatchToggleCheckboxes {
                     number,
                     kind,
-                    checkbox_index,
+                    checkbox_indices,
                 } => {
-                    self.toggle_checkbox(number, kind, checkbox_index);
+                    self.batch_toggle_checkboxes(number, kind, checkbox_indices);
                 }
                 AppEvent::CheckboxToggled {
                     number,
@@ -1274,21 +1274,22 @@ impl App<'_> {
         }
     }
 
-    fn toggle_checkbox(&mut self, number: u64, kind: GhItemKind, checkbox_index: usize) {
-        self.pending_message = Some("Updating checkbox...".to_string());
+    fn batch_toggle_checkboxes(
+        &mut self,
+        number: u64,
+        kind: GhItemKind,
+        checkbox_indices: Vec<usize>,
+    ) {
+        self.pending_message = Some("Updating checkboxes...".to_string());
 
         let repo_path = self.repository.path().to_path_buf();
         let tx = self.ec.sender();
+        let count = checkbox_indices.len();
 
         std::thread::spawn(move || {
             let result = (|| -> Result<String, String> {
                 let body = crate::github::get_body(&repo_path, number, kind)?;
-                let items = crate::github::parse_checkboxes(&body);
-                let item = items
-                    .iter()
-                    .find(|i| i.index == checkbox_index)
-                    .ok_or_else(|| "Checkbox not found".to_string())?;
-                let new_body = crate::github::toggle_checkbox(&body, item);
+                let new_body = crate::github::toggle_checkboxes(&body, &checkbox_indices);
                 crate::github::update_body(&repo_path, number, kind, &new_body)?;
                 Ok(new_body)
             })();
@@ -1298,7 +1299,7 @@ impl App<'_> {
             match result {
                 Ok(new_body) => {
                     tx.send(AppEvent::GitHubFlash {
-                        message: "Checkbox updated".to_string(),
+                        message: format!("{count} checkbox(es) updated"),
                         is_error: false,
                     });
                     tx.send(AppEvent::CheckboxToggled {
@@ -1309,7 +1310,7 @@ impl App<'_> {
                 }
                 Err(e) => {
                     tx.send(AppEvent::GitHubFlash {
-                        message: format!("Toggle failed: {e}"),
+                        message: format!("Batch toggle failed: {e}"),
                         is_error: true,
                     });
                 }

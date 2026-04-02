@@ -65,10 +65,10 @@ pub enum AppEvent {
         issue_details: Vec<(u64, String)>,
         pr_details: Vec<(u64, String)>,
     },
-    ToggleCheckbox {
+    BatchToggleCheckboxes {
         number: u64,
         kind: crate::github::GhItemKind,
-        checkbox_index: usize,
+        checkbox_indices: Vec<usize>,
     },
     CheckboxToggled {
         number: u64,

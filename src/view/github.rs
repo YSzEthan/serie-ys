@@ -52,6 +52,7 @@ struct TaskListPanel {
     number: u64,
     kind: GhItemKind,
     items: Vec<CheckboxItem>,
+    original_checked: Vec<bool>,
     selected: usize,
 }
 
@@ -177,6 +178,7 @@ impl<'a> GitHubView<'a> {
             if panel.number == number && panel.kind == kind {
                 let items = github::parse_checkboxes(new_body);
                 let selected = panel.selected.min(items.len().saturating_sub(1));
+                panel.original_checked = items.iter().map(|i| i.checked).collect();
                 panel.items = items;
                 panel.selected = selected;
             }
@@ -188,10 +190,12 @@ impl<'a> GitHubView<'a> {
             self.set_flash("No tasks found".to_string(), false);
             return;
         }
+        let original_checked = items.iter().map(|i| i.checked).collect();
         self.task_panel = Some(TaskListPanel {
             number,
             kind,
             items,
+            original_checked,
             selected: 0,
         });
     }
@@ -200,7 +204,8 @@ impl<'a> GitHubView<'a> {
         if self.task_panel.is_some() {
             return vec![
                 (UserEvent::NavigateLeft, "toggle"),
-                (UserEvent::Cancel, "close"),
+                (UserEvent::Confirm, "submit"),
+                (UserEvent::Cancel, "cancel"),
             ];
         }
         if self.detail.is_some() {
@@ -256,13 +261,28 @@ impl<'a> GitHubView<'a> {
                     return;
                 }
                 UserEvent::NavigateLeft | UserEvent::NavigateRight => {
-                    if let Some(item) = panel.items.get(panel.selected) {
-                        self.tx.send(AppEvent::ToggleCheckbox {
+                    // 本地切換，不立即打 API
+                    if let Some(item) = panel.items.get_mut(panel.selected) {
+                        item.checked = !item.checked;
+                    }
+                    return;
+                }
+                UserEvent::Confirm => {
+                    let changed: Vec<usize> = panel
+                        .items
+                        .iter()
+                        .enumerate()
+                        .filter(|(i, item)| item.checked != panel.original_checked[*i])
+                        .map(|(_, item)| item.index)
+                        .collect();
+                    if !changed.is_empty() {
+                        self.tx.send(AppEvent::BatchToggleCheckboxes {
                             number: panel.number,
                             kind: panel.kind,
-                            checkbox_index: item.index,
+                            checkbox_indices: changed,
                         });
                     }
+                    self.task_panel = None;
                     return;
                 }
                 _ => return,
@@ -644,7 +664,7 @@ impl<'a> GitHubView<'a> {
 
         // Footer
         let footer = Line::from(Span::styled(
-            " Enter:toggle  Esc:close",
+            " h/l:toggle  Enter/y:submit  Esc:cancel",
             Style::default().fg(Color::DarkGray),
         ));
         lines.push(footer);

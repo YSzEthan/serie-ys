@@ -223,15 +223,19 @@ pub fn parse_checkboxes(body: &str) -> Vec<CheckboxItem> {
     items
 }
 
-pub fn toggle_checkbox(body: &str, item: &CheckboxItem) -> String {
-    let mut result = String::with_capacity(body.len());
-    result.push_str(&body[..item.byte_offset]);
-    if item.checked {
-        result.push_str("[ ]");
-    } else {
-        result.push_str("[x]");
+pub fn toggle_checkboxes(body: &str, indices: &[usize]) -> String {
+    let items = parse_checkboxes(body);
+    let mut result = body.to_string();
+    // 從後往前處理，避免 byte offset 錯位
+    let mut targets: Vec<&CheckboxItem> = items
+        .iter()
+        .filter(|item| indices.contains(&item.index))
+        .collect();
+    targets.sort_by(|a, b| b.byte_offset.cmp(&a.byte_offset));
+    for item in targets {
+        let replacement = if item.checked { "[ ]" } else { "[x]" };
+        result.replace_range(item.byte_offset..item.byte_offset + 3, replacement);
     }
-    result.push_str(&body[item.byte_offset + 3..]);
     result
 }
 
