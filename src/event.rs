@@ -111,6 +111,10 @@ pub enum AppEvent {
         message: String,
     },
     HidePendingOverlay,
+    FetchAll,
+    CheckoutCommit {
+        target: String,
+    },
     AutoRefresh,
 }
 
@@ -365,6 +369,8 @@ pub enum UserEvent {
     GitHubToggle,
     TaskListToggle,
     DetailPaneToggle,
+    Fetch,
+    Checkout,
     Unknown,
 }
 
@@ -435,6 +441,8 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "github_toggle" => Ok(UserEvent::GitHubToggle),
                         "task_list_toggle" => Ok(UserEvent::TaskListToggle),
                         "detail_pane_toggle" => Ok(UserEvent::DetailPaneToggle),
+                        "fetch" => Ok(UserEvent::Fetch),
+                        "checkout" => Ok(UserEvent::Checkout),
                         _ => {
                             let msg = format!("Unknown user event: {value}");
                             Err(de::Error::custom(msg))

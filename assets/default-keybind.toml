@@ -44,5 +44,7 @@ delete_tag = ["ctrl-t"]
 
 remote_refs_toggle = ["o"]
 github_toggle = ["g"]
+fetch = ["f"]
+checkout = ["space"]
 
 detail_pane_toggle = ["u"]

@@ -95,10 +95,26 @@ impl<'a> RefsView<'a> {
             UserEvent::UserCommand(_) | UserEvent::DeleteTag => {
                 self.open_delete_ref();
             }
+            UserEvent::Checkout => {
+                self.checkout_selected_ref();
+            }
             UserEvent::Refresh => {
                 self.refresh();
             }
             _ => {}
+        }
+    }
+
+    fn checkout_selected_ref(&self) {
+        let name = self
+            .ref_list_state
+            .selected_local_branch()
+            .or_else(|| self.ref_list_state.selected_remote_branch());
+        match name {
+            Some(target) => self.tx.send(AppEvent::CheckoutCommit { target }),
+            None => self
+                .tx
+                .send(AppEvent::NotifyWarn("Select a branch to checkout".into())),
         }
     }
 

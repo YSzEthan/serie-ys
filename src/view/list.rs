@@ -167,6 +167,17 @@ impl<'a> ListView<'a> {
                 self.tx
                     .send_after(AppEvent::ClearStatusLine, std::time::Duration::from_secs(3));
             }
+            UserEvent::Fetch => {
+                self.tx.send(AppEvent::FetchAll);
+            }
+            UserEvent::Checkout => {
+                if !self.as_list_state().is_virtual_row_selected() {
+                    let hash = self.as_list_state().selected_commit_hash().clone();
+                    self.tx.send(AppEvent::CheckoutCommit {
+                        target: hash.as_str().to_string(),
+                    });
+                }
+            }
             UserEvent::Refresh => {
                 self.refresh();
             }

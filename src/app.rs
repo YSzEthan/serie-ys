@@ -482,6 +482,12 @@ impl App<'_> {
                 AppEvent::HidePendingOverlay => {
                     self.pending_message = None;
                 }
+                AppEvent::FetchAll => {
+                    self.fetch_all();
+                }
+                AppEvent::CheckoutCommit { target } => {
+                    self.checkout_commit(target);
+                }
                 AppEvent::AutoRefresh => {
                     self.ec.clear_pending_refresh();
                     self.view.refresh();
@@ -1528,6 +1534,68 @@ impl App<'_> {
                 self.ec.send(AppEvent::NotifyError(msg));
             }
         }
+    }
+
+    fn fetch_all(&self) {
+        self.spawn_git_task(
+            &["fetch", "--all"],
+            "Fetching...".into(),
+            "Fetch completed".into(),
+            "Fetch failed",
+        );
+    }
+
+    fn checkout_commit(&self, target: String) {
+        self.spawn_git_task(
+            &["checkout", &target],
+            format!("Checking out '{target}'..."),
+            format!("Checked out '{target}'"),
+            "Checkout failed",
+        );
+    }
+
+    fn spawn_git_task(
+        &self,
+        args: &[&str],
+        pending_msg: String,
+        success_msg: String,
+        error_prefix: &str,
+    ) {
+        let repo_path = self.repository.path().to_path_buf();
+        let tx = self.ec.sender();
+        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        let error_prefix = error_prefix.to_string();
+
+        tx.send(AppEvent::ShowPendingOverlay {
+            message: pending_msg,
+        });
+
+        std::thread::spawn(move || {
+            let output = std::process::Command::new("git")
+                .args(&args)
+                .current_dir(&repo_path)
+                .output();
+
+            tx.send(AppEvent::HidePendingOverlay);
+            match output {
+                Ok(o) if o.status.success() => {
+                    let detail = String::from_utf8_lossy(&o.stderr).trim().to_string();
+                    let msg = if detail.is_empty() {
+                        success_msg
+                    } else {
+                        detail
+                    };
+                    tx.send(AppEvent::NotifySuccess(msg));
+                }
+                Ok(o) => {
+                    let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
+                    tx.send(AppEvent::NotifyError(format!("{error_prefix}: {stderr}")));
+                }
+                Err(e) => {
+                    tx.send(AppEvent::NotifyError(format!("{error_prefix}: {e}")));
+                }
+            }
+        });
     }
 }
 
