@@ -108,6 +108,12 @@ impl<'a> ListView<'a> {
                     self.as_mut_list_state().select_prev();
                 }
             }
+            UserEvent::GoToTop => {
+                self.as_mut_list_state().select_first();
+            }
+            UserEvent::GoToBottom => {
+                self.as_mut_list_state().select_last();
+            }
             UserEvent::ScrollDown => {
                 for _ in 0..count {
                     self.as_mut_list_state().scroll_down();

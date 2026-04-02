@@ -370,6 +370,11 @@ pub fn run() -> Result<()> {
     let ret = loop {
         if terminal.is_none() {
             terminal = Some(ratatui::init());
+            ratatui::crossterm::execute!(
+                std::io::stdout(),
+                ratatui::crossterm::event::EnableMouseCapture
+            )
+            .ok();
         }
 
         let mut app = App::new(
@@ -427,6 +432,11 @@ pub fn run() -> Result<()> {
         }
     };
 
+    ratatui::crossterm::execute!(
+        std::io::stdout(),
+        ratatui::crossterm::event::DisableMouseCapture
+    )
+    .ok();
     ratatui::restore();
     ret.map_err(Into::into)
 }

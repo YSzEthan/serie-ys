@@ -501,6 +501,15 @@ impl<'a> CommitListState<'a> {
         self.offset = 0;
     }
 
+    pub fn select_last(&mut self) {
+        if self.total == 0 || self.height == 0 {
+            return;
+        }
+        let max_selected = self.height.min(self.total) - 1;
+        self.selected = max_selected;
+        self.offset = self.total.saturating_sub(self.height);
+    }
+
     pub fn scroll_down(&mut self) {
         if self.offset + self.height < self.total {
             self.offset += 1;
