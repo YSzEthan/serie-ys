@@ -27,7 +27,7 @@ pub enum GraphStyle {
 
 const IMAGE_CACHE_CAPACITY: usize = 512;
 
-pub struct GraphImageManager<'a> {
+pub struct GraphImageManager {
     encoded_image_map: LruCache<CommitHash, String>,
     spacer_image_map: LruCache<CommitHash, String>,
 
@@ -40,7 +40,7 @@ pub struct GraphImageManager<'a> {
     first_commit_with_up_image: Option<(CommitHash, String)>,
     selected_first_commit_with_up_image: Option<(CommitHash, String)>,
 
-    graph: Rc<Graph<'a>>,
+    graph: Rc<Graph>,
     cell_width_type: CellWidthType,
     graph_style: GraphStyle,
     image_params: ImageParams,
@@ -49,7 +49,7 @@ pub struct GraphImageManager<'a> {
     head_commit_hash: Option<CommitHash>,
 }
 
-impl Debug for GraphImageManager<'_> {
+impl Debug for GraphImageManager {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         f.debug_struct("GraphImageManager")
             .field("encoded_image_map_len", &self.encoded_image_map.len())
@@ -58,9 +58,9 @@ impl Debug for GraphImageManager<'_> {
     }
 }
 
-impl<'a> GraphImageManager<'a> {
+impl GraphImageManager {
     pub fn new(
-        graph: Rc<Graph<'a>>,
+        graph: Rc<Graph>,
         graph_color_set: &GraphColorSet,
         cell_width_type: CellWidthType,
         graph_style: GraphStyle,
@@ -74,7 +74,7 @@ impl<'a> GraphImageManager<'a> {
 
         let cache_cap = if preload {
             // Preload mode: size cache to fit all commits
-            NonZeroUsize::new(graph.commits.len().max(1)).unwrap()
+            NonZeroUsize::new(graph.commit_hashes.len().max(1)).unwrap()
         } else {
             NonZeroUsize::new(IMAGE_CACHE_CAPACITY).unwrap()
         };
@@ -113,18 +113,18 @@ impl<'a> GraphImageManager<'a> {
             &self.drawing_pixels,
             self.graph_style,
         );
-        for (i, commit) in self.graph.commits.iter().enumerate() {
+        for (i, commit_hash) in self.graph.commit_hashes.iter().enumerate() {
             let is_head = self
                 .head_commit_hash
                 .as_ref()
-                .is_some_and(|h| *h == commit.commit_hash);
+                .is_some_and(|h| h == commit_hash);
             let image = if is_head {
                 build_single_graph_row_image(
                     &self.graph,
                     &self.image_params,
                     &self.drawing_pixels,
                     self.graph_style,
-                    &commit.commit_hash,
+                    commit_hash,
                     true,
                 )
                 .encode(self.cell_width_type, self.image_protocol)
@@ -132,8 +132,7 @@ impl<'a> GraphImageManager<'a> {
                 let edges = &self.graph.edges[i];
                 graph_image.images[edges].encode(self.cell_width_type, self.image_protocol)
             };
-            self.encoded_image_map
-                .put(commit.commit_hash.clone(), image);
+            self.encoded_image_map.put(commit_hash.clone(), image);
         }
     }
 
@@ -485,10 +484,10 @@ pub fn build_graph_image(
     graph_style: GraphStyle,
 ) -> GraphImage {
     let graph_row_sources: FxHashSet<(usize, &Vec<Edge>)> = graph
-        .commits
+        .commit_hashes
         .iter()
-        .map(|commit| {
-            let (pos_x, pos_y) = graph.commit_pos_map[&commit.commit_hash];
+        .map(|commit_hash| {
+            let (pos_x, pos_y) = graph.commit_pos_map[commit_hash];
             let edges = &graph.edges[pos_y];
             (pos_x, edges)
         })

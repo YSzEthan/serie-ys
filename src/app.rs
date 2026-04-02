@@ -103,9 +103,9 @@ impl<'a> App<'a> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         repository: &'a Repository,
-        graph_image_manager: GraphImageManager<'a>,
-        graph: &Rc<Graph<'a>>,
-        filtered_graph: Option<FilteredGraphData<'a>>,
+        graph_image_manager: GraphImageManager,
+        graph: &Rc<Graph>,
+        filtered_graph: Option<FilteredGraphData>,
         remote_only_commits: FxHashSet<CommitHash>,
         graph_color_set: &'a GraphColorSet,
         cell_width_type: CellWidthType,
@@ -116,15 +116,18 @@ impl<'a> App<'a> {
     ) -> Self {
         let mut ref_name_to_commit_index_map = FxHashMap::default();
         let commits = graph
-            .commits
+            .commit_hashes
             .iter()
             .enumerate()
-            .map(|(i, commit)| {
-                let refs = repository.refs(&commit.commit_hash);
+            .map(|(i, commit_hash)| {
+                let commit = repository
+                    .commit(commit_hash)
+                    .expect("commit hash from graph must exist in repository");
+                let refs = repository.refs(commit_hash);
                 for r in &refs {
                     ref_name_to_commit_index_map.insert(r.name().to_string(), i);
                 }
-                let (pos_x, _) = graph.commit_pos_map[&commit.commit_hash];
+                let (pos_x, _) = graph.commit_pos_map[commit_hash];
                 let graph_color = graph_color_set.get(pos_x).to_ratatui_color();
                 CommitInfo::new(commit, refs, graph_color)
             })
@@ -134,17 +137,16 @@ impl<'a> App<'a> {
             CellWidthType::Single => (graph.max_pos_x + 1) as u16,
         };
 
-        // Build filtered graph data
         let (filtered_image_manager, filtered_cell_width, filtered_colors) =
             if let Some(fg) = filtered_graph {
                 let colors: FxHashMap<CommitHash, ratatui::style::Color> = fg
                     .graph
-                    .commits
+                    .commit_hashes
                     .iter()
-                    .map(|c| {
-                        let (pos_x, _) = fg.graph.commit_pos_map[&c.commit_hash];
+                    .map(|commit_hash| {
+                        let (pos_x, _) = fg.graph.commit_pos_map[commit_hash];
                         let color = graph_color_set.get(pos_x).to_ratatui_color();
-                        (c.commit_hash.clone(), color)
+                        (commit_hash.clone(), color)
                     })
                     .collect();
                 (Some(fg.image_manager), fg.cell_width, Some(colors))

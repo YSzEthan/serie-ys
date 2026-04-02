@@ -20,8 +20,8 @@ impl GraphDataSource for Repository {
 }
 
 #[derive(Debug)]
-pub struct Graph<'a> {
-    pub commits: Vec<&'a Commit>,
+pub struct Graph {
+    pub commit_hashes: Vec<CommitHash>,
     pub commit_pos_map: CommitPosMap,
     pub edges: Vec<Vec<Edge>>,
     pub max_pos_x: usize,
@@ -71,14 +71,15 @@ impl EdgeType {
     }
 }
 
-pub fn calc_graph<'a>(repository: &'a Repository) -> Graph<'a> {
+pub fn calc_graph(repository: &Repository) -> Graph {
     let commits: Vec<&Commit> = repository.all_commits().iter().collect();
 
     let commit_pos_map = calc_commit_positions(&commits, repository);
     let (graph_edges, max_pos_x) = calc_edges(&commit_pos_map, &commits, repository);
+    let commit_hashes = commits.iter().map(|c| c.commit_hash.clone()).collect();
 
     Graph {
-        commits,
+        commit_hashes,
         commit_pos_map,
         edges: graph_edges,
         max_pos_x,
@@ -520,10 +521,10 @@ fn find_nearest_visible_parent(
     None
 }
 
-pub fn calc_graph_filtered<'a>(
-    repository: &'a Repository,
+pub fn calc_graph_filtered(
+    repository: &Repository,
     visible_hashes: &FxHashSet<CommitHash>,
-) -> Graph<'a> {
+) -> Graph {
     let commits: Vec<&Commit> = repository
         .all_commits()
         .iter()
@@ -563,9 +564,10 @@ pub fn calc_graph_filtered<'a>(
 
     let commit_pos_map = calc_commit_positions(&commits, &source);
     let (graph_edges, max_pos_x) = calc_edges(&commit_pos_map, &commits, &source);
+    let commit_hashes = commits.iter().map(|c| c.commit_hash.clone()).collect();
 
     Graph {
-        commits,
+        commit_hashes,
         commit_pos_map,
         edges: graph_edges,
         max_pos_x,

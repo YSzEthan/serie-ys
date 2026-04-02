@@ -203,6 +203,22 @@ impl Repository {
         &self.commits
     }
 
+    /// Compare commit hash sequences to check if the commit graph has changed.
+    pub fn same_commits(&self, other: &Self) -> bool {
+        self.commits
+            .iter()
+            .map(|c| &c.commit_hash)
+            .eq(other.commits.iter().map(|c| &c.commit_hash))
+    }
+
+    /// Update refs, head, and working changes from another repository,
+    /// keeping commits and derived data (index, children_map) unchanged.
+    pub fn update_metadata_from(&mut self, other: Self) {
+        self.ref_map = other.ref_map;
+        self.head = other.head;
+        self.working_changes = other.working_changes;
+    }
+
     pub fn parents_hash(&self, commit_hash: &CommitHash) -> Vec<&CommitHash> {
         self.commit(commit_hash)
             .map(|c| c.parent_commit_hashes.iter().collect())

@@ -1401,7 +1401,7 @@ fn generate_and_output_graph_image<P: AsRef<Path>>(path: P, option: &GenerateGra
     // Create concatenated image
     let (width, height) = (50, 50);
     let image_width = ((width * (graph.max_pos_x as usize + 1)) + (width * 7)) as u32;
-    let image_height = (height * graph.commits.len()) as u32;
+    let image_height = (height * graph.commit_hashes.len()) as u32;
     let mut img_buf: image::ImageBuffer<image::Rgba<u8>, Vec<u8>> =
         image::ImageBuffer::new(image_width, image_height);
 
@@ -1417,7 +1417,8 @@ fn generate_and_output_graph_image<P: AsRef<Path>>(path: P, option: &GenerateGra
         img_buf.copy_from(&image, 0, y).unwrap();
 
         // write hash and date
-        let commit = &graph.commits[i];
+        let commit_hash = &graph.commit_hashes[i];
+        let commit = repository.commit(commit_hash).unwrap();
         let text = format!(
             "{} / {}",
             &commit.commit_hash.as_short_hash(),

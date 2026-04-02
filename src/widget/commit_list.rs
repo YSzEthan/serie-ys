@@ -231,12 +231,12 @@ impl SearchMatcher {
 pub struct CommitListState<'a> {
     commits: Vec<CommitInfo<'a>>,
     commit_hash_set: FxHashSet<CommitHash>,
-    graph_image_manager: GraphImageManager<'a>,
+    graph_image_manager: GraphImageManager,
     graph_cell_width: u16,
     head: Head,
 
     // Filtered graph data (for when remote-only commits are hidden)
-    filtered_graph_image_manager: Option<GraphImageManager<'a>>,
+    filtered_graph_image_manager: Option<GraphImageManager>,
     filtered_graph_cell_width: u16,
     filtered_graph_colors: Option<FxHashMap<CommitHash, Color>>,
 
@@ -281,13 +281,13 @@ impl<'a> CommitListState<'a> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         commits: Vec<CommitInfo<'a>>,
-        graph_image_manager: GraphImageManager<'a>,
+        graph_image_manager: GraphImageManager,
         graph_cell_width: u16,
         head: Head,
         ref_name_to_commit_index_map: FxHashMap<String, usize>,
         default_ignore_case: bool,
         default_fuzzy: bool,
-        filtered_graph_image_manager: Option<GraphImageManager<'a>>,
+        filtered_graph_image_manager: Option<GraphImageManager>,
         filtered_graph_cell_width: u16,
         filtered_graph_colors: Option<FxHashMap<CommitHash, Color>>,
         remote_only_commits: FxHashSet<CommitHash>,
@@ -950,7 +950,7 @@ impl<'a> CommitListState<'a> {
         }
     }
 
-    fn current_image_manager(&self) -> &GraphImageManager<'_> {
+    fn current_image_manager(&self) -> &GraphImageManager {
         if !self.show_remote_refs {
             if let Some(ref mgr) = self.filtered_graph_image_manager {
                 return mgr;
