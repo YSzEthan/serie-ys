@@ -331,6 +331,7 @@ impl<'a> GitHubView<'a> {
                 }
                 _ => {}
             }
+            self.clamp_detail_offset();
             return;
         }
 
@@ -439,6 +440,13 @@ impl<'a> GitHubView<'a> {
         match self.active_tab {
             GitHubTab::Issues => self.issues.len(),
             GitHubTab::PullRequests => self.pull_requests.len(),
+        }
+    }
+
+    fn clamp_detail_offset(&mut self) {
+        if let Some(ref lines) = self.detail {
+            let max_offset = lines.len().saturating_sub(self.height);
+            self.detail_offset = self.detail_offset.min(max_offset);
         }
     }
 
