@@ -107,6 +107,7 @@ impl<'a> DeleteRefView<'a> {
                 selected: 0,
                 height: 0,
                 scroll_to_top: true,
+                show_remote_refs: true,
             });
 
         let pending_msg = match ref_type {

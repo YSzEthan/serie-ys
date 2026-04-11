@@ -109,6 +109,7 @@ impl<'a> DeleteTagView<'a> {
                 selected: 0,
                 height: 0,
                 scroll_to_top: false,
+                show_remote_refs: true,
             });
 
         // Show pending overlay and close dialog

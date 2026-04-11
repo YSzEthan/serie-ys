@@ -301,13 +301,18 @@ impl<'a> ListView<'a> {
     }
 
     pub fn reset_commit_list_with(&mut self, list_context: &ListRefreshViewContext) {
+        // Order matters: set_show_remote_refs rebuilds filtered_indices and may
+        // change `total`, which reset_height / select_* depend on. Restore the
+        // visibility toggle *before* touching selection.
         let ListRefreshViewContext {
             commit_hash,
             selected,
             height,
             scroll_to_top,
+            show_remote_refs,
         } = list_context;
         let list_state = self.as_mut_list_state();
+        list_state.set_show_remote_refs(*show_remote_refs);
         list_state.reset_height(*height);
         if *scroll_to_top {
             list_state.select_first();

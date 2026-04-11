@@ -277,6 +277,7 @@ pub struct ListRefreshViewContext {
     pub selected: usize,
     pub height: usize,
     pub scroll_to_top: bool,
+    pub show_remote_refs: bool,
 }
 
 impl From<&CommitListState<'_>> for ListRefreshViewContext {
@@ -291,6 +292,7 @@ impl From<&CommitListState<'_>> for ListRefreshViewContext {
             selected,
             height,
             scroll_to_top,
+            show_remote_refs: list_state.show_remote_refs(),
         }
     }
 }

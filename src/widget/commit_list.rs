@@ -385,6 +385,31 @@ impl<'a> CommitListState<'a> {
         self.show_remote_refs
     }
 
+    pub fn show_remote_refs(&self) -> bool {
+        self.show_remote_refs
+    }
+
+    /// Restore the remote-refs visibility flag after rebuilding a fresh
+    /// `CommitListState` (used by the refresh path to carry the user's
+    /// toggle across App instances).
+    ///
+    /// Contract: the caller is responsible for clearing image overlays.
+    /// The refresh path already does this via `clear_image_area` in `lib.rs`,
+    /// so this setter deliberately does **not** set `needs_graph_clear` —
+    /// doing so would cause a double clear and an extra blank frame.
+    ///
+    /// Do not call from interactive key handlers. Use `toggle_remote_refs`
+    /// for those; it owns the full widget-local invalidation contract.
+    pub fn set_show_remote_refs(&mut self, show: bool) {
+        if self.show_remote_refs == show {
+            return;
+        }
+        self.show_remote_refs = show;
+        // rebuild_filtered_indices clamps selected/offset into the new index
+        // space, so callers don't have to care about ordering vs reset_height.
+        self.rebuild_filtered_indices();
+    }
+
     pub fn take_graph_clear(&mut self) -> bool {
         std::mem::replace(&mut self.needs_graph_clear, false)
     }
