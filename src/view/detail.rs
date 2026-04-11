@@ -316,7 +316,6 @@ impl<'a> DetailView<'a> {
         let list_state = self.as_list_state();
         let list_context = ListRefreshViewContext::from(list_state);
         let context = RefreshViewContext::Detail { list_context };
-        self.tx.send(AppEvent::Clear);
         self.tx.send(AppEvent::Refresh(context));
     }
 }

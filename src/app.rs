@@ -9,7 +9,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Padding, Paragraph},
+    widgets::{Block, Borders, Padding, Paragraph},
     DefaultTerminal, Frame,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
@@ -33,6 +33,23 @@ use crate::{
     },
     FilteredGraphData,
 };
+
+/// Clear terminal image overlays and force a full ratatui redraw.
+///
+/// - `protocol.clear_line` removes leftover Kitty graphics overlays
+///   (no-op on iTerm2, whose images live inside cells).
+/// - `terminal.clear()` drops ratatui's backing buffer so the next
+///   draw repaints every cell instead of diffing against stale state.
+pub(crate) fn clear_image_area(
+    protocol: ImageProtocol,
+    terminal: &mut DefaultTerminal,
+    y_range: std::ops::Range<u16>,
+) -> std::io::Result<()> {
+    for y in y_range {
+        protocol.clear_line(y);
+    }
+    terminal.clear()
+}
 
 #[derive(Debug, Default)]
 enum StatusLine {
@@ -74,7 +91,6 @@ struct AppStatus {
     status_line: StatusLine,
     numeric_prefix: String,
     view_area: Rect,
-    clear: bool,
     last_quit_press: Option<Instant>,
 }
 
@@ -210,10 +226,11 @@ impl App<'_> {
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<Ret, std::io::Error> {
         loop {
             if self.view.take_graph_clear() {
-                for y in self.app_status.view_area.top()..self.app_status.view_area.bottom() {
-                    self.ctx.image_protocol.clear_line(y);
-                }
-                terminal.clear()?;
+                clear_image_area(
+                    self.ctx.image_protocol,
+                    terminal,
+                    self.app_status.view_area.top()..self.app_status.view_area.bottom(),
+                )?;
             }
             terminal.draw(|f| self.render(f))?;
             match self.ec.recv() {
@@ -316,9 +333,6 @@ impl App<'_> {
                 }
                 AppEvent::Quit => {
                     return Ok(Ret::Quit);
-                }
-                AppEvent::Clear => {
-                    self.clear();
                 }
                 AppEvent::OpenDetail => {
                     self.open_detail();
@@ -505,12 +519,6 @@ impl App<'_> {
         let [view_area, status_line_area] =
             Layout::vertical([Constraint::Min(0), Constraint::Length(2)]).areas(f.area());
 
-        if self.app_status.clear {
-            self.render_clear(f, view_area);
-            self.reset_clear();
-            return;
-        }
-
         self.update_state(view_area);
 
         self.view.render(f, view_area);
@@ -524,13 +532,6 @@ impl App<'_> {
 }
 
 impl App<'_> {
-    fn render_clear(&mut self, f: &mut Frame, area: Rect) {
-        f.render_widget(Clear, area);
-        for y in area.top()..area.bottom() {
-            self.ctx.image_protocol.clear_line(y);
-        }
-    }
-
     fn render_status_line(&self, f: &mut Frame, area: Rect) {
         let text: Line = match &self.app_status.status_line {
             StatusLine::None => {
@@ -649,14 +650,6 @@ impl App<'_> {
 impl App<'_> {
     fn update_state(&mut self, view_area: Rect) {
         self.app_status.view_area = view_area;
-    }
-
-    fn clear(&mut self) {
-        self.app_status.clear = true;
-    }
-
-    fn reset_clear(&mut self) {
-        self.app_status.clear = false;
     }
 
     fn is_input_mode(&self) -> bool {

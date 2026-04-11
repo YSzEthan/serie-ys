@@ -299,7 +299,6 @@ pub fn send_refresh(list_state: Option<&CommitListState<'_>>, tx: &Sender) {
     if let Some(list_state) = list_state {
         let list_context = ListRefreshViewContext::from(list_state);
         let context = RefreshViewContext::List { list_context };
-        tx.send(AppEvent::Clear);
         tx.send(AppEvent::Refresh(context));
     }
 }

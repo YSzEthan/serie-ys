@@ -424,6 +424,13 @@ pub fn run() -> Result<()> {
                     selected_bg_color,
                 );
 
+                // Clear *after* rebuild so the old frame stays visible during
+                // the expensive graph work instead of a blank intermediate frame.
+                if let Some(t) = terminal.as_mut() {
+                    let size = t.size()?;
+                    app::clear_image_area(image_protocol, t, 0..size.height)?;
+                }
+
                 continue;
             }
             Err(e) => {
