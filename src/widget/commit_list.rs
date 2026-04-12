@@ -128,7 +128,7 @@ impl SearchMatch {
             .matched_position(&c.author_name)
             .map(SearchMatchPosition::new);
         let commit_hash = matcher
-            .matched_position(&c.commit_hash.as_short_hash())
+            .matched_position(c.commit_hash.as_short_hash())
             .map(SearchMatchPosition::new);
         Self {
             refs,
@@ -837,7 +837,7 @@ impl<'a> CommitListState<'a> {
         }
 
         // Check commit hash
-        if matcher.matches(&commit.commit_hash.as_short_hash()) {
+        if matcher.matches(commit.commit_hash.as_short_hash()) {
             return true;
         }
 

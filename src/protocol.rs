@@ -10,7 +10,9 @@ pub fn auto_detect() -> ImageProtocol {
         return ImageProtocol::Kitty;
     }
     // https://ghostty.org/docs/help/terminfo
-    if env::var("TERM").is_ok_and(|t| t == "xterm-ghostty") {
+    if env::var("TERM").is_ok_and(|t| t == "xterm-ghostty")
+        || env::var("GHOSTTY_RESOURCES_DIR").is_ok()
+    {
         return ImageProtocol::Kitty;
     }
     ImageProtocol::Iterm2
@@ -34,6 +36,13 @@ impl ImageProtocol {
         match self {
             ImageProtocol::Iterm2 => {}
             ImageProtocol::Kitty => kitty_clear_line(y),
+        }
+    }
+
+    pub fn clear(&self) {
+        match self {
+            ImageProtocol::Iterm2 => {}
+            ImageProtocol::Kitty => kitty_clear(),
         }
     }
 }
@@ -84,4 +93,8 @@ fn kitty_encode(bytes: &[u8], cell_width: usize, cell_height: usize) -> String {
 fn kitty_clear_line(y: u16) {
     let y = y + 1; // 1-based
     print!("\x1b_Ga=d,d=Y,y={y};\x1b\\");
+}
+
+fn kitty_clear() {
+    print!("\x1b_Ga=d,d=A;\x1b\\");
 }

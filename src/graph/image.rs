@@ -6,7 +6,6 @@ use std::{
 };
 
 use lru::LruCache;
-use rayon::iter::{IntoParallelIterator, ParallelIterator};
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{
@@ -65,21 +64,14 @@ impl GraphImageManager {
         cell_width_type: CellWidthType,
         graph_style: GraphStyle,
         image_protocol: ImageProtocol,
-        preload: bool,
         head_commit_hash: Option<CommitHash>,
         selected_bg_color: image::Rgba<u8>,
     ) -> Self {
         let image_params = ImageParams::new(graph_color_set, cell_width_type);
         let drawing_pixels = DrawingPixels::new(&image_params);
 
-        let cache_cap = if preload {
-            // Preload mode: size cache to fit all commits
-            NonZeroUsize::new(graph.commit_hashes.len().max(1)).unwrap()
-        } else {
-            NonZeroUsize::new(IMAGE_CACHE_CAPACITY).unwrap()
-        };
-        let mut m = GraphImageManager {
-            encoded_image_map: LruCache::new(cache_cap),
+        GraphImageManager {
+            encoded_image_map: LruCache::new(NonZeroUsize::new(IMAGE_CACHE_CAPACITY).unwrap()),
             spacer_image_map: LruCache::new(NonZeroUsize::new(4).unwrap()),
             selected_image: None,
             selected_bg_color,
@@ -95,45 +87,11 @@ impl GraphImageManager {
             drawing_pixels,
             image_protocol,
             head_commit_hash,
-        };
-        if preload {
-            m.load_all_encoded_image();
         }
-        m
     }
 
     pub fn encoded_image(&self, commit_hash: &CommitHash) -> &str {
         self.encoded_image_map.peek(commit_hash).unwrap()
-    }
-
-    pub fn load_all_encoded_image(&mut self) {
-        let graph_image = build_graph_image(
-            &self.graph,
-            &self.image_params,
-            &self.drawing_pixels,
-            self.graph_style,
-        );
-        for (i, commit_hash) in self.graph.commit_hashes.iter().enumerate() {
-            let is_head = self
-                .head_commit_hash
-                .as_ref()
-                .is_some_and(|h| h == commit_hash);
-            let image = if is_head {
-                build_single_graph_row_image(
-                    &self.graph,
-                    &self.image_params,
-                    &self.drawing_pixels,
-                    self.graph_style,
-                    commit_hash,
-                    true,
-                )
-                .encode(self.cell_width_type, self.image_protocol)
-            } else {
-                let edges = &self.graph.edges[i];
-                graph_image.images[edges].encode(self.cell_width_type, self.image_protocol)
-            };
-            self.encoded_image_map.put(commit_hash.clone(), image);
-        }
     }
 
     pub fn load_encoded_image(&mut self, commit_hash: &CommitHash) {
@@ -475,43 +433,6 @@ fn build_single_graph_row_image(
         graph_style,
         is_head,
     )
-}
-
-pub fn build_graph_image(
-    graph: &Graph,
-    image_params: &ImageParams,
-    drawing_pixels: &DrawingPixels,
-    graph_style: GraphStyle,
-) -> GraphImage {
-    let graph_row_sources: FxHashSet<(usize, &Vec<Edge>)> = graph
-        .commit_hashes
-        .iter()
-        .map(|commit_hash| {
-            let (pos_x, pos_y) = graph.commit_pos_map[commit_hash];
-            let edges = &graph.edges[pos_y];
-            (pos_x, edges)
-        })
-        .collect();
-
-    let cell_count = graph.max_pos_x + 1;
-
-    let images = graph_row_sources
-        .into_par_iter()
-        .map(|(pos_x, edges)| {
-            let graph_row_image = calc_graph_row_image(
-                pos_x,
-                cell_count,
-                edges,
-                image_params,
-                drawing_pixels,
-                graph_style,
-                false,
-            );
-            (edges.clone(), graph_row_image)
-        })
-        .collect();
-
-    GraphImage { images }
 }
 
 type Pixels = FxHashSet<(i32, i32)>;
@@ -886,7 +807,7 @@ fn filtered_edges_with(
     filtered
 }
 
-fn calc_graph_row_image(
+pub fn calc_graph_row_image(
     commit_pos_x: usize,
     cell_count: usize,
     edges: &[Edge],

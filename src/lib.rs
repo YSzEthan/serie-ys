@@ -53,10 +53,6 @@ struct Args {
     /// Initial selection of commit [default: latest]
     #[arg(short, long, value_name = "TYPE")]
     initial_selection: Option<InitialSelection>,
-
-    /// Preload all graph images
-    #[arg(long, default_value = "false")]
-    preload: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
@@ -205,7 +201,6 @@ pub fn compute_filtered_graph(
     graph_color_set: &color::GraphColorSet,
     cell_width_type: graph::CellWidthType,
     image_protocol: protocol::ImageProtocol,
-    preload: bool,
     graph_style: graph::GraphStyle,
     head_commit_hash: Option<git::CommitHash>,
     selected_bg_color: image::Rgba<u8>,
@@ -236,7 +231,6 @@ pub fn compute_filtered_graph(
         cell_width_type,
         graph_style,
         image_protocol,
-        preload,
         head_commit_hash,
         selected_bg_color,
     );
@@ -266,7 +260,6 @@ fn build_graph_artifacts(
     cell_width_type: graph::CellWidthType,
     graph_style: graph::GraphStyle,
     image_protocol: protocol::ImageProtocol,
-    preload: bool,
     selected_bg_color: image::Rgba<u8>,
 ) -> (
     GraphImageManager,
@@ -280,7 +273,6 @@ fn build_graph_artifacts(
         cell_width_type,
         graph_style,
         image_protocol,
-        preload,
         head_commit_hash.clone(),
         selected_bg_color,
     );
@@ -290,7 +282,6 @@ fn build_graph_artifacts(
         graph_color_set,
         cell_width_type,
         image_protocol,
-        preload,
         graph_style,
         head_commit_hash,
         selected_bg_color,
@@ -364,7 +355,6 @@ pub fn run() -> Result<()> {
             cell_width_type,
             graph_style,
             image_protocol,
-            args.preload,
             selected_bg_color,
         );
 
@@ -421,7 +411,6 @@ pub fn run() -> Result<()> {
                     cell_width_type,
                     graph_style,
                     image_protocol,
-                    args.preload,
                     selected_bg_color,
                 );
 

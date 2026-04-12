@@ -2,6 +2,7 @@ use std::{path::Path, process::Command};
 
 use chrono::{DateTime, Days, NaiveDate, TimeZone, Utc};
 use image::{GenericImage, GenericImageView};
+use rustc_hash::FxHashSet;
 use serie::{color, config, git, graph};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -1395,8 +1396,7 @@ fn generate_and_output_graph_image<P: AsRef<Path>>(path: P, option: &GenerateGra
     let graph = graph::calc_graph(&repository);
     let image_params = graph::ImageParams::new(&graph_color_set, cell_width_type);
     let drawing_pixels = graph::DrawingPixels::new(&image_params);
-    let graph_image =
-        graph::build_graph_image(&graph, &image_params, &drawing_pixels, option.style);
+    let graph_image = build_graph_image(&graph, &image_params, &drawing_pixels, option.style);
 
     // Create concatenated image
     let (width, height) = (50, 50);
@@ -1421,7 +1421,7 @@ fn generate_and_output_graph_image<P: AsRef<Path>>(path: P, option: &GenerateGra
         let commit = repository.commit(commit_hash).unwrap();
         let text = format!(
             "{} / {}",
-            &commit.commit_hash.as_short_hash(),
+            commit.commit_hash.as_short_hash(),
             commit.committer_date.naive_utc().format("%Y-%m-%d")
         );
         let text_png = text_renderer
@@ -1454,6 +1454,43 @@ fn generate_and_output_graph_image<P: AsRef<Path>>(path: P, option: &GenerateGra
         image::ColorType::Rgba8,
     )
     .unwrap();
+}
+
+fn build_graph_image(
+    graph: &graph::Graph,
+    image_params: &graph::ImageParams,
+    drawing_pixels: &graph::DrawingPixels,
+    graph_style: graph::GraphStyle,
+) -> graph::GraphImage {
+    let graph_row_sources: FxHashSet<(usize, &Vec<graph::Edge>)> = graph
+        .commit_hashes
+        .iter()
+        .map(|commit_hash| {
+            let (pos_x, pos_y) = graph.commit_pos_map[commit_hash];
+            let edges = &graph.edges[pos_y];
+            (pos_x, edges)
+        })
+        .collect();
+
+    let cell_count = graph.max_pos_x + 1;
+
+    let images = graph_row_sources
+        .into_iter()
+        .map(|(pos_x, edges)| {
+            let graph_row_image = graph::calc_graph_row_image(
+                pos_x,
+                cell_count,
+                edges,
+                image_params,
+                drawing_pixels,
+                graph_style,
+                false,
+            );
+            (edges.clone(), graph_row_image)
+        })
+        .collect();
+
+    graph::GraphImage { images }
 }
 
 fn create_output_dirs(path: &str) {

@@ -5,7 +5,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Clear, Padding, Paragraph},
+    widgets::{Block, Borders, Padding, Paragraph},
     Frame,
 };
 use tui_input::{backend::crossterm::EventHandler, Input};
@@ -103,7 +103,6 @@ pub struct GitHubView<'a> {
 
     ctx: Rc<AppContext>,
     tx: Sender,
-    clear: bool,
 }
 
 impl<'a> GitHubView<'a> {
@@ -138,16 +137,11 @@ impl<'a> GitHubView<'a> {
             flash_message: None,
             ctx,
             tx,
-            clear: false,
         }
     }
 
     pub fn take_before_view(&mut self) -> View<'a> {
         std::mem::take(&mut self.before)
-    }
-
-    pub fn clear(&mut self) {
-        self.clear = true;
     }
 
     pub fn set_flash(&mut self, msg: String, is_error: bool) {
@@ -340,7 +334,6 @@ impl<'a> GitHubView<'a> {
     fn handle_list_event(&mut self, event: UserEvent, count: usize) {
         match event {
             UserEvent::GitHubToggle | UserEvent::Cancel | UserEvent::Close => {
-                self.tx.send(AppEvent::ClearGitHub);
                 self.tx.send(AppEvent::CloseGitHub);
             }
             UserEvent::RefList => {
@@ -439,7 +432,6 @@ impl<'a> GitHubView<'a> {
             UserEvent::Cancel | UserEvent::Close => {
                 if self.search_input.value().is_empty() {
                     // Empty query → close view
-                    self.tx.send(AppEvent::ClearGitHub);
                     self.tx.send(AppEvent::CloseGitHub);
                 } else {
                     // Clear query → back to unfiltered list
@@ -652,11 +644,6 @@ impl<'a> GitHubView<'a> {
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect) {
-        if self.clear {
-            f.render_widget(Clear, area);
-            return;
-        }
-
         self.height = area.height as usize;
 
         // ── 三區 split：頂部 tab/prompt + 下半 list|preview ──

@@ -5,14 +5,12 @@ use ratatui::{
     crossterm::event::KeyEvent,
     layout::{Constraint, Layout, Rect},
     text::Line,
-    widgets::Clear,
     Frame,
 };
 
 use crate::{
     app::AppContext,
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
-    external::{exec_user_command, ExternalCommandParameters},
     git::{Commit, Ref, Repository},
     view::{ListRefreshViewContext, RefreshViewContext, UserCommandRefreshViewContext},
     widget::{
@@ -21,8 +19,7 @@ use crate::{
     },
 };
 
-type BuildParamsFn =
-    fn(&Commit, &[Ref], usize, Rect, &AppContext) -> Result<ExternalCommandParameters, String>;
+type ExecCommandFn = fn(&Commit, &[Ref], usize, Rect, &AppContext) -> Result<String, String>;
 
 #[derive(Debug)]
 pub struct UserCommandView<'a> {
@@ -34,19 +31,18 @@ pub struct UserCommandView<'a> {
 
     ctx: Rc<AppContext>,
     tx: Sender,
-    clear: bool,
 }
 
 impl<'a> UserCommandView<'a> {
     pub fn new(
         commit_list_state: CommitListState<'a>,
-        params: ExternalCommandParameters,
+        command_output: String,
         user_command_number: usize,
         ctx: Rc<AppContext>,
         tx: Sender,
     ) -> UserCommandView<'a> {
-        let user_command_output_lines = build_user_command_output_lines(params, ctx.clone())
-            .unwrap_or_else(|err| {
+        let user_command_output_lines =
+            build_user_command_output_lines(command_output, ctx.clone()).unwrap_or_else(|err| {
                 tx.send(AppEvent::NotifyError(err));
                 vec![]
             });
@@ -58,7 +54,6 @@ impl<'a> UserCommandView<'a> {
             user_command_output_lines,
             ctx,
             tx,
-            clear: false,
         }
     }
 
@@ -117,7 +112,7 @@ impl<'a> UserCommandView<'a> {
             }
             UserEvent::UserCommand(n) => {
                 if n == self.user_command_number {
-                    self.close();
+                    self.tx.send(AppEvent::CloseUserCommand);
                 } else {
                     // switch to another user command
                     self.tx.send(AppEvent::OpenUserCommand(n));
@@ -127,7 +122,7 @@ impl<'a> UserCommandView<'a> {
                 self.tx.send(AppEvent::OpenDetail);
             }
             UserEvent::Cancel | UserEvent::Close => {
-                self.close();
+                self.tx.send(AppEvent::CloseUserCommand);
             }
             UserEvent::Refresh => {
                 self.refresh();
@@ -152,16 +147,6 @@ impl<'a> UserCommandView<'a> {
             user_command_area,
             &mut self.commit_user_command_state,
         );
-
-        if self.clear {
-            f.render_widget(Clear, user_command_area);
-            return;
-        }
-
-        // clear the image area if needed
-        for y in user_command_area.top()..user_command_area.bottom() {
-            self.ctx.image_protocol.clear_line(y);
-        }
     }
 }
 
@@ -184,9 +169,9 @@ impl<'a> UserCommandView<'a> {
         &mut self,
         repository: &Repository,
         view_area: Rect,
-        build_parameters: BuildParamsFn,
+        exec_command: ExecCommandFn,
     ) {
-        self.update_selected_commit(repository, view_area, build_parameters, |state| {
+        self.update_selected_commit(repository, view_area, exec_command, |state| {
             state.select_next()
         });
     }
@@ -195,9 +180,9 @@ impl<'a> UserCommandView<'a> {
         &mut self,
         repository: &Repository,
         view_area: Rect,
-        build_parameters: BuildParamsFn,
+        exec_command: ExecCommandFn,
     ) {
-        self.update_selected_commit(repository, view_area, build_parameters, |state| {
+        self.update_selected_commit(repository, view_area, exec_command, |state| {
             state.select_prev()
         });
     }
@@ -206,9 +191,9 @@ impl<'a> UserCommandView<'a> {
         &mut self,
         repository: &Repository,
         view_area: Rect,
-        build_parameters: BuildParamsFn,
+        exec_command: ExecCommandFn,
     ) {
-        self.update_selected_commit(repository, view_area, build_parameters, |state| {
+        self.update_selected_commit(repository, view_area, exec_command, |state| {
             state.select_parent()
         });
     }
@@ -217,7 +202,7 @@ impl<'a> UserCommandView<'a> {
         &mut self,
         repository: &Repository,
         view_area: Rect,
-        build_parameters: BuildParamsFn,
+        exec_command: ExecCommandFn,
         update_commit_list_state: F,
     ) where
         F: FnOnce(&mut CommitListState<'a>),
@@ -228,30 +213,22 @@ impl<'a> UserCommandView<'a> {
         update_commit_list_state(commit_list_state);
 
         let selected = commit_list_state.selected_commit_hash().clone();
-        let (commit, refs) = repository.commit_refs(&selected);
-        self.user_command_output_lines = build_parameters(
+        let (commit, _) = repository.commit_detail(&selected);
+        let refs: Vec<Ref> = repository.refs(&selected).into_iter().cloned().collect();
+        self.user_command_output_lines = exec_command(
             commit,
             &refs,
             self.user_command_number,
             view_area,
             &self.ctx,
         )
-        .and_then(|params| build_user_command_output_lines(params, self.ctx.clone()))
+        .and_then(|output| build_user_command_output_lines(output, self.ctx.clone()))
         .unwrap_or_else(|err| {
             self.tx.send(AppEvent::NotifyError(err));
             vec![]
         });
 
         self.commit_user_command_state.select_first();
-    }
-
-    pub fn clear(&mut self) {
-        self.clear = true;
-    }
-
-    fn close(&self) {
-        self.tx.send(AppEvent::ClearUserCommand); // hack: reset the rendering of the image area
-        self.tx.send(AppEvent::CloseUserCommand);
     }
 
     pub fn refresh(&self) {
@@ -269,17 +246,13 @@ impl<'a> UserCommandView<'a> {
 }
 
 fn build_user_command_output_lines(
-    params: ExternalCommandParameters,
+    command_output: String,
     ctx: Rc<AppContext>,
 ) -> Result<Vec<Line<'static>>, String> {
     let tab_spaces = " ".repeat(ctx.core_config.user_command.tab_width as usize);
-    exec_user_command(params)
-        .and_then(|output| {
-            output
-                .replace('\t', &tab_spaces) // tab is not rendered correctly, so replace it
-                .into_text()
-                .map(|t| t.into_iter().collect())
-                .map_err(|e| e.to_string())
-        })
-        .map_err(|err| format!("Failed to execute command: {err}"))
+    command_output
+        .replace('\t', &tab_spaces) // tab is not rendered correctly, so replace it
+        .into_text()
+        .map(|t| t.into_iter().collect())
+        .map_err(|e| e.to_string())
 }

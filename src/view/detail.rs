@@ -33,7 +33,6 @@ pub struct DetailView<'a> {
 
     ctx: Rc<AppContext>,
     tx: Sender,
-    clear: bool,
 }
 
 impl<'a> DetailView<'a> {
@@ -55,7 +54,6 @@ impl<'a> DetailView<'a> {
             },
             ctx,
             tx,
-            clear: false,
         }
     }
 
@@ -71,7 +69,6 @@ impl<'a> DetailView<'a> {
             content: DetailContent::WorkingChanges(working_changes),
             ctx,
             tx,
-            clear: false,
         }
     }
 
@@ -126,7 +123,6 @@ impl<'a> DetailView<'a> {
                 self.tx.send(AppEvent::OpenHelp);
             }
             UserEvent::Confirm | UserEvent::Cancel | UserEvent::Close => {
-                self.tx.send(AppEvent::ClearDetail);
                 self.tx.send(AppEvent::CloseDetail);
             }
             UserEvent::Refresh => {
@@ -156,19 +152,11 @@ impl<'a> DetailView<'a> {
             .expect("commit_list_state already taken");
 
         // Set inline detail height so CommitList renders the gap
-        if self.clear {
-            commit_list_state.set_inline_detail_height(0);
-        } else {
-            commit_list_state.set_inline_detail_height(detail_height);
-        }
+        commit_list_state.set_inline_detail_height(detail_height);
 
         // Render CommitList using the full area — it handles the gap internally
         let commit_list = CommitList::new(self.ctx.clone());
         f.render_stateful_widget(commit_list, area, commit_list_state);
-
-        if self.clear {
-            return;
-        }
 
         // Calculate the graph+marker width for inline detail positioning
         let graph_marker_width = calc_graph_marker_width(commit_list_state, &self.ctx);
@@ -289,15 +277,11 @@ impl<'a> DetailView<'a> {
         self.commit_detail_state.select_first();
     }
 
-    pub fn clear(&mut self) {
-        self.clear = true;
-    }
-
     fn copy_commit_short_hash(&self) {
         if let DetailContent::Commit { commit, .. } = &self.content {
             self.copy_to_clipboard(
                 "Commit SHA (short)".into(),
-                commit.commit_hash.as_short_hash(),
+                commit.commit_hash.as_short_hash().into(),
             );
         }
     }

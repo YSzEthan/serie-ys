@@ -286,7 +286,7 @@ impl<'a> ListView<'a> {
             return;
         }
         let selected = self.as_list_state().selected_commit_hash();
-        self.copy_to_clipboard("Commit SHA (short)".into(), selected.as_short_hash());
+        self.copy_to_clipboard("Commit SHA (short)".into(), selected.as_short_hash().into());
     }
 
     fn copy_to_clipboard(&self, name: String, value: String) {
