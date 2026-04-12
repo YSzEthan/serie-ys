@@ -1693,6 +1693,9 @@ fn refs_spans<'a>(
         }
     }
 
+    let head_bg = Color::Rgb(255, 140, 0);
+    let is_head_branch = |n: &str| matches!(head, Head::Branch { name: hn } if hn == n);
+
     let ref_spans: Vec<(Vec<Span>, &String)> = refs
         .iter()
         .filter_map(|r| match r {
@@ -1704,8 +1707,13 @@ fn refs_spans<'a>(
                 if has_remote && show_remote_refs {
                     return None;
                 }
-                let fg = color_theme.list_ref_branch_fg;
-                let spans = refs_matches
+                let is_head = is_head_branch(name);
+                let fg = if is_head {
+                    Color::White
+                } else {
+                    color_theme.list_ref_branch_fg
+                };
+                let mut spans = refs_matches
                     .get(name)
                     .map(|pos| {
                         highlighted_spans(
@@ -1718,6 +1726,9 @@ fn refs_spans<'a>(
                         )
                     })
                     .unwrap_or_else(|| vec![Span::raw(name).fg(fg).bold()]);
+                if is_head {
+                    spans = spans.into_iter().map(|s| s.bg(head_bg)).collect();
+                }
                 Some((spans, name))
             }
             Ref::RemoteBranch { name, .. } => {
@@ -1733,6 +1744,13 @@ fn refs_spans<'a>(
                         matches!(r, Ref::Branch { name: ln, .. } if ln == branch_part)
                     });
                     if has_local {
+                        let is_head = is_head_branch(branch_part);
+                        let mut branch_span = Span::raw(branch_part.to_string()).bold();
+                        branch_span = if is_head {
+                            branch_span.fg(Color::White).bg(head_bg)
+                        } else {
+                            branch_span.fg(color_theme.list_ref_branch_fg)
+                        };
                         vec![
                             Span::raw(remote_part.to_string())
                                 .fg(color_theme.list_ref_remote_branch_fg)
@@ -1740,9 +1758,7 @@ fn refs_spans<'a>(
                             Span::raw("/")
                                 .fg(color_theme.list_ref_paren_fg)
                                 .bold(),
-                            Span::raw(branch_part.to_string())
-                                .fg(color_theme.list_ref_branch_fg)
-                                .bold(),
+                            branch_span,
                         ]
                     } else {
                         vec![Span::raw(name)

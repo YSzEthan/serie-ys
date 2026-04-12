@@ -63,6 +63,7 @@ enum GitHubFocus {
     List,
     Preview,
     Prompt,
+    CheckboxEdit,
 }
 
 #[derive(Debug, Default)]
@@ -188,14 +189,14 @@ impl<'a> GitHubView<'a> {
     }
 
     pub fn status_hints(&self) -> Vec<(UserEvent, &'static str)> {
-        if self.task_panel.is_some() {
-            return vec![
-                (UserEvent::NavigateLeft, "toggle"),
-                (UserEvent::Confirm, "submit"),
-                (UserEvent::Cancel, "cancel"),
-            ];
-        }
         match self.focus {
+            GitHubFocus::CheckboxEdit => {
+                vec![
+                    (UserEvent::NavigateLeft, "toggle"),
+                    (UserEvent::Confirm, "submit"),
+                    (UserEvent::Cancel, "cancel"),
+                ]
+            }
             GitHubFocus::Prompt => {
                 vec![
                     (UserEvent::Confirm, "done"),
@@ -236,63 +237,61 @@ impl<'a> GitHubView<'a> {
 
         self.flash_message = None;
 
-        // Task list panel 事件（最高優先級）
-        if let Some(ref mut panel) = self.task_panel {
-            match event {
-                UserEvent::Cancel => {
-                    self.task_panel = None;
-                    self.focus = GitHubFocus::Preview;
-                    return;
-                }
-                UserEvent::NavigateDown | UserEvent::SelectDown => {
-                    let max = panel.items.len().saturating_sub(1);
-                    for _ in 0..count {
-                        if panel.selected < max {
-                            panel.selected += 1;
-                        }
-                    }
-                    return;
-                }
-                UserEvent::NavigateUp | UserEvent::SelectUp => {
-                    for _ in 0..count {
-                        panel.selected = panel.selected.saturating_sub(1);
-                    }
-                    return;
-                }
-                UserEvent::NavigateLeft | UserEvent::NavigateRight => {
-                    if let Some(item) = panel.items.get_mut(panel.selected) {
-                        item.checked = !item.checked;
-                    }
-                    return;
-                }
-                UserEvent::Confirm => {
-                    let changed: Vec<usize> = panel
-                        .items
-                        .iter()
-                        .enumerate()
-                        .filter(|(i, item)| item.checked != panel.original_checked[*i])
-                        .map(|(_, item)| item.index)
-                        .collect();
-                    if !changed.is_empty() {
-                        self.tx.send(AppEvent::BatchToggleCheckboxes {
-                            number: panel.number,
-                            kind: panel.kind,
-                            checkbox_indices: changed,
-                        });
-                    }
-                    self.task_panel = None;
-                    self.focus = GitHubFocus::Preview;
-                    return;
-                }
-                _ => return,
-            }
-        }
-
-        // Focus-based event dispatch
         match self.focus {
+            GitHubFocus::CheckboxEdit => self.handle_checkbox_edit_event(event, count),
             GitHubFocus::Preview => self.handle_preview_event(event, count),
             GitHubFocus::Prompt => self.handle_prompt_event(event, count, key),
             GitHubFocus::List => self.handle_list_event(event, count),
+        }
+    }
+
+    fn handle_checkbox_edit_event(&mut self, event: UserEvent, count: usize) {
+        let Some(ref mut panel) = self.task_panel else {
+            self.focus = GitHubFocus::Preview;
+            return;
+        };
+        match event {
+            UserEvent::Cancel => {
+                self.task_panel = None;
+                self.focus = GitHubFocus::Preview;
+            }
+            UserEvent::NavigateDown | UserEvent::SelectDown => {
+                let max = panel.items.len().saturating_sub(1);
+                for _ in 0..count {
+                    if panel.selected < max {
+                        panel.selected += 1;
+                    }
+                }
+            }
+            UserEvent::NavigateUp | UserEvent::SelectUp => {
+                for _ in 0..count {
+                    panel.selected = panel.selected.saturating_sub(1);
+                }
+            }
+            UserEvent::NavigateLeft | UserEvent::NavigateRight => {
+                if let Some(item) = panel.items.get_mut(panel.selected) {
+                    item.checked = !item.checked;
+                }
+            }
+            UserEvent::Confirm => {
+                let changed: Vec<usize> = panel
+                    .items
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, item)| item.checked != panel.original_checked[*i])
+                    .map(|(_, item)| item.index)
+                    .collect();
+                if !changed.is_empty() {
+                    self.tx.send(AppEvent::BatchToggleCheckboxes {
+                        number: panel.number,
+                        kind: panel.kind,
+                        checkbox_indices: changed,
+                    });
+                }
+                self.task_panel = None;
+                self.focus = GitHubFocus::Preview;
+            }
+            _ => {}
         }
     }
 
@@ -515,6 +514,7 @@ impl<'a> GitHubView<'a> {
                 original_checked,
                 selected: 0,
             });
+            self.focus = GitHubFocus::CheckboxEdit;
         }
     }
 
@@ -684,11 +684,6 @@ impl<'a> GitHubView<'a> {
         self.render_list(f, list_area);
         self.render_preview(f, preview_area);
 
-        // Task panel overlay（暫時保留至 Step D 改整合進 preview）
-        if self.task_panel.is_some() {
-            self.render_task_panel(f, area);
-        }
-
         // ── Flash message ──
         if let Some((ref msg, is_error)) = self.flash_message {
             let color = if is_error {
@@ -847,6 +842,11 @@ impl<'a> GitHubView<'a> {
     }
 
     fn render_preview(&mut self, f: &mut Frame, area: Rect) {
+        if self.focus == GitHubFocus::CheckboxEdit {
+            self.render_checkbox_preview(f, area);
+            return;
+        }
+
         let block = Block::default().padding(Padding::horizontal(1));
         let inner = block.inner(area);
         f.render_widget(block, area);
@@ -864,6 +864,70 @@ impl<'a> GitHubView<'a> {
             .collect();
 
         let paragraph = Paragraph::new(visible);
+        f.render_widget(paragraph, inner);
+    }
+
+    fn render_checkbox_preview(&self, f: &mut Frame, area: Rect) {
+        let Some(ref panel) = self.task_panel else {
+            return;
+        };
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(Color::Yellow))
+            .title(" Tasks (editing) ")
+            .padding(Padding::horizontal(1));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        // Available height minus footer line
+        let content_height = inner.height.saturating_sub(1) as usize;
+
+        // Scroll offset for long task lists
+        let offset = if panel.selected >= content_height {
+            panel.selected - content_height + 1
+        } else {
+            0
+        };
+
+        let mut lines: Vec<Line> = panel
+            .items
+            .iter()
+            .enumerate()
+            .skip(offset)
+            .take(content_height)
+            .map(|(i, item)| {
+                let selected = i == panel.selected;
+                let indicator = if selected { "▸ " } else { "  " };
+                let checkbox = if item.checked { "☑ " } else { "☐ " };
+                let checkbox_color = if item.checked {
+                    Color::Green
+                } else {
+                    Color::DarkGray
+                };
+                let label_style = if selected {
+                    Style::default()
+                        .fg(Color::Cyan)
+                        .add_modifier(Modifier::BOLD)
+                } else {
+                    Style::default()
+                };
+
+                Line::from(vec![
+                    Span::styled(indicator.to_string(), label_style),
+                    Span::styled(checkbox.to_string(), Style::default().fg(checkbox_color)),
+                    Span::styled(item.label.clone(), label_style),
+                ])
+            })
+            .collect();
+
+        // Footer
+        lines.push(Line::from(Span::styled(
+            " h/l:toggle  Enter:submit  Esc:cancel",
+            Style::default().fg(Color::DarkGray),
+        )));
+
+        let paragraph = Paragraph::new(lines);
         f.render_widget(paragraph, inner);
     }
 
@@ -981,91 +1045,6 @@ impl<'a> GitHubView<'a> {
         for y in area.top()..area.bottom() {
             self.ctx.image_protocol.clear_line(y);
         }
-    }
-
-    fn render_task_panel(&self, f: &mut Frame, area: Rect) {
-        let Some(ref panel) = self.task_panel else {
-            return;
-        };
-
-        // 計算 overlay 尺寸
-        let max_label_width = panel
-            .items
-            .iter()
-            .map(|item| item.label.len() + 5) // "  ☑ " prefix
-            .max()
-            .unwrap_or(20);
-        let dialog_width = (max_label_width as u16 + 4)
-            .max(28)
-            .min(area.width.saturating_sub(4));
-        // items + title(1) + borders(2) + footer(1)
-        let dialog_height = (panel.items.len() as u16 + 4).min(area.height.saturating_sub(2));
-
-        let x = area.x + (area.width.saturating_sub(dialog_width)) / 2;
-        let y = area.y + (area.height.saturating_sub(dialog_height)) / 2;
-        let dialog_area = Rect::new(x, y, dialog_width, dialog_height);
-
-        f.render_widget(Clear, dialog_area);
-
-        let block = Block::default()
-            .borders(Borders::ALL)
-            .border_style(Style::default().fg(Color::Cyan))
-            .title(" Tasks ");
-
-        let inner = block.inner(dialog_area);
-        f.render_widget(block, dialog_area);
-
-        // 可用高度（扣除 footer 行）
-        let content_height = inner.height.saturating_sub(1) as usize;
-
-        // 計算滾動 offset
-        let offset = if panel.selected >= content_height {
-            panel.selected - content_height + 1
-        } else {
-            0
-        };
-
-        let mut lines: Vec<Line> = panel
-            .items
-            .iter()
-            .enumerate()
-            .skip(offset)
-            .take(content_height)
-            .map(|(i, item)| {
-                let selected = i == panel.selected;
-                let indicator = if selected { "▸ " } else { "  " };
-                let checkbox = if item.checked { "☑ " } else { "☐ " };
-                let checkbox_color = if item.checked {
-                    Color::Green
-                } else {
-                    Color::DarkGray
-                };
-                let label_style = if selected {
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::BOLD)
-                } else {
-                    Style::default()
-                };
-
-                Line::from(vec![
-                    Span::styled(indicator.to_string(), label_style),
-                    Span::styled(checkbox.to_string(), Style::default().fg(checkbox_color)),
-                    Span::styled(item.label.clone(), label_style),
-                ])
-            })
-            .collect();
-
-        // Footer
-        let footer = Line::from(Span::styled(
-            " h/l:toggle  Enter/y:submit  Esc:cancel",
-            Style::default().fg(Color::DarkGray),
-        ));
-        lines.push(footer);
-
-        let paragraph =
-            Paragraph::new(lines).block(Block::default().padding(Padding::horizontal(1)));
-        f.render_widget(paragraph, inner);
     }
 }
 
