@@ -9,6 +9,7 @@ mod app;
 mod check;
 mod event;
 mod external;
+mod fuzzy;
 mod keybind;
 mod view;
 mod widget;

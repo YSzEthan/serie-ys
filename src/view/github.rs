@@ -1,17 +1,19 @@
 use std::rc::Rc;
 
 use ratatui::{
-    crossterm::event::KeyEvent,
+    crossterm::event::{Event, KeyEvent},
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Padding, Paragraph},
     Frame,
 };
+use tui_input::{backend::crossterm::EventHandler, Input};
 
 use crate::{
     app::AppContext,
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
+    fuzzy::SearchMatcher,
     github::{self, CheckboxItem, GhIssue, GhItemKind, GhPullRequest},
     view::View,
 };
@@ -60,6 +62,7 @@ struct TaskListPanel {
 enum GitHubFocus {
     List,
     Preview,
+    Prompt,
 }
 
 #[derive(Debug, Default)]
@@ -84,6 +87,10 @@ pub struct GitHubView<'a> {
     height: usize,
 
     preview_offset: usize,
+
+    search_input: Input,
+    filtered_issue_indices: Vec<usize>,
+    filtered_pr_indices: Vec<usize>,
 
     state_filter: StateFilter,
 
@@ -121,6 +128,9 @@ impl<'a> GitHubView<'a> {
             offset: 0,
             height: 0,
             preview_offset: 0,
+            search_input: Input::default(),
+            filtered_issue_indices: Vec::new(),
+            filtered_pr_indices: Vec::new(),
             state_filter: StateFilter::Open,
             task_panel: None,
             load_state,
@@ -186,6 +196,12 @@ impl<'a> GitHubView<'a> {
             ];
         }
         match self.focus {
+            GitHubFocus::Prompt => {
+                vec![
+                    (UserEvent::Confirm, "done"),
+                    (UserEvent::Cancel, "clear/close"),
+                ]
+            }
             GitHubFocus::Preview => {
                 vec![(UserEvent::Cancel, "back")]
             }
@@ -204,6 +220,7 @@ impl<'a> GitHubView<'a> {
                 }
                 vec![
                     (UserEvent::RefList, "switch tab"),
+                    (UserEvent::Search, "search"),
                     (UserEvent::Confirm, "preview"),
                     (UserEvent::Refresh, "refresh"),
                     (UserEvent::Filter, "filter"),
@@ -213,7 +230,7 @@ impl<'a> GitHubView<'a> {
         }
     }
 
-    pub fn handle_event(&mut self, event_with_count: UserEventWithCount, _: KeyEvent) {
+    pub fn handle_event(&mut self, event_with_count: UserEventWithCount, key: KeyEvent) {
         let event = event_with_count.event;
         let count = event_with_count.count;
 
@@ -274,6 +291,7 @@ impl<'a> GitHubView<'a> {
         // Focus-based event dispatch
         match self.focus {
             GitHubFocus::Preview => self.handle_preview_event(event, count),
+            GitHubFocus::Prompt => self.handle_prompt_event(event, count, key),
             GitHubFocus::List => self.handle_list_event(event, count),
         }
     }
@@ -394,6 +412,9 @@ impl<'a> GitHubView<'a> {
                 self.preview_offset = 0;
                 self.adjust_scroll();
             }
+            UserEvent::Search => {
+                self.focus = GitHubFocus::Prompt;
+            }
             UserEvent::Filter => {
                 self.state_filter = self.state_filter.next();
                 self.selected_index = 0;
@@ -411,6 +432,67 @@ impl<'a> GitHubView<'a> {
                 });
             }
             _ => {}
+        }
+    }
+
+    fn handle_prompt_event(&mut self, event: UserEvent, count: usize, key: KeyEvent) {
+        match event {
+            UserEvent::Cancel | UserEvent::Close => {
+                if self.search_input.value().is_empty() {
+                    // Empty query → close view
+                    self.tx.send(AppEvent::ClearGitHub);
+                    self.tx.send(AppEvent::CloseGitHub);
+                } else {
+                    // Clear query → back to unfiltered list
+                    self.search_input.reset();
+                    self.filtered_issue_indices.clear();
+                    self.filtered_pr_indices.clear();
+                    self.selected_index = 0;
+                    self.offset = 0;
+                    self.preview_offset = 0;
+                    self.focus = GitHubFocus::List;
+                }
+            }
+            UserEvent::Confirm => {
+                // Keep query, switch to List focus
+                self.focus = GitHubFocus::List;
+            }
+            UserEvent::NavigateDown | UserEvent::SelectDown => {
+                // Move list selection without leaving prompt
+                let max = self.current_list_len().saturating_sub(1);
+                for _ in 0..count {
+                    if self.selected_index < max {
+                        self.selected_index += 1;
+                    }
+                }
+                self.preview_offset = 0;
+                self.adjust_scroll();
+            }
+            UserEvent::NavigateUp | UserEvent::SelectUp => {
+                for _ in 0..count {
+                    self.selected_index = self.selected_index.saturating_sub(1);
+                }
+                self.preview_offset = 0;
+                self.adjust_scroll();
+            }
+            UserEvent::RefList => {
+                // Tab: switch Issues ⇄ PRs (keep query)
+                self.active_tab = match self.active_tab {
+                    GitHubTab::Issues => GitHubTab::PullRequests,
+                    GitHubTab::PullRequests => GitHubTab::Issues,
+                };
+                self.selected_index = 0;
+                self.offset = 0;
+                self.preview_offset = 0;
+            }
+            _ => {
+                // Forward key to tui-input; only rebuild if value actually changed
+                let before = self.search_input.value().to_string();
+                self.search_input.handle_event(&Event::Key(key));
+                if self.search_input.value() != before {
+                    self.rebuild_filtered_indices();
+                }
+            }
         }
     }
 
@@ -437,37 +519,123 @@ impl<'a> GitHubView<'a> {
     }
 
     fn selected_body(&self) -> String {
+        let idx = self.actual_index(self.selected_index);
         match self.active_tab {
             GitHubTab::Issues => self
                 .issues
-                .get(self.selected_index)
+                .get(idx)
                 .map(|i| i.body.clone())
                 .unwrap_or_default(),
             GitHubTab::PullRequests => self
                 .pull_requests
-                .get(self.selected_index)
+                .get(idx)
                 .map(|p| p.body.clone())
                 .unwrap_or_default(),
         }
     }
 
     fn selected_number_and_kind(&self) -> Option<(u64, GhItemKind)> {
+        let idx = self.actual_index(self.selected_index);
         match self.active_tab {
-            GitHubTab::Issues => self
-                .issues
-                .get(self.selected_index)
-                .map(|i| (i.number, GhItemKind::Issue)),
+            GitHubTab::Issues => self.issues.get(idx).map(|i| (i.number, GhItemKind::Issue)),
             GitHubTab::PullRequests => self
                 .pull_requests
-                .get(self.selected_index)
+                .get(idx)
                 .map(|p| (p.number, GhItemKind::PullRequest)),
         }
     }
 
     fn current_list_len(&self) -> usize {
+        if self.has_active_filter() {
+            self.current_filtered_indices().len()
+        } else {
+            match self.active_tab {
+                GitHubTab::Issues => self.issues.len(),
+                GitHubTab::PullRequests => self.pull_requests.len(),
+            }
+        }
+    }
+
+    fn current_filtered_indices(&self) -> &[usize] {
         match self.active_tab {
-            GitHubTab::Issues => self.issues.len(),
-            GitHubTab::PullRequests => self.pull_requests.len(),
+            GitHubTab::Issues => &self.filtered_issue_indices,
+            GitHubTab::PullRequests => &self.filtered_pr_indices,
+        }
+    }
+
+    fn has_active_filter(&self) -> bool {
+        !self.search_input.value().is_empty()
+    }
+
+    fn rebuild_filtered_indices(&mut self) {
+        let query = self.search_input.value().to_string();
+        if query.is_empty() {
+            self.filtered_issue_indices.clear();
+            self.filtered_pr_indices.clear();
+            return;
+        }
+        let matcher = SearchMatcher::new(&query, true, true);
+
+        self.filtered_issue_indices = self
+            .issues
+            .iter()
+            .enumerate()
+            .filter(|(_, i)| {
+                let target = format!(
+                    "#{} {} @{} {}",
+                    i.number,
+                    i.title,
+                    i.author.login,
+                    i.labels
+                        .iter()
+                        .map(|l| l.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                );
+                matcher.matches(&target)
+            })
+            .map(|(idx, _)| idx)
+            .collect();
+
+        self.filtered_pr_indices = self
+            .pull_requests
+            .iter()
+            .enumerate()
+            .filter(|(_, p)| {
+                let target = format!(
+                    "#{} {} @{} {}",
+                    p.number,
+                    p.title,
+                    p.author.login,
+                    p.labels
+                        .iter()
+                        .map(|l| l.name.as_str())
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                );
+                matcher.matches(&target)
+            })
+            .map(|(idx, _)| idx)
+            .collect();
+
+        // Clamp selected_index
+        let max = self.current_list_len().saturating_sub(1);
+        if self.selected_index > max {
+            self.selected_index = max;
+        }
+        self.offset = 0;
+        self.preview_offset = 0;
+    }
+
+    /// Map visible index to actual data index (through filter if active)
+    fn actual_index(&self, visible_idx: usize) -> usize {
+        if self.has_active_filter() {
+            self.current_filtered_indices()
+                .get(visible_idx)
+                .copied()
+                .unwrap_or(0)
+        } else {
+            visible_idx
         }
     }
 
@@ -493,7 +661,7 @@ impl<'a> GitHubView<'a> {
 
         // ── 三區 split：頂部 tab/prompt + 下半 list|preview ──
         let [header_area, content_area] =
-            Layout::vertical([Constraint::Length(2), Constraint::Min(0)]).areas(area);
+            Layout::vertical([Constraint::Length(3), Constraint::Min(0)]).areas(area);
 
         self.render_header(f, header_area);
 
@@ -547,6 +715,7 @@ impl<'a> GitHubView<'a> {
 
     fn render_header(&self, f: &mut Frame, area: Rect) {
         let filter_label = self.state_filter.as_str();
+        let count = self.current_list_len();
         let issues_label = format!(" Issues ({}) ", self.issues.len());
         let prs_label = format!(" PRs ({}) ", self.pull_requests.len());
 
@@ -573,12 +742,45 @@ impl<'a> GitHubView<'a> {
                 format!("[{}]", filter_label),
                 Style::default().fg(Color::DarkGray),
             ),
+            if self.has_active_filter() {
+                Span::styled(
+                    format!("  {count} matched"),
+                    Style::default().fg(Color::DarkGray),
+                )
+            } else {
+                Span::raw("")
+            },
         ]);
+
+        // Prompt input line
+        let prompt_color = if self.focus == GitHubFocus::Prompt {
+            Color::Cyan
+        } else {
+            Color::DarkGray
+        };
+        let prompt_prefix = Span::styled("> ", Style::default().fg(prompt_color));
+        let prompt_value = Span::raw(self.search_input.value().to_string());
+        let prompt_line = Line::from(vec![
+            Span::raw("  "), // left padding
+            prompt_prefix,
+            prompt_value,
+        ]);
+
+        let [tab_area, prompt_area] =
+            Layout::vertical([Constraint::Length(2), Constraint::Length(1)]).areas(area);
 
         f.render_widget(
             Paragraph::new(tab_line).block(Block::default().padding(Padding::new(2, 2, 1, 0))),
-            area,
+            tab_area,
         );
+
+        f.render_widget(Paragraph::new(prompt_line), prompt_area);
+
+        // Show cursor in prompt when focused
+        if self.focus == GitHubFocus::Prompt {
+            let cursor_x = prompt_area.x + 2 /* pad */ + 2 /* "> " */ + self.search_input.visual_cursor() as u16;
+            f.set_cursor_position((cursor_x, prompt_area.y));
+        }
     }
 
     fn render_list(&self, f: &mut Frame, area: Rect) {
@@ -594,23 +796,49 @@ impl<'a> GitHubView<'a> {
         f.render_widget(block, area);
 
         let visible_height = inner.height as usize;
-        let items: Vec<Line> = match self.active_tab {
-            GitHubTab::Issues => self
-                .issues
-                .iter()
-                .enumerate()
-                .skip(self.offset)
-                .take(visible_height)
-                .map(|(i, issue)| render_issue_line(issue, i == self.selected_index))
-                .collect(),
-            GitHubTab::PullRequests => self
-                .pull_requests
-                .iter()
-                .enumerate()
-                .skip(self.offset)
-                .take(visible_height)
-                .map(|(i, pr)| render_pr_line(pr, i == self.selected_index))
-                .collect(),
+        let items: Vec<Line> = if !self.has_active_filter() {
+            // No filter: iterate all items
+            match self.active_tab {
+                GitHubTab::Issues => self
+                    .issues
+                    .iter()
+                    .enumerate()
+                    .skip(self.offset)
+                    .take(visible_height)
+                    .map(|(i, issue)| render_issue_line(issue, i == self.selected_index))
+                    .collect(),
+                GitHubTab::PullRequests => self
+                    .pull_requests
+                    .iter()
+                    .enumerate()
+                    .skip(self.offset)
+                    .take(visible_height)
+                    .map(|(i, pr)| render_pr_line(pr, i == self.selected_index))
+                    .collect(),
+            }
+        } else {
+            // Filter active: iterate through filtered indices
+            let indices = self.current_filtered_indices();
+            match self.active_tab {
+                GitHubTab::Issues => indices
+                    .iter()
+                    .enumerate()
+                    .skip(self.offset)
+                    .take(visible_height)
+                    .map(|(vis_i, &data_i)| {
+                        render_issue_line(&self.issues[data_i], vis_i == self.selected_index)
+                    })
+                    .collect(),
+                GitHubTab::PullRequests => indices
+                    .iter()
+                    .enumerate()
+                    .skip(self.offset)
+                    .take(visible_height)
+                    .map(|(vis_i, &data_i)| {
+                        render_pr_line(&self.pull_requests[data_i], vis_i == self.selected_index)
+                    })
+                    .collect(),
+            }
         };
 
         let list_paragraph =
@@ -644,8 +872,9 @@ impl<'a> GitHubView<'a> {
     fn selected_item_fields(
         &self,
     ) -> Option<(&str, &str, &str, &[crate::github::GhLabel], &str, u64)> {
+        let idx = self.actual_index(self.selected_index);
         match self.active_tab {
-            GitHubTab::Issues => self.issues.get(self.selected_index).map(|i| {
+            GitHubTab::Issues => self.issues.get(idx).map(|i| {
                 (
                     i.title.as_str(),
                     i.state.as_str(),
@@ -655,7 +884,7 @@ impl<'a> GitHubView<'a> {
                     i.number,
                 )
             }),
-            GitHubTab::PullRequests => self.pull_requests.get(self.selected_index).map(|p| {
+            GitHubTab::PullRequests => self.pull_requests.get(idx).map(|p| {
                 (
                     p.title.as_str(),
                     p.state.as_str(),

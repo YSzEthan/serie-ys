@@ -1,6 +1,5 @@
 use std::rc::Rc;
 
-use fuzzy_matcher::{skim::SkimMatcherV2, FuzzyMatcher};
 use laurier::highlight::highlight_matched_text;
 use ratatui::{
     buffer::Buffer,
@@ -11,19 +10,16 @@ use ratatui::{
     widgets::{List, ListItem, Paragraph, StatefulWidget, Widget},
 };
 use rustc_hash::{FxHashMap, FxHashSet};
-use std::sync::LazyLock;
 use tui_input::{backend::crossterm::EventHandler, Input};
 
 use crate::{
     app::AppContext,
     color::{ratatui_color_to_rgb, ColorTheme},
     config::UserListColumnType,
+    fuzzy::SearchMatcher,
     git::{Commit, CommitHash, Head, Ref, WorkingChanges},
     graph::GraphImageManager,
 };
-
-static FUZZY_MATCHER: LazyLock<SkimMatcherV2> =
-    LazyLock::new(|| SkimMatcherV2::default().respect_case());
 
 const ELLIPSIS: &str = "...";
 const VIRTUAL_ROW_COLOR: Color = Color::Gray;
@@ -121,12 +117,19 @@ impl SearchMatch {
             .filter_map(|r| {
                 matcher
                     .matched_position(r.name())
+                    .map(SearchMatchPosition::new)
                     .map(|pos| (r.name().into(), pos))
             })
             .collect();
-        let subject = matcher.matched_position(&c.subject);
-        let author_name = matcher.matched_position(&c.author_name);
-        let commit_hash = matcher.matched_position(&c.commit_hash.as_short_hash());
+        let subject = matcher
+            .matched_position(&c.subject)
+            .map(SearchMatchPosition::new);
+        let author_name = matcher
+            .matched_position(&c.author_name)
+            .map(SearchMatchPosition::new);
+        let commit_hash = matcher
+            .matched_position(&c.commit_hash.as_short_hash())
+            .map(SearchMatchPosition::new);
         Self {
             refs,
             subject,
@@ -159,71 +162,6 @@ struct SearchMatchPosition {
 impl SearchMatchPosition {
     fn new(matched_indices: Vec<usize>) -> Self {
         Self { matched_indices }
-    }
-}
-
-struct SearchMatcher {
-    query: String,
-    ignore_case: bool,
-    fuzzy: bool,
-}
-
-impl SearchMatcher {
-    fn new(query: &str, ignore_case: bool, fuzzy: bool) -> Self {
-        let query = if ignore_case {
-            query.to_lowercase()
-        } else {
-            query.into()
-        };
-        Self {
-            query,
-            ignore_case,
-            fuzzy,
-        }
-    }
-
-    /// Quick check if string matches without computing match positions
-    fn matches(&self, s: &str) -> bool {
-        if self.query.is_empty() {
-            return false;
-        }
-        if self.fuzzy {
-            let result = if self.ignore_case {
-                FUZZY_MATCHER.fuzzy_match(&s.to_lowercase(), &self.query)
-            } else {
-                FUZZY_MATCHER.fuzzy_match(s, &self.query)
-            };
-            result.is_some()
-        } else if self.ignore_case {
-            s.to_lowercase().contains(&self.query)
-        } else {
-            s.contains(&self.query)
-        }
-    }
-
-    fn matched_position(&self, s: &str) -> Option<SearchMatchPosition> {
-        if self.query.is_empty() {
-            return None;
-        }
-        if self.fuzzy {
-            let result = if self.ignore_case {
-                FUZZY_MATCHER.fuzzy_indices(&s.to_lowercase(), &self.query)
-            } else {
-                FUZZY_MATCHER.fuzzy_indices(s, &self.query)
-            };
-            result
-                .map(|(_, indices)| indices)
-                .map(SearchMatchPosition::new)
-        } else {
-            let result = if self.ignore_case {
-                s.to_lowercase().find(&self.query)
-            } else {
-                s.find(&self.query)
-            };
-            result
-                .map(|p| (p..(p + self.query.len())).collect())
-                .map(SearchMatchPosition::new)
-        }
     }
 }
 
