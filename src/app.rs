@@ -3,7 +3,6 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use ansi_to_tui::IntoText as _;
 use ratatui::{
     crossterm::event::{KeyCode, KeyEvent},
     layout::{Constraint, Layout, Rect},
@@ -17,7 +16,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::{
     color::{ColorTheme, GraphColorSet},
     config::{CoreConfig, CursorType, UiConfig, UserCommand, UserCommandType},
-    event::{AppEvent, EventController, Sender, UserEvent, UserEventWithCount},
+    event::{AppEvent, EventController, UserEvent, UserEventWithCount},
     external::{
         copy_to_clipboard, exec_user_command, exec_user_command_suspend, ExternalCommandParameters,
     },
@@ -110,8 +109,6 @@ pub struct App<'a> {
 struct GitHubCache {
     issues: Vec<crate::github::GhIssue>,
     pull_requests: Vec<crate::github::GhPullRequest>,
-    issue_details: FxHashMap<u64, Vec<Line<'static>>>,
-    pr_details: FxHashMap<u64, Vec<Line<'static>>>,
     state_filter: String,
 }
 
@@ -414,12 +411,6 @@ impl App<'_> {
                         view.set_error(error);
                     }
                 }
-                AppEvent::GitHubDetailsLoaded {
-                    issue_details,
-                    pr_details,
-                } => {
-                    self.on_github_details_loaded(issue_details, pr_details);
-                }
                 AppEvent::BatchToggleCheckboxes {
                     number,
                     kind,
@@ -433,28 +424,6 @@ impl App<'_> {
                     new_body,
                 } => {
                     self.on_checkbox_toggled(number, kind, &new_body);
-                }
-                AppEvent::LoadDetail { number, kind } => {
-                    self.on_load_detail(number, kind);
-                }
-                AppEvent::DetailFetched {
-                    number,
-                    kind,
-                    rendered,
-                } => {
-                    self.on_detail_fetched(number, kind, &rendered);
-                }
-                AppEvent::LoadTaskPanel { number, kind } => {
-                    self.on_load_task_panel(number, kind);
-                }
-                AppEvent::TaskPanelLoaded {
-                    number,
-                    kind,
-                    items,
-                } => {
-                    if let View::GitHub(ref mut view) = self.view {
-                        view.set_task_panel(number, kind, items);
-                    }
                 }
                 AppEvent::SelectOlderCommit => {
                     self.select_older_commit();
@@ -1035,9 +1004,6 @@ impl App<'_> {
                 };
 
                 if any_ok {
-                    if first_run {
-                        Self::fetch_all_details(&repo_path, &issues, &pull_requests, &tx);
-                    }
                     tx.send(AppEvent::GitHubDataLoaded {
                         issues,
                         pull_requests,
@@ -1054,36 +1020,6 @@ impl App<'_> {
 
                 std::thread::sleep(Duration::from_secs(30));
             }
-        });
-    }
-
-    fn fetch_all_details(
-        repo_path: &std::path::Path,
-        issues: &[crate::github::GhIssue],
-        pull_requests: &[crate::github::GhPullRequest],
-        tx: &Sender,
-    ) {
-        let issue_details: Vec<(u64, String)> = issues
-            .iter()
-            .filter_map(|i| {
-                crate::github::view_item_rendered(repo_path, i.number, GhItemKind::Issue)
-                    .ok()
-                    .map(|s| (i.number, s))
-            })
-            .collect();
-
-        let pr_details: Vec<(u64, String)> = pull_requests
-            .iter()
-            .filter_map(|p| {
-                crate::github::view_item_rendered(repo_path, p.number, GhItemKind::PullRequest)
-                    .ok()
-                    .map(|s| (p.number, s))
-            })
-            .collect();
-
-        tx.send(AppEvent::GitHubDetailsLoaded {
-            issue_details,
-            pr_details,
         });
     }
 
@@ -1133,29 +1069,7 @@ impl App<'_> {
             None => true,
         };
 
-        // 偵測新增的 issue/PR number（用於差量抓取詳情）
-        let new_issue_numbers: Vec<u64> = if let Some(ref cache) = self.github_cache {
-            let existing: FxHashSet<u64> = cache.issues.iter().map(|i| i.number).collect();
-            issues
-                .iter()
-                .filter(|i| !existing.contains(&i.number))
-                .map(|i| i.number)
-                .collect()
-        } else {
-            Vec::new()
-        };
-        let new_pr_numbers: Vec<u64> = if let Some(ref cache) = self.github_cache {
-            let existing: FxHashSet<u64> = cache.pull_requests.iter().map(|p| p.number).collect();
-            pull_requests
-                .iter()
-                .filter(|p| !existing.contains(&p.number))
-                .map(|p| p.number)
-                .collect()
-        } else {
-            Vec::new()
-        };
-
-        // 更新快取（保留既有 detail cache）
+        // 更新快取（body 已含在 list data 中，不需要 detail cache）
         if let Some(ref mut cache) = self.github_cache {
             cache.issues = issues.clone();
             cache.pull_requests = pull_requests.clone();
@@ -1163,39 +1077,7 @@ impl App<'_> {
             self.github_cache = Some(GitHubCache {
                 issues: issues.clone(),
                 pull_requests: pull_requests.clone(),
-                issue_details: FxHashMap::default(),
-                pr_details: FxHashMap::default(),
                 state_filter: "open".to_string(),
-            });
-        }
-
-        // 背景補抓新增項目的詳情
-        if !new_issue_numbers.is_empty() || !new_pr_numbers.is_empty() {
-            let repo_path = self.repository.path().to_path_buf();
-            let tx = self.ec.sender();
-            std::thread::spawn(move || {
-                let issue_details: Vec<(u64, String)> = new_issue_numbers
-                    .iter()
-                    .filter_map(|&n| {
-                        crate::github::view_item_rendered(&repo_path, n, GhItemKind::Issue)
-                            .ok()
-                            .map(|s| (n, s))
-                    })
-                    .collect();
-                let pr_details: Vec<(u64, String)> = new_pr_numbers
-                    .iter()
-                    .filter_map(|&n| {
-                        crate::github::view_item_rendered(&repo_path, n, GhItemKind::PullRequest)
-                            .ok()
-                            .map(|s| (n, s))
-                    })
-                    .collect();
-                if !issue_details.is_empty() || !pr_details.is_empty() {
-                    tx.send(AppEvent::GitHubDetailsLoaded {
-                        issue_details,
-                        pr_details,
-                    });
-                }
             });
         }
 
@@ -1206,27 +1088,6 @@ impl App<'_> {
             }
             if !warnings.is_empty() {
                 view.set_flash(warnings.join("; "), false);
-            }
-        }
-    }
-
-    fn on_github_details_loaded(
-        &mut self,
-        issue_details: Vec<(u64, String)>,
-        pr_details: Vec<(u64, String)>,
-    ) {
-        let convert = |s: &str| -> Vec<Line<'static>> {
-            s.into_text()
-                .map(|t| t.into_iter().collect())
-                .unwrap_or_else(|_| vec![Line::raw(s.to_string())])
-        };
-
-        if let Some(ref mut cache) = self.github_cache {
-            for (n, s) in &issue_details {
-                cache.issue_details.insert(*n, convert(s));
-            }
-            for (n, s) in &pr_details {
-                cache.pr_details.insert(*n, convert(s));
             }
         }
     }
@@ -1252,12 +1113,10 @@ impl App<'_> {
                 }
                 (Ok(issues), Ok(pull_requests)) => {
                     tx.send(AppEvent::GitHubDataLoaded {
-                        issues: issues.clone(),
-                        pull_requests: pull_requests.clone(),
+                        issues,
+                        pull_requests,
                         warnings: Vec::new(),
                     });
-                    // R 刷新：全量重抓詳情
-                    Self::fetch_all_details(&repo_path, &issues, &pull_requests, &tx);
                 }
             }
         });
@@ -1320,112 +1179,25 @@ impl App<'_> {
     }
 
     fn on_checkbox_toggled(&mut self, number: u64, kind: GhItemKind, new_body: &str) {
-        // 清除該項目的 detail cache
+        // 更新 list item 的 body 欄位，preview 直接從 body 渲染（零 API）
+        if let View::GitHub(ref mut view) = self.view {
+            view.update_body_for_item(number, kind, new_body.to_string());
+        }
+        // 同步更新 cache 的 list data
         if let Some(ref mut cache) = self.github_cache {
             match kind {
-                GhItemKind::Issue => cache.issue_details.remove(&number),
-                GhItemKind::PullRequest => cache.pr_details.remove(&number),
-            };
-        }
-
-        // 更新 GitHubView 中的 detail 和 task panel
-        if let View::GitHub(ref mut view) = self.view {
-            view.invalidate_detail_cache(number, kind);
-            view.update_task_panel(number, kind, new_body);
-        }
-
-        // 背景重新抓取該項目的渲染詳情
-        let repo_path = self.repository.path().to_path_buf();
-        let tx = self.ec.sender();
-        std::thread::spawn(move || {
-            if let Ok(rendered) = crate::github::view_item_rendered(&repo_path, number, kind) {
-                tx.send(AppEvent::DetailFetched {
-                    number,
-                    kind,
-                    rendered,
-                });
-            }
-        });
-    }
-
-    fn on_load_detail(&mut self, number: u64, kind: GhItemKind) {
-        // 先查 cache
-        if let Some(ref cache) = self.github_cache {
-            let detail_cache = match kind {
-                GhItemKind::Issue => &cache.issue_details,
-                GhItemKind::PullRequest => &cache.pr_details,
-            };
-            if let Some(lines) = detail_cache.get(&number) {
-                if let View::GitHub(ref mut view) = self.view {
-                    view.set_detail(number, kind, lines.clone());
+                GhItemKind::Issue => {
+                    if let Some(issue) = cache.issues.iter_mut().find(|i| i.number == number) {
+                        issue.body = new_body.to_string();
+                    }
                 }
-                return;
-            }
-        }
-
-        // Cache miss：背景抓取
-        let repo_path = self.repository.path().to_path_buf();
-        let tx = self.ec.sender();
-        std::thread::spawn(move || {
-            match crate::github::view_item_rendered(&repo_path, number, kind) {
-                Ok(rendered) => {
-                    tx.send(AppEvent::DetailFetched {
-                        number,
-                        kind,
-                        rendered,
-                    });
-                }
-                Err(e) => {
-                    tx.send(AppEvent::GitHubFlash {
-                        message: format!("Failed to load detail: {e}"),
-                        is_error: true,
-                    });
+                GhItemKind::PullRequest => {
+                    if let Some(pr) = cache.pull_requests.iter_mut().find(|p| p.number == number) {
+                        pr.body = new_body.to_string();
+                    }
                 }
             }
-        });
-    }
-
-    fn on_detail_fetched(&mut self, number: u64, kind: GhItemKind, rendered: &str) {
-        let lines: Vec<Line<'static>> = rendered
-            .into_text()
-            .map(|t| t.into_iter().collect())
-            .unwrap_or_else(|_| vec![Line::raw(rendered.to_string())]);
-
-        // 存入 cache
-        if let Some(ref mut cache) = self.github_cache {
-            match kind {
-                GhItemKind::Issue => cache.issue_details.insert(number, lines.clone()),
-                GhItemKind::PullRequest => cache.pr_details.insert(number, lines.clone()),
-            };
         }
-
-        // 設定 detail（若仍在 GitHub 視圖）
-        if let View::GitHub(ref mut view) = self.view {
-            view.set_detail(number, kind, lines);
-        }
-    }
-
-    fn on_load_task_panel(&mut self, number: u64, kind: GhItemKind) {
-        let repo_path = self.repository.path().to_path_buf();
-        let tx = self.ec.sender();
-        std::thread::spawn(
-            move || match crate::github::get_body(&repo_path, number, kind) {
-                Ok(body) => {
-                    let items = crate::github::parse_checkboxes(&body);
-                    tx.send(AppEvent::TaskPanelLoaded {
-                        number,
-                        kind,
-                        items,
-                    });
-                }
-                Err(e) => {
-                    tx.send(AppEvent::GitHubFlash {
-                        message: format!("Failed to load body: {e}"),
-                        is_error: true,
-                    });
-                }
-            },
-        );
     }
 
     fn select_older_commit(&mut self) {

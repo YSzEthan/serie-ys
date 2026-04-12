@@ -60,10 +60,6 @@ pub enum AppEvent {
     GitHubLoadFailed {
         error: String,
     },
-    GitHubDetailsLoaded {
-        issue_details: Vec<(u64, String)>,
-        pr_details: Vec<(u64, String)>,
-    },
     BatchToggleCheckboxes {
         number: u64,
         kind: crate::github::GhItemKind,
@@ -73,24 +69,6 @@ pub enum AppEvent {
         number: u64,
         kind: crate::github::GhItemKind,
         new_body: String,
-    },
-    LoadDetail {
-        number: u64,
-        kind: crate::github::GhItemKind,
-    },
-    DetailFetched {
-        number: u64,
-        kind: crate::github::GhItemKind,
-        rendered: String,
-    },
-    LoadTaskPanel {
-        number: u64,
-        kind: crate::github::GhItemKind,
-    },
-    TaskPanelLoaded {
-        number: u64,
-        kind: crate::github::GhItemKind,
-        items: Vec<crate::github::CheckboxItem>,
     },
     SelectNewerCommit,
     SelectOlderCommit,

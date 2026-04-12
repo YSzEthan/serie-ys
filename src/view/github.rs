@@ -56,6 +56,12 @@ struct TaskListPanel {
     selected: usize,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GitHubFocus {
+    List,
+    Preview,
+}
+
 #[derive(Debug, Default)]
 enum LoadState {
     #[default]
@@ -68,6 +74,8 @@ enum LoadState {
 pub struct GitHubView<'a> {
     before: View<'a>,
 
+    focus: GitHubFocus,
+
     active_tab: GitHubTab,
     issues: Vec<GhIssue>,
     pull_requests: Vec<GhPullRequest>,
@@ -75,9 +83,7 @@ pub struct GitHubView<'a> {
     offset: usize,
     height: usize,
 
-    detail: Option<Vec<Line<'static>>>,
-    detail_number: Option<(u64, GhItemKind)>,
-    detail_offset: usize,
+    preview_offset: usize,
 
     state_filter: StateFilter,
 
@@ -107,15 +113,14 @@ impl<'a> GitHubView<'a> {
         };
         GitHubView {
             before,
+            focus: GitHubFocus::List,
             active_tab: GitHubTab::Issues,
             issues,
             pull_requests,
             selected_index: 0,
             offset: 0,
             height: 0,
-            detail: None,
-            detail_number: None,
-            detail_offset: 0,
+            preview_offset: 0,
             state_filter: StateFilter::Open,
             task_panel: None,
             load_state,
@@ -153,51 +158,23 @@ impl<'a> GitHubView<'a> {
         if self.selected_index > max {
             self.selected_index = max;
         }
-        // 如果在看詳情，清除掉（內容可能已過時）
-        self.detail = None;
-        self.detail_number = None;
-        self.detail_offset = 0;
+        self.preview_offset = 0;
     }
 
-    pub fn set_detail(&mut self, number: u64, kind: GhItemKind, lines: Vec<Line<'static>>) {
-        self.detail = Some(lines);
-        self.detail_number = Some((number, kind));
-        self.detail_offset = 0;
-    }
-
-    pub fn invalidate_detail_cache(&mut self, number: u64, kind: GhItemKind) {
-        if self.detail_number == Some((number, kind)) {
-            self.detail = None;
-            self.detail_number = None;
-            self.detail_offset = 0;
-        }
-    }
-
-    pub fn update_task_panel(&mut self, number: u64, kind: GhItemKind, new_body: &str) {
-        if let Some(ref mut panel) = self.task_panel {
-            if panel.number == number && panel.kind == kind {
-                let items = github::parse_checkboxes(new_body);
-                let selected = panel.selected.min(items.len().saturating_sub(1));
-                panel.original_checked = items.iter().map(|i| i.checked).collect();
-                panel.items = items;
-                panel.selected = selected;
+    pub fn update_body_for_item(&mut self, number: u64, kind: GhItemKind, new_body: String) {
+        match kind {
+            GhItemKind::Issue => {
+                if let Some(issue) = self.issues.iter_mut().find(|i| i.number == number) {
+                    issue.body = new_body;
+                }
+            }
+            GhItemKind::PullRequest => {
+                if let Some(pr) = self.pull_requests.iter_mut().find(|p| p.number == number) {
+                    pr.body = new_body;
+                }
             }
         }
-    }
-
-    pub fn set_task_panel(&mut self, number: u64, kind: GhItemKind, items: Vec<CheckboxItem>) {
-        if items.is_empty() {
-            self.set_flash("No tasks found".to_string(), false);
-            return;
-        }
-        let original_checked = items.iter().map(|i| i.checked).collect();
-        self.task_panel = Some(TaskListPanel {
-            number,
-            kind,
-            items,
-            original_checked,
-            selected: 0,
-        });
+        self.preview_offset = 0;
     }
 
     pub fn status_hints(&self) -> Vec<(UserEvent, &'static str)> {
@@ -208,28 +185,32 @@ impl<'a> GitHubView<'a> {
                 (UserEvent::Cancel, "cancel"),
             ];
         }
-        if self.detail.is_some() {
-            return vec![(UserEvent::Confirm, "tasks"), (UserEvent::Cancel, "back")];
-        }
-        if self.current_list_len() == 0 {
-            return match &self.load_state {
-                LoadState::Loading => vec![(UserEvent::Cancel, "close")],
-                LoadState::Error(_) => {
-                    vec![(UserEvent::Refresh, "retry"), (UserEvent::Cancel, "close")]
+        match self.focus {
+            GitHubFocus::Preview => {
+                vec![(UserEvent::Cancel, "back")]
+            }
+            GitHubFocus::List => {
+                if self.current_list_len() == 0 {
+                    return match &self.load_state {
+                        LoadState::Loading => vec![(UserEvent::Cancel, "close")],
+                        LoadState::Error(_) => {
+                            vec![(UserEvent::Refresh, "retry"), (UserEvent::Cancel, "close")]
+                        }
+                        LoadState::Idle => vec![
+                            (UserEvent::Refresh, "refresh"),
+                            (UserEvent::Cancel, "close"),
+                        ],
+                    };
                 }
-                LoadState::Idle => vec![
+                vec![
+                    (UserEvent::RefList, "switch tab"),
+                    (UserEvent::Confirm, "preview"),
                     (UserEvent::Refresh, "refresh"),
-                    (UserEvent::Cancel, "close"),
-                ],
-            };
+                    (UserEvent::Filter, "filter"),
+                    (UserEvent::GitHubToggle, "close"),
+                ]
+            }
         }
-        vec![
-            (UserEvent::RefList, "switch tab"),
-            (UserEvent::Confirm, "detail"),
-            (UserEvent::Refresh, "refresh"),
-            (UserEvent::Filter, "filter"),
-            (UserEvent::GitHubToggle, "close"),
-        ]
     }
 
     pub fn handle_event(&mut self, event_with_count: UserEventWithCount, _: KeyEvent) {
@@ -243,6 +224,7 @@ impl<'a> GitHubView<'a> {
             match event {
                 UserEvent::Cancel => {
                     self.task_panel = None;
+                    self.focus = GitHubFocus::Preview;
                     return;
                 }
                 UserEvent::NavigateDown | UserEvent::SelectDown => {
@@ -261,7 +243,6 @@ impl<'a> GitHubView<'a> {
                     return;
                 }
                 UserEvent::NavigateLeft | UserEvent::NavigateRight => {
-                    // 本地切換，不立即打 API
                     if let Some(item) = panel.items.get_mut(panel.selected) {
                         item.checked = !item.checked;
                     }
@@ -283,72 +264,76 @@ impl<'a> GitHubView<'a> {
                         });
                     }
                     self.task_panel = None;
+                    self.focus = GitHubFocus::Preview;
                     return;
                 }
                 _ => return,
             }
         }
 
-        // 詳情模式事件
-        if self.detail.is_some() {
-            match event {
-                UserEvent::Cancel | UserEvent::Close => {
-                    self.detail = None;
-                    self.detail_number = None;
-                    self.detail_offset = 0;
-                }
-                UserEvent::NavigateDown | UserEvent::SelectDown => {
-                    for _ in 0..count {
-                        self.detail_offset = self.detail_offset.saturating_add(1);
-                    }
-                }
-                UserEvent::NavigateUp | UserEvent::SelectUp => {
-                    for _ in 0..count {
-                        self.detail_offset = self.detail_offset.saturating_sub(1);
-                    }
-                }
-                UserEvent::PageDown => {
-                    let page = self.height.saturating_sub(2).max(1);
-                    self.detail_offset = self.detail_offset.saturating_add(page);
-                }
-                UserEvent::PageUp => {
-                    let page = self.height.saturating_sub(2).max(1);
-                    self.detail_offset = self.detail_offset.saturating_sub(page);
-                }
-                UserEvent::HalfPageDown => {
-                    let half = self.height.saturating_sub(2).max(1) / 2;
-                    self.detail_offset = self.detail_offset.saturating_add(half);
-                }
-                UserEvent::HalfPageUp => {
-                    let half = self.height.saturating_sub(2).max(1) / 2;
-                    self.detail_offset = self.detail_offset.saturating_sub(half);
-                }
-                UserEvent::GoToTop => {
-                    self.detail_offset = 0;
-                }
-                UserEvent::Confirm => {
-                    self.request_task_panel();
-                }
-                _ => {}
-            }
-            self.clamp_detail_offset();
-            return;
+        // Focus-based event dispatch
+        match self.focus {
+            GitHubFocus::Preview => self.handle_preview_event(event, count),
+            GitHubFocus::List => self.handle_list_event(event, count),
         }
+    }
 
-        // 列表模式事件
+    fn handle_preview_event(&mut self, event: UserEvent, count: usize) {
+        match event {
+            UserEvent::Cancel | UserEvent::Close => {
+                self.focus = GitHubFocus::List;
+            }
+            UserEvent::NavigateDown | UserEvent::SelectDown => {
+                for _ in 0..count {
+                    self.preview_offset = self.preview_offset.saturating_add(1);
+                }
+            }
+            UserEvent::NavigateUp | UserEvent::SelectUp => {
+                for _ in 0..count {
+                    self.preview_offset = self.preview_offset.saturating_sub(1);
+                }
+            }
+            UserEvent::PageDown => {
+                let page = self.height.saturating_sub(2).max(1);
+                self.preview_offset = self.preview_offset.saturating_add(page);
+            }
+            UserEvent::PageUp => {
+                let page = self.height.saturating_sub(2).max(1);
+                self.preview_offset = self.preview_offset.saturating_sub(page);
+            }
+            UserEvent::HalfPageDown => {
+                let half = self.height.saturating_sub(2).max(1) / 2;
+                self.preview_offset = self.preview_offset.saturating_add(half);
+            }
+            UserEvent::HalfPageUp => {
+                let half = self.height.saturating_sub(2).max(1) / 2;
+                self.preview_offset = self.preview_offset.saturating_sub(half);
+            }
+            UserEvent::GoToTop => {
+                self.preview_offset = 0;
+            }
+            UserEvent::Confirm => {
+                // e key or Enter → try checkbox edit
+                self.try_enter_checkbox_edit();
+            }
+            _ => {}
+        }
+    }
+
+    fn handle_list_event(&mut self, event: UserEvent, count: usize) {
         match event {
             UserEvent::GitHubToggle | UserEvent::Cancel | UserEvent::Close => {
                 self.tx.send(AppEvent::ClearGitHub);
                 self.tx.send(AppEvent::CloseGitHub);
             }
             UserEvent::RefList => {
-                // Tab 鍵 — 切換頁籤
                 self.active_tab = match self.active_tab {
                     GitHubTab::Issues => GitHubTab::PullRequests,
                     GitHubTab::PullRequests => GitHubTab::Issues,
                 };
                 self.selected_index = 0;
                 self.offset = 0;
+                self.preview_offset = 0;
             }
             UserEvent::NavigateDown | UserEvent::SelectDown => {
                 let max = self.current_list_len().saturating_sub(1);
@@ -357,51 +342,63 @@ impl<'a> GitHubView<'a> {
                         self.selected_index += 1;
                     }
                 }
+                self.preview_offset = 0;
                 self.adjust_scroll();
             }
             UserEvent::NavigateUp | UserEvent::SelectUp => {
                 for _ in 0..count {
                     self.selected_index = self.selected_index.saturating_sub(1);
                 }
+                self.preview_offset = 0;
                 self.adjust_scroll();
             }
             UserEvent::GoToTop => {
                 self.selected_index = 0;
                 self.offset = 0;
+                self.preview_offset = 0;
             }
             UserEvent::GoToBottom => {
                 self.selected_index = self.current_list_len().saturating_sub(1);
+                self.preview_offset = 0;
                 self.adjust_scroll();
             }
             UserEvent::Confirm => {
-                self.load_detail();
+                // Enter → switch to Preview focus
+                if self.current_list_len() > 0 {
+                    self.focus = GitHubFocus::Preview;
+                }
             }
             UserEvent::PageDown => {
                 let page = self.height.saturating_sub(3).max(1);
                 let max = self.current_list_len().saturating_sub(1);
                 self.selected_index = (self.selected_index + page).min(max);
+                self.preview_offset = 0;
                 self.adjust_scroll();
             }
             UserEvent::PageUp => {
                 let page = self.height.saturating_sub(3).max(1);
                 self.selected_index = self.selected_index.saturating_sub(page);
+                self.preview_offset = 0;
                 self.adjust_scroll();
             }
             UserEvent::HalfPageDown => {
                 let half = self.height.saturating_sub(3).max(1) / 2;
                 let max = self.current_list_len().saturating_sub(1);
                 self.selected_index = (self.selected_index + half).min(max);
+                self.preview_offset = 0;
                 self.adjust_scroll();
             }
             UserEvent::HalfPageUp => {
                 let half = self.height.saturating_sub(3).max(1) / 2;
                 self.selected_index = self.selected_index.saturating_sub(half);
+                self.preview_offset = 0;
                 self.adjust_scroll();
             }
             UserEvent::Filter => {
                 self.state_filter = self.state_filter.next();
                 self.selected_index = 0;
                 self.offset = 0;
+                self.preview_offset = 0;
                 self.load_state = LoadState::Loading;
                 self.tx.send(AppEvent::RefreshGitHub {
                     state: self.state_filter.as_str().to_string(),
@@ -414,6 +411,43 @@ impl<'a> GitHubView<'a> {
                 });
             }
             _ => {}
+        }
+    }
+
+    fn try_enter_checkbox_edit(&mut self) {
+        let body = self.selected_body();
+        if body.is_empty() {
+            return;
+        }
+        let items = github::parse_checkboxes(&body);
+        if items.is_empty() {
+            self.set_flash("No tasks found".to_string(), false);
+            return;
+        }
+        if let Some((number, kind)) = self.selected_number_and_kind() {
+            let original_checked = items.iter().map(|i| i.checked).collect();
+            self.task_panel = Some(TaskListPanel {
+                number,
+                kind,
+                items,
+                original_checked,
+                selected: 0,
+            });
+        }
+    }
+
+    fn selected_body(&self) -> String {
+        match self.active_tab {
+            GitHubTab::Issues => self
+                .issues
+                .get(self.selected_index)
+                .map(|i| i.body.clone())
+                .unwrap_or_default(),
+            GitHubTab::PullRequests => self
+                .pull_requests
+                .get(self.selected_index)
+                .map(|p| p.body.clone())
+                .unwrap_or_default(),
         }
     }
 
@@ -430,23 +464,10 @@ impl<'a> GitHubView<'a> {
         }
     }
 
-    fn request_task_panel(&self) {
-        if let Some((number, kind)) = self.selected_number_and_kind() {
-            self.tx.send(AppEvent::LoadTaskPanel { number, kind });
-        }
-    }
-
     fn current_list_len(&self) -> usize {
         match self.active_tab {
             GitHubTab::Issues => self.issues.len(),
             GitHubTab::PullRequests => self.pull_requests.len(),
-        }
-    }
-
-    fn clamp_detail_offset(&mut self) {
-        if let Some(ref lines) = self.detail {
-            let max_offset = lines.len().saturating_sub(self.height);
-            self.detail_offset = self.detail_offset.min(max_offset);
         }
     }
 
@@ -462,12 +483,6 @@ impl<'a> GitHubView<'a> {
         }
     }
 
-    fn load_detail(&self) {
-        if let Some((number, kind)) = self.selected_number_and_kind() {
-            self.tx.send(AppEvent::LoadDetail { number, kind });
-        }
-    }
-
     pub fn render(&mut self, f: &mut Frame, area: Rect) {
         if self.clear {
             f.render_widget(Clear, area);
@@ -476,18 +491,64 @@ impl<'a> GitHubView<'a> {
 
         self.height = area.height as usize;
 
-        if let Some(ref detail) = self.detail {
-            self.render_detail(f, area, detail.clone());
-            if self.task_panel.is_some() {
-                self.render_task_panel(f, area);
-            }
+        // ── 三區 split：頂部 tab/prompt + 下半 list|preview ──
+        let [header_area, content_area] =
+            Layout::vertical([Constraint::Length(2), Constraint::Min(0)]).areas(area);
+
+        self.render_header(f, header_area);
+
+        // ── Loading / 錯誤提示 ──
+        if self.current_list_len() == 0 {
+            let (text, color) = match &self.load_state {
+                LoadState::Loading => ("Loading GitHub data...".to_string(), Color::DarkGray),
+                LoadState::Error(err) => (err.clone(), Color::Red),
+                LoadState::Idle => ("No items".to_string(), Color::DarkGray),
+            };
+            render_centered_message(f, content_area, text, color);
+            self.clear_image_area(area);
             return;
         }
 
-        // ── 頁籤列 ──
+        let [list_area, preview_area] =
+            Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
+                .areas(content_area);
+
+        self.render_list(f, list_area);
+        self.render_preview(f, preview_area);
+
+        // Task panel overlay（暫時保留至 Step D 改整合進 preview）
+        if self.task_panel.is_some() {
+            self.render_task_panel(f, area);
+        }
+
+        // ── Flash message ──
+        if let Some((ref msg, is_error)) = self.flash_message {
+            let color = if is_error {
+                Color::Red
+            } else {
+                Color::DarkGray
+            };
+            let flash_area = Rect::new(
+                content_area.x,
+                content_area.bottom().saturating_sub(1),
+                content_area.width,
+                1,
+            );
+            let flash = Paragraph::new(Line::from(Span::styled(
+                msg.clone(),
+                Style::default().fg(color),
+            )))
+            .alignment(ratatui::layout::Alignment::Center);
+            f.render_widget(flash, flash_area);
+        }
+
+        self.clear_image_area(area);
+    }
+
+    fn render_header(&self, f: &mut Frame, area: Rect) {
         let filter_label = self.state_filter.as_str();
-        let issues_label = format!(" Issues ({}) [{}] ", self.issues.len(), filter_label);
-        let prs_label = format!(" PRs ({}) [{}] ", self.pull_requests.len(), filter_label);
+        let issues_label = format!(" Issues ({}) ", self.issues.len());
+        let prs_label = format!(" PRs ({}) ", self.pull_requests.len());
 
         let tab_line = Line::from(vec![
             Span::styled(
@@ -507,30 +568,32 @@ impl<'a> GitHubView<'a> {
                     Style::default().fg(Color::DarkGray)
                 },
             ),
+            Span::raw("  "),
+            Span::styled(
+                format!("[{}]", filter_label),
+                Style::default().fg(Color::DarkGray),
+            ),
         ]);
-
-        let [tab_area, list_area] =
-            Layout::vertical([Constraint::Length(2), Constraint::Min(0)]).areas(area);
 
         f.render_widget(
             Paragraph::new(tab_line).block(Block::default().padding(Padding::new(2, 2, 1, 0))),
-            tab_area,
+            area,
         );
+    }
 
-        // ── Loading / 錯誤提示 ──
-        if self.current_list_len() == 0 {
-            let (text, color) = match &self.load_state {
-                LoadState::Loading => ("Loading GitHub data...".to_string(), Color::DarkGray),
-                LoadState::Error(err) => (err.clone(), Color::Red),
-                LoadState::Idle => ("No items".to_string(), Color::DarkGray),
-            };
-            render_centered_message(f, list_area, text, color);
-            self.clear_image_area(area);
-            return;
-        }
+    fn render_list(&self, f: &mut Frame, area: Rect) {
+        let list_border_color = if self.focus == GitHubFocus::List {
+            Color::Cyan
+        } else {
+            Color::DarkGray
+        };
+        let block = Block::default()
+            .borders(Borders::RIGHT)
+            .border_style(Style::default().fg(list_border_color));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
 
-        // ── 列表 ──
-        let visible_height = list_area.height as usize;
+        let visible_height = inner.height as usize;
         let items: Vec<Line> = match self.active_tab {
             GitHubTab::Issues => self
                 .issues
@@ -551,50 +614,144 @@ impl<'a> GitHubView<'a> {
         };
 
         let list_paragraph =
-            Paragraph::new(items).block(Block::default().padding(Padding::horizontal(2)));
-        f.render_widget(list_paragraph, list_area);
+            Paragraph::new(items).block(Block::default().padding(Padding::horizontal(1)));
+        f.render_widget(list_paragraph, inner);
+    }
 
-        // ── Flash message ──
-        if let Some((ref msg, is_error)) = self.flash_message {
-            let color = if is_error {
-                Color::Red
-            } else {
-                Color::DarkGray
-            };
-            let flash_area = Rect::new(
-                list_area.x,
-                list_area.bottom().saturating_sub(1),
-                list_area.width,
-                1,
-            );
-            let flash = Paragraph::new(Line::from(Span::styled(
-                msg.clone(),
-                Style::default().fg(color),
-            )))
-            .alignment(ratatui::layout::Alignment::Center);
-            f.render_widget(flash, flash_area);
+    fn render_preview(&mut self, f: &mut Frame, area: Rect) {
+        let block = Block::default().padding(Padding::horizontal(1));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        let preview_lines = self.build_preview_lines();
+
+        // Clamp preview_offset to avoid scrolling past content
+        let max_offset = preview_lines.len().saturating_sub(inner.height as usize);
+        self.preview_offset = self.preview_offset.min(max_offset);
+
+        let visible: Vec<Line> = preview_lines
+            .into_iter()
+            .skip(self.preview_offset)
+            .take(inner.height as usize)
+            .collect();
+
+        let paragraph = Paragraph::new(visible);
+        f.render_widget(paragraph, inner);
+    }
+
+    /// Extract common fields from the selected issue or PR for preview rendering.
+    #[allow(clippy::type_complexity)]
+    fn selected_item_fields(
+        &self,
+    ) -> Option<(&str, &str, &str, &[crate::github::GhLabel], &str, u64)> {
+        match self.active_tab {
+            GitHubTab::Issues => self.issues.get(self.selected_index).map(|i| {
+                (
+                    i.title.as_str(),
+                    i.state.as_str(),
+                    i.author.login.as_str(),
+                    i.labels.as_slice(),
+                    i.body.as_str(),
+                    i.number,
+                )
+            }),
+            GitHubTab::PullRequests => self.pull_requests.get(self.selected_index).map(|p| {
+                (
+                    p.title.as_str(),
+                    p.state.as_str(),
+                    p.author.login.as_str(),
+                    p.labels.as_slice(),
+                    p.body.as_str(),
+                    p.number,
+                )
+            }),
+        }
+    }
+
+    fn build_preview_lines(&self) -> Vec<Line<'static>> {
+        let Some((title, state, author, labels, body, number)) = self.selected_item_fields() else {
+            return vec![Line::styled(
+                "(no item selected)",
+                Style::default().fg(Color::DarkGray),
+            )];
+        };
+
+        // Convert borrowed fields to owned for 'static Line requirement
+        let title = title.to_string();
+        let state = state.to_string();
+        let author = author.to_string();
+        let body = body.to_string();
+        let labels: Vec<crate::github::GhLabel> = labels.to_vec();
+
+        let mut lines = Vec::new();
+
+        // Header: #number title
+        lines.push(Line::from(vec![
+            Span::styled(format!("#{number} "), Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                title,
+                Style::default()
+                    .fg(Color::White)
+                    .add_modifier(Modifier::BOLD),
+            ),
+        ]));
+
+        // Metadata: state @author
+        let state_color = match state.as_str() {
+            "OPEN" => Color::Green,
+            "CLOSED" => Color::Red,
+            "MERGED" => Color::Magenta,
+            _ => Color::Gray,
+        };
+        let mut meta_spans = vec![
+            Span::styled(state.to_lowercase(), Style::default().fg(state_color)),
+            Span::styled(format!("  @{author}"), Style::default().fg(Color::DarkGray)),
+        ];
+        if !labels.is_empty() {
+            meta_spans.push(Span::raw("  "));
+            meta_spans.extend(label_spans(&labels));
+        }
+        lines.push(Line::from(meta_spans));
+
+        // Separator
+        lines.push(Line::styled(
+            "─".repeat(40),
+            Style::default().fg(Color::DarkGray),
+        ));
+
+        // Body: raw markdown with minimal highlighting
+        if body.is_empty() {
+            lines.push(Line::styled(
+                "(no body)",
+                Style::default().fg(Color::DarkGray),
+            ));
+        } else {
+            for line in body.lines() {
+                if line.starts_with('#') {
+                    // Heading → bold
+                    lines.push(Line::styled(
+                        line.to_string(),
+                        Style::default().add_modifier(Modifier::BOLD),
+                    ));
+                } else if line.starts_with("---") || line.starts_with("___") {
+                    // Separator
+                    lines.push(Line::styled(
+                        "─".repeat(40),
+                        Style::default().fg(Color::DarkGray),
+                    ));
+                } else {
+                    lines.push(Line::raw(line.to_string()));
+                }
+            }
         }
 
-        self.clear_image_area(area);
+        lines
     }
 
     fn clear_image_area(&self, area: Rect) {
         for y in area.top()..area.bottom() {
             self.ctx.image_protocol.clear_line(y);
         }
-    }
-
-    fn render_detail(&self, f: &mut Frame, area: Rect, lines: Vec<Line<'static>>) {
-        let visible: Vec<Line> = lines
-            .into_iter()
-            .skip(self.detail_offset)
-            .take(area.height as usize)
-            .collect();
-
-        let paragraph =
-            Paragraph::new(visible).block(Block::default().padding(Padding::new(3, 3, 1, 0)));
-        f.render_widget(paragraph, area);
-        self.clear_image_area(area);
     }
 
     fn render_task_panel(&self, f: &mut Frame, area: Rect) {
