@@ -1,6 +1,4 @@
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use ratatui::{
@@ -100,7 +98,7 @@ pub struct App<'a> {
     app_status: AppStatus,
     pending_message: Option<String>,
     github_cache: Option<GitHubCache>,
-    github_timer_cancel: Option<Arc<AtomicBool>>,
+    github_loading: bool,
     ctx: Rc<AppContext>,
     ec: &'a EventController,
 }
@@ -203,7 +201,7 @@ impl<'a> App<'a> {
             app_status: AppStatus::default(),
             pending_message: None,
             github_cache: None,
-            github_timer_cancel: None,
+            github_loading: false,
             ctx,
             ec,
         };
@@ -211,9 +209,6 @@ impl<'a> App<'a> {
         if let Some(context) = refresh_view_context {
             app.init_with_context(context);
         }
-
-        // 啟動時背景預載 GitHub 資料
-        app.prefetch_github();
 
         app
     }
@@ -405,6 +400,7 @@ impl App<'_> {
                     }
                 }
                 AppEvent::GitHubLoadFailed { error } => {
+                    self.github_loading = false;
                     if let View::GitHub(ref mut view) = self.view {
                         view.set_error(error);
                     }
@@ -980,82 +976,11 @@ impl App<'_> {
         }
     }
 
-    fn prefetch_github(&self) {
-        let repo_path = self.repository.path().to_path_buf();
-        let tx = self.ec.sender();
-
-        std::thread::spawn(move || {
-            let mut first_run = true;
-            loop {
-                let issues_result = crate::github::list_issues(&repo_path, "open");
-                let prs_result = crate::github::list_pull_requests(&repo_path, "open");
-
-                let mut any_ok = false;
-                let mut warnings = Vec::new();
-
-                let issues = match issues_result {
-                    Ok(v) => {
-                        any_ok = true;
-                        v
-                    }
-                    Err(e) => {
-                        warnings.push(format!("GitHub issues unavailable: {e}"));
-                        Vec::new()
-                    }
-                };
-                let pull_requests = match prs_result {
-                    Ok(v) => {
-                        any_ok = true;
-                        v
-                    }
-                    Err(e) => {
-                        warnings.push(format!("GitHub PRs unavailable: {e}"));
-                        Vec::new()
-                    }
-                };
-
-                if any_ok {
-                    tx.send(AppEvent::GitHubDataLoaded {
-                        issues,
-                        pull_requests,
-                        warnings,
-                    });
-                } else if first_run {
-                    let err = warnings.remove(0);
-                    tx.send(AppEvent::GitHubLoadFailed { error: err });
-                }
-
-                if first_run {
-                    first_run = false;
-                }
-
-                std::thread::sleep(Duration::from_secs(30));
-            }
-        });
-    }
-
     fn open_github(&mut self) {
         let (issues, prs) = if let Some(ref cache) = self.github_cache {
             (cache.issues.clone(), cache.pull_requests.clone())
         } else {
-            // 取消前一個 stale 計時器
-            if let Some(ref prev) = self.github_timer_cancel {
-                prev.store(true, Ordering::Relaxed);
-            }
-
-            // 3 秒計時器：若資料遲遲未到達，發送失敗事件作為保底
-            let cancel = Arc::new(AtomicBool::new(false));
-            self.github_timer_cancel = Some(cancel.clone());
-            let tx = self.ec.sender();
-            std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_secs(3));
-                if !cancel.load(Ordering::Relaxed) {
-                    tx.send(AppEvent::GitHubLoadFailed {
-                        error: "GitHub data not available".into(),
-                    });
-                }
-            });
-
+            self.refresh_github("open");
             (Vec::new(), Vec::new())
         };
 
@@ -1069,11 +994,7 @@ impl App<'_> {
         pull_requests: Vec<crate::github::GhPullRequest>,
         warnings: Vec<String>,
     ) {
-        // 資料到達，取消 stale 計時器
-        if let Some(ref cancel) = self.github_timer_cancel {
-            cancel.store(true, Ordering::Relaxed);
-        }
-
+        self.github_loading = false;
         // 檢查是否與快取相同
         let changed = match &self.github_cache {
             Some(cache) => cache.issues != issues || cache.pull_requests != pull_requests,
@@ -1104,6 +1025,11 @@ impl App<'_> {
     }
 
     fn refresh_github(&mut self, state: &str) {
+        if self.github_loading {
+            return;
+        }
+        self.github_loading = true;
+
         if let Some(ref mut cache) = self.github_cache {
             cache.state_filter = state.to_string();
         }
@@ -1116,19 +1042,40 @@ impl App<'_> {
             let issues_result = crate::github::list_issues(&repo_path, &state);
             let prs_result = crate::github::list_pull_requests(&repo_path, &state);
 
-            match (issues_result, prs_result) {
-                (Err(e), _) | (_, Err(e)) => {
-                    tx.send(AppEvent::GitHubLoadFailed {
-                        error: e.to_string(),
-                    });
+            let mut any_ok = false;
+            let mut warnings = Vec::new();
+
+            let issues = match issues_result {
+                Ok(v) => {
+                    any_ok = true;
+                    v
                 }
-                (Ok(issues), Ok(pull_requests)) => {
-                    tx.send(AppEvent::GitHubDataLoaded {
-                        issues,
-                        pull_requests,
-                        warnings: Vec::new(),
-                    });
+                Err(e) => {
+                    warnings.push(format!("GitHub issues unavailable: {e}"));
+                    Vec::new()
                 }
+            };
+            let pull_requests = match prs_result {
+                Ok(v) => {
+                    any_ok = true;
+                    v
+                }
+                Err(e) => {
+                    warnings.push(format!("GitHub PRs unavailable: {e}"));
+                    Vec::new()
+                }
+            };
+
+            if any_ok {
+                tx.send(AppEvent::GitHubDataLoaded {
+                    issues,
+                    pull_requests,
+                    warnings,
+                });
+            } else {
+                tx.send(AppEvent::GitHubLoadFailed {
+                    error: warnings.join("; "),
+                });
             }
         });
     }
@@ -1378,7 +1325,6 @@ fn selected_commit_details(
     let refs: Vec<Ref> = repository.refs(&selected).into_iter().cloned().collect();
     (commit.clone(), changes, refs)
 }
-
 
 fn process_numeric_prefix(
     numeric_prefix: &str,
