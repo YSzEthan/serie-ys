@@ -399,6 +399,11 @@ pub fn run() -> Result<()> {
                     // App must release its &repository borrow before mutation.
                     (graph_image_manager, filtered_graph, remote_only_commits) = app.into_parts();
                     repository.update_metadata_from(new_repo);
+                    let new_head = resolve_head_commit_hash(&repository);
+                    graph_image_manager.update_head_commit_hash(new_head.clone());
+                    if let Some(filtered) = filtered_graph.as_mut() {
+                        filtered.image_manager.update_head_commit_hash(new_head);
+                    }
                 } else {
                     // Slow path: commits changed — drop app, rebuild graph + image,
                     // and clear the on-screen image area for the new frame.

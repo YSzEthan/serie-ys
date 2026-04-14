@@ -7,7 +7,10 @@ use crate::{
     config::UserListColumnType,
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
     git::{Commit, FileChange, Ref, Repository, WorkingChanges},
-    view::{dispatch_branch_copy, partition_branches, ListRefreshViewContext, RefreshViewContext},
+    view::{
+        dispatch_branch_copy, dispatch_tag_copy, partition_branches, partition_tags,
+        ListRefreshViewContext, RefreshViewContext,
+    },
     widget::{
         commit_detail::{CommitDetail, CommitDetailState, WorkingChangesDetail},
         commit_list::{CommitList, CommitListState},
@@ -110,6 +113,9 @@ impl<'a> DetailView<'a> {
             }
             UserEvent::FullBranchCopy => {
                 self.handle_branch_copy(true);
+            }
+            UserEvent::TagCopy => {
+                self.handle_tag_copy();
             }
             UserEvent::RemoteRefsToggle => {
                 if let Some(ref mut cls) = self.commit_list_state {
@@ -304,6 +310,14 @@ impl<'a> DetailView<'a> {
         };
         let (local, remote) = partition_branches(refs.iter());
         dispatch_branch_copy(&self.tx, &local, &remote, full);
+    }
+
+    fn handle_tag_copy(&self) {
+        let DetailContent::Commit { refs, .. } = &self.content else {
+            return;
+        };
+        let tags = partition_tags(refs.iter());
+        dispatch_tag_copy(&self.tx, &tags);
     }
 
     fn copy_to_clipboard(&self, name: String, value: String) {

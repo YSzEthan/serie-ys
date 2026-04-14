@@ -9,7 +9,10 @@ use ratatui::{
 use crate::{
     app::AppContext,
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
-    view::{dispatch_branch_copy, partition_branches, ListRefreshViewContext, RefreshViewContext},
+    view::{
+        dispatch_branch_copy, dispatch_tag_copy, partition_branches, partition_tags,
+        ListRefreshViewContext, RefreshViewContext,
+    },
     widget::commit_list::{CommitList, CommitListState, FilterState, SearchState},
 };
 
@@ -135,6 +138,9 @@ impl<'a> ListView<'a> {
             }
             UserEvent::FullBranchCopy => {
                 self.handle_branch_copy(true);
+            }
+            UserEvent::TagCopy => {
+                self.handle_tag_copy();
             }
             UserEvent::Search => {
                 self.as_mut_list_state().start_search();
@@ -310,6 +316,15 @@ impl<'a> ListView<'a> {
         let refs = self.as_list_state().selected_commit_refs();
         let (local, remote) = partition_branches(refs.iter().copied());
         dispatch_branch_copy(&self.tx, &local, &remote, full);
+    }
+
+    fn handle_tag_copy(&self) {
+        if self.as_list_state().is_virtual_row_selected() {
+            return;
+        }
+        let refs = self.as_list_state().selected_commit_refs();
+        let tags = partition_tags(refs.iter().copied());
+        dispatch_tag_copy(&self.tx, &tags);
     }
 
     fn copy_to_clipboard(&self, name: String, value: String) {

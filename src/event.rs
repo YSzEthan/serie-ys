@@ -91,23 +91,33 @@ pub enum AppEvent {
         target: String,
     },
     AutoRefresh,
-    OpenBranchPicker {
+    OpenRefPicker {
         options: Vec<String>,
-        kind: BranchKind,
+        kind: RefCopyKind,
     },
 }
 
 #[derive(Debug, Clone, Copy)]
-pub enum BranchKind {
+pub enum RefCopyKind {
     Local,
     Remote,
+    Tag,
 }
 
-impl BranchKind {
+impl RefCopyKind {
     pub fn copy_label(self) -> &'static str {
         match self {
-            BranchKind::Local => "Branch Name",
-            BranchKind::Remote => "Remote Branch Name",
+            RefCopyKind::Local => "Branch Name",
+            RefCopyKind::Remote => "Remote Branch Name",
+            RefCopyKind::Tag => "Tag Name",
+        }
+    }
+
+    pub fn picker_prompt(self) -> &'static str {
+        match self {
+            RefCopyKind::Local => "Pick branch: ",
+            RefCopyKind::Remote => "Pick remote branch: ",
+            RefCopyKind::Tag => "Pick tag: ",
         }
     }
 }
@@ -271,6 +281,14 @@ impl EventController {
     pub fn clear_pending_refresh(&self) {
         if let Some(ref flag) = self.pending_refresh {
             flag.store(false, Ordering::Release);
+        }
+    }
+
+    /// 標記「已有 refresh 在路上」，讓 watcher 短期內偵測到的後續 fs 事件
+    /// 被 debounce 吃掉，避免主動 refresh 後 watcher 重複觸發 slow-path。
+    pub fn mark_pending_refresh(&self) {
+        if let Some(ref flag) = self.pending_refresh {
+            flag.store(true, Ordering::Release);
         }
     }
 }
@@ -437,6 +455,7 @@ pub enum UserEvent {
     FullCopy,
     BranchCopy,
     FullBranchCopy,
+    TagCopy,
     CreateTag,
     DeleteTag,
     RemoteRefsToggle,
@@ -511,6 +530,7 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "full_copy" => Ok(UserEvent::FullCopy),
                         "branch_copy" => Ok(UserEvent::BranchCopy),
                         "full_branch_copy" => Ok(UserEvent::FullBranchCopy),
+                        "tag_copy" => Ok(UserEvent::TagCopy),
                         "create_tag" => Ok(UserEvent::CreateTag),
                         "delete_tag" => Ok(UserEvent::DeleteTag),
                         "remote_refs_toggle" => Ok(UserEvent::RemoteRefsToggle),

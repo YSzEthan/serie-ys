@@ -14,7 +14,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::{
     color::{ColorTheme, GraphColorSet},
     config::{CoreConfig, CursorType, UiConfig, UserCommand, UserCommandType},
-    event::{AppEvent, BranchKind, EventController, UserEvent, UserEventWithCount},
+    event::{AppEvent, EventController, RefCopyKind, UserEvent, UserEventWithCount},
     external::{
         copy_to_clipboard, exec_user_command, exec_user_command_suspend, ExternalCommandParameters,
     },
@@ -53,9 +53,9 @@ enum StatusLine {
     #[default]
     None,
     Input(String, Option<u16>, Option<String>),
-    BranchPicker {
+    RefPicker {
         options: Vec<String>,
-        kind: BranchKind,
+        kind: RefCopyKind,
     },
     NotificationInfo(String),
     NotificationSuccess(String),
@@ -252,18 +252,18 @@ impl App<'_> {
                     }
 
                     // Branch picker intercepts input; ForceQuit (Ctrl-C) falls through so
-                    //使用者在 picker 中仍能離開程式。
-                    if matches!(self.app_status.status_line, StatusLine::BranchPicker { .. })
+                    // 使用者在 picker 中仍能離開程式。
+                    if matches!(self.app_status.status_line, StatusLine::RefPicker { .. })
                         && !matches!(self.ctx.keybind.get(&key), Some(UserEvent::ForceQuit))
                     {
-                        self.handle_branch_picker_key(key);
+                        self.handle_ref_picker_key(key);
                         continue;
                     }
 
                     match self.app_status.status_line {
                         StatusLine::None
                         | StatusLine::Input(_, _, _)
-                        | StatusLine::BranchPicker { .. } => {
+                        | StatusLine::RefPicker { .. } => {
                             // do nothing
                         }
                         StatusLine::NotificationInfo(_)
@@ -501,8 +501,8 @@ impl App<'_> {
                     self.ec.clear_pending_refresh();
                     self.view.refresh();
                 }
-                AppEvent::OpenBranchPicker { options, kind } => {
-                    self.app_status.status_line = StatusLine::BranchPicker { options, kind };
+                AppEvent::OpenRefPicker { options, kind } => {
+                    self.app_status.status_line = StatusLine::RefPicker { options, kind };
                 }
             }
         }
@@ -556,8 +556,8 @@ impl App<'_> {
                     Line::raw(msg).fg(self.ctx.color_theme.status_input_fg)
                 }
             }
-            StatusLine::BranchPicker { options, .. } => {
-                let mut spans: Vec<Span> = vec!["Pick branch: ".into()];
+            StatusLine::RefPicker { options, kind } => {
+                let mut spans: Vec<Span> = vec![kind.picker_prompt().into()];
                 for (i, name) in options.iter().enumerate() {
                     spans.push(
                         format!("[{}]", i + 1).fg(self.ctx.color_theme.status_input_transient_fg),
@@ -682,18 +682,18 @@ impl App<'_> {
     fn is_input_mode(&self) -> bool {
         matches!(
             self.app_status.status_line,
-            StatusLine::Input(_, _, _) | StatusLine::BranchPicker { .. }
+            StatusLine::Input(_, _, _) | StatusLine::RefPicker { .. }
         ) || matches!(self.view, View::CreateTag(_))
     }
 
     /// 處理 picker 啟用時的按鍵。`UserEvent::Cancel` 取消；`1`-`9` 選擇；其他吞掉。
-    /// 呼叫前須確認 status_line 是 BranchPicker 且不是 ForceQuit。
-    fn handle_branch_picker_key(&mut self, key: KeyEvent) {
+    /// 呼叫前須確認 status_line 是 RefPicker 且不是 ForceQuit。
+    fn handle_ref_picker_key(&mut self, key: KeyEvent) {
         if let Some(UserEvent::Cancel) = self.ctx.keybind.get(&key) {
             self.app_status.status_line = StatusLine::None;
             return;
         }
-        let StatusLine::BranchPicker { options, kind } = &self.app_status.status_line else {
+        let StatusLine::RefPicker { options, kind } = &self.app_status.status_line else {
             return;
         };
         let KeyCode::Char(c) = key.code else { return };
@@ -1399,6 +1399,9 @@ impl App<'_> {
         let tx = self.ec.sender();
         let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
         let error_prefix = error_prefix.to_string();
+        // 預先 set pending flag，讓 git watcher 在 debounce 視窗內偵測到的 fs 事件
+        // 被吞掉；主動 refresh 走完後，watcher 不會重複觸發 slow-path。
+        self.ec.mark_pending_refresh();
 
         tx.send(AppEvent::ShowPendingOverlay {
             message: pending_msg,
@@ -1420,6 +1423,7 @@ impl App<'_> {
                         detail
                     };
                     tx.send(AppEvent::NotifySuccess(msg));
+                    tx.send(AppEvent::AutoRefresh);
                 }
                 Ok(o) => {
                     let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();

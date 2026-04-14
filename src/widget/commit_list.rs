@@ -1717,14 +1717,19 @@ fn refs_spans<'a>(
         }
     }
 
-    let head_bg = Color::Rgb(255, 140, 0);
     let is_head_branch = |n: &str| matches!(head, Head::Branch { name: hn } if hn == n);
+    // tag arm 高亮條件：detached HEAD 指向此 commit。
+    let is_head_detached_here = matches!(
+        head,
+        Head::Detached { target } if commit_info.commit.commit_hash == *target,
+    );
 
     let ref_spans: Vec<(Vec<Span>, &String)> = refs
         .iter()
         .filter_map(|r| match r {
             Ref::Branch { name, .. } => {
-                // 如果存在對應的 remote branch，隱藏本地分支
+                // 如果存在對應的 remote branch，隱藏本地分支（HEAD branch 也適用：
+                // 此時 RemoteBranch arm 內會把對應的 dev 部分高亮表達 HEAD）。
                 let has_remote = refs.iter().any(|r| {
                     matches!(r, Ref::RemoteBranch { name: rn, .. } if rn.ends_with(&format!("/{name}")))
                 });
@@ -1732,11 +1737,7 @@ fn refs_spans<'a>(
                     return None;
                 }
                 let is_head = is_head_branch(name);
-                let fg = if is_head {
-                    Color::White
-                } else {
-                    color_theme.list_ref_branch_fg
-                };
+                let fg = color_theme.list_ref_branch_fg;
                 let mut spans = refs_matches
                     .get(name)
                     .map(|pos| {
@@ -1751,7 +1752,7 @@ fn refs_spans<'a>(
                     })
                     .unwrap_or_else(|| vec![Span::raw(name).fg(fg).bold()]);
                 if is_head {
-                    spans = spans.into_iter().map(|s| s.bg(head_bg)).collect();
+                    spans = highlight_as_head(spans, color_theme);
                 }
                 Some((spans, name))
             }
@@ -1771,7 +1772,9 @@ fn refs_spans<'a>(
                         let is_head = is_head_branch(branch_part);
                         let mut branch_span = Span::raw(branch_part.to_string()).bold();
                         branch_span = if is_head {
-                            branch_span.fg(Color::White).bg(head_bg)
+                            branch_span
+                                .fg(Color::Black)
+                                .bg(color_theme.list_head_fg)
                         } else {
                             branch_span.fg(color_theme.list_ref_branch_fg)
                         };
@@ -1798,7 +1801,7 @@ fn refs_spans<'a>(
             }
             Ref::Tag { name, .. } => {
                 let fg = color_theme.list_ref_tag_fg;
-                let spans = refs_matches
+                let mut spans = refs_matches
                     .get(name)
                     .map(|pos| {
                         highlighted_spans(
@@ -1811,6 +1814,9 @@ fn refs_spans<'a>(
                         )
                     })
                     .unwrap_or_else(|| vec![Span::raw(name).fg(fg).bold()]);
+                if is_head_detached_here {
+                    spans = highlight_as_head(spans, color_theme);
+                }
                 Some((spans, name))
             }
             Ref::Stash { .. } => None,
@@ -1819,14 +1825,7 @@ fn refs_spans<'a>(
 
     let mut spans = vec![Span::raw("(").fg(color_theme.list_ref_paren_fg).bold()];
 
-    if let Head::Detached { target } = head {
-        if commit_info.commit.commit_hash == *target {
-            spans.push(Span::raw("HEAD").fg(color_theme.list_head_fg).bold());
-            if !ref_spans.is_empty() {
-                spans.push(Span::raw(", ").fg(color_theme.list_ref_paren_fg).bold());
-            }
-        }
-    }
+    // HEAD（含 detached）由 graph 上的空心圓表達，文字不再顯示。
 
     let refs_len = ref_spans.len();
     for (i, ss) in ref_spans.into_iter().enumerate() {
@@ -1844,6 +1843,13 @@ fn refs_spans<'a>(
     }
 
     spans
+}
+
+fn highlight_as_head<'a>(spans: Vec<Span<'a>>, color_theme: &ColorTheme) -> Vec<Span<'a>> {
+    spans
+        .into_iter()
+        .map(|s| s.fg(Color::Black).bg(color_theme.list_head_fg))
+        .collect()
 }
 
 fn highlighted_spans(

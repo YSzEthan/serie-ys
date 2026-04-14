@@ -90,6 +90,30 @@ impl GraphImageManager {
         }
     }
 
+    pub fn update_head_commit_hash(&mut self, head: Option<CommitHash>) {
+        if self.head_commit_hash == head {
+            return;
+        }
+        let old_head = self.head_commit_hash.take();
+        self.head_commit_hash = head.clone();
+        self.invalidate_for(old_head.as_ref());
+        self.invalidate_for(head.as_ref());
+    }
+
+    fn invalidate_for(&mut self, hash: Option<&CommitHash>) {
+        let Some(h) = hash else { return };
+        self.encoded_image_map.pop(h);
+        if matches!(&self.selected_image, Some((sh, _)) if sh == h) {
+            self.selected_image = None;
+        }
+        if matches!(&self.first_commit_with_up_image, Some((sh, _)) if sh == h) {
+            self.first_commit_with_up_image = None;
+        }
+        if matches!(&self.selected_first_commit_with_up_image, Some((sh, _)) if sh == h) {
+            self.selected_first_commit_with_up_image = None;
+        }
+    }
+
     pub fn encoded_image(&self, commit_hash: &CommitHash) -> &str {
         self.encoded_image_map.peek(commit_hash).unwrap()
     }

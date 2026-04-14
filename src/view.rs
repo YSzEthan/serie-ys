@@ -14,25 +14,16 @@ pub use refs::RefsOrigin;
 pub use views::*;
 
 use crate::{
-    event::{AppEvent, BranchKind, Sender},
+    event::{AppEvent, RefCopyKind, Sender},
     git::Ref,
 };
 
-/// 依 `b` / `B` 規則從 local/remote 清單挑候選，候選 1 個直接送 CopyToClipboard，
-/// 候選 >=2 送 OpenBranchPicker（最多前 9 個）；沒候選靜默略過。
-pub(crate) fn dispatch_branch_copy(tx: &Sender, local: &[&str], remote: &[&str], full: bool) {
-    let (candidates, kind) = if full {
-        if remote.is_empty() {
-            return;
-        }
-        (remote, BranchKind::Remote)
-    } else if !local.is_empty() {
-        (local, BranchKind::Local)
-    } else if !remote.is_empty() {
-        (remote, BranchKind::Remote)
-    } else {
+/// 核心 send-or-picker 邏輯：候選 1 個直接 CopyToClipboard，>=2 送 OpenRefPicker
+/// （最多前 9 個），0 個靜默。branch/tag 的 dispatch wrapper 都最終呼這個。
+pub(crate) fn dispatch_ref_copy(tx: &Sender, candidates: &[&str], kind: RefCopyKind) {
+    if candidates.is_empty() {
         return;
-    };
+    }
     if candidates.len() == 1 {
         tx.send(AppEvent::CopyToClipboard {
             name: kind.copy_label().into(),
@@ -40,8 +31,26 @@ pub(crate) fn dispatch_branch_copy(tx: &Sender, local: &[&str], remote: &[&str],
         });
     } else {
         let options: Vec<String> = candidates.iter().take(9).map(|s| (*s).to_owned()).collect();
-        tx.send(AppEvent::OpenBranchPicker { options, kind });
+        tx.send(AppEvent::OpenRefPicker { options, kind });
     }
+}
+
+/// 依 `b` / `B` 規則從 local/remote 清單挑候選，再交給 `dispatch_ref_copy`。
+/// `full=true` (Shift+B) 只看 remote；`false` (b) prefer local，fallback remote。
+pub(crate) fn dispatch_branch_copy(tx: &Sender, local: &[&str], remote: &[&str], full: bool) {
+    let (candidates, kind) = if full {
+        (remote, RefCopyKind::Remote)
+    } else if !local.is_empty() {
+        (local, RefCopyKind::Local)
+    } else {
+        (remote, RefCopyKind::Remote)
+    };
+    dispatch_ref_copy(tx, candidates, kind);
+}
+
+/// Tag 無 local/remote 之分，直接交給 `dispatch_ref_copy`。
+pub(crate) fn dispatch_tag_copy(tx: &Sender, tags: &[&str]) {
+    dispatch_ref_copy(tx, tags, RefCopyKind::Tag);
 }
 
 /// 把 refs 分拆成 local 和 remote branch 名稱列表，各自按字典序排序。
@@ -61,6 +70,20 @@ pub(crate) fn partition_branches<'r>(
     local.sort_unstable();
     remote.sort_unstable();
     (local, remote)
+}
+
+/// 把 refs 裡的 tag 名稱抽出，字典序排序。Branch / Stash 忽略。
+/// tag name 已經被 `parse_tag_refs` strip 過 `refs/tags/` 與 `^{}`。
+pub(crate) fn partition_tags<'r>(refs: impl IntoIterator<Item = &'r Ref>) -> Vec<&'r str> {
+    let mut tags: Vec<&str> = refs
+        .into_iter()
+        .filter_map(|r| match r {
+            Ref::Tag { name, .. } => Some(name.as_str()),
+            _ => None,
+        })
+        .collect();
+    tags.sort_unstable();
+    tags
 }
 
 #[cfg(test)]
@@ -148,5 +171,33 @@ mod tests {
         let (local, remote) = partition_branches(refs.iter());
         assert!(local.is_empty());
         assert!(remote.is_empty());
+    }
+
+    #[test]
+    fn partition_tags_only() {
+        let refs = [tag("v1.0")];
+        let tags = partition_tags(refs.iter());
+        assert_eq!(tags, ["v1.0"]);
+    }
+
+    #[test]
+    fn partition_tags_sorted() {
+        let refs = [tag("v2.0"), tag("v1.0"), tag("v1.5")];
+        let tags = partition_tags(refs.iter());
+        assert_eq!(tags, ["v1.0", "v1.5", "v2.0"]);
+    }
+
+    #[test]
+    fn partition_tags_ignores_branches() {
+        let refs = [branch("foo"), tag("v1.0"), remote_branch("origin/foo")];
+        let tags = partition_tags(refs.iter());
+        assert_eq!(tags, ["v1.0"]);
+    }
+
+    #[test]
+    fn partition_tags_empty() {
+        let refs: [Ref; 0] = [];
+        let tags = partition_tags(refs.iter());
+        assert!(tags.is_empty());
     }
 }

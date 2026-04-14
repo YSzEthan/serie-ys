@@ -40,6 +40,7 @@ short_copy = ["c"]
 full_copy = ["shift-c"]
 branch_copy = ["b"]
 full_branch_copy = ["shift-b"]
+tag_copy = ["v"]
 
 create_tag = ["t"]
 delete_tag = ["ctrl-t"]
