@@ -1494,7 +1494,7 @@ impl CommitList<'_> {
         // Virtual row
         if state.has_virtual_row() && state.offset == 0 {
             let count = state.working_changes().map_or(0, |wc| wc.file_count());
-            let text = format!("Uncommitted Changes ({})", count);
+            let text = format!("Uncommitted Changes ({count})");
             let spans = vec![Span::styled(
                 text,
                 Style::default()
@@ -1726,7 +1726,7 @@ fn refs_spans<'a>(
             Ref::Branch { name, .. } => {
                 // 如果存在對應的 remote branch，隱藏本地分支
                 let has_remote = refs.iter().any(|r| {
-                    matches!(r, Ref::RemoteBranch { name: rn, .. } if rn.ends_with(&format!("/{}", name)))
+                    matches!(r, Ref::RemoteBranch { name: rn, .. } if rn.ends_with(&format!("/{name}")))
                 });
                 if has_remote && show_remote_refs {
                     return None;

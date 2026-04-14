@@ -16,7 +16,7 @@ use crate::{
         delete_branch, delete_branch_force, delete_remote_branch, delete_remote_tag, delete_tag,
         CommitHash, Ref, RefType,
     },
-    view::{ListRefreshViewContext, RefreshViewContext},
+    view::{ListRefreshViewContext, RefreshViewContext, RefsOrigin},
     widget::{
         commit_list::{CommitList, CommitListState},
         ref_list::RefListState,
@@ -35,11 +35,18 @@ pub struct DeleteRefView<'a> {
     delete_from_remote: bool,
     force_delete: bool,
 
+    // 純 passthrough：DeleteRef 本身不關心 Refs 從哪來，
+    // 只是為了 close_delete_ref 時把原 origin 還回 RefsView。
+    // TODO: DeleteRef 長遠應 demotion 成 RefsView 的 modal dialog state，
+    // 就不需要這個欄位。
+    refs_origin: RefsOrigin,
+
     ctx: Rc<AppContext>,
     tx: Sender,
 }
 
 impl<'a> DeleteRefView<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         commit_list_state: CommitListState<'a>,
         ref_list_state: RefListState,
@@ -47,6 +54,7 @@ impl<'a> DeleteRefView<'a> {
         repo_path: PathBuf,
         ref_name: String,
         ref_type: RefType,
+        refs_origin: RefsOrigin,
         ctx: Rc<AppContext>,
         tx: Sender,
     ) -> DeleteRefView<'a> {
@@ -59,9 +67,14 @@ impl<'a> DeleteRefView<'a> {
             ref_type,
             delete_from_remote: ref_type == RefType::RemoteBranch,
             force_delete: false,
+            refs_origin,
             ctx,
             tx,
         }
+    }
+
+    pub fn refs_origin(&self) -> RefsOrigin {
+        self.refs_origin
     }
 
     pub fn handle_event(&mut self, event_with_count: UserEventWithCount, _key: KeyEvent) {
@@ -113,20 +126,20 @@ impl<'a> DeleteRefView<'a> {
         let pending_msg = match ref_type {
             RefType::Tag => {
                 if delete_from_remote {
-                    format!("Deleting tag '{}' from local and remote...", ref_name)
+                    format!("Deleting tag '{ref_name}' from local and remote...")
                 } else {
-                    format!("Deleting tag '{}'...", ref_name)
+                    format!("Deleting tag '{ref_name}'...")
                 }
             }
             RefType::Branch => {
                 if force_delete {
-                    format!("Force deleting branch '{}'...", ref_name)
+                    format!("Force deleting branch '{ref_name}'...")
                 } else {
-                    format!("Deleting branch '{}'...", ref_name)
+                    format!("Deleting branch '{ref_name}'...")
                 }
             }
             RefType::RemoteBranch => {
-                format!("Deleting remote branch '{}'...", ref_name)
+                format!("Deleting remote branch '{ref_name}'...")
             }
         };
 
@@ -147,10 +160,7 @@ impl<'a> DeleteRefView<'a> {
                         local_deleted = true;
                         if delete_from_remote {
                             delete_remote_tag(&repo_path, &ref_name).map_err(|e| {
-                                format!(
-                                    "Local tag deleted, but failed to delete from remote: {}",
-                                    e
-                                )
+                                format!("Local tag deleted, but failed to delete from remote: {e}")
                             })
                         } else {
                             Ok(())
@@ -176,16 +186,16 @@ impl<'a> DeleteRefView<'a> {
                     let msg = match ref_type {
                         RefType::Tag => {
                             if delete_from_remote {
-                                format!("Tag '{}' deleted from local and remote", ref_name)
+                                format!("Tag '{ref_name}' deleted from local and remote")
                             } else {
-                                format!("Tag '{}' deleted locally", ref_name)
+                                format!("Tag '{ref_name}' deleted locally")
                             }
                         }
                         RefType::Branch => {
-                            format!("Branch '{}' deleted", ref_name)
+                            format!("Branch '{ref_name}' deleted")
                         }
                         RefType::RemoteBranch => {
-                            format!("Remote branch '{}' deleted", ref_name)
+                            format!("Remote branch '{ref_name}' deleted")
                         }
                     };
                     tx.send(AppEvent::NotifySuccess(msg));

@@ -119,11 +119,11 @@ impl<'a> DetailView<'a> {
                         .send_after(AppEvent::ClearStatusLine, std::time::Duration::from_secs(3));
                 }
             }
-            UserEvent::HelpToggle => {
-                self.tx.send(AppEvent::OpenHelp);
-            }
             UserEvent::Confirm | UserEvent::Cancel | UserEvent::Close => {
                 self.tx.send(AppEvent::CloseDetail);
+            }
+            UserEvent::RefList => {
+                self.tx.send(AppEvent::OpenRefs);
             }
             UserEvent::Refresh => {
                 self.refresh();

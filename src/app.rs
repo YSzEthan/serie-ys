@@ -23,7 +23,7 @@ use crate::{
     graph::{CellWidthType, Graph, GraphImageManager},
     keybind::KeyBind,
     protocol::ImageProtocol,
-    view::{RefreshViewContext, View},
+    view::{RefreshViewContext, RefsOrigin, View},
     widget::{
         commit_list::{CommitInfo, CommitListState},
         pending_overlay::PendingOverlay,
@@ -306,6 +306,20 @@ impl App<'_> {
                             self.app_status.last_quit_press = None;
                             let event_with_count =
                                 process_numeric_prefix(&self.app_status.numeric_prefix, *ue, key);
+                            // 只在 browsing view 攔截，確保 modal/input view（CreateTag、
+                            // DeleteTag、DeleteRef、UserCommand）保有自己的 keymap。
+                            if self.view.is_browsing_view() {
+                                let global_event = match event_with_count.event {
+                                    UserEvent::GitHubToggle => Some(AppEvent::OpenGitHub),
+                                    UserEvent::HelpToggle => Some(AppEvent::OpenHelp),
+                                    _ => None,
+                                };
+                                if let Some(app_event) = global_event {
+                                    self.app_status.numeric_prefix.clear();
+                                    self.ec.send(app_event);
+                                    continue;
+                                }
+                            }
                             self.view.handle_event(event_with_count, key);
                             self.app_status.numeric_prefix.clear();
                         }
@@ -613,6 +627,23 @@ impl App<'_> {
     }
 }
 
+impl<'a> App<'a> {
+    fn enter_detail(&mut self, cls: CommitListState<'a>) {
+        if cls.is_virtual_row_selected() {
+            unreachable!("virtual row must be handled before reaching Detail");
+        }
+        let (commit, changes, refs) = selected_commit_details(self.repository, &cls);
+        self.view = View::of_detail(
+            cls,
+            commit,
+            changes,
+            refs,
+            self.ctx.clone(),
+            self.ec.sender(),
+        );
+    }
+}
+
 impl App<'_> {
     fn update_state(&mut self, view_area: Rect) {
         self.app_status.view_area = view_area;
@@ -660,15 +691,7 @@ impl App<'_> {
             return;
         }
 
-        let (commit, changes, refs) = selected_commit_details(self.repository, &commit_list_state);
-        self.view = View::of_detail(
-            commit_list_state,
-            commit,
-            changes,
-            refs,
-            self.ctx.clone(),
-            self.ec.sender(),
-        );
+        self.enter_detail(commit_list_state);
     }
 
     fn close_detail(&mut self) {
@@ -844,21 +867,48 @@ impl App<'_> {
     }
 
     fn open_refs(&mut self) {
-        if let View::List(ref mut view) = self.view {
-            let Some(commit_list_state) = view.take_list_state() else {
-                return;
-            };
-            let refs: Vec<Ref> = self.repository.all_refs().into_iter().cloned().collect();
-            self.view = View::of_refs(commit_list_state, refs, self.ctx.clone(), self.ec.sender());
-        }
+        let origin = match self.view {
+            View::List(_) => RefsOrigin::List,
+            View::Detail(_) => RefsOrigin::Detail,
+            _ => return,
+        };
+        self.open_refs_with_origin(origin);
+    }
+
+    fn open_refs_with_origin(&mut self, origin: RefsOrigin) {
+        let commit_list_state = match self.view {
+            View::List(ref mut view) => view.take_list_state(),
+            View::Detail(ref mut view) => view.take_list_state(),
+            _ => return,
+        };
+        let Some(commit_list_state) = commit_list_state else {
+            return;
+        };
+        let refs: Vec<Ref> = self.repository.all_refs().into_iter().cloned().collect();
+        self.view = View::of_refs(
+            commit_list_state,
+            refs,
+            origin,
+            self.ctx.clone(),
+            self.ec.sender(),
+        );
     }
 
     fn close_refs(&mut self) {
         if let View::Refs(ref mut view) = self.view {
+            let origin = view.origin();
             let Some(commit_list_state) = view.take_list_state() else {
                 return;
             };
-            self.view = View::of_list(commit_list_state, self.ctx.clone(), self.ec.sender());
+            match origin {
+                RefsOrigin::List => {
+                    self.view =
+                        View::of_list(commit_list_state, self.ctx.clone(), self.ec.sender());
+                }
+                RefsOrigin::Detail => {
+                    self.enter_detail(commit_list_state);
+                }
+            }
         }
     }
 
@@ -933,6 +983,7 @@ impl App<'_> {
 
     fn open_delete_ref(&mut self, ref_name: String, ref_type: RefType) {
         if let View::Refs(ref mut view) = self.view {
+            let refs_origin = view.origin();
             let Some(commit_list_state) = view.take_list_state() else {
                 return;
             };
@@ -945,6 +996,7 @@ impl App<'_> {
                 self.repository.path().to_path_buf(),
                 ref_name,
                 ref_type,
+                refs_origin,
                 self.ctx.clone(),
                 self.ec.sender(),
             );
@@ -953,6 +1005,7 @@ impl App<'_> {
 
     fn close_delete_ref(&mut self) {
         if let View::DeleteRef(ref mut view) = self.view {
+            let refs_origin = view.refs_origin();
             let Some(commit_list_state) = view.take_list_state() else {
                 return;
             };
@@ -962,6 +1015,7 @@ impl App<'_> {
                 commit_list_state,
                 ref_list_state,
                 refs,
+                refs_origin,
                 self.ctx.clone(),
                 self.ec.sender(),
             );
@@ -1206,8 +1260,14 @@ impl App<'_> {
             } => {
                 self.open_user_command(user_command_context.n, None);
             }
-            RefreshViewContext::Refs { refs_context, .. } => {
-                self.open_refs();
+            RefreshViewContext::Refs {
+                refs_context,
+                origin,
+                ..
+            } => {
+                // origin 只是 close Refs 時「要回哪」的記號，不需要先把 view 切成 Detail
+                // 再立刻被 open_refs_with_origin take 走 list_state——那會白跑一次 git diff。
+                self.open_refs_with_origin(origin);
                 if let View::Refs(ref mut view) = self.view {
                     view.reset_refs_with(refs_context);
                 }

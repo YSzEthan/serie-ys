@@ -721,7 +721,7 @@ impl<'a> GitHubView<'a> {
             ),
             Span::raw("  "),
             Span::styled(
-                format!("[{}]", filter_label),
+                format!("[{filter_label}]"),
                 Style::default().fg(Color::DarkGray),
             ),
             if self.has_active_filter() {
@@ -1137,7 +1137,7 @@ fn render_pr_line(pr: &GhPullRequest, selected: bool) -> Line<'static> {
             Style::default().fg(Color::DarkGray),
         ),
         Span::styled(
-            format!("{:<8} ", state_label),
+            format!("{state_label:<8} "),
             Style::default().fg(state_color),
         ),
         Span::styled(pr.title.clone(), style),

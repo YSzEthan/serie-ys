@@ -17,12 +17,19 @@ use crate::{
     },
 };
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefsOrigin {
+    List,
+    Detail,
+}
+
 #[derive(Debug)]
 pub struct RefsView<'a> {
     commit_list_state: Option<CommitListState<'a>>,
     ref_list_state: RefListState,
 
     refs: Vec<Ref>,
+    origin: RefsOrigin,
 
     ctx: Rc<AppContext>,
     tx: Sender,
@@ -32,6 +39,7 @@ impl<'a> RefsView<'a> {
     pub fn new(
         commit_list_state: CommitListState<'a>,
         refs: Vec<Ref>,
+        origin: RefsOrigin,
         ctx: Rc<AppContext>,
         tx: Sender,
     ) -> RefsView<'a> {
@@ -39,6 +47,7 @@ impl<'a> RefsView<'a> {
             commit_list_state: Some(commit_list_state),
             ref_list_state: RefListState::new(),
             refs,
+            origin,
             ctx,
             tx,
         }
@@ -48,6 +57,7 @@ impl<'a> RefsView<'a> {
         commit_list_state: CommitListState<'a>,
         ref_list_state: RefListState,
         refs: Vec<Ref>,
+        origin: RefsOrigin,
         ctx: Rc<AppContext>,
         tx: Sender,
     ) -> RefsView<'a> {
@@ -55,9 +65,14 @@ impl<'a> RefsView<'a> {
             commit_list_state: Some(commit_list_state),
             ref_list_state,
             refs,
+            origin,
             ctx,
             tx,
         }
+    }
+
+    pub fn origin(&self) -> RefsOrigin {
+        self.origin
     }
 
     pub fn handle_event(&mut self, event_with_count: UserEventWithCount, _: KeyEvent) {
@@ -201,6 +216,7 @@ impl<'a> RefsView<'a> {
         let context = RefreshViewContext::Refs {
             list_context,
             refs_context,
+            origin: self.origin,
         };
         self.tx.send(AppEvent::Refresh(context));
     }

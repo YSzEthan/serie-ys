@@ -9,7 +9,7 @@ use crate::{
     view::{
         create_tag::CreateTagView, delete_ref::DeleteRefView, delete_tag::DeleteTagView,
         detail::DetailView, github::GitHubView, help::HelpView, list::ListView, refs::RefsView,
-        user_command::UserCommandView,
+        user_command::UserCommandView, RefsOrigin,
     },
     widget::{commit_list::CommitListState, ref_list::RefListState},
 };
@@ -65,6 +65,19 @@ impl<'a> View<'a> {
             View::List(view) => view.take_graph_clear(),
             View::Detail(view) => view.take_graph_clear(),
             _ => false,
+        }
+    }
+
+    pub fn is_browsing_view(&self) -> bool {
+        match self {
+            View::List(_) | View::Detail(_) | View::Refs(_) => true,
+            View::Default
+            | View::UserCommand(_)
+            | View::CreateTag(_)
+            | View::DeleteTag(_)
+            | View::DeleteRef(_)
+            | View::Help(_)
+            | View::GitHub(_) => false,
         }
     }
 
@@ -127,16 +140,24 @@ impl<'a> View<'a> {
     pub fn of_refs(
         commit_list_state: CommitListState<'a>,
         refs: Vec<Ref>,
+        origin: RefsOrigin,
         ctx: Rc<AppContext>,
         tx: Sender,
     ) -> Self {
-        View::Refs(Box::new(RefsView::new(commit_list_state, refs, ctx, tx)))
+        View::Refs(Box::new(RefsView::new(
+            commit_list_state,
+            refs,
+            origin,
+            ctx,
+            tx,
+        )))
     }
 
     pub fn of_refs_with_state(
         commit_list_state: CommitListState<'a>,
         ref_list_state: RefListState,
         refs: Vec<Ref>,
+        origin: RefsOrigin,
         ctx: Rc<AppContext>,
         tx: Sender,
     ) -> Self {
@@ -144,6 +165,7 @@ impl<'a> View<'a> {
             commit_list_state,
             ref_list_state,
             refs,
+            origin,
             ctx,
             tx,
         )))
@@ -190,6 +212,7 @@ impl<'a> View<'a> {
         repo_path: PathBuf,
         ref_name: String,
         ref_type: RefType,
+        refs_origin: RefsOrigin,
         ctx: Rc<AppContext>,
         tx: Sender,
     ) -> Self {
@@ -200,6 +223,7 @@ impl<'a> View<'a> {
             repo_path,
             ref_name,
             ref_type,
+            refs_origin,
             ctx,
             tx,
         )))
@@ -276,6 +300,7 @@ pub enum RefreshViewContext {
     Refs {
         list_context: ListRefreshViewContext,
         refs_context: RefsRefreshViewContext,
+        origin: RefsOrigin,
     },
 }
 

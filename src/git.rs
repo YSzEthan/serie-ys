@@ -509,7 +509,7 @@ fn load_refs(path: &Path) -> (RefMap, Head) {
         let line = line.unwrap();
 
         let Some((hash, refs)) = line.split_once(' ') else {
-            panic!("unexpected format: [{}]", line);
+            panic!("unexpected format: [{line}]");
         };
 
         if refs == "HEAD" {

@@ -135,9 +135,6 @@ impl<'a> ListView<'a> {
                 self.as_mut_list_state().start_filter();
                 self.update_filter_query();
             }
-            UserEvent::GitHubToggle => {
-                self.tx.send(AppEvent::OpenGitHub);
-            }
             UserEvent::Cancel => {
                 self.as_mut_list_state().cancel_search();
                 self.as_mut_list_state().cancel_filter();

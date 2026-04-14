@@ -114,9 +114,9 @@ impl<'a> DeleteTagView<'a> {
 
         // Show pending overlay and close dialog
         let pending_msg = if delete_from_remote {
-            format!("Deleting tag '{}' from local and remote...", tag_name)
+            format!("Deleting tag '{tag_name}' from local and remote...")
         } else {
-            format!("Deleting tag '{}'...", tag_name)
+            format!("Deleting tag '{tag_name}'...")
         };
         self.tx.send(AppEvent::ShowPendingOverlay {
             message: pending_msg,
@@ -135,8 +135,7 @@ impl<'a> DeleteTagView<'a> {
                 if let Err(e) = delete_remote_tag(&repo_path, &tag_name) {
                     tx.send(AppEvent::HidePendingOverlay);
                     tx.send(AppEvent::NotifyError(format!(
-                        "Local tag deleted, but failed to delete from remote: {}",
-                        e
+                        "Local tag deleted, but failed to delete from remote: {e}"
                     )));
                     // Still refresh to show deletion
                     tx.send(AppEvent::Refresh(RefreshViewContext::List { list_context }));
@@ -146,9 +145,9 @@ impl<'a> DeleteTagView<'a> {
 
             // Success
             let msg = if delete_from_remote {
-                format!("Tag '{}' deleted from local and remote", tag_name)
+                format!("Tag '{tag_name}' deleted from local and remote")
             } else {
-                format!("Tag '{}' deleted locally", tag_name)
+                format!("Tag '{tag_name}' deleted locally")
             };
             tx.send(AppEvent::NotifySuccess(msg));
             tx.send(AppEvent::HidePendingOverlay);
@@ -222,7 +221,7 @@ impl<'a> DeleteTagView<'a> {
                 } else {
                     Style::default()
                 };
-                Line::from(Span::styled(format!("{}{}", prefix, tag), style))
+                Line::from(Span::styled(format!("{prefix}{tag}"), style))
             })
             .collect();
 

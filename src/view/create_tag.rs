@@ -188,9 +188,9 @@ impl<'a> CreateTagView<'a> {
 
         // Show pending overlay and close dialog
         let pending_msg = if push_to_remote {
-            format!("Creating and pushing tag '{}'...", tag_name)
+            format!("Creating and pushing tag '{tag_name}'...")
         } else {
-            format!("Creating tag '{}'...", tag_name)
+            format!("Creating tag '{tag_name}'...")
         };
         self.tx.send(AppEvent::ShowPendingOverlay {
             message: pending_msg,
@@ -209,8 +209,7 @@ impl<'a> CreateTagView<'a> {
                 if let Err(e) = push_tag(&repo_path, &tag_name) {
                     tx.send(AppEvent::HidePendingOverlay);
                     tx.send(AppEvent::NotifyError(format!(
-                        "Tag created locally, but push failed: {}",
-                        e
+                        "Tag created locally, but push failed: {e}"
                     )));
                     // Still refresh to show locally created tag
                     tx.send(AppEvent::Refresh(RefreshViewContext::List { list_context }));
@@ -220,9 +219,9 @@ impl<'a> CreateTagView<'a> {
 
             // Success
             let msg = if push_to_remote {
-                format!("Tag '{}' created and pushed to origin", tag_name)
+                format!("Tag '{tag_name}' created and pushed to origin")
             } else {
-                format!("Tag '{}' created", tag_name)
+                format!("Tag '{tag_name}' created")
             };
             tx.send(AppEvent::NotifySuccess(msg));
             tx.send(AppEvent::HidePendingOverlay);
@@ -385,7 +384,7 @@ impl<'a> CreateTagView<'a> {
         };
 
         f.render_widget(
-            Paragraph::new(Line::from(Span::raw(format!(" {}", display_value)))).style(input_style),
+            Paragraph::new(Line::from(Span::raw(format!(" {display_value}")))).style(input_style),
             input_area,
         );
 
