@@ -95,6 +95,10 @@ pub enum AppEvent {
         options: Vec<String>,
         kind: RefCopyKind,
     },
+    OpenCheckoutPicker {
+        options: Vec<String>,
+        kind: CheckoutPickKind,
+    },
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -122,6 +126,21 @@ impl RefCopyKind {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CheckoutPickKind {
+    Branch,
+    Tag,
+}
+
+impl CheckoutPickKind {
+    pub fn picker_prompt(self) -> &'static str {
+        match self {
+            CheckoutPickKind::Branch => "Checkout branch: ",
+            CheckoutPickKind::Tag => "Checkout tag: ",
+        }
+    }
+}
+
 #[derive(Clone)]
 pub struct Sender {
     tx: mpsc::Sender<AppEvent>,
@@ -145,6 +164,14 @@ impl Sender {
 impl Debug for Sender {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "Sender")
+    }
+}
+
+#[cfg(test)]
+impl Sender {
+    pub(crate) fn channel_for_test() -> (Self, mpsc::Receiver<AppEvent>) {
+        let (tx, rx) = mpsc::channel();
+        (Sender { tx }, rx)
     }
 }
 

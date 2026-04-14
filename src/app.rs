@@ -14,7 +14,9 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::{
     color::{ColorTheme, GraphColorSet},
     config::{CoreConfig, CursorType, UiConfig, UserCommand, UserCommandType},
-    event::{AppEvent, EventController, RefCopyKind, UserEvent, UserEventWithCount},
+    event::{
+        AppEvent, CheckoutPickKind, EventController, RefCopyKind, UserEvent, UserEventWithCount,
+    },
     external::{
         copy_to_clipboard, exec_user_command, exec_user_command_suspend, ExternalCommandParameters,
     },
@@ -37,6 +39,14 @@ use crate::{
 ///   (no-op on iTerm2, whose images live inside cells).
 /// - `terminal.clear()` drops ratatui's backing buffer so the next
 ///   draw repaints every cell instead of diffing against stale state.
+fn picker_digit_index(key: KeyEvent) -> Option<usize> {
+    let KeyCode::Char(c) = key.code else {
+        return None;
+    };
+    let digit = c.to_digit(10)?;
+    (digit as usize).checked_sub(1)
+}
+
 pub(crate) fn clear_image_area(
     protocol: ImageProtocol,
     terminal: &mut DefaultTerminal,
@@ -56,6 +66,10 @@ enum StatusLine {
     RefPicker {
         options: Vec<String>,
         kind: RefCopyKind,
+    },
+    CheckoutPicker {
+        options: Vec<String>,
+        kind: CheckoutPickKind,
     },
     NotificationInfo(String),
     NotificationSuccess(String),
@@ -251,19 +265,27 @@ impl App<'_> {
                         continue;
                     }
 
-                    // Branch picker intercepts input; ForceQuit (Ctrl-C) falls through so
+                    // Picker intercepts input; ForceQuit (Ctrl-C) falls through so
                     // 使用者在 picker 中仍能離開程式。
-                    if matches!(self.app_status.status_line, StatusLine::RefPicker { .. })
-                        && !matches!(self.ctx.keybind.get(&key), Some(UserEvent::ForceQuit))
-                    {
-                        self.handle_ref_picker_key(key);
-                        continue;
+                    if !matches!(self.ctx.keybind.get(&key), Some(UserEvent::ForceQuit)) {
+                        match self.app_status.status_line {
+                            StatusLine::RefPicker { .. } => {
+                                self.handle_ref_picker_key(key);
+                                continue;
+                            }
+                            StatusLine::CheckoutPicker { .. } => {
+                                self.handle_checkout_picker_key(key);
+                                continue;
+                            }
+                            _ => {}
+                        }
                     }
 
                     match self.app_status.status_line {
                         StatusLine::None
                         | StatusLine::Input(_, _, _)
-                        | StatusLine::RefPicker { .. } => {
+                        | StatusLine::RefPicker { .. }
+                        | StatusLine::CheckoutPicker { .. } => {
                             // do nothing
                         }
                         StatusLine::NotificationInfo(_)
@@ -504,6 +526,9 @@ impl App<'_> {
                 AppEvent::OpenRefPicker { options, kind } => {
                     self.app_status.status_line = StatusLine::RefPicker { options, kind };
                 }
+                AppEvent::OpenCheckoutPicker { options, kind } => {
+                    self.app_status.status_line = StatusLine::CheckoutPicker { options, kind };
+                }
             }
         }
     }
@@ -557,16 +582,10 @@ impl App<'_> {
                 }
             }
             StatusLine::RefPicker { options, kind } => {
-                let mut spans: Vec<Span> = vec![kind.picker_prompt().into()];
-                for (i, name) in options.iter().enumerate() {
-                    spans.push(
-                        format!("[{}]", i + 1).fg(self.ctx.color_theme.status_input_transient_fg),
-                    );
-                    spans.push(name.as_str().into());
-                    spans.push("  ".into());
-                }
-                spans.push("(Esc to cancel)".fg(self.ctx.color_theme.status_input_transient_fg));
-                Line::from(spans)
+                self.render_picker_line(kind.picker_prompt(), options)
+            }
+            StatusLine::CheckoutPicker { options, kind } => {
+                self.render_picker_line(kind.picker_prompt(), options)
             }
             StatusLine::NotificationInfo(msg) => {
                 Line::raw(msg).fg(self.ctx.color_theme.status_info_fg)
@@ -601,6 +620,17 @@ impl App<'_> {
                 }
             }
         }
+    }
+
+    fn render_picker_line<'s>(&self, prompt: &'s str, options: &'s [String]) -> Line<'s> {
+        let mut spans: Vec<Span<'s>> = vec![prompt.into()];
+        for (i, name) in options.iter().enumerate() {
+            spans.push(format!("[{}]", i + 1).fg(self.ctx.color_theme.status_input_transient_fg));
+            spans.push(name.as_str().into());
+            spans.push("  ".into());
+        }
+        spans.push("(Esc to cancel)".fg(self.ctx.color_theme.status_input_transient_fg));
+        Line::from(spans)
     }
 
     fn build_hotkey_hints(&self) -> Line<'static> {
@@ -682,12 +712,12 @@ impl App<'_> {
     fn is_input_mode(&self) -> bool {
         matches!(
             self.app_status.status_line,
-            StatusLine::Input(_, _, _) | StatusLine::RefPicker { .. }
+            StatusLine::Input(_, _, _)
+                | StatusLine::RefPicker { .. }
+                | StatusLine::CheckoutPicker { .. }
         ) || matches!(self.view, View::CreateTag(_))
     }
 
-    /// 處理 picker 啟用時的按鍵。`UserEvent::Cancel` 取消；`1`-`9` 選擇；其他吞掉。
-    /// 呼叫前須確認 status_line 是 RefPicker 且不是 ForceQuit。
     fn handle_ref_picker_key(&mut self, key: KeyEvent) {
         if let Some(UserEvent::Cancel) = self.ctx.keybind.get(&key) {
             self.app_status.status_line = StatusLine::None;
@@ -696,9 +726,7 @@ impl App<'_> {
         let StatusLine::RefPicker { options, kind } = &self.app_status.status_line else {
             return;
         };
-        let KeyCode::Char(c) = key.code else { return };
-        let Some(digit) = c.to_digit(10) else { return };
-        let Some(idx) = (digit as usize).checked_sub(1) else {
+        let Some(idx) = picker_digit_index(key) else {
             return;
         };
         let Some(name) = options.get(idx) else { return };
@@ -706,6 +734,23 @@ impl App<'_> {
         let value = name.clone();
         self.app_status.status_line = StatusLine::None;
         self.copy_to_clipboard(label.into(), value);
+    }
+
+    fn handle_checkout_picker_key(&mut self, key: KeyEvent) {
+        if let Some(UserEvent::Cancel) = self.ctx.keybind.get(&key) {
+            self.app_status.status_line = StatusLine::None;
+            return;
+        }
+        let StatusLine::CheckoutPicker { options, .. } = &self.app_status.status_line else {
+            return;
+        };
+        let Some(idx) = picker_digit_index(key) else {
+            return;
+        };
+        let Some(name) = options.get(idx) else { return };
+        let target = name.clone();
+        self.app_status.status_line = StatusLine::None;
+        self.checkout_commit(target);
     }
 
     fn clear_image(&self, terminal: Option<&mut DefaultTerminal>) -> Result<(), std::io::Error> {

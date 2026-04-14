@@ -14,7 +14,7 @@ pub use refs::RefsOrigin;
 pub use views::*;
 
 use crate::{
-    event::{AppEvent, RefCopyKind, Sender},
+    event::{AppEvent, CheckoutPickKind, RefCopyKind, Sender},
     git::Ref,
 };
 
@@ -51,6 +51,34 @@ pub(crate) fn dispatch_branch_copy(tx: &Sender, local: &[&str], remote: &[&str],
 /// Tag 無 local/remote 之分，直接交給 `dispatch_ref_copy`。
 pub(crate) fn dispatch_tag_copy(tx: &Sender, tags: &[&str]) {
     dispatch_ref_copy(tx, tags, RefCopyKind::Tag);
+}
+
+/// 空白鍵 checkout 派送：local branch > tag > commit hash。
+/// Remote branch 跳過（`git checkout origin/x` 跟 hash 一樣 detached，差別僅在 notification 字串）。
+pub(crate) fn dispatch_checkout(tx: &Sender, refs: &[&Ref], fallback_hash: &str) {
+    let (local, _remote) = partition_branches(refs.iter().copied());
+    let tags = partition_tags(refs.iter().copied());
+
+    if !local.is_empty() {
+        dispatch_checkout_candidates(tx, &local, CheckoutPickKind::Branch);
+    } else if !tags.is_empty() {
+        dispatch_checkout_candidates(tx, &tags, CheckoutPickKind::Tag);
+    } else {
+        tx.send(AppEvent::CheckoutCommit {
+            target: fallback_hash.to_owned(),
+        });
+    }
+}
+
+fn dispatch_checkout_candidates(tx: &Sender, candidates: &[&str], kind: CheckoutPickKind) {
+    if candidates.len() == 1 {
+        tx.send(AppEvent::CheckoutCommit {
+            target: candidates[0].to_owned(),
+        });
+    } else {
+        let options: Vec<String> = candidates.iter().take(9).map(|s| (*s).to_owned()).collect();
+        tx.send(AppEvent::OpenCheckoutPicker { options, kind });
+    }
 }
 
 /// 把 refs 分拆成 local 和 remote branch 名稱列表，各自按字典序排序。
@@ -199,5 +227,90 @@ mod tests {
         let refs: [Ref; 0] = [];
         let tags = partition_tags(refs.iter());
         assert!(tags.is_empty());
+    }
+
+    fn run_dispatch_checkout(refs: &[Ref], hash: &str) -> AppEvent {
+        let (tx, rx) = Sender::channel_for_test();
+        let refs: Vec<&Ref> = refs.iter().collect();
+        dispatch_checkout(&tx, &refs, hash);
+        rx.try_recv().expect("dispatch_checkout sent no event")
+    }
+
+    #[test]
+    fn dispatch_checkout_local_only_single() {
+        let refs = [branch("main")];
+        match run_dispatch_checkout(&refs, "deadbeef") {
+            AppEvent::CheckoutCommit { target } => assert_eq!(target, "main"),
+            e => panic!("unexpected event: {e:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_checkout_local_multi_opens_picker() {
+        let refs = [branch("main"), branch("dev")];
+        match run_dispatch_checkout(&refs, "deadbeef") {
+            AppEvent::OpenCheckoutPicker { options, kind } => {
+                assert_eq!(kind, CheckoutPickKind::Branch);
+                assert_eq!(options, vec!["dev".to_string(), "main".to_string()]);
+            }
+            e => panic!("unexpected event: {e:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_checkout_prefers_local_over_remote() {
+        let refs = [remote_branch("origin/main"), branch("main")];
+        match run_dispatch_checkout(&refs, "deadbeef") {
+            AppEvent::CheckoutCommit { target } => assert_eq!(target, "main"),
+            e => panic!("unexpected event: {e:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_checkout_remote_only_falls_back_to_hash() {
+        let refs = [remote_branch("origin/main")];
+        match run_dispatch_checkout(&refs, "deadbeef") {
+            AppEvent::CheckoutCommit { target } => assert_eq!(target, "deadbeef"),
+            e => panic!("unexpected event: {e:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_checkout_tag_only_single() {
+        let refs = [tag("v1.0")];
+        match run_dispatch_checkout(&refs, "deadbeef") {
+            AppEvent::CheckoutCommit { target } => assert_eq!(target, "v1.0"),
+            e => panic!("unexpected event: {e:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_checkout_tag_multi_opens_picker() {
+        let refs = [tag("v1.1"), tag("v1.0")];
+        match run_dispatch_checkout(&refs, "deadbeef") {
+            AppEvent::OpenCheckoutPicker { options, kind } => {
+                assert_eq!(kind, CheckoutPickKind::Tag);
+                assert_eq!(options, vec!["v1.0".to_string(), "v1.1".to_string()]);
+            }
+            e => panic!("unexpected event: {e:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_checkout_empty_falls_back_to_hash() {
+        let refs: [Ref; 0] = [];
+        match run_dispatch_checkout(&refs, "deadbeef") {
+            AppEvent::CheckoutCommit { target } => assert_eq!(target, "deadbeef"),
+            e => panic!("unexpected event: {e:?}"),
+        }
+    }
+
+    #[test]
+    fn dispatch_checkout_local_preferred_over_tag() {
+        let refs = [tag("v1.0"), branch("main")];
+        match run_dispatch_checkout(&refs, "deadbeef") {
+            AppEvent::CheckoutCommit { target } => assert_eq!(target, "main"),
+            e => panic!("unexpected event: {e:?}"),
+        }
     }
 }

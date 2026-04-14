@@ -1393,7 +1393,7 @@ fn generate_and_output_graph_image<P: AsRef<Path>>(path: P, option: &GenerateGra
     let graph_color_set = color::GraphColorSet::new(&graph_color_config);
     let cell_width_type = graph::CellWidthType::Double;
     let repository = git::Repository::load(path.as_ref(), option.sort, max_count).unwrap();
-    let graph = graph::calc_graph(&repository);
+    let graph = graph::calc_graph(&repository, None);
     let image_params = graph::ImageParams::new(&graph_color_set, cell_width_type);
     let drawing_pixels = graph::DrawingPixels::new(&image_params);
     let graph_image = build_graph_image(&graph, &image_params, &drawing_pixels, option.style);

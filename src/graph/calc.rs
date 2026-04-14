@@ -71,11 +71,12 @@ impl EdgeType {
     }
 }
 
-pub fn calc_graph(repository: &Repository) -> Graph {
+pub fn calc_graph(repository: &Repository, head_hint: Option<&CommitHash>) -> Graph {
     let commits: Vec<&Commit> = repository.all_commits().iter().collect();
 
-    let commit_pos_map = calc_commit_positions(&commits, repository);
-    let (graph_edges, max_pos_x) = calc_edges(&commit_pos_map, &commits, repository);
+    let commit_pos_map = calc_commit_positions(&commits, repository, head_hint);
+    let (mut graph_edges, max_pos_x) = calc_edges(&commit_pos_map, &commits, repository);
+    extend_head_line_to_top(&mut graph_edges, &commit_pos_map, head_hint);
     let commit_hashes = commits.iter().map(|c| c.commit_hash.clone()).collect();
 
     Graph {
@@ -86,16 +87,66 @@ pub fn calc_graph(repository: &Repository) -> Graph {
     }
 }
 
-fn calc_commit_positions(commits: &[&Commit], source: &impl GraphDataSource) -> CommitPosMap {
+/// When a head hint is present and HEAD is not at pos_y=0, extend HEAD's column
+/// upward so the virtual (uncommitted) row can visually connect down to HEAD.
+fn extend_head_line_to_top(
+    edges: &mut [Vec<Edge>],
+    commit_pos_map: &CommitPosMap,
+    head_hint: Option<&CommitHash>,
+) {
+    let Some(head_hash) = head_hint else { return };
+    let Some(&(head_pos_x, head_pos_y)) = commit_pos_map.get(head_hash) else {
+        return;
+    };
+    if head_pos_y == 0 {
+        return;
+    }
+    for row in edges.iter_mut().take(head_pos_y) {
+        if !row
+            .iter()
+            .any(|e| e.pos_x == head_pos_x && e.edge_type == EdgeType::Vertical)
+        {
+            row.push(Edge::new(EdgeType::Vertical, head_pos_x, head_pos_x));
+        }
+    }
+    let head_row = &mut edges[head_pos_y];
+    if !head_row
+        .iter()
+        .any(|e| e.pos_x == head_pos_x && matches!(e.edge_type, EdgeType::Up | EdgeType::Vertical))
+    {
+        head_row.push(Edge::new(EdgeType::Up, head_pos_x, head_pos_x));
+    }
+}
+
+fn calc_commit_positions(
+    commits: &[&Commit],
+    source: &impl GraphDataSource,
+    head_hint: Option<&CommitHash>,
+) -> CommitPosMap {
+    // Reserve pos_x = HEAD_RESERVED_COL for HEAD until HEAD is placed (keeps
+    // uncommitted row + HEAD circle on the leftmost line).
+    const HEAD_RESERVED_COL: usize = 0;
+
     let mut commit_pos_map: CommitPosMap = FxHashMap::default();
     let mut commit_line_state: Vec<Option<CommitHash>> = Vec::new();
     // Reverse index: hash → pos_x for O(1) lookup instead of linear scan
     let mut hash_to_pos: FxHashMap<CommitHash, usize> = FxHashMap::default();
+    let mut head_pending = head_hint.is_some_and(|h| commits.iter().any(|c| c.commit_hash == *h));
 
     for (pos_y, commit) in commits.iter().enumerate() {
+        let is_head = head_hint.is_some_and(|h| *h == commit.commit_hash);
         let filtered_children_hash = filtered_children_hash(commit, source);
         if filtered_children_hash.is_empty() {
-            let pos_x = get_first_vacant_line(&commit_line_state);
+            let pos_x = if is_head {
+                HEAD_RESERVED_COL
+            } else {
+                let start = if head_pending {
+                    HEAD_RESERVED_COL + 1
+                } else {
+                    0
+                };
+                get_first_vacant_line_from(&commit_line_state, start)
+            };
             add_commit_line(commit, &mut commit_line_state, &mut hash_to_pos, pos_x);
             commit_pos_map.insert(commit.commit_hash.clone(), (pos_x, pos_y));
         } else {
@@ -106,6 +157,9 @@ fn calc_commit_positions(commits: &[&Commit], source: &impl GraphDataSource) -> 
                 &filtered_children_hash,
             );
             commit_pos_map.insert(commit.commit_hash.clone(), (pos_x, pos_y));
+        }
+        if is_head {
+            head_pending = false;
         }
     }
 
@@ -126,11 +180,13 @@ fn filtered_children_hash<'a>(
         .collect()
 }
 
-fn get_first_vacant_line(commit_line_state: &[Option<CommitHash>]) -> usize {
+fn get_first_vacant_line_from(commit_line_state: &[Option<CommitHash>], start: usize) -> usize {
     commit_line_state
         .iter()
-        .position(|c| c.is_none())
-        .unwrap_or(commit_line_state.len())
+        .enumerate()
+        .skip(start)
+        .find_map(|(i, c)| c.is_none().then_some(i))
+        .unwrap_or_else(|| commit_line_state.len().max(start))
 }
 
 fn add_commit_line(
@@ -139,7 +195,10 @@ fn add_commit_line(
     hash_to_pos: &mut FxHashMap<CommitHash, usize>,
     pos_x: usize,
 ) {
-    if commit_line_state.len() <= pos_x {
+    if commit_line_state.len() < pos_x {
+        commit_line_state.resize(pos_x, None);
+    }
+    if commit_line_state.len() == pos_x {
         commit_line_state.push(Some(commit.commit_hash.clone()));
     } else {
         commit_line_state[pos_x] = Some(commit.commit_hash.clone());
@@ -524,6 +583,7 @@ fn find_nearest_visible_parent(
 pub fn calc_graph_filtered(
     repository: &Repository,
     visible_hashes: &FxHashSet<CommitHash>,
+    head_hint: Option<&CommitHash>,
 ) -> Graph {
     let commits: Vec<&Commit> = repository
         .all_commits()
@@ -562,8 +622,10 @@ pub fn calc_graph_filtered(
         parents_map,
     };
 
-    let commit_pos_map = calc_commit_positions(&commits, &source);
-    let (graph_edges, max_pos_x) = calc_edges(&commit_pos_map, &commits, &source);
+    let effective_head = head_hint.filter(|h| visible_hashes.contains(*h));
+    let commit_pos_map = calc_commit_positions(&commits, &source, effective_head);
+    let (mut graph_edges, max_pos_x) = calc_edges(&commit_pos_map, &commits, &source);
+    extend_head_line_to_top(&mut graph_edges, &commit_pos_map, effective_head);
     let commit_hashes = commits.iter().map(|c| c.commit_hash.clone()).collect();
 
     Graph {

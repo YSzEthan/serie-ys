@@ -10,8 +10,8 @@ use crate::{
     app::AppContext,
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
     view::{
-        dispatch_branch_copy, dispatch_tag_copy, partition_branches, partition_tags,
-        ListRefreshViewContext, RefreshViewContext,
+        dispatch_branch_copy, dispatch_checkout, dispatch_tag_copy, partition_branches,
+        partition_tags, ListRefreshViewContext, RefreshViewContext,
     },
     widget::commit_list::{CommitList, CommitListState, FilterState, SearchState},
 };
@@ -184,10 +184,13 @@ impl<'a> ListView<'a> {
             }
             UserEvent::Checkout => {
                 if !self.as_list_state().is_virtual_row_selected() {
-                    let hash = self.as_list_state().selected_commit_hash().clone();
-                    self.tx.send(AppEvent::CheckoutCommit {
-                        target: hash.as_str().to_string(),
-                    });
+                    let refs = self.as_list_state().selected_commit_refs();
+                    let hash = self
+                        .as_list_state()
+                        .selected_commit_hash()
+                        .as_str()
+                        .to_string();
+                    dispatch_checkout(&self.tx, refs, &hash);
                 }
             }
             UserEvent::Refresh => {

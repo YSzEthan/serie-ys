@@ -188,12 +188,11 @@ impl GraphImageManager {
         if self.virtual_row_image.is_some() {
             return;
         }
-        let (pos_x, pos_y) = self.graph.commit_pos_map[commit_hash];
-        let edges = filtered_edges_with(&self.graph.edges[pos_y], pos_x, EdgeType::Down);
-        let cell_count = self.graph.max_pos_x + 1;
+        let (circle_pos_x, edges, cell_count) =
+            self.virtual_row_geometry(commit_hash, EdgeType::Down);
         let gray_params = self.image_params.with_gray_colors();
         let row_image = calc_graph_row_image(
-            pos_x,
+            circle_pos_x,
             cell_count,
             &edges,
             &gray_params,
@@ -204,6 +203,26 @@ impl GraphImageManager {
         self.virtual_row_image = Some(row_image.encode(self.cell_width_type, self.image_protocol));
     }
 
+    fn virtual_circle_pos_x(&self, first_hash: &CommitHash) -> usize {
+        self.head_commit_hash
+            .as_ref()
+            .and_then(|h| self.graph.commit_pos_map.get(h))
+            .map(|(x, _)| *x)
+            .unwrap_or_else(|| self.graph.commit_pos_map[first_hash].0)
+    }
+
+    fn virtual_row_geometry(
+        &self,
+        commit_hash: &CommitHash,
+        edge_type: EdgeType,
+    ) -> (usize, Vec<Edge>, usize) {
+        let (_, pos_y) = self.graph.commit_pos_map[commit_hash];
+        let circle_pos_x = self.virtual_circle_pos_x(commit_hash);
+        let edges = filtered_edges_with(&self.graph.edges[pos_y], circle_pos_x, edge_type);
+        let cell_count = self.graph.max_pos_x + 1;
+        (circle_pos_x, edges, cell_count)
+    }
+
     pub fn virtual_row_image(&self) -> Option<&str> {
         self.virtual_row_image.as_deref()
     }
@@ -212,15 +231,14 @@ impl GraphImageManager {
         if self.selected_virtual_row_image.is_some() {
             return;
         }
-        let (pos_x, pos_y) = self.graph.commit_pos_map[commit_hash];
-        let edges = filtered_edges_with(&self.graph.edges[pos_y], pos_x, EdgeType::Down);
-        let cell_count = self.graph.max_pos_x + 1;
+        let (circle_pos_x, edges, cell_count) =
+            self.virtual_row_geometry(commit_hash, EdgeType::Down);
         let gray_params = self
             .image_params
             .with_gray_colors()
             .with_background_color(self.selected_bg_color);
         let row_image = calc_graph_row_image(
-            pos_x,
+            circle_pos_x,
             cell_count,
             &edges,
             &gray_params,
@@ -240,9 +258,7 @@ impl GraphImageManager {
         if self.gray_spacer_image.is_some() {
             return;
         }
-        let (pos_x, pos_y) = self.graph.commit_pos_map[commit_hash];
-        let edges = filtered_edges_with(&self.graph.edges[pos_y], pos_x, EdgeType::Vertical);
-        let cell_count = self.graph.max_pos_x + 1;
+        let (_, edges, cell_count) = self.virtual_row_geometry(commit_hash, EdgeType::Vertical);
         let gray_params = self.image_params.with_gray_colors();
         let spacer_image =
             calc_graph_spacer_image(cell_count, &edges, &gray_params, &self.drawing_pixels);
@@ -260,25 +276,9 @@ impl GraphImageManager {
                 return;
             }
         }
-        let (pos_x, pos_y) = self.graph.commit_pos_map[commit_hash];
-        let edges = &self.graph.edges[pos_y];
-        let cell_count = self.graph.max_pos_x + 1;
-        let is_head = self
-            .head_commit_hash
-            .as_ref()
-            .is_some_and(|h| h == commit_hash);
-        let edges_with_up = edges_appending_up(edges, pos_x);
-        let row_image = calc_graph_row_image(
-            pos_x,
-            cell_count,
-            &edges_with_up,
-            &self.image_params,
-            &self.drawing_pixels,
-            self.graph_style,
-            is_head,
-        );
-        let image = row_image.encode(self.cell_width_type, self.image_protocol);
-        self.first_commit_with_up_image = Some((commit_hash.clone(), image));
+        self.first_commit_with_up_image = self
+            .build_first_commit_with_up_image(commit_hash, false)
+            .map(|s| (commit_hash.clone(), s));
     }
 
     pub fn load_selected_first_commit_with_up_image(&mut self, commit_hash: &CommitHash) {
@@ -287,6 +287,26 @@ impl GraphImageManager {
                 return;
             }
         }
+        self.selected_first_commit_with_up_image = self
+            .build_first_commit_with_up_image(commit_hash, true)
+            .map(|s| (commit_hash.clone(), s));
+    }
+
+    /// When HEAD is elsewhere in the graph, the extended HEAD line already
+    /// provides the virtual-row connection via the normal encoded image — so
+    /// we return None and let the widget fall back to encoded_image.
+    fn build_first_commit_with_up_image(
+        &self,
+        commit_hash: &CommitHash,
+        selected: bool,
+    ) -> Option<String> {
+        if self
+            .head_commit_hash
+            .as_ref()
+            .is_some_and(|h| h != commit_hash && self.graph.commit_pos_map.contains_key(h))
+        {
+            return None;
+        }
         let (pos_x, pos_y) = self.graph.commit_pos_map[commit_hash];
         let edges = &self.graph.edges[pos_y];
         let cell_count = self.graph.max_pos_x + 1;
@@ -294,10 +314,13 @@ impl GraphImageManager {
             .head_commit_hash
             .as_ref()
             .is_some_and(|h| h == commit_hash);
-        let params = self
-            .image_params
-            .with_background_color(self.selected_bg_color);
         let edges_with_up = edges_appending_up(edges, pos_x);
+        let params = if selected {
+            self.image_params
+                .with_background_color(self.selected_bg_color)
+        } else {
+            self.image_params.clone()
+        };
         let row_image = calc_graph_row_image(
             pos_x,
             cell_count,
@@ -307,8 +330,7 @@ impl GraphImageManager {
             self.graph_style,
             is_head,
         );
-        let image = row_image.encode(self.cell_width_type, self.image_protocol);
-        self.selected_first_commit_with_up_image = Some((commit_hash.clone(), image));
+        Some(row_image.encode(self.cell_width_type, self.image_protocol))
     }
 
     pub fn first_commit_with_up_image(&self) -> Option<&str> {

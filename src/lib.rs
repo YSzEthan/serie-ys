@@ -218,7 +218,12 @@ pub fn compute_filtered_graph(
         .cloned()
         .collect();
 
-    let filtered = Rc::new(graph::calc_graph_filtered(repository, &visible_hashes));
+    let filtered_head_hint = layout_head_hint(repository);
+    let filtered = Rc::new(graph::calc_graph_filtered(
+        repository,
+        &visible_hashes,
+        filtered_head_hint.as_ref(),
+    ));
 
     let cell_width = match cell_width_type {
         graph::CellWidthType::Double => (filtered.max_pos_x + 1) as u16 * 2,
@@ -289,6 +294,14 @@ fn build_graph_artifacts(
     (image_manager, filtered, remote_only)
 }
 
+fn layout_head_hint(repository: &git::Repository) -> Option<git::CommitHash> {
+    if repository.working_changes().is_empty() {
+        None
+    } else {
+        resolve_head_commit_hash(repository)
+    }
+}
+
 fn resolve_head_commit_hash(repository: &git::Repository) -> Option<git::CommitHash> {
     match repository.head() {
         git::Head::Branch { name } => {
@@ -347,7 +360,10 @@ pub fn run() -> Result<()> {
     let selected_bg_color = ratatui_color_to_rgba(ctx.color_theme.list_selected_bg);
 
     let mut repository = git::Repository::load(Path::new(&args.path), order, max_count)?;
-    let mut graph = Rc::new(graph::calc_graph(&repository));
+    let mut graph = Rc::new(graph::calc_graph(
+        &repository,
+        layout_head_hint(&repository).as_ref(),
+    ));
     let mut cell_width_type = check::decide_cell_width_type(&graph, graph_width)?;
     let (mut graph_image_manager, mut filtered_graph, mut remote_only_commits) =
         build_graph_artifacts(
@@ -393,7 +409,9 @@ pub fn run() -> Result<()> {
 
                 let new_repo = git::Repository::load(Path::new(&args.path), order, max_count)?;
 
-                if repository.same_commits(&new_repo) {
+                let layout_inputs_same =
+                    layout_head_hint(&repository) == layout_head_hint(&new_repo);
+                if repository.same_commits(&new_repo) && layout_inputs_same {
                     // Fast path: commits unchanged — reuse the existing image
                     // manager so the screen doesn't flicker on watcher refresh.
                     // App must release its &repository borrow before mutation.
@@ -409,7 +427,10 @@ pub fn run() -> Result<()> {
                     // and clear the on-screen image area for the new frame.
                     drop(app);
                     repository = new_repo;
-                    graph = Rc::new(graph::calc_graph(&repository));
+                    graph = Rc::new(graph::calc_graph(
+                        &repository,
+                        layout_head_hint(&repository).as_ref(),
+                    ));
                     cell_width_type = check::decide_cell_width_type(&graph, graph_width)?;
                     (graph_image_manager, filtered_graph, remote_only_commits) =
                         build_graph_artifacts(
