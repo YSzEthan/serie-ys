@@ -135,12 +135,13 @@
           "description": "Configuration for external commands used by the application.",
           "properties": {
             "clipboard": {
-              "description": "The clipboard command to use for copy operations.\n- \"Auto\": Use the default clipboard library\n- { Custom = { commands = [\"...\"] } }: Use a custom command that receives text via stdin",
+              "description": "The clipboard command to use for copy operations.\n- \"Auto\": Use the default clipboard library; falls back to OSC 52 escape sequence when SSH is detected ($SSH_CONNECTION or $SSH_TTY).\n- \"Osc52\": Always use OSC 52 escape sequence (writes to terminal stdout; terminal forwards to local clipboard, supports tmux passthrough).\n- { Custom = { commands = [\"...\"] } }: Use a custom command that receives text via stdin",
               "oneOf": [
                 {
                   "type": "string",
                   "enum": [
-                    "Auto"
+                    "Auto",
+                    "Osc52"
                   ]
                 },
                 {

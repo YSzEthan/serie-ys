@@ -218,13 +218,19 @@ The clipboard command to use for copy operations.
 - type: `object` (enum)
 - default: `Auto`
 - possible values:
-  - `Auto`: Use the default clipboard library
+  - `Auto`: Use the default clipboard library (`arboard`). When `$SSH_CONNECTION` or `$SSH_TTY` is set, falls back to `Osc52` so the copy reaches the **local** clipboard instead of the remote host's X11/Wayland clipboard.
+  - `Osc52`: Always emit the OSC 52 terminal escape sequence to stdout; a supporting terminal (iTerm2, Kitty, WezTerm, foot, tmux with `set-clipboard on`, etc.) writes the text to the local clipboard. Works transparently over SSH without X11 forwarding.
   - `{ Custom = { commands = ["..."] } }`: Use a custom command that receives text via stdin
     - `commands`: `array of strings` - The command and its arguments.
 - examples:
     - `clipboard = "Auto"`
+    - `clipboard = "Osc52"`
     - `clipboard = { Custom = { commands = ["wl-copy"] } }`
     - `clipboard = { Custom = { commands = ["xclip", "-selection", "clipboard"] } }`
+
+Notes on `Osc52`:
+- tmux: 3.3+ ships with `allow-passthrough` off by default; add `set -g allow-passthrough on` to `~/.tmux.conf`. If you already have `set -g set-clipboard on`, tmux handles OSC 52 natively and you do not need passthrough.
+- Unsupported terminals silently ignore the sequence (no error surfaced), but this is still better than the previous behavior of copying to the wrong host's clipboard.
 
 ### `ui.common.cursor_type`
 

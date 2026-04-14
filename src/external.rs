@@ -1,6 +1,12 @@
-use std::{cell::RefCell, process::Command};
+use std::{
+    cell::RefCell,
+    env,
+    io::{self, Write},
+    process::Command,
+};
 
 use arboard::Clipboard;
+use base64::{engine::general_purpose::STANDARD, Engine};
 
 use crate::config::ClipboardConfig;
 
@@ -21,9 +27,49 @@ thread_local! {
 
 pub fn copy_to_clipboard(value: String, config: &ClipboardConfig) -> Result<(), String> {
     match config {
-        ClipboardConfig::Auto => copy_to_clipboard_auto(value),
+        ClipboardConfig::Auto => {
+            if is_ssh_session() {
+                copy_to_clipboard_osc52(&value)
+            } else {
+                copy_to_clipboard_auto(value)
+            }
+        }
+        ClipboardConfig::Osc52 => copy_to_clipboard_osc52(&value),
         ClipboardConfig::Custom { commands } => copy_to_clipboard_custom(value, commands),
     }
+}
+
+fn is_ssh_session() -> bool {
+    env::var_os("SSH_CONNECTION").is_some() || env::var_os("SSH_TTY").is_some()
+}
+
+// tmux DCS passthrough：把 inner 所有 \x1b 替換成 \x1b\x1b，包在 \x1bPtmux;...\x1b\\ 裡。
+// 用通用 escape 處理而不是 hardcode 單一 \x1b 位置，未來若把終止符從 \x07 換成 \x1b\\ 不會漏掉。
+fn wrap_for_tmux(inner: &str) -> String {
+    let escaped = inner.replace('\x1b', "\x1b\x1b");
+    format!("\x1bPtmux;{escaped}\x1b\\")
+}
+
+fn format_osc52_raw(value: &str) -> String {
+    let encoded = STANDARD.encode(value.as_bytes());
+    format!("\x1b]52;c;{encoded}\x07")
+}
+
+fn copy_to_clipboard_osc52(value: &str) -> Result<(), String> {
+    let raw = format_osc52_raw(value);
+    let sequence = if env::var_os("TMUX").is_some() {
+        wrap_for_tmux(&raw)
+    } else {
+        raw
+    };
+    let mut stdout = io::stdout().lock();
+    stdout
+        .write_all(sequence.as_bytes())
+        .map_err(|e| format!("Failed to write OSC 52 sequence: {e}"))?;
+    stdout
+        .flush()
+        .map_err(|e| format!("Failed to flush stdout: {e}"))?;
+    Ok(())
 }
 
 fn copy_to_clipboard_custom(value: String, commands: &[String]) -> Result<(), String> {
@@ -164,4 +210,35 @@ fn replace_command_arg(s: &str, params: &ExternalCommandParameters) -> String {
         .replace(USER_COMMAND_TAGS_MARKER, tags)
         .replace(USER_COMMAND_AREA_WIDTH_MARKER, area_width)
         .replace(USER_COMMAND_AREA_HEIGHT_MARKER, area_height)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn format_osc52_raw_encodes_value() {
+        // "ABC" → base64 "QUJD"
+        assert_eq!(format_osc52_raw("ABC"), "\x1b]52;c;QUJD\x07");
+    }
+
+    #[test]
+    fn wrap_for_tmux_escapes_single_esc() {
+        // 實際 pipeline：tmux passthrough 包住 BEL-terminated OSC 52，只有開頭一個 \x1b
+        let inner = format_osc52_raw("ABC");
+        assert_eq!(
+            wrap_for_tmux(&inner),
+            "\x1bPtmux;\x1b\x1b]52;c;QUJD\x07\x1b\\"
+        );
+    }
+
+    #[test]
+    fn wrap_for_tmux_escapes_multiple_escs() {
+        // 若未來終止符改為 ST (\x1b\\)，inner 會有兩個 \x1b，都要 escape
+        let inner = "\x1b]52;c;QUJD\x1b\\";
+        assert_eq!(
+            wrap_for_tmux(inner),
+            "\x1bPtmux;\x1b\x1b]52;c;QUJD\x1b\x1b\\\x1b\\"
+        );
+    }
 }

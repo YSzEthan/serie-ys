@@ -188,6 +188,7 @@ fn build_lines(
         (vec![UserEvent::GoToPrevious], "Go to previous search match".into()),
         (vec![UserEvent::FuzzyToggle], "Toggle fuzzy match".into()),
         (vec![UserEvent::ShortCopy], "Copy commit short hash".into()),
+        (vec![UserEvent::FullCopy], "Copy commit hash".into()),
         (vec![UserEvent::CreateTag], "Create tag on commit".into()),
         (vec![UserEvent::DeleteTag], "Delete tag from commit".into()),
         (vec![UserEvent::RemoteRefsToggle], "Toggle remote refs".into()),

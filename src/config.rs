@@ -295,6 +295,7 @@ pub enum CursorType {
 pub enum ClipboardConfig {
     #[default]
     Auto,
+    Osc52,
     Custom {
         #[garde(length(min = 1), inner(length(min = 1)))]
         commands: Vec<String>,
@@ -739,6 +740,16 @@ mod tests {
         "#;
         let config: Config = toml::from_str::<OptionalConfig>(toml).unwrap().into();
         assert_eq!(config.core.external.clipboard, ClipboardConfig::Auto);
+    }
+
+    #[test]
+    fn test_config_clipboard_osc52() {
+        let toml = r#"
+            [core.external]
+            clipboard = "Osc52"
+        "#;
+        let config: Config = toml::from_str::<OptionalConfig>(toml).unwrap().into();
+        assert_eq!(config.core.external.clipboard, ClipboardConfig::Osc52);
     }
 
     #[test]

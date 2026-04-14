@@ -127,6 +127,9 @@ impl<'a> ListView<'a> {
             UserEvent::ShortCopy => {
                 self.copy_commit_short_hash();
             }
+            UserEvent::FullCopy => {
+                self.copy_commit_hash();
+            }
             UserEvent::Search => {
                 self.as_mut_list_state().start_search();
                 self.update_search_query();
@@ -284,6 +287,14 @@ impl<'a> ListView<'a> {
         }
         let selected = self.as_list_state().selected_commit_hash();
         self.copy_to_clipboard("Commit SHA (short)".into(), selected.as_short_hash().into());
+    }
+
+    fn copy_commit_hash(&self) {
+        if self.as_list_state().is_virtual_row_selected() {
+            return;
+        }
+        let selected = self.as_list_state().selected_commit_hash();
+        self.copy_to_clipboard("Commit SHA".into(), selected.as_str().into());
     }
 
     fn copy_to_clipboard(&self, name: String, value: String) {
