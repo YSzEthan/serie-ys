@@ -223,10 +223,6 @@ impl<'a> App<'a> {
 
 impl App<'_> {
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<Ret, std::io::Error> {
-        // Clearing the screen here, as it should be cleared upon refresh
-        self.clear_image(None)?;
-        terminal.clear()?;
-
         loop {
             if self.view.take_graph_clear() {
                 clear_image_area(
