@@ -18,7 +18,8 @@ use crate::{
     config::UserListColumnType,
     fuzzy::SearchMatcher,
     git::{Commit, CommitHash, Head, Ref, WorkingChanges},
-    graph::GraphImageManager,
+    graph::{Graph, GraphImageManager},
+    FilteredGraphData,
 };
 
 const ELLIPSIS: &str = "...";
@@ -174,6 +175,7 @@ pub struct CommitListState<'a> {
     head: Head,
 
     // Filtered graph data (for when remote-only commits are hidden)
+    filtered_graph: Option<Rc<Graph>>,
     filtered_graph_image_manager: Option<GraphImageManager>,
     filtered_graph_cell_width: u16,
     filtered_graph_colors: Option<FxHashMap<CommitHash, Color>>,
@@ -216,7 +218,6 @@ pub struct CommitListState<'a> {
 }
 
 impl<'a> CommitListState<'a> {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         commits: Vec<CommitInfo<'a>>,
         graph_image_manager: GraphImageManager,
@@ -225,12 +226,16 @@ impl<'a> CommitListState<'a> {
         ref_name_to_commit_index_map: FxHashMap<String, usize>,
         default_ignore_case: bool,
         default_fuzzy: bool,
-        filtered_graph_image_manager: Option<GraphImageManager>,
-        filtered_graph_cell_width: u16,
+        filtered: Option<FilteredGraphData>,
         filtered_graph_colors: Option<FxHashMap<CommitHash, Color>>,
         remote_only_commits: FxHashSet<CommitHash>,
         working_changes: Option<WorkingChanges>,
     ) -> CommitListState<'a> {
+        let (filtered_graph, filtered_graph_image_manager, filtered_graph_cell_width) =
+            match filtered {
+                Some(fg) => (Some(fg.graph), Some(fg.image_manager), fg.cell_width),
+                None => (None, None, 0),
+            };
         let commit_count = commits.len();
         let has_virtual_row = working_changes.as_ref().is_some_and(|wc| !wc.is_empty());
         let vr_offset = if has_virtual_row { 1 } else { 0 };
@@ -250,6 +255,7 @@ impl<'a> CommitListState<'a> {
             graph_image_manager,
             graph_cell_width,
             head,
+            filtered_graph,
             filtered_graph_image_manager,
             filtered_graph_cell_width,
             filtered_graph_colors,
@@ -278,6 +284,24 @@ impl<'a> CommitListState<'a> {
             default_fuzzy,
             working_changes,
         }
+    }
+
+    pub fn into_graph_parts(
+        self,
+    ) -> (
+        GraphImageManager,
+        Option<FilteredGraphData>,
+        FxHashSet<CommitHash>,
+    ) {
+        let filtered = match (self.filtered_graph, self.filtered_graph_image_manager) {
+            (Some(graph), Some(image_manager)) => Some(FilteredGraphData {
+                graph,
+                image_manager,
+                cell_width: self.filtered_graph_cell_width,
+            }),
+            _ => None,
+        };
+        (self.graph_image_manager, filtered, self.remote_only_commits)
     }
 
     pub fn graph_area_cell_width(&self) -> u16 {

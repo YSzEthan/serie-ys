@@ -148,22 +148,20 @@ impl<'a> App<'a> {
             CellWidthType::Single => (graph.max_pos_x + 1) as u16,
         };
 
-        let (filtered_image_manager, filtered_cell_width, filtered_colors) =
-            if let Some(fg) = filtered_graph {
-                let colors: FxHashMap<CommitHash, ratatui::style::Color> = fg
-                    .graph
+        let filtered_colors: Option<FxHashMap<CommitHash, ratatui::style::Color>> =
+            filtered_graph.as_ref().map(|fg| {
+                fg.graph
                     .commit_hashes
                     .iter()
                     .map(|commit_hash| {
                         let (pos_x, _) = fg.graph.commit_pos_map[commit_hash];
-                        let color = graph_color_set.get(pos_x).to_ratatui_color();
-                        (commit_hash.clone(), color)
+                        (
+                            commit_hash.clone(),
+                            graph_color_set.get(pos_x).to_ratatui_color(),
+                        )
                     })
-                    .collect();
-                (Some(fg.image_manager), fg.cell_width, Some(colors))
-            } else {
-                (None, 0, None)
-            };
+                    .collect()
+            });
 
         let head = repository.head().clone();
         let working_changes = repository.working_changes().clone();
@@ -180,8 +178,7 @@ impl<'a> App<'a> {
             ref_name_to_commit_index_map,
             ctx.core_config.search.ignore_case,
             ctx.core_config.search.fuzzy,
-            filtered_image_manager,
-            filtered_cell_width,
+            filtered_graph,
             filtered_colors,
             remote_only_commits,
             working_changes_opt,
@@ -211,6 +208,16 @@ impl<'a> App<'a> {
         }
 
         app
+    }
+
+    pub fn into_parts(
+        self,
+    ) -> (
+        GraphImageManager,
+        Option<FilteredGraphData>,
+        FxHashSet<CommitHash>,
+    ) {
+        self.view.into_commit_list_state().into_graph_parts()
     }
 }
 

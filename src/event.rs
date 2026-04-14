@@ -1,6 +1,7 @@
 use std::{
+    ffi::OsStr,
     fmt::{self, Debug, Formatter},
-    path::Path,
+    path::{Component, Path},
     sync::{
         atomic::{AtomicBool, Ordering},
         mpsc, Arc, Mutex,
@@ -10,6 +11,7 @@ use std::{
 };
 
 use ratatui::crossterm::event::KeyEvent;
+use rustc_hash::FxHashSet;
 use serde::{
     de::{self, Deserializer, Visitor},
     Deserialize,
@@ -242,8 +244,8 @@ impl EventController {
         self.rx.recv()
     }
 
-    pub fn start_git_watcher(&mut self, git_dir: &Path) {
-        let flag = start_git_watcher(self.tx.clone(), git_dir);
+    pub fn start_git_watcher(&mut self, repo_root: &Path) {
+        let flag = start_git_watcher(self.tx.clone(), repo_root);
         self.pending_refresh = Some(flag);
     }
 
@@ -254,13 +256,24 @@ impl EventController {
     }
 }
 
-pub fn start_git_watcher(tx: Sender, git_dir: &Path) -> Arc<AtomicBool> {
-    use notify_debouncer_mini::{new_debouncer, DebouncedEventKind};
+pub fn start_git_watcher(tx: Sender, repo_root: &Path) -> Arc<AtomicBool> {
+    use notify_debouncer_mini::new_debouncer;
 
     let pending_refresh = Arc::new(AtomicBool::new(false));
     let pending = pending_refresh.clone();
 
-    let git_dir = git_dir.to_path_buf();
+    let repo_root = repo_root.to_path_buf();
+    let git_dir = repo_root
+        .join(".git")
+        .canonicalize()
+        .unwrap_or_else(|_| repo_root.join(".git"));
+
+    let mut ignored = read_gitignore_name_hints(&repo_root.join(".gitignore"));
+    // .gitignore 已涵蓋使用者專案噪音；這裡只兜底 macOS 系統檔案。
+    for name in [".DS_Store", ".AppleDouble", ".Spotlight-V100", ".Trashes"] {
+        ignored.insert(name.to_string());
+    }
+
     thread::spawn(move || {
         let (debounce_tx, debounce_rx) = std::sync::mpsc::channel();
 
@@ -271,7 +284,7 @@ pub fn start_git_watcher(tx: Sender, git_dir: &Path) -> Arc<AtomicBool> {
 
         if debouncer
             .watcher()
-            .watch(&git_dir, notify::RecursiveMode::Recursive)
+            .watch(&repo_root, notify::RecursiveMode::Recursive)
             .is_err()
         {
             return;
@@ -280,11 +293,9 @@ pub fn start_git_watcher(tx: Sender, git_dir: &Path) -> Arc<AtomicBool> {
         loop {
             match debounce_rx.recv() {
                 Ok(Ok(events)) => {
-                    let has_relevant = events.iter().any(|e| {
-                        e.kind == DebouncedEventKind::Any
-                            && e.path.extension() != Some(std::ffi::OsStr::new("lock"))
-                    });
-                    // Only send if no pending refresh is already queued
+                    let has_relevant = events
+                        .iter()
+                        .any(|e| is_relevant_event(e, &git_dir, &repo_root, &ignored));
                     if has_relevant && !pending.swap(true, Ordering::AcqRel) {
                         tx.send(AppEvent::AutoRefresh);
                     }
@@ -296,6 +307,75 @@ pub fn start_git_watcher(tx: Sender, git_dir: &Path) -> Arc<AtomicBool> {
     });
 
     pending_refresh
+}
+
+/// Fast-path first: cheap string checks on the raw event path before any
+/// syscalls. Only canonicalize when we need to compare against `git_dir`
+/// (which may be a symlink on macOS for worktrees/submodules).
+fn is_relevant_event(
+    e: &notify_debouncer_mini::DebouncedEvent,
+    git_dir: &Path,
+    repo_root: &Path,
+    ignored: &FxHashSet<String>,
+) -> bool {
+    use notify_debouncer_mini::DebouncedEventKind;
+
+    if e.kind != DebouncedEventKind::Any {
+        return false;
+    }
+    if e.path.extension() == Some(OsStr::new("lock")) {
+        return false;
+    }
+    // macOS AppleDouble (._foo) produced by tar/cp on HFS+.
+    if e.path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.starts_with("._"))
+    {
+        return false;
+    }
+    if path_has_ignored_component(&e.path, repo_root, ignored) {
+        return false;
+    }
+    // Canonicalize only the survivors to stabilize comparison against git_dir
+    // across macOS symlinks (e.g. /tmp → /private/tmp).
+    let path = e.path.canonicalize().unwrap_or_else(|_| e.path.clone());
+    if path.starts_with(git_dir) {
+        return true;
+    }
+    // After canonicalization the path may differ; re-check ignored components.
+    !path_has_ignored_component(&path, repo_root, ignored)
+}
+
+/// Collect plain directory/file names from a .gitignore. Glob patterns, paths,
+/// and negation entries are intentionally skipped — this is a noise-filter hint,
+/// not a gitignore parser. Final correctness is delegated to `git status`.
+fn read_gitignore_name_hints(path: &Path) -> FxHashSet<String> {
+    let Ok(content) = std::fs::read_to_string(path) else {
+        return FxHashSet::default();
+    };
+    content
+        .lines()
+        .map(str::trim)
+        .filter(|line| !line.is_empty() && !line.starts_with('#'))
+        .filter_map(|line| {
+            if line.starts_with('!')
+                || line.contains(['*', '?', '['])
+                || line.trim_end_matches('/').contains('/')
+            {
+                return None;
+            }
+            Some(line.trim_end_matches('/').to_string())
+        })
+        .collect()
+}
+
+fn path_has_ignored_component(path: &Path, repo_root: &Path, ignored: &FxHashSet<String>) -> bool {
+    let rel = path.strip_prefix(repo_root).unwrap_or(path);
+    rel.components().any(|c| match c {
+        Component::Normal(name) => name.to_str().is_some_and(|n| ignored.contains(n)),
+        _ => false,
+    })
 }
 
 // The event triggered by user's key input

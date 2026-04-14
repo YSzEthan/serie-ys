@@ -336,10 +336,12 @@ pub fn run() -> Result<()> {
     let mut refresh_view_context = None;
     let mut terminal = None;
 
-    // Start file watcher on .git directory for auto-refresh
-    let git_dir = Path::new(&args.path).join(".git");
-    if git_dir.is_dir() {
-        ec.start_git_watcher(&git_dir);
+    // Start file watcher on repo root for auto-refresh
+    let repo_root = Path::new(&args.path)
+        .canonicalize()
+        .unwrap_or_else(|_| Path::new(&args.path).to_path_buf());
+    if repo_root.join(".git").is_dir() {
+        ec.start_git_watcher(&repo_root);
     }
 
     let selected_bg_color = ratatui_color_to_rgba(ctx.color_theme.list_selected_bg);
@@ -388,37 +390,37 @@ pub fn run() -> Result<()> {
             }
             Ok(Ret::Refresh(request)) => {
                 refresh_view_context = Some(request.context);
-                drop(app);
 
                 let new_repo = git::Repository::load(Path::new(&args.path), order, max_count)?;
 
                 if repository.same_commits(&new_repo) {
-                    // Commits unchanged — skip expensive graph recalculation,
-                    // just update refs/head/working_changes
+                    // Fast path: commits unchanged — reuse the existing image
+                    // manager so the screen doesn't flicker on watcher refresh.
+                    // App must release its &repository borrow before mutation.
+                    (graph_image_manager, filtered_graph, remote_only_commits) = app.into_parts();
                     repository.update_metadata_from(new_repo);
                 } else {
-                    // Commits changed — full graph recalculation
+                    // Slow path: commits changed — drop app, rebuild graph + image,
+                    // and clear the on-screen image area for the new frame.
+                    drop(app);
                     repository = new_repo;
                     graph = Rc::new(graph::calc_graph(&repository));
                     cell_width_type = check::decide_cell_width_type(&graph, graph_width)?;
-                }
+                    (graph_image_manager, filtered_graph, remote_only_commits) =
+                        build_graph_artifacts(
+                            &repository,
+                            &graph,
+                            &graph_color_set,
+                            cell_width_type,
+                            graph_style,
+                            image_protocol,
+                            selected_bg_color,
+                        );
 
-                // App takes ownership so these must be rebuilt each iteration
-                (graph_image_manager, filtered_graph, remote_only_commits) = build_graph_artifacts(
-                    &repository,
-                    &graph,
-                    &graph_color_set,
-                    cell_width_type,
-                    graph_style,
-                    image_protocol,
-                    selected_bg_color,
-                );
-
-                // Clear *after* rebuild so the old frame stays visible during
-                // the expensive graph work instead of a blank intermediate frame.
-                if let Some(t) = terminal.as_mut() {
-                    let size = t.size()?;
-                    app::clear_image_area(image_protocol, t, 0..size.height)?;
+                    if let Some(t) = terminal.as_mut() {
+                        let size = t.size()?;
+                        app::clear_image_area(image_protocol, t, 0..size.height)?;
+                    }
                 }
 
                 continue;

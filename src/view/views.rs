@@ -239,6 +239,26 @@ impl<'a> View<'a> {
             View::GitHub(_) => {}
         }
     }
+
+    pub fn into_commit_list_state(self) -> CommitListState<'a> {
+        let mut view = self;
+        loop {
+            view = match view {
+                View::List(mut v) => return v.take_list_state().expect("missing state"),
+                View::Detail(mut v) => return v.take_list_state().expect("missing state"),
+                View::Refs(mut v) => return v.take_list_state().expect("missing state"),
+                View::CreateTag(mut v) => return v.take_list_state().expect("missing state"),
+                View::DeleteTag(mut v) => return v.take_list_state().expect("missing state"),
+                View::DeleteRef(mut v) => return v.take_list_state().expect("missing state"),
+                View::UserCommand(mut v) => return v.take_list_state().expect("missing state"),
+                // Help/GitHub are overlay views; unwind to the wrapped before_view.
+                // take_before_view leaves View::Default behind, harmless since `v` drops next.
+                View::Help(mut v) => v.take_before_view(),
+                View::GitHub(mut v) => v.take_before_view(),
+                View::Default => unreachable!("no View::Default at runtime"),
+            };
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
