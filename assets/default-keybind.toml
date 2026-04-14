@@ -38,6 +38,8 @@ user_command_1 = ["d"]
 # copy part of information, ex: copy the short commit hash not all
 short_copy = ["c"]
 full_copy = ["shift-c"]
+branch_copy = ["b"]
+full_branch_copy = ["shift-b"]
 
 create_tag = ["t"]
 delete_tag = ["ctrl-t"]

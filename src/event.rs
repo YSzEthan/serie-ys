@@ -91,6 +91,25 @@ pub enum AppEvent {
         target: String,
     },
     AutoRefresh,
+    OpenBranchPicker {
+        options: Vec<String>,
+        kind: BranchKind,
+    },
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum BranchKind {
+    Local,
+    Remote,
+}
+
+impl BranchKind {
+    pub fn copy_label(self) -> &'static str {
+        match self {
+            BranchKind::Local => "Branch Name",
+            BranchKind::Remote => "Remote Branch Name",
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -416,6 +435,8 @@ pub enum UserEvent {
     Refresh,
     ShortCopy,
     FullCopy,
+    BranchCopy,
+    FullBranchCopy,
     CreateTag,
     DeleteTag,
     RemoteRefsToggle,
@@ -488,6 +509,8 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "refresh" => Ok(UserEvent::Refresh),
                         "short_copy" => Ok(UserEvent::ShortCopy),
                         "full_copy" => Ok(UserEvent::FullCopy),
+                        "branch_copy" => Ok(UserEvent::BranchCopy),
+                        "full_branch_copy" => Ok(UserEvent::FullBranchCopy),
                         "create_tag" => Ok(UserEvent::CreateTag),
                         "delete_tag" => Ok(UserEvent::DeleteTag),
                         "remote_refs_toggle" => Ok(UserEvent::RemoteRefsToggle),

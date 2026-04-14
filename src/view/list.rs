@@ -9,7 +9,7 @@ use ratatui::{
 use crate::{
     app::AppContext,
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
-    view::{ListRefreshViewContext, RefreshViewContext},
+    view::{dispatch_branch_copy, partition_branches, ListRefreshViewContext, RefreshViewContext},
     widget::commit_list::{CommitList, CommitListState, FilterState, SearchState},
 };
 
@@ -129,6 +129,12 @@ impl<'a> ListView<'a> {
             }
             UserEvent::FullCopy => {
                 self.copy_commit_hash();
+            }
+            UserEvent::BranchCopy => {
+                self.handle_branch_copy(false);
+            }
+            UserEvent::FullBranchCopy => {
+                self.handle_branch_copy(true);
             }
             UserEvent::Search => {
                 self.as_mut_list_state().start_search();
@@ -295,6 +301,15 @@ impl<'a> ListView<'a> {
         }
         let selected = self.as_list_state().selected_commit_hash();
         self.copy_to_clipboard("Commit SHA".into(), selected.as_str().into());
+    }
+
+    fn handle_branch_copy(&self, full: bool) {
+        if self.as_list_state().is_virtual_row_selected() {
+            return;
+        }
+        let refs = self.as_list_state().selected_commit_refs();
+        let (local, remote) = partition_branches(refs.iter().copied());
+        dispatch_branch_copy(&self.tx, &local, &remote, full);
     }
 
     fn copy_to_clipboard(&self, name: String, value: String) {

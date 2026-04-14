@@ -14,7 +14,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use crate::{
     color::{ColorTheme, GraphColorSet},
     config::{CoreConfig, CursorType, UiConfig, UserCommand, UserCommandType},
-    event::{AppEvent, EventController, UserEvent, UserEventWithCount},
+    event::{AppEvent, BranchKind, EventController, UserEvent, UserEventWithCount},
     external::{
         copy_to_clipboard, exec_user_command, exec_user_command_suspend, ExternalCommandParameters,
     },
@@ -53,6 +53,10 @@ enum StatusLine {
     #[default]
     None,
     Input(String, Option<u16>, Option<String>),
+    BranchPicker {
+        options: Vec<String>,
+        kind: BranchKind,
+    },
     NotificationInfo(String),
     NotificationSuccess(String),
     NotificationWarn(String),
@@ -247,8 +251,19 @@ impl App<'_> {
                         continue;
                     }
 
+                    // Branch picker intercepts input; ForceQuit (Ctrl-C) falls through so
+                    //使用者在 picker 中仍能離開程式。
+                    if matches!(self.app_status.status_line, StatusLine::BranchPicker { .. })
+                        && !matches!(self.ctx.keybind.get(&key), Some(UserEvent::ForceQuit))
+                    {
+                        self.handle_branch_picker_key(key);
+                        continue;
+                    }
+
                     match self.app_status.status_line {
-                        StatusLine::None | StatusLine::Input(_, _, _) => {
+                        StatusLine::None
+                        | StatusLine::Input(_, _, _)
+                        | StatusLine::BranchPicker { .. } => {
                             // do nothing
                         }
                         StatusLine::NotificationInfo(_)
@@ -486,6 +501,9 @@ impl App<'_> {
                     self.ec.clear_pending_refresh();
                     self.view.refresh();
                 }
+                AppEvent::OpenBranchPicker { options, kind } => {
+                    self.app_status.status_line = StatusLine::BranchPicker { options, kind };
+                }
             }
         }
     }
@@ -537,6 +555,18 @@ impl App<'_> {
                 } else {
                     Line::raw(msg).fg(self.ctx.color_theme.status_input_fg)
                 }
+            }
+            StatusLine::BranchPicker { options, .. } => {
+                let mut spans: Vec<Span> = vec!["Pick branch: ".into()];
+                for (i, name) in options.iter().enumerate() {
+                    spans.push(
+                        format!("[{}]", i + 1).fg(self.ctx.color_theme.status_input_transient_fg),
+                    );
+                    spans.push(name.as_str().into());
+                    spans.push("  ".into());
+                }
+                spans.push("(Esc to cancel)".fg(self.ctx.color_theme.status_input_transient_fg));
+                Line::from(spans)
             }
             StatusLine::NotificationInfo(msg) => {
                 Line::raw(msg).fg(self.ctx.color_theme.status_info_fg)
@@ -650,8 +680,32 @@ impl App<'_> {
     }
 
     fn is_input_mode(&self) -> bool {
-        matches!(self.app_status.status_line, StatusLine::Input(_, _, _))
-            || matches!(self.view, View::CreateTag(_))
+        matches!(
+            self.app_status.status_line,
+            StatusLine::Input(_, _, _) | StatusLine::BranchPicker { .. }
+        ) || matches!(self.view, View::CreateTag(_))
+    }
+
+    /// 處理 picker 啟用時的按鍵。`UserEvent::Cancel` 取消；`1`-`9` 選擇；其他吞掉。
+    /// 呼叫前須確認 status_line 是 BranchPicker 且不是 ForceQuit。
+    fn handle_branch_picker_key(&mut self, key: KeyEvent) {
+        if let Some(UserEvent::Cancel) = self.ctx.keybind.get(&key) {
+            self.app_status.status_line = StatusLine::None;
+            return;
+        }
+        let StatusLine::BranchPicker { options, kind } = &self.app_status.status_line else {
+            return;
+        };
+        let KeyCode::Char(c) = key.code else { return };
+        let Some(digit) = c.to_digit(10) else { return };
+        let Some(idx) = (digit as usize).checked_sub(1) else {
+            return;
+        };
+        let Some(name) = options.get(idx) else { return };
+        let label = kind.copy_label();
+        let value = name.clone();
+        self.app_status.status_line = StatusLine::None;
+        self.copy_to_clipboard(label.into(), value);
     }
 
     fn clear_image(&self, terminal: Option<&mut DefaultTerminal>) -> Result<(), std::io::Error> {
