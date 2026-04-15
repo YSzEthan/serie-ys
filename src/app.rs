@@ -27,7 +27,7 @@ use crate::{
     protocol::ImageProtocol,
     view::{RefreshViewContext, RefsOrigin, View},
     widget::{
-        commit_list::{CommitInfo, CommitListState},
+        commit_list::{CommitInfo, CommitListState, RawCommitIdx},
         pending_overlay::PendingOverlay,
     },
     FilteredGraphData,
@@ -154,7 +154,7 @@ impl<'a> App<'a> {
                     .expect("commit hash from graph must exist in repository");
                 let refs = repository.refs(commit_hash);
                 for r in &refs {
-                    ref_name_to_commit_index_map.insert(r.name().to_string(), i);
+                    ref_name_to_commit_index_map.insert(r.name().to_string(), RawCommitIdx(i));
                 }
                 let (pos_x, _) = graph.commit_pos_map[commit_hash];
                 let graph_color = graph_color_set.get(pos_x).to_ratatui_color();
@@ -961,6 +961,7 @@ impl App<'_> {
             let commit_list_state = view.take_list_state();
             if let Some(commit_list_state) = commit_list_state {
                 self.view = View::of_list(commit_list_state, self.ctx.clone(), self.ec.sender());
+                self.view.request_graph_clear();
             }
         }
     }
@@ -1008,6 +1009,7 @@ impl App<'_> {
                     self.enter_detail(commit_list_state);
                 }
             }
+            self.view.request_graph_clear();
         }
     }
 
@@ -1036,6 +1038,7 @@ impl App<'_> {
                 return;
             };
             self.view = View::of_list(commit_list_state, self.ctx.clone(), self.ec.sender());
+            self.view.request_graph_clear();
         }
     }
 
@@ -1077,6 +1080,7 @@ impl App<'_> {
                 return;
             };
             self.view = View::of_list(commit_list_state, self.ctx.clone(), self.ec.sender());
+            self.view.request_graph_clear();
         }
     }
 
@@ -1129,6 +1133,7 @@ impl App<'_> {
     fn close_help(&mut self) {
         if let View::Help(ref mut view) = self.view {
             self.view = view.take_before_view();
+            self.view.request_graph_clear();
         }
     }
 
@@ -1239,6 +1244,7 @@ impl App<'_> {
     fn close_github(&mut self) {
         if let View::GitHub(ref mut view) = self.view {
             self.view = view.take_before_view();
+            self.view.request_graph_clear();
         }
     }
 

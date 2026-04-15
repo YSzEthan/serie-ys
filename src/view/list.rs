@@ -232,6 +232,12 @@ impl<'a> ListView<'a> {
             .is_some_and(|s| s.take_graph_clear())
     }
 
+    pub fn request_graph_clear(&mut self) {
+        if let Some(s) = self.commit_list_state.as_mut() {
+            s.request_graph_clear();
+        }
+    }
+
     fn as_mut_list_state(&mut self) -> &mut CommitListState<'a> {
         self.commit_list_state
             .as_mut()

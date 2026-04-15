@@ -195,18 +195,23 @@ pub fn find_remote_only_commits(
         .collect()
 }
 
-pub fn compute_filtered_graph(
+/// Rendering parameters shared by every graph/image builder.
+#[derive(Clone, Copy)]
+pub struct GraphRenderCtx<'a> {
+    pub color_set: &'a color::GraphColorSet,
+    pub cell_width_type: graph::CellWidthType,
+    pub image_protocol: protocol::ImageProtocol,
+    pub graph_style: graph::GraphStyle,
+    pub selected_bg_color: image::Rgba<u8>,
+}
+
+pub fn compute_filtered_graph_from(
     repository: &git::Repository,
     full_graph: &Graph,
-    graph_color_set: &color::GraphColorSet,
-    cell_width_type: graph::CellWidthType,
-    image_protocol: protocol::ImageProtocol,
-    graph_style: graph::GraphStyle,
+    remote_only: FxHashSet<git::CommitHash>,
+    ctx: GraphRenderCtx<'_>,
     head_commit_hash: Option<git::CommitHash>,
-    selected_bg_color: image::Rgba<u8>,
 ) -> (Option<FilteredGraphData>, FxHashSet<git::CommitHash>) {
-    let remote_only = find_remote_only_commits(repository, full_graph);
-
     if remote_only.is_empty() {
         return (None, remote_only);
     }
@@ -225,19 +230,19 @@ pub fn compute_filtered_graph(
         filtered_head_hint.as_ref(),
     ));
 
-    let cell_width = match cell_width_type {
+    let cell_width = match ctx.cell_width_type {
         graph::CellWidthType::Double => (filtered.max_pos_x + 1) as u16 * 2,
         graph::CellWidthType::Single => (filtered.max_pos_x + 1) as u16,
     };
 
     let image_manager = GraphImageManager::new(
         Rc::clone(&filtered),
-        graph_color_set,
-        cell_width_type,
-        graph_style,
-        image_protocol,
+        ctx.color_set,
+        ctx.cell_width_type,
+        ctx.graph_style,
+        ctx.image_protocol,
         head_commit_hash,
-        selected_bg_color,
+        ctx.selected_bg_color,
     );
 
     (
@@ -257,15 +262,10 @@ fn ratatui_color_to_rgba(color: ratatui::style::Color) -> image::Rgba<u8> {
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 fn build_graph_artifacts(
     repository: &git::Repository,
     graph: &Rc<Graph>,
-    graph_color_set: &color::GraphColorSet,
-    cell_width_type: graph::CellWidthType,
-    graph_style: graph::GraphStyle,
-    image_protocol: protocol::ImageProtocol,
-    selected_bg_color: image::Rgba<u8>,
+    ctx: GraphRenderCtx<'_>,
 ) -> (
     GraphImageManager,
     Option<FilteredGraphData>,
@@ -274,23 +274,16 @@ fn build_graph_artifacts(
     let head_commit_hash = resolve_head_commit_hash(repository);
     let image_manager = GraphImageManager::new(
         Rc::clone(graph),
-        graph_color_set,
-        cell_width_type,
-        graph_style,
-        image_protocol,
+        ctx.color_set,
+        ctx.cell_width_type,
+        ctx.graph_style,
+        ctx.image_protocol,
         head_commit_hash.clone(),
-        selected_bg_color,
+        ctx.selected_bg_color,
     );
-    let (filtered, remote_only) = compute_filtered_graph(
-        repository,
-        graph,
-        graph_color_set,
-        cell_width_type,
-        image_protocol,
-        graph_style,
-        head_commit_hash,
-        selected_bg_color,
-    );
+    let remote_only = find_remote_only_commits(repository, graph);
+    let (filtered, remote_only) =
+        compute_filtered_graph_from(repository, graph, remote_only, ctx, head_commit_hash);
     (image_manager, filtered, remote_only)
 }
 
@@ -300,6 +293,28 @@ fn layout_head_hint(repository: &git::Repository) -> Option<git::CommitHash> {
     } else {
         resolve_head_commit_hash(repository)
     }
+}
+
+/// Fast-path helper: if the refs changed in a way that shifts commits between
+/// local-reachable and remote-only, rebuild the filtered graph + image manager.
+/// Returns whether a rebuild actually happened (caller clears image if so).
+fn try_refresh_filtered_for_ref_change(
+    repository: &git::Repository,
+    graph: &Graph,
+    remote_only_commits: &mut FxHashSet<git::CommitHash>,
+    filtered_graph: &mut Option<FilteredGraphData>,
+    ctx: GraphRenderCtx<'_>,
+    head_commit_hash: Option<git::CommitHash>,
+) -> bool {
+    let new_remote_only = find_remote_only_commits(repository, graph);
+    if &new_remote_only == remote_only_commits {
+        return false;
+    }
+    let (rebuilt_filtered, rebuilt_remote_only) =
+        compute_filtered_graph_from(repository, graph, new_remote_only, ctx, head_commit_hash);
+    *filtered_graph = rebuilt_filtered;
+    *remote_only_commits = rebuilt_remote_only;
+    true
 }
 
 fn resolve_head_commit_hash(repository: &git::Repository) -> Option<git::CommitHash> {
@@ -365,16 +380,15 @@ pub fn run() -> Result<()> {
         layout_head_hint(&repository).as_ref(),
     ));
     let mut cell_width_type = check::decide_cell_width_type(&graph, graph_width)?;
+    let mut render_ctx = GraphRenderCtx {
+        color_set: &graph_color_set,
+        cell_width_type,
+        image_protocol,
+        graph_style,
+        selected_bg_color,
+    };
     let (mut graph_image_manager, mut filtered_graph, mut remote_only_commits) =
-        build_graph_artifacts(
-            &repository,
-            &graph,
-            &graph_color_set,
-            cell_width_type,
-            graph_style,
-            image_protocol,
-            selected_bg_color,
-        );
+        build_graph_artifacts(&repository, &graph, render_ctx);
 
     let ret = loop {
         if terminal.is_none() {
@@ -420,7 +434,24 @@ pub fn run() -> Result<()> {
                     let new_head = resolve_head_commit_hash(&repository);
                     graph_image_manager.update_head_commit_hash(new_head.clone());
                     if let Some(filtered) = filtered_graph.as_mut() {
-                        filtered.image_manager.update_head_commit_hash(new_head);
+                        filtered
+                            .image_manager
+                            .update_head_commit_hash(new_head.clone());
+                    }
+
+                    let filtered_changed = try_refresh_filtered_for_ref_change(
+                        &repository,
+                        &graph,
+                        &mut remote_only_commits,
+                        &mut filtered_graph,
+                        render_ctx,
+                        new_head,
+                    );
+                    if filtered_changed {
+                        if let Some(t) = terminal.as_mut() {
+                            let size = t.size()?;
+                            app::clear_image_area(image_protocol, t, 0..size.height)?;
+                        }
                     }
                 } else {
                     // Slow path: commits changed — drop app, rebuild graph + image,
@@ -432,16 +463,9 @@ pub fn run() -> Result<()> {
                         layout_head_hint(&repository).as_ref(),
                     ));
                     cell_width_type = check::decide_cell_width_type(&graph, graph_width)?;
+                    render_ctx.cell_width_type = cell_width_type;
                     (graph_image_manager, filtered_graph, remote_only_commits) =
-                        build_graph_artifacts(
-                            &repository,
-                            &graph,
-                            &graph_color_set,
-                            cell_width_type,
-                            graph_style,
-                            image_protocol,
-                            selected_bg_color,
-                        );
+                        build_graph_artifacts(&repository, &graph, render_ctx);
 
                     if let Some(t) = terminal.as_mut() {
                         let size = t.size()?;

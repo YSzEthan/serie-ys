@@ -226,8 +226,13 @@ impl<'a> GitHubView<'a> {
     }
 
     pub fn handle_event(&mut self, event_with_count: UserEventWithCount, key: KeyEvent) {
-        let event = event_with_count.event;
         let count = event_with_count.count;
+        // In modal-ish focus (List/Preview), Right/Left double as Confirm/Cancel.
+        // Prompt takes raw key input; CheckboxEdit uses Left/Right to toggle.
+        let event = match self.focus {
+            GitHubFocus::List | GitHubFocus::Preview => modal_yesno_aliases(event_with_count.event),
+            GitHubFocus::Prompt | GitHubFocus::CheckboxEdit => event_with_count.event,
+        };
 
         self.flash_message = None;
 
@@ -1032,6 +1037,14 @@ impl<'a> GitHubView<'a> {
         for y in area.top()..area.bottom() {
             self.ctx.image_protocol.clear_line(y);
         }
+    }
+}
+
+fn modal_yesno_aliases(event: UserEvent) -> UserEvent {
+    match event {
+        UserEvent::NavigateRight => UserEvent::Confirm,
+        UserEvent::NavigateLeft => UserEvent::Cancel,
+        _ => event,
     }
 }
 

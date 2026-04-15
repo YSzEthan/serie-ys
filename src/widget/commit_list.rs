@@ -24,6 +24,27 @@ use crate::{
 
 const ELLIPSIS: &str = "...";
 const VIRTUAL_ROW_COLOR: Color = Color::Gray;
+/// 游標與 viewport 上下邊緣保持的最小距離；撞進這個 margin 時改由 offset 滾動。
+const CURSOR_SCROLL_MARGIN: usize = 15;
+
+/// 索引到 `commits: Vec<CommitInfo>` 與 `search_matches: Vec<SearchMatch>` 的位置。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub(crate) struct RawCommitIdx(pub(crate) usize);
+
+/// `filtered_indices` 內的位置；filter 空時 alias 到 raw（語意上仍是獨立座標）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FilteredIdx(usize);
+
+/// 可視清單內的位置（= FilteredIdx + virtual_row_offset）。
+/// 對應 `self.offset + self.selected` 的空間。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct VisibleIdx(usize);
+
+#[derive(Debug, Clone, Copy)]
+enum MatchStep {
+    Next,
+    Prev,
+}
 
 #[derive(Debug)]
 pub struct CommitInfo<'a> {
@@ -54,7 +75,7 @@ impl<'a> CommitInfo<'a> {
 pub enum SearchState {
     Inactive,
     Searching {
-        start_index: usize,
+        start_index: RawCommitIdx,
         match_index: usize,
         ignore_case: bool,
         fuzzy: bool,
@@ -169,7 +190,7 @@ impl SearchMatchPosition {
 #[derive(Debug)]
 pub struct CommitListState<'a> {
     commits: Vec<CommitInfo<'a>>,
-    commit_hash_set: FxHashSet<CommitHash>,
+    commit_hash_to_raw: FxHashMap<CommitHash, RawCommitIdx>,
     graph_image_manager: GraphImageManager,
     graph_cell_width: u16,
     head: Head,
@@ -180,7 +201,7 @@ pub struct CommitListState<'a> {
     filtered_graph_cell_width: u16,
     filtered_graph_colors: Option<FxHashMap<CommitHash, Color>>,
 
-    ref_name_to_commit_index_map: FxHashMap<String, usize>,
+    ref_name_to_commit_index_map: FxHashMap<String, RawCommitIdx>,
 
     search_state: SearchState,
     search_input: Input,
@@ -188,15 +209,15 @@ pub struct CommitListState<'a> {
 
     // Optimization: track previous search for incremental search
     last_search_query: String,
-    last_matched_indices: Vec<usize>,
+    last_matched_indices: Vec<RawCommitIdx>,
     last_search_ignore_case: bool,
     last_search_fuzzy: bool,
 
     // Filter mode
     filter_state: FilterState,
     filter_input: Input,
-    filtered_indices: Vec<usize>,
-    text_filtered_indices: Vec<usize>,
+    filtered_indices: Vec<RawCommitIdx>,
+    text_filtered_indices: Vec<RawCommitIdx>,
 
     selected: usize,
     offset: usize,
@@ -223,7 +244,7 @@ impl<'a> CommitListState<'a> {
         graph_image_manager: GraphImageManager,
         graph_cell_width: u16,
         head: Head,
-        ref_name_to_commit_index_map: FxHashMap<String, usize>,
+        ref_name_to_commit_index_map: FxHashMap<String, RawCommitIdx>,
         default_ignore_case: bool,
         default_fuzzy: bool,
         filtered: Option<FilteredGraphData>,
@@ -245,13 +266,14 @@ impl<'a> CommitListState<'a> {
             .map(|c| console::measure_text_width(&c.commit.author_name) as u16)
             .max()
             .unwrap_or(0);
-        let commit_hash_set = commits
+        let commit_hash_to_raw = commits
             .iter()
-            .map(|c| c.commit.commit_hash.clone())
+            .enumerate()
+            .map(|(i, c)| (c.commit.commit_hash.clone(), RawCommitIdx(i)))
             .collect();
         CommitListState {
             commits,
-            commit_hash_set,
+            commit_hash_to_raw,
             graph_image_manager,
             graph_cell_width,
             head,
@@ -342,7 +364,7 @@ impl<'a> CommitListState<'a> {
 
     pub fn toggle_remote_refs(&mut self) -> bool {
         self.show_remote_refs = !self.show_remote_refs;
-        self.needs_graph_clear = true;
+        self.request_graph_clear();
         self.rebuild_filtered_indices();
         self.show_remote_refs
     }
@@ -376,6 +398,10 @@ impl<'a> CommitListState<'a> {
         std::mem::replace(&mut self.needs_graph_clear, false)
     }
 
+    pub fn request_graph_clear(&mut self) {
+        self.needs_graph_clear = true;
+    }
+
     pub fn has_virtual_row(&self) -> bool {
         self.working_changes
             .as_ref()
@@ -395,12 +421,63 @@ impl<'a> CommitListState<'a> {
     }
 
     fn first_visible_commit_hash(&self) -> Option<&CommitHash> {
-        let idx = if self.filtered_indices.is_empty() {
-            0
+        let idx: RawCommitIdx = if self.filtered_indices.is_empty() {
+            RawCommitIdx(0)
         } else {
             *self.filtered_indices.first()?
         };
-        self.commits.get(idx).map(|c| &c.commit.commit_hash)
+        self.commits.get(idx.0).map(|c| &c.commit.commit_hash)
+    }
+
+    // --- 座標系 accessor / 轉換 ---------------------------------------------
+    // 不變式：`self.offset` 與 `self.selected` 的任何直接賦值都必須走
+    // `set_visible_selection`，避免 offset + selected 越過 `total`。
+
+    fn commit(&self, idx: RawCommitIdx) -> &CommitInfo<'a> {
+        &self.commits[idx.0]
+    }
+
+    fn search_match(&self, idx: RawCommitIdx) -> &SearchMatch {
+        &self.search_matches[idx.0]
+    }
+
+    fn search_match_mut(&mut self, idx: RawCommitIdx) -> &mut SearchMatch {
+        &mut self.search_matches[idx.0]
+    }
+
+    fn raw_to_filtered(&self, raw: RawCommitIdx) -> Option<FilteredIdx> {
+        resolve_raw_to_filtered(&self.filtered_indices, self.commits.len(), raw)
+    }
+
+    /// `None` 代表輸入的 `FilteredIdx` 越界。caller 不得 fallback 成 `RawCommitIdx(0)`：
+    /// 合法對應只有「早退 / 游標不動」或 `debug_assert!`（render path invariant）。
+    fn filtered_to_raw(&self, f: FilteredIdx) -> Option<RawCommitIdx> {
+        resolve_filtered_to_raw(&self.filtered_indices, self.commits.len(), f)
+    }
+
+    fn visible_to_filtered(&self, v: VisibleIdx) -> FilteredIdx {
+        FilteredIdx(v.0.saturating_sub(self.virtual_row_offset()))
+    }
+
+    fn filtered_to_visible(&self, f: FilteredIdx) -> VisibleIdx {
+        VisibleIdx(f.0 + self.virtual_row_offset())
+    }
+
+    fn raw_to_visible(&self, raw: RawCommitIdx) -> Option<VisibleIdx> {
+        self.raw_to_filtered(raw)
+            .map(|f| self.filtered_to_visible(f))
+    }
+
+    fn current_visible(&self) -> VisibleIdx {
+        VisibleIdx(self.offset + self.selected)
+    }
+
+    /// 唯一允許寫 `self.offset` / `self.selected` 的入口（相對位移除外）。
+    fn set_visible_selection(&mut self, target: VisibleIdx) {
+        if let Some((offset, selected)) = compute_selection(target, self.total, self.height) {
+            self.offset = offset;
+            self.selected = selected;
+        }
     }
 
     pub fn working_changes(&self) -> Option<&WorkingChanges> {
@@ -411,23 +488,24 @@ impl<'a> CommitListState<'a> {
         let has_text_filter = !self.filter_input.value().is_empty();
         let has_remote_filter = !self.show_remote_refs;
         let vr = self.virtual_row_offset();
+        let prev_visible = self.current_visible();
 
         if !has_text_filter && !has_remote_filter {
             self.filtered_indices.clear();
             self.total = self.commits.len() + vr;
         } else {
-            let base: Box<dyn Iterator<Item = usize>> = if has_text_filter {
+            let base: Box<dyn Iterator<Item = RawCommitIdx>> = if has_text_filter {
                 Box::new(self.text_filtered_indices.iter().copied())
             } else {
-                Box::new(0..self.commits.len())
+                Box::new((0..self.commits.len()).map(RawCommitIdx))
             };
 
             if has_remote_filter {
                 self.filtered_indices = base
-                    .filter(|&i| {
+                    .filter(|raw| {
                         !self
                             .remote_only_commits
-                            .contains(self.commits[i].commit_hash())
+                            .contains(self.commits[raw.0].commit_hash())
                     })
                     .collect();
             } else {
@@ -437,18 +515,31 @@ impl<'a> CommitListState<'a> {
             self.total = self.filtered_indices.len() + vr;
         }
 
-        self.selected = self.selected.min(self.total.saturating_sub(1));
-        self.offset = self.offset.min(self.total.saturating_sub(self.height));
+        let clamped = prev_visible.0.min(self.total.saturating_sub(1));
+        self.offset = 0;
+        self.selected = 0;
+        self.set_visible_selection(VisibleIdx(clamped));
+    }
+
+    fn effective_scroll_margin(&self) -> usize {
+        CURSOR_SCROLL_MARGIN.min(self.height / 3)
     }
 
     pub fn select_next(&mut self) {
         if self.total == 0 || self.height == 0 {
             return;
         }
-        if self.selected < (self.total - 1).min(self.height - 1) {
-            self.selected += 1;
-        } else if self.selected + self.offset < self.total - 1 {
+        if self.offset + self.selected + 1 >= self.total {
+            return;
+        }
+        let margin = self.effective_scroll_margin();
+        let can_scroll_more = self.offset + self.height < self.total;
+        let at_bottom_margin = self.selected + margin + 1 >= self.height;
+
+        if at_bottom_margin && can_scroll_more {
             self.offset += 1;
+        } else {
+            self.selected += 1;
         }
     }
 
@@ -457,7 +548,7 @@ impl<'a> CommitListState<'a> {
             return;
         }
         if let Some(target_commit) = self.selected_commit_parent_hash().cloned() {
-            if self.commit_hash_set.contains(&target_commit) {
+            if self.commit_hash_to_raw.contains_key(&target_commit) {
                 while target_commit.as_str() != self.selected_commit_hash().as_str() {
                     self.select_next();
                 }
@@ -469,14 +560,21 @@ impl<'a> CommitListState<'a> {
         if self.total == 0 || self.is_virtual_row_selected() {
             return None;
         }
-        self.commits[self.current_selected_index()]
+        self.commit(self.current_selected_raw())
             .commit
             .parent_commit_hashes
             .first()
     }
 
     pub fn select_prev(&mut self) {
-        if self.selected > 0 {
+        if self.height == 0 {
+            return;
+        }
+        let at_top_margin = self.selected < self.effective_scroll_margin();
+
+        if at_top_margin && self.offset > 0 {
+            self.offset -= 1;
+        } else if self.selected > 0 {
             self.selected -= 1;
         } else if self.offset > 0 {
             self.offset -= 1;
@@ -484,17 +582,14 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn select_first(&mut self) {
-        self.selected = 0;
-        self.offset = 0;
+        self.set_visible_selection(VisibleIdx(0));
     }
 
     pub fn select_last(&mut self) {
-        if self.total == 0 || self.height == 0 {
+        if self.total == 0 {
             return;
         }
-        let max_selected = self.height.min(self.total) - 1;
-        self.selected = max_selected;
-        self.offset = self.total.saturating_sub(self.height);
+        self.set_visible_selection(VisibleIdx(self.total - 1));
     }
 
     pub fn scroll_down(&mut self) {
@@ -518,50 +613,43 @@ impl<'a> CommitListState<'a> {
         }
     }
 
-    fn select_index(&mut self, index: usize) {
-        if index < self.total {
-            if self.total > self.height {
-                self.selected = 0;
-                self.offset = index;
-            } else {
-                self.selected = index;
-            }
-        }
-    }
-
     pub fn select_next_match(&mut self) {
         if self.commits.is_empty() {
             return;
         }
-        self.select_next_match_index(self.current_selected_index());
+        self.select_next_match_index(self.current_selected_raw());
     }
 
     pub fn select_prev_match(&mut self) {
         if self.commits.is_empty() {
             return;
         }
-        self.select_prev_match_index(self.current_selected_index());
+        self.select_prev_match_index(self.current_selected_raw());
     }
 
     pub fn selected_commit_hash(&self) -> &CommitHash {
         // When virtual row is selected, return first commit hash as fallback
-        let idx = self.current_selected_index();
-        &self.commits[idx].commit.commit_hash
+        &self.commit(self.current_selected_raw()).commit.commit_hash
     }
 
     pub fn selected_commit_refs(&self) -> &[&'a Ref] {
         if self.is_virtual_row_selected() {
             return &[];
         }
-        self.commits[self.current_selected_index()].refs()
+        self.commit(self.current_selected_raw()).refs()
     }
 
-    /// Returns the real commit index (in commits Vec) for the currently selected item.
-    /// When virtual row is selected, returns 0 (first commit) as fallback.
-    pub fn current_selected_index(&self) -> usize {
-        let visible_idx = self.offset + self.selected;
-        let adjusted = visible_idx.saturating_sub(self.virtual_row_offset());
-        self.real_commit_index(adjusted)
+    /// 當前選中的 raw commit index。虛擬行選中時退而求其次回 `RawCommitIdx(0)`。
+    /// Invariant：`total > 0` 時必回合法 raw；render path 依此不處理 `None`。
+    pub fn current_selected_raw(&self) -> RawCommitIdx {
+        let filtered = self.visible_to_filtered(self.current_visible());
+        match self.filtered_to_raw(filtered) {
+            Some(raw) => raw,
+            None => {
+                debug_assert!(false, "current_selected_raw: filtered idx out of range");
+                RawCommitIdx(0)
+            }
+        }
     }
 
     pub fn current_list_status(&self) -> (usize, usize, usize) {
@@ -573,33 +661,20 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn select_ref(&mut self, ref_name: &str) {
-        if let Some(&index) = self.ref_name_to_commit_index_map.get(ref_name) {
-            let visible_index = index + self.virtual_row_offset();
-            if self.total > self.height {
-                self.selected = 0;
-                self.offset = visible_index;
-            } else {
-                self.selected = visible_index;
-            }
+        let Some(&raw) = self.ref_name_to_commit_index_map.get(ref_name) else {
+            return;
+        };
+        if let Some(target) = self.raw_to_visible(raw) {
+            self.set_visible_selection(target);
         }
     }
 
     pub fn select_commit_hash(&mut self, commit_hash: &CommitHash) {
-        if !self.commit_hash_set.contains(commit_hash) {
+        let Some(&raw) = self.commit_hash_to_raw.get(commit_hash) else {
             return;
-        }
-        let vr = self.virtual_row_offset();
-        for (i, commit_info) in self.commits.iter().enumerate() {
-            if commit_info.commit.commit_hash == *commit_hash {
-                let visible_i = i + vr;
-                if self.total > self.height {
-                    self.selected = 0;
-                    self.offset = visible_i;
-                } else {
-                    self.selected = visible_i;
-                }
-                break;
-            }
+        };
+        if let Some(target) = self.raw_to_visible(raw) {
+            self.set_visible_selection(target);
         }
     }
 
@@ -610,7 +685,7 @@ impl<'a> CommitListState<'a> {
     pub fn start_search(&mut self) {
         if let SearchState::Inactive | SearchState::Applied { .. } = self.search_state {
             self.search_state = SearchState::Searching {
-                start_index: self.current_selected_index(),
+                start_index: self.current_selected_raw(),
                 match_index: 0,
                 ignore_case: self.default_ignore_case,
                 fuzzy: self.default_fuzzy,
@@ -795,15 +870,15 @@ impl<'a> CommitListState<'a> {
         let mut match_index = 1;
 
         if can_use_incremental {
-            // Incremental search: only check previously matched commits
-            // First, clear all previous matches
-            for &i in &self.last_matched_indices {
-                self.search_matches[i].clear();
+            // Incremental search: only check previously matched commits.
+            // `mem::take` 避免對 Vec 做額外 clone；迴圈結尾會覆寫回去。
+            let prev = std::mem::take(&mut self.last_matched_indices);
+            for raw in &prev {
+                self.search_match_mut(*raw).clear();
             }
 
-            // Then search only among previously matched
-            for &i in &self.last_matched_indices {
-                let commit_info = &self.commits[i];
+            for raw in prev {
+                let commit_info = self.commit(raw);
                 if Self::commit_quick_matches(&matcher, commit_info) {
                     let mut m = SearchMatch::new(
                         commit_info.commit,
@@ -814,15 +889,17 @@ impl<'a> CommitListState<'a> {
                     );
                     m.match_index = match_index;
                     match_index += 1;
-                    self.search_matches[i] = m;
-                    new_matched_indices.push(i);
+                    *self.search_match_mut(raw) = m;
+                    new_matched_indices.push(raw);
                 }
             }
         } else {
             // Full search: check all commits
             self.clear_search_matches();
 
-            for (i, commit_info) in self.commits.iter().enumerate() {
+            for i in 0..self.commits.len() {
+                let raw = RawCommitIdx(i);
+                let commit_info = self.commit(raw);
                 // Quick check first to avoid creating SearchMatch for non-matching commits
                 if Self::commit_quick_matches(&matcher, commit_info) {
                     let mut m = SearchMatch::new(
@@ -834,8 +911,8 @@ impl<'a> CommitListState<'a> {
                     );
                     m.match_index = match_index;
                     match_index += 1;
-                    self.search_matches[i] = m;
-                    new_matched_indices.push(i);
+                    *self.search_match_mut(raw) = m;
+                    new_matched_indices.push(raw);
                 }
             }
         }
@@ -879,70 +956,53 @@ impl<'a> CommitListState<'a> {
         self.search_matches.iter_mut().for_each(|m| m.clear());
     }
 
-    fn select_current_or_next_match_index(&mut self, current_index: usize) {
-        if self.search_matches[current_index].matched() && self.is_index_visible(current_index) {
-            self.select_real_index(current_index);
-            self.search_state
-                .update_match_index(self.search_matches[current_index].match_index);
+    fn select_current_or_next_match_index(&mut self, current: RawCommitIdx) {
+        if self.search_match(current).matched() && self.is_raw_visible(current) {
+            self.select_raw(current);
+            let mi = self.search_match(current).match_index;
+            self.search_state.update_match_index(mi);
         } else {
-            self.select_next_match_index(current_index)
+            self.select_next_match_index(current)
         }
     }
 
-    fn select_next_match_index(&mut self, current_index: usize) {
-        // Always iterate over full commits list since search_matches uses real indices
+    fn select_next_match_index(&mut self, current: RawCommitIdx) {
+        self.select_match_in_direction(current, MatchStep::Next);
+    }
+
+    fn select_prev_match_index(&mut self, current: RawCommitIdx) {
+        self.select_match_in_direction(current, MatchStep::Prev);
+    }
+
+    fn select_match_in_direction(&mut self, current: RawCommitIdx, step: MatchStep) {
         let len = self.commits.len();
         if len == 0 {
             return;
         }
-        let mut i = (current_index + 1) % len;
-        while i != current_index {
-            if self.search_matches[i].matched() && self.is_index_visible(i) {
-                self.select_real_index(i);
-                self.search_state
-                    .update_match_index(self.search_matches[i].match_index);
+        let advance = |i: usize| match step {
+            MatchStep::Next => (i + 1) % len,
+            MatchStep::Prev => (i + len - 1) % len,
+        };
+        let mut i = advance(current.0);
+        while i != current.0 {
+            let raw = RawCommitIdx(i);
+            if self.search_match(raw).matched() && self.is_raw_visible(raw) {
+                self.select_raw(raw);
+                let mi = self.search_match(raw).match_index;
+                self.search_state.update_match_index(mi);
                 return;
             }
-            i = (i + 1) % len;
+            i = advance(i);
         }
     }
 
-    fn select_prev_match_index(&mut self, current_index: usize) {
-        // Always iterate over full commits list since search_matches uses real indices
-        let len = self.commits.len();
-        if len == 0 {
-            return;
-        }
-        let mut i = (current_index + len - 1) % len;
-        while i != current_index {
-            if self.search_matches[i].matched() && self.is_index_visible(i) {
-                self.select_real_index(i);
-                self.search_state
-                    .update_match_index(self.search_matches[i].match_index);
-                return;
-            }
-            i = (i + len - 1) % len;
-        }
+    fn is_raw_visible(&self, raw: RawCommitIdx) -> bool {
+        self.raw_to_filtered(raw).is_some()
     }
 
-    /// Check if a real commit index is visible (considering filter)
-    fn is_index_visible(&self, real_index: usize) -> bool {
-        if self.filtered_indices.is_empty() {
-            true // No filter, all indices visible
-        } else {
-            self.filtered_indices.contains(&real_index)
-        }
-    }
-
-    /// Select a commit by its real index (in commits Vec), converting to visible index
-    fn select_real_index(&mut self, real_index: usize) {
-        let vr = self.virtual_row_offset();
-        if self.filtered_indices.is_empty() {
-            self.select_index(real_index + vr);
-        } else if let Some(visible_idx) =
-            self.filtered_indices.iter().position(|&i| i == real_index)
-        {
-            self.select_index(visible_idx + vr);
+    fn select_raw(&mut self, raw: RawCommitIdx) {
+        if let Some(target) = self.raw_to_visible(raw) {
+            self.set_visible_selection(target);
         }
     }
 
@@ -1021,9 +1081,8 @@ impl<'a> CommitListState<'a> {
         self.filter_state = FilterState::Inactive;
         self.filter_input.reset();
         self.text_filtered_indices.clear();
-        self.selected = 0;
-        self.offset = 0;
         self.rebuild_filtered_indices();
+        self.set_visible_selection(VisibleIdx(0));
     }
 
     pub fn apply_filter(&mut self) {
@@ -1119,23 +1178,13 @@ impl<'a> CommitListState<'a> {
             let matcher = SearchMatcher::new(&query, ignore_case, fuzzy);
             for (i, commit_info) in self.commits.iter().enumerate() {
                 if Self::commit_quick_matches(&matcher, commit_info) {
-                    self.text_filtered_indices.push(i);
+                    self.text_filtered_indices.push(RawCommitIdx(i));
                 }
             }
         }
 
-        self.selected = 0;
-        self.offset = 0;
         self.rebuild_filtered_indices();
-    }
-
-    /// Map visible index to real commit index
-    fn real_commit_index(&self, visible_idx: usize) -> usize {
-        if self.filtered_indices.is_empty() {
-            visible_idx
-        } else {
-            self.filtered_indices[visible_idx]
-        }
+        self.set_visible_selection(VisibleIdx(0));
     }
 }
 
@@ -1245,7 +1294,6 @@ impl CommitList<'_> {
         }
 
         // Load graph images for visible commits
-        let has_filter = !state.filtered_indices.is_empty();
         let use_filtered = !state.show_remote_refs && state.filtered_graph_image_manager.is_some();
         let vr_offset = state.virtual_row_offset();
         for display_idx in 0..state.height.min(state.total.saturating_sub(state.offset)) {
@@ -1253,13 +1301,12 @@ impl CommitList<'_> {
             if visible_idx < vr_offset {
                 continue; // skip virtual row
             }
-            let commit_visible_idx = visible_idx - vr_offset;
-            let real_idx = if has_filter {
-                state.filtered_indices[commit_visible_idx]
-            } else {
-                commit_visible_idx
+            let filtered = FilteredIdx(visible_idx - vr_offset);
+            let Some(raw) = state.filtered_to_raw(filtered) else {
+                debug_assert!(false, "render: filtered idx out of range in update_state");
+                continue;
             };
-            let hash = &state.commits[real_idx].commit.commit_hash;
+            let hash = &state.commit(raw).commit.commit_hash;
             if use_filtered {
                 state
                     .filtered_graph_image_manager
@@ -1296,8 +1343,13 @@ impl CommitList<'_> {
             let hash = if is_vr {
                 first_hash_opt
             } else {
-                let selected_idx = state.current_selected_index();
-                Some(state.commits[selected_idx].commit.commit_hash.clone())
+                Some(
+                    state
+                        .commit(state.current_selected_raw())
+                        .commit
+                        .commit_hash
+                        .clone(),
+                )
             };
             if let Some(hash) = hash {
                 if use_filtered {
@@ -1349,7 +1401,7 @@ impl CommitList<'_> {
         }
         let use_up_image = state.has_virtual_row() && state.offset == 0;
         self.rendering_commit_info_iter(state)
-            .for_each(|(display_i, real_i, commit_info)| {
+            .for_each(|(display_i, raw, commit_info)| {
                 let y_offset = if gap > 0 && display_i > state.selected {
                     gap
                 } else {
@@ -1357,7 +1409,7 @@ impl CommitList<'_> {
                 };
                 let y = area.top() + display_i as u16 + y_offset;
                 if y < area.bottom() {
-                    let image = if use_up_image && real_i == 0 {
+                    let image = if use_up_image && raw.0 == 0 {
                         // First commit with Up edge for virtual row connection
                         if gap > 0 && display_i == state.selected {
                             state
@@ -1407,8 +1459,7 @@ impl CommitList<'_> {
                 }
             } else {
                 // Normal commit: use plain spacer without background
-                let selected_idx = state.current_selected_index();
-                let spacer_commit = &state.commits[selected_idx];
+                let spacer_commit = state.commit(state.current_selected_raw());
                 let spacer = state.spacer_image(spacer_commit);
                 for gap_row in 0..gap {
                     let y = area.top() + state.selected as u16 + 1 + gap_row;
@@ -1453,8 +1504,7 @@ impl CommitList<'_> {
                 }
                 items.push(ListItem::new(line));
                 if gap > 0 && display_i == state.selected && !state.is_virtual_row_selected() {
-                    let selected_idx = state.current_selected_index();
-                    let sel_color = state.marker_color(&state.commits[selected_idx]);
+                    let sel_color = state.marker_color(state.commit(state.current_selected_raw()));
                     for _ in 0..gap {
                         items.push(ListItem::new("│".fg(sel_color)));
                     }
@@ -1505,11 +1555,11 @@ impl CommitList<'_> {
             Self::insert_gap(&mut items, state, true, 0);
         }
         self.rendering_commit_info_iter(state)
-            .for_each(|(display_i, real_i, commit_info)| {
+            .for_each(|(display_i, raw, commit_info)| {
                 let mut spans = refs_spans(
                     commit_info,
                     &state.head,
-                    &state.search_matches[real_i].refs,
+                    &state.search_match(raw).refs,
                     &self.ctx.color_theme,
                     state.show_remote_refs,
                 );
@@ -1524,8 +1574,7 @@ impl CommitList<'_> {
                         commit.subject.to_string()
                     };
 
-                    let sub_spans = if let Some(pos) = state.search_matches[real_i].subject.clone()
-                    {
+                    let sub_spans = if let Some(pos) = state.search_match(raw).subject.clone() {
                         highlighted_spans(
                             subject.into(),
                             pos,
@@ -1557,14 +1606,14 @@ impl CommitList<'_> {
             Self::insert_gap(&mut items, state, true, 0);
         }
         self.rendering_commit_iter(state)
-            .for_each(|(display_i, real_i, commit)| {
+            .for_each(|(display_i, raw, commit)| {
                 let truncate = console::measure_text_width(&commit.author_name) > max_width;
                 let name = if truncate {
                     console::truncate_str(&commit.author_name, max_width, ELLIPSIS).to_string()
                 } else {
                     commit.author_name.to_string()
                 };
-                let spans = if let Some(pos) = state.search_matches[real_i].author_name.clone() {
+                let spans = if let Some(pos) = state.search_match(raw).author_name.clone() {
                     highlighted_spans(
                         name.into(),
                         pos,
@@ -1592,9 +1641,9 @@ impl CommitList<'_> {
             Self::insert_gap(&mut items, state, true, 0);
         }
         self.rendering_commit_iter(state)
-            .for_each(|(display_i, real_i, commit)| {
+            .for_each(|(display_i, raw, commit)| {
                 let hash = commit.commit_hash.as_short_hash();
-                let spans = if let Some(pos) = state.search_matches[real_i].commit_hash.clone() {
+                let spans = if let Some(pos) = state.search_match(raw).commit_hash.clone() {
                     highlighted_spans(
                         hash.into(),
                         pos,
@@ -1622,7 +1671,7 @@ impl CommitList<'_> {
             Self::insert_gap(&mut items, state, true, 0);
         }
         self.rendering_commit_iter(state)
-            .for_each(|(display_i, _real_i, commit)| {
+            .for_each(|(display_i, _raw, commit)| {
                 let date = &commit.author_date;
                 let date_str = if self.ctx.ui_config.list.date_local {
                     let local = date.with_timezone(&chrono::Local);
@@ -1643,36 +1692,31 @@ impl CommitList<'_> {
         Widget::render(List::new(items), area, buf);
     }
 
-    /// Returns iterator of (display_idx, real_idx, &CommitInfo)
+    /// Returns iterator of (display_idx, raw_idx, &CommitInfo)
     /// display_idx: position on screen (0, 1, 2, ...)
-    /// real_idx: actual index in commits Vec (for search_matches access)
+    /// raw_idx: actual index in commits Vec (for search_matches access)
     /// Skips the virtual row (if present and visible).
     fn rendering_commit_info_iter<'b>(
         &'b self,
         state: &'b CommitListState<'_>,
-    ) -> impl Iterator<Item = (usize, usize, &'b CommitInfo<'b>)> {
-        let has_filter = !state.filtered_indices.is_empty();
+    ) -> impl Iterator<Item = (usize, RawCommitIdx, &'b CommitInfo<'b>)> {
         let vr_offset = state.virtual_row_offset();
         let total_visible = state.height.min(state.total.saturating_sub(state.offset));
         let start = if state.offset == 0 { vr_offset } else { 0 };
-        (start..total_visible).map(move |display_idx| {
+        (start..total_visible).filter_map(move |display_idx| {
             let visible_idx = state.offset + display_idx;
-            let commit_visible_idx = visible_idx - vr_offset;
-            let real_idx = if has_filter {
-                state.filtered_indices[commit_visible_idx]
-            } else {
-                commit_visible_idx
-            };
-            (display_idx, real_idx, &state.commits[real_idx])
+            let filtered = FilteredIdx(visible_idx - vr_offset);
+            let raw = state.filtered_to_raw(filtered)?;
+            Some((display_idx, raw, state.commit(raw)))
         })
     }
 
     fn rendering_commit_iter<'b>(
         &'b self,
         state: &'b CommitListState<'_>,
-    ) -> impl Iterator<Item = (usize, usize, &'b Commit)> {
+    ) -> impl Iterator<Item = (usize, RawCommitIdx, &'b Commit)> {
         self.rendering_commit_info_iter(state)
-            .map(|(display_i, real_i, commit_info)| (display_i, real_i, commit_info.commit))
+            .map(|(display_i, raw, commit_info)| (display_i, raw, commit_info.commit))
     }
 
     fn to_commit_list_item<'a, 'b>(
@@ -1958,6 +2002,50 @@ fn calc_cell_widths(
     constraints
 }
 
+/// Pure：把 raw commit index 轉成 filtered view 的位置。filter 空時 alias 到 raw。
+fn resolve_raw_to_filtered(
+    filtered_indices: &[RawCommitIdx],
+    commits_len: usize,
+    raw: RawCommitIdx,
+) -> Option<FilteredIdx> {
+    if filtered_indices.is_empty() {
+        (raw.0 < commits_len).then_some(FilteredIdx(raw.0))
+    } else {
+        filtered_indices
+            .iter()
+            .position(|r| *r == raw)
+            .map(FilteredIdx)
+    }
+}
+
+/// Pure：把 filtered view 的位置轉回 raw commit index。越界回 None。
+fn resolve_filtered_to_raw(
+    filtered_indices: &[RawCommitIdx],
+    commits_len: usize,
+    f: FilteredIdx,
+) -> Option<RawCommitIdx> {
+    if filtered_indices.is_empty() {
+        (f.0 < commits_len).then_some(RawCommitIdx(f.0))
+    } else {
+        filtered_indices.get(f.0).copied()
+    }
+}
+
+/// Pure：給定 (target, total, height) 算出 (offset, selected)。
+/// target 越界或 height=0 回 None（caller 不動游標）。
+/// 合併 `total > height` 與 `total <= height` 兩分支成單一公式：
+/// `total <= height` 時 `max_offset = 0`，自動退化成 `selected = target.0`。
+fn compute_selection(target: VisibleIdx, total: usize, height: usize) -> Option<(usize, usize)> {
+    if target.0 >= total || height == 0 {
+        return None;
+    }
+    let max_offset = total.saturating_sub(height);
+    let offset = target.0.min(max_offset);
+    let selected = target.0 - offset;
+    debug_assert!(selected < height);
+    Some((offset, selected))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -2144,5 +2232,149 @@ mod tests {
             Constraint::Length(6),  // Graph
         ];
         assert_eq!(actual, expected);
+    }
+
+    // --- 座標系 regression tests ---------------------------------------------
+    // 這些 test 聚焦在 pure function（`resolve_*` / `compute_selection`），
+    // 避開 CommitListState fixture 的建構成本；涵蓋原始 panic 路徑。
+
+    #[test]
+    fn filtered_to_raw_empty_filter_passes_through_when_in_range() {
+        assert_eq!(
+            resolve_filtered_to_raw(&[], 10, FilteredIdx(5)),
+            Some(RawCommitIdx(5))
+        );
+    }
+
+    #[test]
+    fn filtered_to_raw_empty_filter_out_of_range_returns_none() {
+        assert_eq!(resolve_filtered_to_raw(&[], 10, FilteredIdx(10)), None);
+    }
+
+    #[test]
+    fn filtered_to_raw_active_filter_out_of_range_returns_none_no_panic() {
+        // 原始 panic 場景：filtered_indices.len() = 234，index 309 越界。
+        let filtered: Vec<RawCommitIdx> = (0..234).map(RawCommitIdx).collect();
+        assert_eq!(
+            resolve_filtered_to_raw(&filtered, 500, FilteredIdx(309)),
+            None,
+            "越界 FilteredIdx 應返回 None 而非 panic"
+        );
+    }
+
+    #[test]
+    fn filtered_to_raw_active_filter_returns_mapped_raw() {
+        let filtered = vec![RawCommitIdx(3), RawCommitIdx(7), RawCommitIdx(12)];
+        assert_eq!(
+            resolve_filtered_to_raw(&filtered, 20, FilteredIdx(2)),
+            Some(RawCommitIdx(12))
+        );
+    }
+
+    #[test]
+    fn raw_to_filtered_finds_position() {
+        let filtered = vec![RawCommitIdx(3), RawCommitIdx(7), RawCommitIdx(12)];
+        assert_eq!(
+            resolve_raw_to_filtered(&filtered, 20, RawCommitIdx(7)),
+            Some(FilteredIdx(1))
+        );
+    }
+
+    #[test]
+    fn raw_to_filtered_filtered_out_returns_none() {
+        let filtered = vec![RawCommitIdx(3), RawCommitIdx(7), RawCommitIdx(12)];
+        // raw=5 不在 filter 內 → None（caller 應「游標不動」而非 fallback 到 0）
+        assert_eq!(
+            resolve_raw_to_filtered(&filtered, 20, RawCommitIdx(5)),
+            None
+        );
+    }
+
+    #[test]
+    fn raw_to_filtered_empty_filter_alias_to_raw() {
+        assert_eq!(
+            resolve_raw_to_filtered(&[], 10, RawCommitIdx(5)),
+            Some(FilteredIdx(5))
+        );
+    }
+
+    #[test]
+    fn compute_selection_within_first_page() {
+        // total=10, height=5, target=2：total > height 時，畫面從 target 開始捲，
+        // 游標 pin 在畫面頂端（offset=target, selected=0）—— 與原版 select_index 行為一致。
+        let (offset, selected) = compute_selection(VisibleIdx(2), 10, 5).unwrap();
+        assert_eq!((offset, selected), (2, 0));
+    }
+
+    #[test]
+    fn compute_selection_beyond_first_page_pins_max_offset() {
+        // total=10, height=5, target=8 → offset pin 到 max_offset=5，selected=3
+        let (offset, selected) = compute_selection(VisibleIdx(8), 10, 5).unwrap();
+        assert_eq!((offset, selected), (5, 3));
+        assert!(offset + selected < 10);
+        assert!(selected < 5);
+    }
+
+    #[test]
+    fn compute_selection_total_le_height_uses_selected_only() {
+        // total=3, height=10（height 比 total 大）→ 公式退化成 offset=0
+        let (offset, selected) = compute_selection(VisibleIdx(2), 3, 10).unwrap();
+        assert_eq!((offset, selected), (0, 2));
+    }
+
+    #[test]
+    fn compute_selection_out_of_range_returns_none() {
+        // target >= total：不動游標（防呆原 panic 場景）
+        assert!(compute_selection(VisibleIdx(10), 10, 5).is_none());
+        assert!(compute_selection(VisibleIdx(309), 234, 50).is_none());
+    }
+
+    #[test]
+    fn compute_selection_zero_height_returns_none() {
+        // height=0（例如畫面尚未配置）→ 不動游標
+        assert!(compute_selection(VisibleIdx(0), 10, 0).is_none());
+    }
+
+    #[test]
+    fn compute_selection_never_puts_cursor_off_screen() {
+        // 窮舉：任何合法 target 都應產生 offset + selected < total、selected < height
+        for total in 1..30 {
+            for height in 1..20 {
+                for t in 0..total {
+                    let Some((offset, selected)) = compute_selection(VisibleIdx(t), total, height)
+                    else {
+                        continue;
+                    };
+                    assert!(
+                        offset + selected < total,
+                        "invariant: offset+selected < total (t={t}, total={total}, h={height})"
+                    );
+                    assert!(
+                        selected < height,
+                        "invariant: selected < height (t={t}, total={total}, h={height})"
+                    );
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn select_commit_hash_panic_scenario_does_not_panic() {
+        // 原始 panic 場景模擬：
+        // commits.len()=500, filtered_indices.len()=234（隱藏 remote-only 後）。
+        // 使用者選一個 raw=309 的 commit → 轉換應該回 None（不在 filter 內），
+        // caller 不動游標，整體不 panic。
+        let filtered: Vec<RawCommitIdx> = (0..234).map(RawCommitIdx).collect();
+        let target_raw = RawCommitIdx(309);
+        let visible = resolve_raw_to_filtered(&filtered, 500, target_raw);
+        assert_eq!(visible, None, "raw=309 不在 filtered_indices 內 → None");
+
+        // 若 target_raw 恰好在 filter 內（例如 raw=100 → filtered=100），
+        // 再走 compute_selection 必得合法 (offset, selected)。
+        let in_filter = resolve_raw_to_filtered(&filtered, 500, RawCommitIdx(100)).unwrap();
+        // filtered total = 234 + vr(0); height=50；target=100
+        let (offset, selected) = compute_selection(VisibleIdx(in_filter.0), 234, 50).unwrap();
+        assert!(offset + selected < 234);
+        assert!(selected < 50);
     }
 }

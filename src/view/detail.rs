@@ -238,6 +238,12 @@ impl<'a> DetailView<'a> {
             .is_some_and(|s| s.take_graph_clear())
     }
 
+    pub fn request_graph_clear(&mut self) {
+        if let Some(s) = self.commit_list_state.as_mut() {
+            s.request_graph_clear();
+        }
+    }
+
     pub fn take_list_state(&mut self) -> Option<CommitListState<'a>> {
         let mut state = self.commit_list_state.take();
         if let Some(ref mut s) = state {

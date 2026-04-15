@@ -68,6 +68,14 @@ impl<'a> View<'a> {
         }
     }
 
+    pub fn request_graph_clear(&mut self) {
+        match self {
+            View::List(view) => view.request_graph_clear(),
+            View::Detail(view) => view.request_graph_clear(),
+            _ => {}
+        }
+    }
+
     pub fn is_browsing_view(&self) -> bool {
         match self {
             View::List(_) | View::Detail(_) | View::Refs(_) => true,
