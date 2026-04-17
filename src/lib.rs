@@ -223,11 +223,11 @@ pub fn compute_filtered_graph_from(
         .cloned()
         .collect();
 
-    let filtered_head_hint = layout_head_hint(repository);
+    let head = resolve_head_commit_hash(repository);
     let filtered = Rc::new(graph::calc_graph_filtered(
         repository,
         &visible_hashes,
-        filtered_head_hint.as_ref(),
+        head.as_ref(),
     ));
 
     let cell_width = match ctx.cell_width_type {
@@ -285,14 +285,6 @@ fn build_graph_artifacts(
     let (filtered, remote_only) =
         compute_filtered_graph_from(repository, graph, remote_only, ctx, head_commit_hash);
     (image_manager, filtered, remote_only)
-}
-
-fn layout_head_hint(repository: &git::Repository) -> Option<git::CommitHash> {
-    if repository.working_changes().is_empty() {
-        None
-    } else {
-        resolve_head_commit_hash(repository)
-    }
 }
 
 /// Fast-path helper: if the refs changed in a way that shifts commits between
@@ -377,7 +369,7 @@ pub fn run() -> Result<()> {
     let mut repository = git::Repository::load(Path::new(&args.path), order, max_count)?;
     let mut graph = Rc::new(graph::calc_graph(
         &repository,
-        layout_head_hint(&repository).as_ref(),
+        resolve_head_commit_hash(&repository).as_ref(),
     ));
     let mut cell_width_type = check::decide_cell_width_type(&graph, graph_width)?;
     let mut render_ctx = GraphRenderCtx {
@@ -423,15 +415,15 @@ pub fn run() -> Result<()> {
 
                 let new_repo = git::Repository::load(Path::new(&args.path), order, max_count)?;
 
-                let layout_inputs_same =
-                    layout_head_hint(&repository) == layout_head_hint(&new_repo);
+                let old_head = resolve_head_commit_hash(&repository);
+                let new_head = resolve_head_commit_hash(&new_repo);
+                let layout_inputs_same = old_head == new_head;
                 if repository.same_commits(&new_repo) && layout_inputs_same {
                     // Fast path: commits unchanged — reuse the existing image
                     // manager so the screen doesn't flicker on watcher refresh.
                     // App must release its &repository borrow before mutation.
                     (graph_image_manager, filtered_graph, remote_only_commits) = app.into_parts();
                     repository.update_metadata_from(new_repo);
-                    let new_head = resolve_head_commit_hash(&repository);
                     graph_image_manager.update_head_commit_hash(new_head.clone());
                     if let Some(filtered) = filtered_graph.as_mut() {
                         filtered
@@ -460,7 +452,7 @@ pub fn run() -> Result<()> {
                     repository = new_repo;
                     graph = Rc::new(graph::calc_graph(
                         &repository,
-                        layout_head_hint(&repository).as_ref(),
+                        resolve_head_commit_hash(&repository).as_ref(),
                     ));
                     cell_width_type = check::decide_cell_width_type(&graph, graph_width)?;
                     render_ctx.cell_width_type = cell_width_type;

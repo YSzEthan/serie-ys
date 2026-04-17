@@ -76,7 +76,12 @@ pub fn calc_graph(repository: &Repository, head_hint: Option<&CommitHash>) -> Gr
 
     let commit_pos_map = calc_commit_positions(&commits, repository, head_hint);
     let (mut graph_edges, max_pos_x) = calc_edges(&commit_pos_map, &commits, repository);
-    extend_head_line_to_top(&mut graph_edges, &commit_pos_map, head_hint);
+
+    normalize_head_row_invariant(&mut graph_edges, &commit_pos_map, head_hint);
+    if !repository.working_changes().is_empty() {
+        anchor_head_to_virtual_row(&mut graph_edges, &commit_pos_map, head_hint);
+    }
+
     let commit_hashes = commits.iter().map(|c| c.commit_hash.clone()).collect();
 
     Graph {
@@ -87,9 +92,29 @@ pub fn calc_graph(repository: &Repository, head_hint: Option<&CommitHash>) -> Gr
     }
 }
 
-/// When a head hint is present and HEAD is not at pos_y=0, extend HEAD's column
-/// upward so the virtual (uncommitted) row can visually connect down to HEAD.
-fn extend_head_line_to_top(
+/// HEAD row 在 head_pos_x 不能有 Vertical（會穿透空心圓 interior）。
+/// Graph invariant：HEAD 是 commit endpoint，不是 pass-through。永遠呼叫。
+fn normalize_head_row_invariant(
+    edges: &mut [Vec<Edge>],
+    commit_pos_map: &CommitPosMap,
+    head_hint: Option<&CommitHash>,
+) {
+    let Some(head_hash) = head_hint else { return };
+    let Some(&(head_pos_x, head_pos_y)) = commit_pos_map.get(head_hash) else {
+        return;
+    };
+    edges[head_pos_y].retain(|e| !(e.pos_x == head_pos_x && e.edge_type == EdgeType::Vertical));
+
+    debug_assert!(
+        !edges[head_pos_y].iter().any(|e| e.pos_x == head_pos_x
+            && matches!(e.edge_type, EdgeType::Vertical | EdgeType::Horizontal)),
+        "HEAD row invariant: pos_x must not contain pass-through edges"
+    );
+}
+
+/// 延伸 HEAD column 往上，讓 virtual uncommitted row 能視覺連下來。
+/// 僅在 working tree 有變動（需要顯示 virtual row）時呼叫。
+fn anchor_head_to_virtual_row(
     edges: &mut [Vec<Edge>],
     commit_pos_map: &CommitPosMap,
     head_hint: Option<&CommitHash>,
@@ -101,6 +126,7 @@ fn extend_head_line_to_top(
     if head_pos_y == 0 {
         return;
     }
+
     for row in edges.iter_mut().take(head_pos_y) {
         if !row
             .iter()
@@ -112,10 +138,17 @@ fn extend_head_line_to_top(
     let head_row = &mut edges[head_pos_y];
     if !head_row
         .iter()
-        .any(|e| e.pos_x == head_pos_x && matches!(e.edge_type, EdgeType::Up | EdgeType::Vertical))
+        .any(|e| e.pos_x == head_pos_x && e.edge_type == EdgeType::Up)
     {
         head_row.push(Edge::new(EdgeType::Up, head_pos_x, head_pos_x));
     }
+
+    debug_assert!(
+        head_row
+            .iter()
+            .any(|e| e.pos_x == head_pos_x && e.edge_type == EdgeType::Up),
+        "anchor_head_to_virtual_row must leave Up endpoint on head_row"
+    );
 }
 
 fn calc_commit_positions(
@@ -206,6 +239,8 @@ fn add_commit_line(
     hash_to_pos.insert(commit.commit_hash.clone(), pos_x);
 }
 
+// TODO: column 分配不知 pending merge edge，同 col merge 靠 calc_edges detour 繞道。
+// 根本修復：此處加 merge edge reservation 讓 column 分配避開被預訂的 column。
 fn update_commit_line(
     commit: &Commit,
     commit_line_state: &mut [Option<CommitHash>],
@@ -249,6 +284,21 @@ impl<'a> WrappedEdge<'a> {
     }
 }
 
+/// 畫 Up/Vertical/Down 直線（parent 到 child 同 col 或 merge 同 col 無 overlap）。
+fn draw_vertical_chain<'a>(
+    edges: &mut [Vec<WrappedEdge<'a>>],
+    col: usize,
+    child_row: usize,
+    parent_row: usize,
+    hash: &'a CommitHash,
+) {
+    edges[parent_row].push(WrappedEdge::new(EdgeType::Up, col, col, hash));
+    for y in ((child_row + 1)..parent_row).rev() {
+        edges[y].push(WrappedEdge::new(EdgeType::Vertical, col, col, hash));
+    }
+    edges[child_row].push(WrappedEdge::new(EdgeType::Down, col, col, hash));
+}
+
 fn calc_edges(
     commit_pos_map: &CommitPosMap,
     commits: &[&Commit],
@@ -264,17 +314,20 @@ fn calc_edges(
         for child_hash in source.children_hash(hash) {
             let (child_pos_x, child_pos_y) = commit_pos_map[child_hash];
 
-            if pos_x == child_pos_x {
-                // commit
-                edges[pos_y].push(WrappedEdge::new(EdgeType::Up, pos_x, pos_x, hash));
-                for y in ((child_pos_y + 1)..pos_y).rev() {
-                    edges[y].push(WrappedEdge::new(EdgeType::Vertical, pos_x, pos_x, hash));
+            debug_assert!(!commits[child_pos_y].parent_commit_hashes.is_empty());
+            let child_first_parent_hash = &commits[child_pos_y].parent_commit_hashes[0];
+            let is_first_parent = *child_first_parent_hash == *hash;
+
+            match (pos_x == child_pos_x, is_first_parent) {
+                (true, true) => {
+                    // commit: first-parent 且同 col → 直線
+                    draw_vertical_chain(&mut edges, pos_x, child_pos_y, pos_y, hash);
                 }
-                edges[child_pos_y].push(WrappedEdge::new(EdgeType::Down, pos_x, pos_x, hash));
-            } else {
-                let child_first_parent_hash = &commits[child_pos_y].parent_commit_hashes[0];
-                if *child_first_parent_hash == *hash {
-                    // branch
+                (_, false) => {
+                    // merge: 交給第二 loop detour（忽略 col 相等與否）
+                }
+                (false, true) => {
+                    // branch: first-parent 不同 col → 斜線
                     if pos_x < child_pos_x {
                         edges[pos_y].push(WrappedEdge::new(
                             EdgeType::Right,
@@ -332,9 +385,6 @@ fn calc_edges(
                         child_pos_x,
                         hash,
                     ));
-                } else {
-                    // merge
-                    // skip
                 }
             }
         }
@@ -361,94 +411,133 @@ fn calc_edges(
         for child_hash in source.children_hash(hash) {
             let (child_pos_x, child_pos_y) = commit_pos_map[child_hash];
 
-            if pos_x == child_pos_x {
-                // commit
-                // skip
+            let child_first_parent_hash = &commits[child_pos_y].parent_commit_hashes[0];
+            if *child_first_parent_hash == *hash {
+                // commit or branch — 已由第一 loop 處理
             } else {
-                let child_first_parent_hash = &commits[child_pos_y].parent_commit_hashes[0];
-                if *child_first_parent_hash == *hash {
-                    // branch
-                    // skip
-                } else {
-                    // merge
-                    let mut overlap = false;
-                    let mut new_pos_x = pos_x;
+                // merge（同 col 或不同 col 統一處理）
+                let mut overlap = false;
+                let mut new_pos_x = pos_x;
 
-                    let mut skip_judge_overlap = true;
+                let mut skip_judge_overlap = true;
+                for y in (child_pos_y + 1)..pos_y {
+                    let processing_commit_pos_x =
+                        commit_pos_map.get(&commits[y].commit_hash).unwrap().0;
+                    if processing_commit_pos_x == new_pos_x {
+                        skip_judge_overlap = false;
+                        break;
+                    }
+                    if edges[y]
+                        .iter()
+                        .filter(|e| e.edge.pos_x == pos_x)
+                        .filter(|e| matches!(e.edge.edge_type, EdgeType::Vertical))
+                        .any(|e| e.edge_parent_hash != hash)
+                    {
+                        skip_judge_overlap = false;
+                        break;
+                    }
+                }
+
+                if !skip_judge_overlap {
                     for y in (child_pos_y + 1)..pos_y {
                         let processing_commit_pos_x =
                             commit_pos_map.get(&commits[y].commit_hash).unwrap().0;
                         if processing_commit_pos_x == new_pos_x {
-                            skip_judge_overlap = false;
-                            break;
+                            overlap = true;
+                            if new_pos_x < processing_commit_pos_x + 1 {
+                                new_pos_x = processing_commit_pos_x + 1;
+                            }
                         }
-                        if edges[y]
-                            .iter()
-                            .filter(|e| e.edge.pos_x == pos_x)
-                            .filter(|e| matches!(e.edge.edge_type, EdgeType::Vertical))
-                            .any(|e| e.edge_parent_hash != hash)
-                        {
-                            skip_judge_overlap = false;
-                            break;
-                        }
-                    }
-
-                    if !skip_judge_overlap {
-                        for y in (child_pos_y + 1)..pos_y {
-                            let processing_commit_pos_x =
-                                commit_pos_map.get(&commits[y].commit_hash).unwrap().0;
-                            if processing_commit_pos_x == new_pos_x {
+                        for edge in &edges[y] {
+                            if edge.edge.pos_x >= new_pos_x
+                                && edge.edge_parent_hash != hash
+                                && matches!(edge.edge.edge_type, EdgeType::Vertical)
+                            {
                                 overlap = true;
-                                if new_pos_x < processing_commit_pos_x + 1 {
-                                    new_pos_x = processing_commit_pos_x + 1;
-                                }
-                            }
-                            for edge in &edges[y] {
-                                if edge.edge.pos_x >= new_pos_x
-                                    && edge.edge_parent_hash != hash
-                                    && matches!(edge.edge.edge_type, EdgeType::Vertical)
-                                {
-                                    overlap = true;
-                                    if new_pos_x < edge.edge.pos_x + 1 {
-                                        new_pos_x = edge.edge.pos_x + 1;
-                                    }
+                                if new_pos_x < edge.edge.pos_x + 1 {
+                                    new_pos_x = edge.edge.pos_x + 1;
                                 }
                             }
                         }
                     }
+                }
 
-                    if overlap {
-                        // detour
-                        edges[pos_y].push(WrappedEdge::new(EdgeType::Right, pos_x, pos_x, hash));
-                        for x in (pos_x + 1)..new_pos_x {
-                            edges[pos_y].push(WrappedEdge::new(
+                if overlap {
+                    // detour
+                    edges[pos_y].push(WrappedEdge::new(EdgeType::Right, pos_x, pos_x, hash));
+                    for x in (pos_x + 1)..new_pos_x {
+                        edges[pos_y].push(WrappedEdge::new(EdgeType::Horizontal, x, pos_x, hash));
+                    }
+                    edges[pos_y].push(WrappedEdge::new(
+                        EdgeType::RightBottom,
+                        new_pos_x,
+                        pos_x,
+                        hash,
+                    ));
+                    for y in ((child_pos_y + 1)..pos_y).rev() {
+                        edges[y].push(WrappedEdge::new(EdgeType::Vertical, new_pos_x, pos_x, hash));
+                    }
+                    edges[child_pos_y].push(WrappedEdge::new(
+                        EdgeType::RightTop,
+                        new_pos_x,
+                        pos_x,
+                        hash,
+                    ));
+                    for x in (child_pos_x + 1)..new_pos_x {
+                        edges[child_pos_y].push(WrappedEdge::new(
+                            EdgeType::Horizontal,
+                            x,
+                            pos_x,
+                            hash,
+                        ));
+                    }
+                    edges[child_pos_y].push(WrappedEdge::new(
+                        EdgeType::Right,
+                        child_pos_x,
+                        pos_x,
+                        hash,
+                    ));
+
+                    if max_pos_x < new_pos_x {
+                        max_pos_x = new_pos_x;
+                    }
+                } else if pos_x == child_pos_x {
+                    // 同 col merge 且無 overlap → 等同 commit 直線
+                    draw_vertical_chain(&mut edges, pos_x, child_pos_y, pos_y, hash);
+                } else {
+                    edges[pos_y].push(WrappedEdge::new(EdgeType::Up, pos_x, pos_x, hash));
+                    for y in ((child_pos_y + 1)..pos_y).rev() {
+                        edges[y].push(WrappedEdge::new(EdgeType::Vertical, pos_x, pos_x, hash));
+                    }
+                    if pos_x < child_pos_x {
+                        edges[child_pos_y].push(WrappedEdge::new(
+                            EdgeType::LeftTop,
+                            pos_x,
+                            pos_x,
+                            hash,
+                        ));
+                        for x in (pos_x + 1)..child_pos_x {
+                            edges[child_pos_y].push(WrappedEdge::new(
                                 EdgeType::Horizontal,
                                 x,
                                 pos_x,
                                 hash,
                             ));
                         }
-                        edges[pos_y].push(WrappedEdge::new(
-                            EdgeType::RightBottom,
-                            new_pos_x,
+                        edges[child_pos_y].push(WrappedEdge::new(
+                            EdgeType::Left,
+                            child_pos_x,
                             pos_x,
                             hash,
                         ));
-                        for y in ((child_pos_y + 1)..pos_y).rev() {
-                            edges[y].push(WrappedEdge::new(
-                                EdgeType::Vertical,
-                                new_pos_x,
-                                pos_x,
-                                hash,
-                            ));
-                        }
+                    } else {
                         edges[child_pos_y].push(WrappedEdge::new(
                             EdgeType::RightTop,
-                            new_pos_x,
+                            pos_x,
                             pos_x,
                             hash,
                         ));
-                        for x in (child_pos_x + 1)..new_pos_x {
+                        for x in (child_pos_x + 1)..pos_x {
                             edges[child_pos_y].push(WrappedEdge::new(
                                 EdgeType::Horizontal,
                                 x,
@@ -462,58 +551,6 @@ fn calc_edges(
                             pos_x,
                             hash,
                         ));
-
-                        if max_pos_x < new_pos_x {
-                            max_pos_x = new_pos_x;
-                        }
-                    } else {
-                        edges[pos_y].push(WrappedEdge::new(EdgeType::Up, pos_x, pos_x, hash));
-                        for y in ((child_pos_y + 1)..pos_y).rev() {
-                            edges[y].push(WrappedEdge::new(EdgeType::Vertical, pos_x, pos_x, hash));
-                        }
-                        if pos_x < child_pos_x {
-                            edges[child_pos_y].push(WrappedEdge::new(
-                                EdgeType::LeftTop,
-                                pos_x,
-                                pos_x,
-                                hash,
-                            ));
-                            for x in (pos_x + 1)..child_pos_x {
-                                edges[child_pos_y].push(WrappedEdge::new(
-                                    EdgeType::Horizontal,
-                                    x,
-                                    pos_x,
-                                    hash,
-                                ));
-                            }
-                            edges[child_pos_y].push(WrappedEdge::new(
-                                EdgeType::Left,
-                                child_pos_x,
-                                pos_x,
-                                hash,
-                            ));
-                        } else {
-                            edges[child_pos_y].push(WrappedEdge::new(
-                                EdgeType::RightTop,
-                                pos_x,
-                                pos_x,
-                                hash,
-                            ));
-                            for x in (child_pos_x + 1)..pos_x {
-                                edges[child_pos_y].push(WrappedEdge::new(
-                                    EdgeType::Horizontal,
-                                    x,
-                                    pos_x,
-                                    hash,
-                                ));
-                            }
-                            edges[child_pos_y].push(WrappedEdge::new(
-                                EdgeType::Right,
-                                child_pos_x,
-                                pos_x,
-                                hash,
-                            ));
-                        }
                     }
                 }
             }
@@ -625,7 +662,12 @@ pub fn calc_graph_filtered(
     let effective_head = head_hint.filter(|h| visible_hashes.contains(*h));
     let commit_pos_map = calc_commit_positions(&commits, &source, effective_head);
     let (mut graph_edges, max_pos_x) = calc_edges(&commit_pos_map, &commits, &source);
-    extend_head_line_to_top(&mut graph_edges, &commit_pos_map, effective_head);
+
+    normalize_head_row_invariant(&mut graph_edges, &commit_pos_map, effective_head);
+    if !repository.working_changes().is_empty() {
+        anchor_head_to_virtual_row(&mut graph_edges, &commit_pos_map, effective_head);
+    }
+
     let commit_hashes = commits.iter().map(|c| c.commit_hash.clone()).collect();
 
     Graph {
@@ -633,5 +675,273 @@ pub fn calc_graph_filtered(
         commit_pos_map,
         edges: graph_edges,
         max_pos_x,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn head_hash() -> CommitHash {
+        CommitHash::from("headhash")
+    }
+
+    fn pos_map_for_head(head_pos_x: usize, head_pos_y: usize) -> CommitPosMap {
+        let mut map = CommitPosMap::default();
+        map.insert(head_hash(), (head_pos_x, head_pos_y));
+        map
+    }
+
+    #[test]
+    fn invariant_no_head_hint_leaves_edges_untouched() {
+        let mut edges: Vec<Vec<Edge>> = vec![
+            vec![Edge::new(EdgeType::Vertical, 1, 1)],
+            vec![Edge::new(EdgeType::Up, 1, 1)],
+        ];
+        let before = edges.clone();
+        normalize_head_row_invariant(&mut edges, &pos_map_for_head(1, 1), None);
+        assert_eq!(edges, before);
+    }
+
+    #[test]
+    fn invariant_removes_vertical_at_head_pos_x() {
+        let head = head_hash();
+        let pos = pos_map_for_head(1, 2);
+        // Row 2 has a pass-through Vertical at HEAD's column — the pierce source.
+        let mut edges: Vec<Vec<Edge>> = vec![
+            vec![Edge::new(EdgeType::Vertical, 0, 0)],
+            vec![Edge::new(EdgeType::Vertical, 0, 0)],
+            vec![
+                Edge::new(EdgeType::Vertical, 0, 0),
+                Edge::new(EdgeType::Vertical, 1, 1),
+                Edge::new(EdgeType::Up, 1, 1),
+                Edge::new(EdgeType::Down, 1, 1),
+            ],
+        ];
+        normalize_head_row_invariant(&mut edges, &pos, Some(&head));
+        assert!(
+            !edges[2]
+                .iter()
+                .any(|e| e.pos_x == 1 && e.edge_type == EdgeType::Vertical),
+            "Vertical at head_pos_x on head row must be removed"
+        );
+        // Non-HEAD Vertical at col 0 untouched.
+        assert!(edges[2]
+            .iter()
+            .any(|e| e.pos_x == 0 && e.edge_type == EdgeType::Vertical));
+        assert_eq!(edges[0].len(), 1);
+        assert_eq!(edges[1].len(), 1);
+    }
+
+    #[test]
+    fn invariant_head_pos_y_zero_still_retains() {
+        let head = head_hash();
+        let pos = pos_map_for_head(0, 0);
+        let mut edges: Vec<Vec<Edge>> = vec![vec![
+            Edge::new(EdgeType::Vertical, 0, 0),
+            Edge::new(EdgeType::Down, 0, 0),
+        ]];
+        normalize_head_row_invariant(&mut edges, &pos, Some(&head));
+        assert!(
+            !edges[0]
+                .iter()
+                .any(|e| e.pos_x == 0 && e.edge_type == EdgeType::Vertical),
+            "pierce fix must run even at head_pos_y=0"
+        );
+    }
+
+    #[test]
+    fn anchor_not_called_leaves_no_stray_vertical_above_head() {
+        // Regression test: without anchor (clean working tree), HEAD's column
+        // must NOT get extra Verticals on rows above HEAD.
+        let head = head_hash();
+        let pos = pos_map_for_head(1, 3);
+        let mut edges: Vec<Vec<Edge>> = vec![
+            vec![Edge::new(EdgeType::Vertical, 0, 0)],
+            vec![Edge::new(EdgeType::Vertical, 0, 0)],
+            vec![Edge::new(EdgeType::Vertical, 0, 0)],
+            vec![
+                Edge::new(EdgeType::Up, 1, 1),
+                Edge::new(EdgeType::Down, 1, 1),
+            ],
+        ];
+        normalize_head_row_invariant(&mut edges, &pos, Some(&head));
+        for (i, row) in edges.iter().enumerate().take(3) {
+            assert!(
+                !row.iter()
+                    .any(|e| e.pos_x == 1 && e.edge_type == EdgeType::Vertical),
+                "row {i} must not have Vertical at HEAD's col without anchor"
+            );
+        }
+    }
+
+    #[test]
+    fn anchor_adds_vertical_above_and_up_on_head_row() {
+        let head = head_hash();
+        let pos = pos_map_for_head(1, 3);
+        let mut edges: Vec<Vec<Edge>> = vec![
+            vec![Edge::new(EdgeType::Vertical, 0, 0)],
+            vec![Edge::new(EdgeType::Vertical, 0, 0)],
+            vec![Edge::new(EdgeType::Vertical, 0, 0)],
+            vec![Edge::new(EdgeType::Down, 1, 1)],
+        ];
+        anchor_head_to_virtual_row(&mut edges, &pos, Some(&head));
+        for (i, row) in edges.iter().enumerate().take(3) {
+            assert!(
+                row.iter()
+                    .any(|e| e.pos_x == 1 && e.edge_type == EdgeType::Vertical),
+                "row {i} must have Vertical at HEAD's col after anchor"
+            );
+        }
+        assert!(edges[3]
+            .iter()
+            .any(|e| e.pos_x == 1 && e.edge_type == EdgeType::Up));
+    }
+
+    // --- calc_edges tests ---
+
+    fn make_commit(hash: &str, parents: &[&str]) -> Commit {
+        Commit {
+            commit_hash: CommitHash::from(hash),
+            parent_commit_hashes: parents.iter().map(|h| CommitHash::from(*h)).collect(),
+            ..Default::default()
+        }
+    }
+
+    struct MockSource {
+        children: FxHashMap<CommitHash, Vec<CommitHash>>,
+    }
+
+    impl MockSource {
+        fn from_commits(commits: &[&Commit]) -> Self {
+            let mut children: FxHashMap<CommitHash, Vec<CommitHash>> = FxHashMap::default();
+            for commit in commits {
+                for parent in &commit.parent_commit_hashes {
+                    children
+                        .entry(parent.clone())
+                        .or_default()
+                        .push(commit.commit_hash.clone());
+                }
+            }
+            Self { children }
+        }
+    }
+
+    impl GraphDataSource for MockSource {
+        fn children_hash(&self, hash: &CommitHash) -> Vec<&CommitHash> {
+            self.children
+                .get(hash)
+                .map(|hs| hs.iter().collect())
+                .unwrap_or_default()
+        }
+        fn parents_hash(&self, _hash: &CommitHash) -> Vec<&CommitHash> {
+            Vec::new()
+        }
+    }
+
+    fn has_edge(edges: &[Vec<Edge>], row: usize, col: usize, et: EdgeType) -> bool {
+        edges[row]
+            .iter()
+            .any(|e| e.pos_x == col && e.edge_type == et)
+    }
+
+    /// 同 col first-parent → 直線 Vertical（原有行為）
+    #[test]
+    fn edges_same_col_first_parent_draws_vertical() {
+        // A (y=0, col=1) ← B (y=1, col=1), first parent
+        let a = make_commit("a", &["b"]);
+        let b = make_commit("b", &[]);
+        let commits = vec![&a, &b];
+        let source = MockSource::from_commits(&commits);
+        let mut pos_map = CommitPosMap::default();
+        pos_map.insert(CommitHash::from("a"), (1, 0));
+        pos_map.insert(CommitHash::from("b"), (1, 1));
+
+        let (edges, _) = calc_edges(&pos_map, &commits, &source);
+
+        assert!(
+            has_edge(&edges, 0, 1, EdgeType::Down),
+            "child row should have Down"
+        );
+        assert!(
+            has_edge(&edges, 1, 1, EdgeType::Up),
+            "parent row should have Up"
+        );
+    }
+
+    /// 同 col merge 且中間有其他 commit → 應 detour 繞道，不穿透
+    #[test]
+    fn edges_same_col_merge_with_intermediate_detours() {
+        // Topology (模擬 scanoo-web 的 bug)：
+        //   y=0: M (merge, col=1) parents=[E, P]  first-parent=E
+        //   y=1: E (col=0)                        M 的 first-parent（相鄰，branch 不生中間 Vertical）
+        //   y=2: X (col=1) parents=[Y]            unrelated commit on same col
+        //   y=3: Y (col=1) parents=[]             unrelated commit on same col
+        //   y=4: P (col=1) parents=[]             merge second-parent
+        //
+        // P→M 是 merge（non-first-parent），同 col 1，中間有 X, Y 在 col 1
+        // 應該 detour 到 col≥2，不在 col 1 rows 2-3 畫穿透 Vertical
+        let m = make_commit("M", &["E", "P"]);
+        let e = make_commit("E", &[]);
+        let x = make_commit("X", &["Y"]);
+        let y_c = make_commit("Y", &[]);
+        let p = make_commit("P", &[]);
+        let commits = vec![&m, &e, &x, &y_c, &p];
+        let source = MockSource::from_commits(&commits);
+        let mut pos_map = CommitPosMap::default();
+        pos_map.insert(CommitHash::from("M"), (1, 0));
+        pos_map.insert(CommitHash::from("E"), (0, 1));
+        pos_map.insert(CommitHash::from("X"), (1, 2));
+        pos_map.insert(CommitHash::from("Y"), (1, 3));
+        pos_map.insert(CommitHash::from("P"), (1, 4));
+
+        let (edges, _) = calc_edges(&pos_map, &commits, &source);
+
+        // 中間 rows (X, Y) 在 col 1 不能有 merge 的 pass-through Vertical
+        for row in [2, 3] {
+            assert!(
+                !edges[row]
+                    .iter()
+                    .any(|e| e.pos_x == 1 && e.edge_type == EdgeType::Vertical),
+                "row {row} col 1 must NOT have pass-through Vertical from merge"
+            );
+        }
+        // detour 應在 col≥2 有 Vertical
+        for row in [2, 3] {
+            assert!(
+                edges[row]
+                    .iter()
+                    .any(|e| e.pos_x >= 2 && e.edge_type == EdgeType::Vertical),
+                "row {row} should have detour Vertical at col≥2"
+            );
+        }
+    }
+
+    /// 同 col merge 且相鄰（無中間 commit）→ 直接 Up/Down
+    #[test]
+    fn edges_same_col_merge_adjacent_draws_up_down() {
+        // y=0: M (merge, col=1) parents=[E, P]  first-parent=E
+        // y=1: P (col=1)                       merge second-parent
+        // y=2: E (col=0)                       merge first-parent
+        let m = make_commit("M", &["E", "P"]);
+        let p = make_commit("P", &[]);
+        let e = make_commit("E", &[]);
+        let commits = vec![&m, &p, &e];
+        let source = MockSource::from_commits(&commits);
+        let mut pos_map = CommitPosMap::default();
+        pos_map.insert(CommitHash::from("M"), (1, 0));
+        pos_map.insert(CommitHash::from("P"), (1, 1));
+        pos_map.insert(CommitHash::from("E"), (0, 2));
+
+        let (edges, _) = calc_edges(&pos_map, &commits, &source);
+
+        assert!(
+            has_edge(&edges, 0, 1, EdgeType::Down),
+            "child row should have Down at col 1"
+        );
+        assert!(
+            has_edge(&edges, 1, 1, EdgeType::Up),
+            "parent row should have Up at col 1"
+        );
     }
 }

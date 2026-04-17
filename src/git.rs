@@ -719,6 +719,16 @@ pub fn load_working_changes(path: &Path) -> WorkingChanges {
         let y = line.as_bytes()[1]; // unstaged status
         let file_path = &line[3..];
 
+        // Untracked files always appear as `??` — both columns must be
+        // handled together since `?` has no independent per-column meaning.
+        if x == b'?' && y == b'?' {
+            unstaged.push(FileChange::Add {
+                path: file_path.into(),
+                stats: None,
+            });
+            continue;
+        }
+
         // Parse staged changes (X column)
         staged.extend(parse_status_char(x, file_path));
 
