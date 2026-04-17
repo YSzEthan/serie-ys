@@ -119,6 +119,9 @@ pub struct App<'a> {
     github_loading: bool,
     ctx: Rc<AppContext>,
     ec: &'a EventController,
+    marquee_frame: u64,
+    marquee_needed: bool,
+    last_marquee_hash: Option<CommitHash>,
 }
 
 #[derive(Debug)]
@@ -219,6 +222,9 @@ impl<'a> App<'a> {
             github_loading: false,
             ctx,
             ec,
+            marquee_frame: 0,
+            marquee_needed: false,
+            last_marquee_hash: None,
         };
 
         if let Some(context) = refresh_view_context {
@@ -241,16 +247,43 @@ impl<'a> App<'a> {
 
 impl App<'_> {
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<Ret, std::io::Error> {
+        let mut skip_draw = false;
         loop {
-            if self.view.take_graph_clear() {
-                clear_image_area(
-                    self.ctx.image_protocol,
-                    terminal,
-                    self.app_status.view_area.top()..self.app_status.view_area.bottom(),
-                )?;
+            if !skip_draw {
+                let current_hash = match &self.view {
+                    View::List(lv) => Some(lv.as_list_state().selected_commit_hash().clone()),
+                    _ => None,
+                };
+                if self.last_marquee_hash != current_hash {
+                    self.marquee_frame = 0;
+                    self.last_marquee_hash = current_hash;
+                }
+
+                if self.view.take_graph_clear() {
+                    clear_image_area(
+                        self.ctx.image_protocol,
+                        terminal,
+                        self.app_status.view_area.top()..self.app_status.view_area.bottom(),
+                    )?;
+                }
+                terminal.draw(|f| self.render(f))?;
+
+                self.marquee_needed = match &self.view {
+                    View::List(lv) => lv.as_list_state().selected_row_overflows.get(),
+                    _ => false,
+                };
             }
-            terminal.draw(|f| self.render(f))?;
+            skip_draw = false;
+
             match self.ec.recv() {
+                AppEvent::Tick => {
+                    if self.marquee_needed {
+                        self.marquee_frame = self.marquee_frame.wrapping_add(1);
+                    } else {
+                        skip_draw = true;
+                    }
+                    continue;
+                }
                 AppEvent::Key(key) => {
                     // Handle pending overlay - Esc hides it
                     if self.pending_message.is_some() {
@@ -544,7 +577,8 @@ impl App<'_> {
 
         self.update_state(view_area);
 
-        self.view.render(f, view_area);
+        let marquee_frame = self.marquee_frame;
+        self.view.render(f, view_area, marquee_frame);
         self.render_status_line(f, status_line_area);
 
         if let Some(message) = &self.pending_message {
@@ -940,6 +974,7 @@ impl App<'_> {
                 self.ec.suspend();
                 let exec_result = exec_user_command_suspend(params);
                 self.ec.resume();
+                self.marquee_frame = 0;
 
                 if extract_user_command_refresh_by_number(user_command_number, &self.ctx) {
                     self.view.refresh();

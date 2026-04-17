@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::{cell::Cell, rc::Rc, time::Duration};
 
 use laurier::highlight::highlight_matched_text;
 use ratatui::{
@@ -11,11 +11,13 @@ use ratatui::{
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 use tui_input::{backend::crossterm::EventHandler, Input};
+use unicode_width::UnicodeWidthChar;
 
 use crate::{
     app::AppContext,
     color::{ratatui_color_to_rgb, ColorTheme},
     config::UserListColumnType,
+    event::TICK_INTERVAL,
     fuzzy::SearchMatcher,
     git::{Commit, CommitHash, Head, Ref, WorkingChanges},
     graph::{Graph, GraphImageManager},
@@ -26,6 +28,11 @@ const ELLIPSIS: &str = "...";
 const VIRTUAL_ROW_COLOR: Color = Color::Gray;
 /// 游標與 viewport 上下邊緣保持的最小距離；撞進這個 margin 時改由 offset 滾動。
 const CURSOR_SCROLL_MARGIN: usize = 15;
+
+/// Marquee 動畫在滑到端點時停留的時間。
+const MARQUEE_PAUSE: Duration = Duration::from_secs(1);
+/// `MARQUEE_PAUSE` 換算成 tick 數；TICK_INTERVAL 變動時自動跟上。
+const PAUSE_TICKS: u64 = (MARQUEE_PAUSE.as_millis() / TICK_INTERVAL.as_millis()) as u64;
 
 /// 索引到 `commits: Vec<CommitInfo>` 與 `search_matches: Vec<SearchMatch>` 的位置。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -236,6 +243,8 @@ pub struct CommitListState<'a> {
     default_fuzzy: bool,
 
     working_changes: Option<WorkingChanges>,
+
+    pub(crate) selected_row_overflows: Cell<bool>,
 }
 
 impl<'a> CommitListState<'a> {
@@ -305,6 +314,7 @@ impl<'a> CommitListState<'a> {
             default_ignore_case,
             default_fuzzy,
             working_changes,
+            selected_row_overflows: Cell::new(false),
         }
     }
 
@@ -1190,13 +1200,15 @@ impl<'a> CommitListState<'a> {
 
 pub struct CommitList<'a> {
     ctx: Rc<AppContext>,
+    marquee_frame: u64,
     _marker: std::marker::PhantomData<&'a ()>,
 }
 
 impl<'a> CommitList<'a> {
-    pub fn new(ctx: Rc<AppContext>) -> Self {
+    pub fn new(ctx: Rc<AppContext>, marquee_frame: u64) -> Self {
         Self {
             ctx,
+            marquee_frame,
             _marker: std::marker::PhantomData,
         }
     }
@@ -1538,9 +1550,13 @@ impl CommitList<'_> {
     fn render_subject(&self, buf: &mut Buffer, area: Rect, state: &CommitListState<'_>) {
         let max_width = (area.width as usize).saturating_sub(2);
         if area.is_empty() || max_width == 0 {
+            state.selected_row_overflows.set(false);
             return;
         }
         let mut items: Vec<ListItem> = Vec::new();
+        let mut any_selected_overflow = false;
+        let marquee_frame = self.marquee_frame;
+        let selected = state.selected;
         // Virtual row
         if state.has_virtual_row() && state.offset == 0 {
             let count = state.working_changes().map_or(0, |wc| wc.file_count());
@@ -1564,34 +1580,49 @@ impl CommitList<'_> {
                     state.show_remote_refs,
                 );
                 let ref_spans_width: usize = spans.iter().map(|s| s.width()).sum();
-                let max_width = max_width.saturating_sub(ref_spans_width);
+                let avail = max_width.saturating_sub(ref_spans_width);
                 let commit = &commit_info.commit;
-                if max_width > ELLIPSIS.len() {
-                    let truncate = console::measure_text_width(&commit.subject) > max_width;
-                    let subject = if truncate {
-                        console::truncate_str(&commit.subject, max_width, ELLIPSIS).to_string()
-                    } else {
-                        commit.subject.to_string()
-                    };
-
-                    let sub_spans = if let Some(pos) = state.search_match(raw).subject.clone() {
-                        highlighted_spans(
-                            subject.into(),
-                            pos,
-                            self.ctx.color_theme.list_subject_fg,
-                            Modifier::empty(),
+                if avail > ELLIPSIS.len() {
+                    // byte-len 是視覺寬度的下界（ASCII 相等、非 ASCII byte 更多），
+                    // 用它先短路大多數「明顯放得下」的 row，省一次 measure_text_width。
+                    let overflow = commit.subject.len() > avail
+                        && console::measure_text_width(&commit.subject) > avail;
+                    let is_selected = display_i == selected;
+                    let search_pos = state.search_match(raw).subject.as_ref();
+                    let sub_spans = if is_selected && overflow {
+                        any_selected_overflow = true;
+                        marquee_subject_spans(
+                            &commit.subject,
+                            avail,
+                            marquee_frame,
+                            search_pos,
                             &self.ctx.color_theme,
-                            truncate,
                         )
                     } else {
-                        vec![subject.fg(self.ctx.color_theme.list_subject_fg)]
+                        let subject = if overflow {
+                            console::truncate_str(&commit.subject, avail, ELLIPSIS).to_string()
+                        } else {
+                            commit.subject.to_string()
+                        };
+                        if let Some(pos) = search_pos {
+                            highlighted_spans(
+                                subject.into(),
+                                pos.clone(),
+                                self.ctx.color_theme.list_subject_fg,
+                                Modifier::empty(),
+                                &self.ctx.color_theme,
+                                overflow,
+                            )
+                        } else {
+                            vec![subject.fg(self.ctx.color_theme.list_subject_fg)]
+                        }
                     };
-
-                    spans.extend(sub_spans)
+                    spans.extend(sub_spans);
                 }
                 items.push(self.to_commit_list_item(display_i, spans, state));
                 Self::insert_gap(&mut items, state, false, display_i);
             });
+        state.selected_row_overflows.set(any_selected_overflow);
         Widget::render(List::new(items), area, buf);
     }
 
@@ -1894,6 +1925,95 @@ fn highlight_as_head<'a>(spans: Vec<Span<'a>>, color_theme: &ColorTheme) -> Vec<
         .into_iter()
         .map(|s| s.fg(Color::Black).bg(color_theme.list_head_fg))
         .collect()
+}
+
+/// 回傳 marquee 視窗內的 subject spans。
+///
+/// 這裡破例使用 `unicode_width::UnicodeWidthChar` 而非專案慣用的 `console::measure_text_width`——
+/// 後者只收 `&str`，逐字計算寬度需要為每個 char 建立 `String`，在每 100ms 一次的 hot path 上浪費。
+fn marquee_subject_spans(
+    subject: &str,
+    available: usize,
+    marquee_frame: u64,
+    search_pos: Option<&SearchMatchPosition>,
+    color_theme: &ColorTheme,
+) -> Vec<Span<'static>> {
+    let char_info: Vec<(usize, usize)> = subject
+        .char_indices()
+        .map(|(bi, c)| (bi, UnicodeWidthChar::width(c).unwrap_or(0)))
+        .collect();
+    let total_visual: usize = char_info.iter().map(|(_, w)| *w).sum();
+    let max_offset = total_visual - available;
+    let period = 2 * (PAUSE_TICKS + max_offset as u64);
+    let phase = marquee_frame % period;
+    let offset_cells = if phase < PAUSE_TICKS {
+        0
+    } else if phase < PAUSE_TICKS + max_offset as u64 {
+        phase - PAUSE_TICKS
+    } else if phase < 2 * PAUSE_TICKS + max_offset as u64 {
+        max_offset as u64
+    } else {
+        period - phase
+    } as usize;
+
+    let mut skipped = 0usize;
+    let mut start_idx = char_info.len();
+    for (idx, &(_, w)) in char_info.iter().enumerate() {
+        if skipped >= offset_cells {
+            start_idx = idx;
+            break;
+        }
+        skipped += w;
+    }
+    let first_byte = char_info
+        .get(start_idx)
+        .map(|&(bi, _)| bi)
+        .unwrap_or(subject.len());
+    // CJK 等 double-width 字元跨過 offset 邊界時會整個被保留在右側，
+    // 造成 skipped > offset_cells。此時在最左補一個空格佔位，避免右半字抖一格。
+    let prepend_space = skipped > offset_cells;
+
+    let mut acc = if prepend_space { 1 } else { 0 };
+    let mut end_idx = char_info.len();
+    for (idx, &(_, w)) in char_info[start_idx..].iter().enumerate() {
+        if acc + w > available {
+            end_idx = start_idx + idx;
+            break;
+        }
+        acc += w;
+    }
+    let end_byte = char_info
+        .get(end_idx)
+        .map(|&(bi, _)| bi)
+        .unwrap_or(subject.len());
+
+    let slice = &subject[first_byte..end_byte];
+    let visible = if prepend_space {
+        format!(" {slice}")
+    } else {
+        slice.to_string()
+    };
+
+    if let Some(pos) = search_pos {
+        let shift = if prepend_space { 1 } else { 0 };
+        let translated: Vec<usize> = pos
+            .matched_indices
+            .iter()
+            .copied()
+            .filter(|&bi| bi >= first_byte && bi < end_byte)
+            .map(|bi| bi - first_byte + shift)
+            .collect();
+        highlighted_spans(
+            visible.into(),
+            SearchMatchPosition::new(translated),
+            color_theme.list_subject_fg,
+            Modifier::empty(),
+            color_theme,
+            false,
+        )
+    } else {
+        vec![visible.fg(color_theme.list_subject_fg)]
+    }
 }
 
 fn highlighted_spans(

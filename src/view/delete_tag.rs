@@ -160,7 +160,7 @@ impl<'a> DeleteTagView<'a> {
             return;
         };
 
-        let commit_list = CommitList::new(self.ctx.clone());
+        let commit_list = CommitList::new(self.ctx.clone(), 0);
         f.render_stateful_widget(commit_list, area, list_state);
 
         let dialog_width = 50u16.min(area.width.saturating_sub(4));

@@ -167,7 +167,7 @@ impl<'a> DetailView<'a> {
         commit_list_state.set_inline_detail_height(detail_height);
 
         // Render CommitList using the full area — it handles the gap internally
-        let commit_list = CommitList::new(self.ctx.clone());
+        let commit_list = CommitList::new(self.ctx.clone(), 0);
         f.render_stateful_widget(commit_list, area, commit_list_state);
 
         // Calculate the graph+marker width for inline detail positioning

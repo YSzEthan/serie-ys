@@ -45,10 +45,10 @@ impl<'a> View<'a> {
         }
     }
 
-    pub fn render(&mut self, f: &mut Frame, area: Rect) {
+    pub fn render(&mut self, f: &mut Frame, area: Rect, marquee_frame: u64) {
         match self {
             View::Default => {}
-            View::List(view) => view.render(f, area),
+            View::List(view) => view.render(f, area, marquee_frame),
             View::Detail(view) => view.render(f, area),
             View::UserCommand(view) => view.render(f, area),
             View::Refs(view) => view.render(f, area),

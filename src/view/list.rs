@@ -215,8 +215,8 @@ impl<'a> ListView<'a> {
         }
     }
 
-    pub fn render(&mut self, f: &mut Frame, area: Rect) {
-        let commit_list = CommitList::new(self.ctx.clone());
+    pub fn render(&mut self, f: &mut Frame, area: Rect, marquee_frame: u64) {
+        let commit_list = CommitList::new(self.ctx.clone(), marquee_frame);
         f.render_stateful_widget(commit_list, area, self.as_mut_list_state());
     }
 }

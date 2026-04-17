@@ -38,6 +38,7 @@ tui-tree-widget = "0.24.0"
 notify = { version = "7.0.0", features = ["macos_fsevent"] }
 notify-debouncer-mini = "0.5.0"
 umbra = "0.4.0"
+unicode-width = "0.2"
 
 [dev-dependencies]
 dircpy = "0.3.20"

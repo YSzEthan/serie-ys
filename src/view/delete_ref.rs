@@ -230,7 +230,7 @@ impl<'a> DeleteRefView<'a> {
         let [list_area, refs_area] =
             Layout::horizontal([Constraint::Min(0), Constraint::Length(refs_width)]).areas(area);
 
-        let commit_list = CommitList::new(self.ctx.clone());
+        let commit_list = CommitList::new(self.ctx.clone(), 0);
         f.render_stateful_widget(commit_list, list_area, list_state);
 
         let ref_list = crate::widget::ref_list::RefList::new(&self.refs, self.ctx.clone());

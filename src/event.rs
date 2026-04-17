@@ -7,7 +7,7 @@ use std::{
         mpsc, Arc, Mutex,
     },
     thread,
-    time::Duration,
+    time::{Duration, Instant},
 };
 
 use ratatui::crossterm::event::KeyEvent;
@@ -19,10 +19,14 @@ use serde::{
 
 use crate::view::RefreshViewContext;
 
+/// Tick event interval driving UI animations (marquee, etc.).
+pub const TICK_INTERVAL: Duration = Duration::from_millis(100);
+
 #[derive(Debug)]
 pub enum AppEvent {
     Key(KeyEvent),
     Resize(usize, usize),
+    Tick,
     Quit,
     OpenDetail,
     CloseDetail,
@@ -222,30 +226,36 @@ impl EventController {
         self.stop.store(false, Ordering::Release);
         let stop = self.stop.clone();
         let tx = self.tx.clone();
-        let handle = thread::spawn(move || loop {
-            if stop.load(Ordering::Acquire) {
-                break;
-            }
-            match ratatui::crossterm::event::poll(std::time::Duration::from_millis(100)) {
-                Ok(true) => match ratatui::crossterm::event::read() {
-                    Ok(e) => match e {
-                        ratatui::crossterm::event::Event::Key(key) => {
-                            tx.send(AppEvent::Key(key));
-                        }
-                        ratatui::crossterm::event::Event::Resize(w, h) => {
-                            tx.send(AppEvent::Resize(w as usize, h as usize));
-                        }
-                        _ => {}
-                    },
-                    Err(e) => {
-                        panic!("Failed to read event: {e}");
-                    }
-                },
-                Ok(false) => {
-                    continue;
+        let handle = thread::spawn(move || {
+            let tick_interval = TICK_INTERVAL;
+            let mut last_tick = Instant::now();
+            loop {
+                if stop.load(Ordering::Acquire) {
+                    break;
                 }
-                Err(e) => {
-                    panic!("Failed to poll event: {e}");
+                match ratatui::crossterm::event::poll(tick_interval) {
+                    Ok(true) => match ratatui::crossterm::event::read() {
+                        Ok(e) => match e {
+                            ratatui::crossterm::event::Event::Key(key) => {
+                                tx.send(AppEvent::Key(key));
+                            }
+                            ratatui::crossterm::event::Event::Resize(w, h) => {
+                                tx.send(AppEvent::Resize(w as usize, h as usize));
+                            }
+                            _ => {}
+                        },
+                        Err(e) => {
+                            panic!("Failed to read event: {e}");
+                        }
+                    },
+                    Ok(false) => {}
+                    Err(e) => {
+                        panic!("Failed to poll event: {e}");
+                    }
+                }
+                if last_tick.elapsed() >= tick_interval {
+                    tx.send(AppEvent::Tick);
+                    last_tick = Instant::now();
                 }
             }
         });

@@ -235,7 +235,7 @@ impl<'a> CreateTagView<'a> {
         };
 
         // Render commit list in background
-        let commit_list = CommitList::new(self.ctx.clone());
+        let commit_list = CommitList::new(self.ctx.clone(), 0);
         f.render_stateful_widget(commit_list, area, list_state);
 
         // Dialog dimensions
