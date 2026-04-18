@@ -2241,6 +2241,7 @@ dependencies = [
  "semver",
  "serde",
  "serde_json",
+ "signal-hook",
  "smart-default",
  "tempfile",
  "text-to-png",

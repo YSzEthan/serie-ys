@@ -203,6 +203,7 @@ pub struct EventController {
     stop: Arc<AtomicBool>,
     handle: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
     pending_refresh: Option<Arc<AtomicBool>>,
+    term_signal: Arc<AtomicBool>,
 }
 
 impl EventController {
@@ -211,12 +212,22 @@ impl EventController {
         let tx = Sender { tx };
         let rx = Receiver { rx };
 
+        let term_signal = Arc::new(AtomicBool::new(false));
+        #[cfg(unix)]
+        {
+            let _ =
+                signal_hook::flag::register(signal_hook::consts::SIGTERM, Arc::clone(&term_signal));
+            let _ =
+                signal_hook::flag::register(signal_hook::consts::SIGHUP, Arc::clone(&term_signal));
+        }
+
         let controller = EventController {
             tx: tx.clone(),
             rx,
             stop: Arc::new(AtomicBool::new(false)),
             handle: Arc::new(Mutex::new(None)),
             pending_refresh: None,
+            term_signal,
         };
         controller.start();
 
@@ -227,11 +238,16 @@ impl EventController {
         self.stop.store(false, Ordering::Release);
         let stop = self.stop.clone();
         let tx = self.tx.clone();
+        let term_signal = self.term_signal.clone();
         let handle = thread::spawn(move || {
             let tick_interval = TICK_INTERVAL;
             let mut last_tick = Instant::now();
             loop {
                 if stop.load(Ordering::Acquire) {
+                    break;
+                }
+                if term_signal.load(Ordering::Acquire) {
+                    tx.send(AppEvent::Quit);
                     break;
                 }
                 match ratatui::crossterm::event::poll(tick_interval) {

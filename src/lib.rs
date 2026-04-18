@@ -328,6 +328,17 @@ fn resolve_head_commit_hash(repository: &git::Repository) -> Option<git::CommitH
 }
 
 pub fn run() -> Result<()> {
+    // ratatui::init() 裝的 panic hook 只還原 alt screen + raw mode，
+    // 不會清 mouse capture — 先補一層 DisableMouseCapture。
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        let _ = ratatui::crossterm::execute!(
+            std::io::stdout(),
+            ratatui::crossterm::event::DisableMouseCapture
+        );
+        prev_hook(info);
+    }));
+
     let args = Args::parse();
     let (core_config, ui_config, graph_config, color_theme, keybind_patch) = config::load()?;
     let keybind = keybind::KeyBind::new(keybind_patch);
