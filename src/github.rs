@@ -18,6 +18,13 @@ impl GhItemKind {
             GhItemKind::PullRequest => "pr",
         }
     }
+
+    pub fn display_name(self) -> &'static str {
+        match self {
+            GhItemKind::Issue => "Issue",
+            GhItemKind::PullRequest => "Pull Request",
+        }
+    }
 }
 
 // ── 列表項目 ──

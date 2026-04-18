@@ -49,6 +49,15 @@ enum GitHubTab {
     PullRequests,
 }
 
+impl GitHubTab {
+    fn kind(self) -> GhItemKind {
+        match self {
+            GitHubTab::Issues => GhItemKind::Issue,
+            GitHubTab::PullRequests => GhItemKind::PullRequest,
+        }
+    }
+}
+
 #[derive(Debug)]
 struct TaskListPanel {
     number: u64,
@@ -219,6 +228,7 @@ impl<'a> GitHubView<'a> {
                     (UserEvent::Confirm, "preview"),
                     (UserEvent::Refresh, "refresh"),
                     (UserEvent::Filter, "filter"),
+                    (UserEvent::ShortCopy, "copy url / C open / v #num"),
                     (UserEvent::GitHubToggle, "close"),
                 ]
             }
@@ -428,6 +438,24 @@ impl<'a> GitHubView<'a> {
                     state: self.state_filter.as_str().to_string(),
                 });
             }
+            UserEvent::ShortCopy => {
+                let kind = self.active_tab.kind();
+                self.with_selected_url(|url| AppEvent::CopyToClipboard {
+                    name: format!("{} URL", kind.display_name()),
+                    value: url,
+                });
+            }
+            UserEvent::FullCopy => {
+                self.with_selected_url(AppEvent::OpenUrl);
+            }
+            UserEvent::TagCopy => {
+                if let Some((number, kind)) = self.selected_number_and_kind() {
+                    self.tx.send(AppEvent::CopyToClipboard {
+                        name: format!("{} Number", kind.display_name()),
+                        value: format!("#{number}"),
+                    });
+                }
+            }
             _ => {}
         }
     }
@@ -539,6 +567,24 @@ impl<'a> GitHubView<'a> {
                 .pull_requests
                 .get(idx)
                 .map(|p| (p.number, GhItemKind::PullRequest)),
+        }
+    }
+
+    fn selected_url(&self) -> Option<String> {
+        let idx = self.actual_index(self.selected_index);
+        match self.active_tab {
+            GitHubTab::Issues => self.issues.get(idx).map(|i| i.url.clone()),
+            GitHubTab::PullRequests => self.pull_requests.get(idx).map(|p| p.url.clone()),
+        }
+    }
+
+    fn with_selected_url(&self, on_url: impl FnOnce(String) -> AppEvent) {
+        match self.selected_url() {
+            Some(url) if !url.is_empty() => self.tx.send(on_url(url)),
+            Some(_) => self
+                .tx
+                .send(AppEvent::NotifyWarn("No URL for this item".into())),
+            None => {}
         }
     }
 

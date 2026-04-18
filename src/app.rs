@@ -518,6 +518,9 @@ impl App<'_> {
                 AppEvent::CopyToClipboard { name, value } => {
                     self.copy_to_clipboard(name, value);
                 }
+                AppEvent::OpenUrl(url) => {
+                    self.open_url(url);
+                }
                 AppEvent::Refresh(context) => {
                     let request = RefreshRequest { context };
                     return Ok(Ret::Refresh(request));
@@ -1449,6 +1452,17 @@ impl App<'_> {
             Ok(_) => {
                 let msg = format!("Copied {name} to clipboard successfully");
                 self.ec.send(AppEvent::NotifySuccess(msg));
+            }
+            Err(msg) => {
+                self.ec.send(AppEvent::NotifyError(msg));
+            }
+        }
+    }
+
+    fn open_url(&self, url: String) {
+        match crate::external::open_url(&url) {
+            Ok(()) => {
+                self.ec.send(AppEvent::NotifyInfo(format!("Opening {url}")));
             }
             Err(msg) => {
                 self.ec.send(AppEvent::NotifyError(msg));

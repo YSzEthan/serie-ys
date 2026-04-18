@@ -116,6 +116,26 @@ fn copy_to_clipboard_auto(value: String) -> Result<(), String> {
     })
 }
 
+pub fn open_url(url: &str) -> Result<(), String> {
+    if !(url.starts_with("https://") || url.starts_with("http://")) {
+        return Err(format!("Refusing to open non-http URL: {url}"));
+    }
+
+    #[cfg(target_os = "macos")]
+    let (prog, args): (&str, &[&str]) = ("open", &[url]);
+    #[cfg(target_os = "linux")]
+    let (prog, args): (&str, &[&str]) = ("xdg-open", &[url]);
+    // 用 rundll32 取代 `cmd /C start ""`，避開 cmd.exe 對 URL 內 `&`/`^`/`%` 的 shell 解釋。
+    #[cfg(target_os = "windows")]
+    let (prog, args): (&str, &[&str]) = ("rundll32", &["url.dll,FileProtocolHandler", url]);
+
+    Command::new(prog)
+        .args(args)
+        .spawn()
+        .map(|_| ())
+        .map_err(|e| format!("Failed to open URL: {e}"))
+}
+
 pub struct ExternalCommandParameters<'a> {
     pub command: &'a [String],
     pub target_hash: &'a str,

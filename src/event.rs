@@ -79,6 +79,7 @@ pub enum AppEvent {
         name: String,
         value: String,
     },
+    OpenUrl(String),
     Refresh(RefreshViewContext),
     ClearStatusLine,
     UpdateStatusInput(String, Option<u16>, Option<String>),
