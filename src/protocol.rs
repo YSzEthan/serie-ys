@@ -2,8 +2,8 @@ use std::env;
 
 use base64::Engine;
 
-// By default assume the Iterm2 is the best protocol to use for all terminals *unless* an env
-// variable is set that suggests the terminal is probably Kitty.
+// Default to Text fallback; only use an image protocol when the terminal is
+// explicitly detected.
 pub fn auto_detect() -> ImageProtocol {
     // https://sw.kovidgoyal.net/kitty/glossary/#envvar-KITTY_WINDOW_ID
     if env::var("KITTY_WINDOW_ID").is_ok() {
@@ -15,34 +15,45 @@ pub fn auto_detect() -> ImageProtocol {
     {
         return ImageProtocol::Kitty;
     }
-    ImageProtocol::Iterm2
+    // iTerm2 sets LC_TERMINAL=iTerm2 (preserved through tmux passthrough)
+    // and TERM_PROGRAM=iTerm.app.
+    if env::var("LC_TERMINAL").is_ok_and(|t| t == "iTerm2")
+        || env::var("TERM_PROGRAM").is_ok_and(|t| t == "iTerm.app")
+    {
+        return ImageProtocol::Iterm2;
+    }
+    ImageProtocol::Text
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ImageProtocol {
     Iterm2,
     Kitty,
+    Text,
 }
 
 impl ImageProtocol {
+    pub fn is_text(&self) -> bool {
+        matches!(self, ImageProtocol::Text)
+    }
+
     pub fn encode(&self, bytes: &[u8], cell_width: usize) -> String {
         match self {
             ImageProtocol::Iterm2 => iterm2_encode(bytes, cell_width, 1),
             ImageProtocol::Kitty => kitty_encode(bytes, cell_width, 1),
+            ImageProtocol::Text => String::new(),
         }
     }
 
     pub fn clear_line(&self, y: u16) {
-        match self {
-            ImageProtocol::Iterm2 => {}
-            ImageProtocol::Kitty => kitty_clear_line(y),
+        if matches!(self, ImageProtocol::Kitty) {
+            kitty_clear_line(y);
         }
     }
 
     pub fn clear(&self) {
-        match self {
-            ImageProtocol::Iterm2 => {}
-            ImageProtocol::Kitty => kitty_clear(),
+        if matches!(self, ImageProtocol::Kitty) {
+            kitty_clear();
         }
     }
 }

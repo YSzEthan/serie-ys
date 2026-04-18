@@ -71,10 +71,14 @@ impl EdgeType {
     }
 }
 
-pub fn calc_graph(repository: &Repository, head_hint: Option<&CommitHash>) -> Graph {
+pub fn calc_graph(
+    repository: &Repository,
+    head_hint: Option<&CommitHash>,
+    reserve_head_col: bool,
+) -> Graph {
     let commits: Vec<&Commit> = repository.all_commits().iter().collect();
 
-    let commit_pos_map = calc_commit_positions(&commits, repository, head_hint);
+    let commit_pos_map = calc_commit_positions(&commits, repository, head_hint, reserve_head_col);
     let (mut graph_edges, max_pos_x) = calc_edges(&commit_pos_map, &commits, repository);
 
     normalize_head_row_invariant(&mut graph_edges, &commit_pos_map, head_hint);
@@ -155,25 +159,28 @@ fn calc_commit_positions(
     commits: &[&Commit],
     source: &impl GraphDataSource,
     head_hint: Option<&CommitHash>,
+    reserve_head_col: bool,
 ) -> CommitPosMap {
     // Reserve pos_x = HEAD_RESERVED_COL for HEAD until HEAD is placed (keeps
-    // uncommitted row + HEAD circle on the leftmost line).
+    // uncommitted row + HEAD circle on the leftmost line). Only applies when
+    // the caller opts in via `reserve_head_col` (HEAD has a branch/tag).
     const HEAD_RESERVED_COL: usize = 0;
 
     let mut commit_pos_map: CommitPosMap = FxHashMap::default();
     let mut commit_line_state: Vec<Option<CommitHash>> = Vec::new();
     // Reverse index: hash → pos_x for O(1) lookup instead of linear scan
     let mut hash_to_pos: FxHashMap<CommitHash, usize> = FxHashMap::default();
-    let mut head_pending = head_hint.is_some_and(|h| commits.iter().any(|c| c.commit_hash == *h));
+    let mut head_col_pending =
+        reserve_head_col && head_hint.is_some_and(|h| commits.iter().any(|c| c.commit_hash == *h));
 
     for (pos_y, commit) in commits.iter().enumerate() {
         let is_head = head_hint.is_some_and(|h| *h == commit.commit_hash);
         let filtered_children_hash = filtered_children_hash(commit, source);
         if filtered_children_hash.is_empty() {
-            let pos_x = if is_head {
+            let pos_x = if is_head && reserve_head_col {
                 HEAD_RESERVED_COL
             } else {
-                let start = if head_pending {
+                let start = if head_col_pending {
                     HEAD_RESERVED_COL + 1
                 } else {
                     0
@@ -192,7 +199,7 @@ fn calc_commit_positions(
             commit_pos_map.insert(commit.commit_hash.clone(), (pos_x, pos_y));
         }
         if is_head {
-            head_pending = false;
+            head_col_pending = false;
         }
     }
 
@@ -621,6 +628,7 @@ pub fn calc_graph_filtered(
     repository: &Repository,
     visible_hashes: &FxHashSet<CommitHash>,
     head_hint: Option<&CommitHash>,
+    reserve_head_col: bool,
 ) -> Graph {
     let commits: Vec<&Commit> = repository
         .all_commits()
@@ -660,7 +668,10 @@ pub fn calc_graph_filtered(
     };
 
     let effective_head = head_hint.filter(|h| visible_hashes.contains(*h));
-    let commit_pos_map = calc_commit_positions(&commits, &source, effective_head);
+    // If the anchor HEAD isn't visible in this filtered view, don't reserve col 0 for it.
+    let effective_reserve = reserve_head_col && effective_head.is_some();
+    let commit_pos_map =
+        calc_commit_positions(&commits, &source, effective_head, effective_reserve);
     let (mut graph_edges, max_pos_x) = calc_edges(&commit_pos_map, &commits, &source);
 
     normalize_head_row_invariant(&mut graph_edges, &commit_pos_map, effective_head);
@@ -810,12 +821,18 @@ mod tests {
 
     struct MockSource {
         children: FxHashMap<CommitHash, Vec<CommitHash>>,
+        parents: FxHashMap<CommitHash, Vec<CommitHash>>,
     }
 
     impl MockSource {
         fn from_commits(commits: &[&Commit]) -> Self {
             let mut children: FxHashMap<CommitHash, Vec<CommitHash>> = FxHashMap::default();
+            let mut parents: FxHashMap<CommitHash, Vec<CommitHash>> = FxHashMap::default();
             for commit in commits {
+                parents.insert(
+                    commit.commit_hash.clone(),
+                    commit.parent_commit_hashes.clone(),
+                );
                 for parent in &commit.parent_commit_hashes {
                     children
                         .entry(parent.clone())
@@ -823,7 +840,7 @@ mod tests {
                         .push(commit.commit_hash.clone());
                 }
             }
-            Self { children }
+            Self { children, parents }
         }
     }
 
@@ -834,8 +851,11 @@ mod tests {
                 .map(|hs| hs.iter().collect())
                 .unwrap_or_default()
         }
-        fn parents_hash(&self, _hash: &CommitHash) -> Vec<&CommitHash> {
-            Vec::new()
+        fn parents_hash(&self, hash: &CommitHash) -> Vec<&CommitHash> {
+            self.parents
+                .get(hash)
+                .map(|hs| hs.iter().collect())
+                .unwrap_or_default()
         }
     }
 
@@ -942,6 +962,77 @@ mod tests {
         assert!(
             has_edge(&edges, 1, 1, EdgeType::Up),
             "parent row should have Up at col 1"
+        );
+    }
+
+    // --- calc_commit_positions: HEAD col reservation ---
+
+    /// HEAD 無 branch/tag (reserve=false)：第一個 leaf 從 col 0 開始，不再被擠。
+    #[test]
+    fn positions_no_reserve_leaf_takes_col_0() {
+        let head = make_commit("head", &[]);
+        let a = make_commit("a", &[]);
+        let b = make_commit("b", &[]);
+        let commits = vec![&head, &a, &b];
+        let source = MockSource::from_commits(&commits);
+        let head_hash = CommitHash::from("head");
+
+        let map = calc_commit_positions(&commits, &source, Some(&head_hash), false);
+
+        assert_eq!(map[&CommitHash::from("head")].0, 0);
+        assert_eq!(map[&CommitHash::from("a")].0, 1);
+        assert_eq!(map[&CommitHash::from("b")].0, 2);
+    }
+
+    /// HEAD 有 branch/tag (reserve=true)：HEAD 保留 col 0，其他 leaf 從 col 1 起。
+    #[test]
+    fn positions_reserve_pushes_others_right_then_releases() {
+        // commits 順序：a (leaf, y=0) → b (leaf, y=1) → head (leaf, y=2) → c (leaf, y=3)
+        // reserve=true 時 a/b 被擠到 col 1,2；head 落在 col 0；c 放完 head 後可拿 col 0 之後首個空位。
+        let a = make_commit("a", &[]);
+        let b = make_commit("b", &[]);
+        let head = make_commit("head", &[]);
+        let c = make_commit("c", &[]);
+        let commits = vec![&a, &b, &head, &c];
+        let source = MockSource::from_commits(&commits);
+        let head_hash = CommitHash::from("head");
+
+        let map = calc_commit_positions(&commits, &source, Some(&head_hash), true);
+
+        assert_eq!(
+            map[&CommitHash::from("a")].0,
+            1,
+            "other leaf starts at col 1"
+        );
+        assert_eq!(map[&CommitHash::from("b")].0, 2);
+        assert_eq!(map[&CommitHash::from("head")].0, 0, "HEAD takes col 0");
+        // After HEAD placed, head_col_pending=false → c can scan from col 0.
+        // Cols 0,1,2 are occupied by head,a,b → c goes col 3.
+        assert_eq!(map[&CommitHash::from("c")].0, 3);
+    }
+
+    /// 釘住：HEAD 被 merge 回去時不補救，跟子 commit 欄位走。
+    #[test]
+    fn positions_merged_head_follows_child_col_regression() {
+        // child (y=0) parents=[head, other]
+        // head (y=1) — HEAD，被 child first-parent 指到
+        // other (y=2) — child second-parent
+        let child = make_commit("child", &["head", "other"]);
+        let head = make_commit("head", &[]);
+        let other = make_commit("other", &[]);
+        let commits = vec![&child, &head, &other];
+        let source = MockSource::from_commits(&commits);
+        let head_hash = CommitHash::from("head");
+
+        let map = calc_commit_positions(&commits, &source, Some(&head_hash), true);
+
+        // reserve=true 但 child 走 leaf 分支前，HEAD 尚未放 → child 是 leaf → 從 col 1 起
+        // child 在 col 1；head 透過 update_commit_line 繼承 child 的 col 1；head 不在 col 0。
+        assert_eq!(map[&CommitHash::from("child")].0, 1);
+        assert_eq!(
+            map[&CommitHash::from("head")].0,
+            1,
+            "merged HEAD follows child col, not forced to 0"
         );
     }
 }

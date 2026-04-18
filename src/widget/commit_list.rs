@@ -20,7 +20,10 @@ use crate::{
     event::TICK_INTERVAL,
     fuzzy::SearchMatcher,
     git::{Commit, CommitHash, Head, Ref, WorkingChanges},
-    graph::{Graph, GraphImageManager},
+    graph::{
+        Graph, GraphImageManager, TextCell, TEXT_COMMIT_DOT, TEXT_CORNER_BL, TEXT_CORNER_BR,
+        TEXT_CORNER_TL, TEXT_CORNER_TR, TEXT_HEAD_DOT, TEXT_VERT,
+    },
     FilteredGraphData,
 };
 
@@ -1382,8 +1385,176 @@ impl CommitList<'_> {
         }
     }
 
+    fn render_graph_text(&self, buf: &mut Buffer, area: Rect, state: &CommitListState<'_>) {
+        let gap = state.inline_detail_height;
+        let mgr = state.current_image_manager();
+        let head_hash = mgr.head_commit_hash().cloned();
+        let selected_bg = ratatui_color_to_rgb(self.ctx.color_theme.list_selected_bg);
+
+        // Virtual row: single gray vertical line at the HEAD column.
+        if state.has_virtual_row() && state.offset == 0 {
+            let y = area.top();
+            let col = state
+                .first_visible_commit_hash()
+                .and_then(|h| self.graph_text_head_col(state, h))
+                .unwrap_or(0);
+            self.put_text_cell(buf, area, y, col, '│', VIRTUAL_ROW_COLOR);
+            if state.selected == 0 && gap > 0 {
+                apply_row_bg(buf, area, y, selected_bg);
+            }
+        }
+
+        self.rendering_commit_info_iter(state)
+            .for_each(|(display_i, _, commit_info)| {
+                let y_offset = if gap > 0 && display_i > state.selected {
+                    gap
+                } else {
+                    0
+                };
+                let y = area.top() + display_i as u16 + y_offset;
+                if y >= area.bottom() {
+                    return;
+                }
+                let hash = &commit_info.commit.commit_hash;
+                let Some(cells) = mgr.text_cells(hash) else {
+                    return;
+                };
+                let is_head = head_hash.as_ref() == Some(hash);
+                let is_selected = display_i == state.selected;
+                self.put_text_cells(buf, area, y, cells, is_head);
+                if is_selected && gap > 0 {
+                    apply_row_bg(buf, area, y, selected_bg);
+                }
+            });
+
+        // Spacer rows (inline detail gap): draw `│` at each active column.
+        if gap > 0 {
+            let spacer_hash = if state.is_virtual_row_selected() {
+                state.first_visible_commit_hash().cloned()
+            } else {
+                Some(
+                    state
+                        .commit(state.current_selected_raw())
+                        .commit
+                        .commit_hash
+                        .clone(),
+                )
+            };
+            if let Some(hash) = spacer_hash {
+                if let Some(cells) = mgr.text_cells(&hash) {
+                    let gray = state.is_virtual_row_selected();
+                    for gap_row in 0..gap {
+                        let y = area.top() + state.selected as u16 + 1 + gap_row;
+                        if y >= area.bottom() {
+                            break;
+                        }
+                        self.put_text_spacer(buf, area, y, cells, gray);
+                    }
+                }
+            }
+        }
+    }
+
+    /// Returns the text-graph column (in cells, not chars) of `hash` on the
+    /// current graph, or None if missing.
+    fn graph_text_head_col(&self, state: &CommitListState<'_>, hash: &CommitHash) -> Option<usize> {
+        let cells = state.current_image_manager().text_cells(hash)?;
+        cells
+            .iter()
+            .position(|c| c.ch == TEXT_COMMIT_DOT || c.ch == TEXT_HEAD_DOT)
+    }
+
+    fn put_text_cells(
+        &self,
+        buf: &mut Buffer,
+        area: Rect,
+        y: u16,
+        cells: &[TextCell],
+        is_head: bool,
+    ) {
+        let mut buffer = [0u8; 4];
+        for (i, cell) in cells.iter().enumerate() {
+            let x = area.left() + i as u16;
+            if x >= area.right() {
+                break;
+            }
+            let (ch, bold) = if is_head && cell.ch == TEXT_COMMIT_DOT {
+                (TEXT_HEAD_DOT, true)
+            } else {
+                (cell.ch, false)
+            };
+            let s = ch.encode_utf8(&mut buffer);
+            let mut style = Style::default().fg(cell.color);
+            if bold {
+                style = style.add_modifier(Modifier::BOLD);
+            }
+            buf[(x, y)].set_symbol(s).set_style(style);
+        }
+    }
+
+    fn put_text_spacer(
+        &self,
+        buf: &mut Buffer,
+        area: Rect,
+        y: u16,
+        cells: &[TextCell],
+        gray: bool,
+    ) {
+        let mut buffer = [0u8; 4];
+        for (i, cell) in cells.iter().enumerate() {
+            let x = area.left() + i as u16;
+            if x >= area.right() {
+                break;
+            }
+            // Horizontal-only edges don't extend into the spacer row, so only
+            // redraw `│` at columns that had a dot or vertical-reaching glyph.
+            let draw_vertical = matches!(
+                cell.ch,
+                TEXT_COMMIT_DOT
+                    | TEXT_VERT
+                    | TEXT_HEAD_DOT
+                    | TEXT_CORNER_TL
+                    | TEXT_CORNER_TR
+                    | TEXT_CORNER_BL
+                    | TEXT_CORNER_BR
+            );
+            if !draw_vertical {
+                continue;
+            }
+            let color = if gray { VIRTUAL_ROW_COLOR } else { cell.color };
+            let s = TEXT_VERT.encode_utf8(&mut buffer);
+            buf[(x, y)]
+                .set_symbol(s)
+                .set_style(Style::default().fg(color));
+        }
+    }
+
+    fn put_text_cell(
+        &self,
+        buf: &mut Buffer,
+        area: Rect,
+        y: u16,
+        col: usize,
+        ch: char,
+        color: Color,
+    ) {
+        let x = area.left() + col as u16;
+        if x >= area.right() {
+            return;
+        }
+        let mut buffer = [0u8; 4];
+        let s = ch.encode_utf8(&mut buffer);
+        buf[(x, y)]
+            .set_symbol(s)
+            .set_style(Style::default().fg(color));
+    }
+
     fn render_graph(&self, buf: &mut Buffer, area: Rect, state: &CommitListState<'_>) {
         if area.is_empty() {
+            return;
+        }
+        if state.current_image_manager().is_text_mode() {
+            self.render_graph_text(buf, area, state);
             return;
         }
         let gap = state.inline_detail_height;
@@ -1769,6 +1940,14 @@ impl CommitList<'_> {
             line = line.bg(bg).fg(self.ctx.color_theme.list_selected_fg);
         }
         ListItem::new(line)
+    }
+}
+
+fn apply_row_bg(buf: &mut Buffer, area: Rect, y: u16, bg: Color) {
+    // Overwrite only the bg channel so previously-written fg/modifier on the
+    // graph cells survives.
+    for x in area.left()..area.right() {
+        buf[(x, y)].set_bg(bg);
     }
 }
 

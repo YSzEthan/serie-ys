@@ -61,6 +61,7 @@ pub enum ImageProtocolType {
     Auto,
     Iterm,
     Kitty,
+    Text,
 }
 
 impl From<Option<ImageProtocolType>> for protocol::ImageProtocol {
@@ -69,6 +70,7 @@ impl From<Option<ImageProtocolType>> for protocol::ImageProtocol {
             Some(ImageProtocolType::Auto) => protocol::auto_detect(),
             Some(ImageProtocolType::Iterm) => protocol::ImageProtocol::Iterm2,
             Some(ImageProtocolType::Kitty) => protocol::ImageProtocol::Kitty,
+            Some(ImageProtocolType::Text) => protocol::ImageProtocol::Text,
             None => protocol::auto_detect(),
         }
     }
@@ -228,6 +230,7 @@ pub fn compute_filtered_graph_from(
         repository,
         &visible_hashes,
         head.as_ref(),
+        head_has_named_ref(repository),
     ));
 
     let cell_width = match ctx.cell_width_type {
@@ -309,6 +312,24 @@ fn try_refresh_filtered_for_ref_change(
     true
 }
 
+/// Returns true when HEAD points at a commit that has a local branch or tag
+/// ref. Used to gate col-0 reservation in the graph layout — detached HEADs
+/// without any ref shouldn't elbow other branches out of col 0.
+///
+/// `RemoteBranch` is deliberately excluded: a detached HEAD sitting on a
+/// commit that only has a remote ref isn't something the user has a local
+/// handle for, so we don't treat it as an anchor worth protecting.
+fn head_has_named_ref(repository: &git::Repository) -> bool {
+    match repository.head() {
+        git::Head::Branch { .. } => true,
+        git::Head::Detached { target } => repository
+            .refs(target)
+            .iter()
+            .any(|r| matches!(r, git::Ref::Branch { .. } | git::Ref::Tag { .. })),
+        git::Head::None => false,
+    }
+}
+
 fn resolve_head_commit_hash(repository: &git::Repository) -> Option<git::CommitHash> {
     match repository.head() {
         git::Head::Branch { name } => {
@@ -381,6 +402,7 @@ pub fn run() -> Result<()> {
     let mut graph = Rc::new(graph::calc_graph(
         &repository,
         resolve_head_commit_hash(&repository).as_ref(),
+        head_has_named_ref(&repository),
     ));
     let mut cell_width_type = check::decide_cell_width_type(&graph, graph_width)?;
     let mut render_ctx = GraphRenderCtx {
@@ -464,6 +486,7 @@ pub fn run() -> Result<()> {
                     graph = Rc::new(graph::calc_graph(
                         &repository,
                         resolve_head_commit_hash(&repository).as_ref(),
+                        head_has_named_ref(&repository),
                     ));
                     cell_width_type = check::decide_cell_width_type(&graph, graph_width)?;
                     render_ctx.cell_width_type = cell_width_type;
