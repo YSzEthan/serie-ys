@@ -381,14 +381,27 @@ pub fn start_git_watcher(tx: Sender, repo_root: &Path) -> Arc<AtomicBool> {
             return;
         }
 
+        // 節流間隔：避免大量 fs 事件觸發 Repository::load 重跑（本身可能 200-500ms）。
+        let throttle = Duration::from_secs(1);
+        let mut last_sent = Instant::now()
+            .checked_sub(throttle)
+            .unwrap_or_else(Instant::now);
         loop {
             match debounce_rx.recv() {
                 Ok(Ok(events)) => {
                     let has_relevant = events
                         .iter()
                         .any(|e| is_relevant_event(e, &git_dir, &repo_root, &ignored));
-                    if has_relevant && !pending.swap(true, Ordering::AcqRel) {
+                    if !has_relevant {
+                        continue;
+                    }
+                    let now = Instant::now();
+                    if now.duration_since(last_sent) < throttle {
+                        continue;
+                    }
+                    if !pending.swap(true, Ordering::AcqRel) {
                         tx.send(AppEvent::AutoRefresh);
+                        last_sent = now;
                     }
                 }
                 Ok(Err(_)) => {}

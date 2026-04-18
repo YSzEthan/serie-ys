@@ -371,7 +371,7 @@ pub fn run() -> Result<()> {
     let repo_root = Path::new(&args.path)
         .canonicalize()
         .unwrap_or_else(|_| Path::new(&args.path).to_path_buf());
-    if repo_root.join(".git").is_dir() {
+    if git::is_inside_work_tree(&repo_root) {
         ec.start_git_watcher(&repo_root);
     }
 

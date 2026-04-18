@@ -160,7 +160,7 @@ impl Repository {
         let stash_ref_map = load_stashes_as_refs(path);
         merge_ref_maps(&mut ref_map, stash_ref_map);
 
-        let working_changes = load_working_changes(path);
+        let working_changes = load_working_changes(path)?;
 
         Ok(Self::new(
             path.to_path_buf(),
@@ -285,7 +285,7 @@ fn check_git_repository(path: &Path) -> Result<()> {
     Ok(())
 }
 
-fn is_inside_work_tree(path: &Path) -> bool {
+pub fn is_inside_work_tree(path: &Path) -> bool {
     Command::new("git")
         .arg("rev-parse")
         .arg("--is-inside-work-tree")
@@ -694,7 +694,7 @@ impl WorkingChanges {
     }
 }
 
-pub fn load_working_changes(path: &Path) -> WorkingChanges {
+pub fn load_working_changes(path: &Path) -> Result<WorkingChanges> {
     let mut cmd = Command::new("git")
         .arg("status")
         .arg("--porcelain=v1")
@@ -702,16 +702,19 @@ pub fn load_working_changes(path: &Path) -> WorkingChanges {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .unwrap();
+        .map_err(|e| format!("failed to spawn git status: {e}"))?;
 
-    let stdout = cmd.stdout.take().expect("failed to open stdout");
+    let stdout = cmd
+        .stdout
+        .take()
+        .ok_or("failed to open git status stdout")?;
     let reader = BufReader::new(stdout);
 
     let mut staged = Vec::new();
     let mut unstaged = Vec::new();
 
     for line in reader.lines() {
-        let line = line.unwrap();
+        let Ok(line) = line else { continue };
         if line.len() < 4 {
             continue;
         }
@@ -736,7 +739,7 @@ pub fn load_working_changes(path: &Path) -> WorkingChanges {
         unstaged.extend(parse_status_char(y, file_path));
     }
 
-    cmd.wait().unwrap();
+    let _ = cmd.wait();
 
     // Get numstat for unstaged changes
     let unstaged_stats = get_diff_numstat(path, &[]);
@@ -746,7 +749,7 @@ pub fn load_working_changes(path: &Path) -> WorkingChanges {
     let staged_stats = get_diff_numstat(path, &["--cached"]);
     apply_numstat(&mut staged, &staged_stats);
 
-    WorkingChanges { staged, unstaged }
+    Ok(WorkingChanges { staged, unstaged })
 }
 
 fn rename_to_changes(old_path: &str, new_path: &str) -> Vec<FileChange> {
