@@ -116,9 +116,22 @@ fn copy_to_clipboard_auto(value: String) -> Result<(), String> {
     })
 }
 
-pub fn open_url(url: &str) -> Result<(), String> {
+/// Outcome of `open_url`. `Hyperlinked` means we couldn't (or shouldn't) spawn
+/// a browser locally — the caller should instead surface the URL as an OSC 8
+/// clickable button so the user's local terminal can hand it off to their
+/// own browser.
+pub enum OpenUrlOutcome {
+    Spawned,
+    Hyperlinked(String),
+}
+
+pub fn open_url(url: &str) -> Result<OpenUrlOutcome, String> {
     if !(url.starts_with("https://") || url.starts_with("http://")) {
         return Err(format!("Refusing to open non-http URL: {url}"));
+    }
+
+    if is_ssh_session() {
+        return Ok(OpenUrlOutcome::Hyperlinked(url.to_string()));
     }
 
     #[cfg(target_os = "macos")]
@@ -132,8 +145,20 @@ pub fn open_url(url: &str) -> Result<(), String> {
     Command::new(prog)
         .args(args)
         .spawn()
-        .map(|_| ())
+        .map(|_| OpenUrlOutcome::Spawned)
         .map_err(|e| format!("Failed to open URL: {e}"))
+}
+
+/// Format a URL + label into an OSC 8 hyperlink escape sequence. Terminals
+/// that support OSC 8 (ghostty, iTerm2, Kitty, WezTerm) render the label as
+/// a clickable link. tmux gets DCS-passthrough wrapping.
+pub fn format_osc8_hyperlink(url: &str, label: &str) -> String {
+    let raw = format!("\x1b]8;;{url}\x1b\\{label}\x1b]8;;\x1b\\");
+    if env::var_os("TMUX").is_some() {
+        wrap_for_tmux(&raw)
+    } else {
+        raw
+    }
 }
 
 pub struct ExternalCommandParameters<'a> {
@@ -259,6 +284,18 @@ mod tests {
         assert_eq!(
             wrap_for_tmux(inner),
             "\x1bPtmux;\x1b\x1b]52;c;QUJD\x1b\x1b\\\x1b\\"
+        );
+    }
+
+    #[test]
+    fn format_osc8_hyperlink_plain_no_tmux() {
+        // 跑 test 通常不在 tmux 內；若在 tmux 下請跳過此檢查。
+        if env::var_os("TMUX").is_some() {
+            return;
+        }
+        assert_eq!(
+            format_osc8_hyperlink("https://x.com", "[#1]"),
+            "\x1b]8;;https://x.com\x1b\\[#1]\x1b]8;;\x1b\\"
         );
     }
 }

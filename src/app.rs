@@ -47,6 +47,25 @@ fn picker_digit_index(key: KeyEvent) -> Option<usize> {
     (digit as usize).checked_sub(1)
 }
 
+const SSH_OPEN_PREFIX: &str = "SSH: ⌘/⌥/⇧+Click ";
+
+/// Short label for an OSC 8 hyperlink. GitHub issue/PR URLs collapse to
+/// `[#N]`; anything else falls back to `[open]`. Host-gated to `github.com`
+/// so URLs like `https://example.com/blog/issues/2024` aren't misread.
+fn short_link_label(url: &str) -> String {
+    let on_github = url.starts_with("https://github.com/") || url.starts_with("http://github.com/");
+    let is_issue_or_pr = url.contains("/issues/") || url.contains("/pull/");
+    let tail = url.trim_end_matches('/').rsplit('/').next();
+    if let (true, true, Some(n)) = (
+        on_github,
+        is_issue_or_pr,
+        tail.and_then(|s| s.parse::<u64>().ok()),
+    ) {
+        return format!("[#{n}]");
+    }
+    "[open]".to_string()
+}
+
 pub(crate) fn clear_image_area(
     protocol: ImageProtocol,
     terminal: &mut DefaultTerminal,
@@ -75,6 +94,15 @@ enum StatusLine {
     NotificationSuccess(String),
     NotificationWarn(String),
     NotificationError(String),
+    /// A notification whose tail is an OSC 8 hyperlink. The renderer must
+    /// bypass `Line::raw` — which would split the escape byte-by-byte across
+    /// cells — and instead stuff the entire payload into one cell via
+    /// `set_symbol` + `set_skip` on the following cells.
+    NotificationHyperlink {
+        prefix: &'static str,
+        label: String,
+        url: String,
+    },
 }
 
 #[derive(Clone, Copy)]
@@ -323,7 +351,8 @@ impl App<'_> {
                         }
                         StatusLine::NotificationInfo(_)
                         | StatusLine::NotificationSuccess(_)
-                        | StatusLine::NotificationWarn(_) => {
+                        | StatusLine::NotificationWarn(_)
+                        | StatusLine::NotificationHyperlink { .. } => {
                             // Clear message and pass key input as is
                             self.clear_status_line();
                         }
@@ -594,6 +623,10 @@ impl App<'_> {
 impl App<'_> {
     fn render_status_line(&self, f: &mut Frame, area: Rect) {
         let text: Line = match &self.app_status.status_line {
+            StatusLine::NotificationHyperlink { prefix, label, url } => {
+                self.render_hyperlink_notification(f, area, prefix, label, url);
+                return;
+            }
             StatusLine::None => {
                 if self.app_status.numeric_prefix.is_empty() {
                     self.build_hotkey_hints()
@@ -656,6 +689,38 @@ impl App<'_> {
                     f.buffer_mut().set_string(x, y, cursor, style);
                 }
             }
+        }
+    }
+
+    fn render_hyperlink_notification(
+        &self,
+        f: &mut Frame,
+        area: Rect,
+        prefix: &str,
+        label: &str,
+        url: &str,
+    ) {
+        let block = Block::default()
+            .borders(Borders::TOP)
+            .style(Style::default().fg(self.ctx.color_theme.divider_fg))
+            .padding(Padding::horizontal(1));
+        let inner = block.inner(area);
+        f.render_widget(block, area);
+
+        let buf = f.buffer_mut();
+        let style = Style::default().fg(self.ctx.color_theme.status_info_fg);
+        buf.set_string(inner.left(), inner.top(), prefix, style);
+        let prefix_w = console::measure_text_width(prefix) as u16;
+        let x0 = inner.left().saturating_add(prefix_w);
+        if x0 >= inner.right() {
+            return;
+        }
+        let payload = crate::external::format_osc8_hyperlink(url, label);
+        let label_width = console::measure_text_width(label) as u16;
+        buf[(x0, inner.top())].set_symbol(&payload).set_style(style);
+        let remaining = inner.right().saturating_sub(x0);
+        for i in 1..label_width.min(remaining) {
+            buf[(x0 + i, inner.top())].set_skip(true);
         }
     }
 
@@ -1459,10 +1524,17 @@ impl App<'_> {
         }
     }
 
-    fn open_url(&self, url: String) {
+    fn open_url(&mut self, url: String) {
         match crate::external::open_url(&url) {
-            Ok(()) => {
+            Ok(crate::external::OpenUrlOutcome::Spawned) => {
                 self.ec.send(AppEvent::NotifyInfo(format!("Opening {url}")));
+            }
+            Ok(crate::external::OpenUrlOutcome::Hyperlinked(url)) => {
+                self.app_status.status_line = StatusLine::NotificationHyperlink {
+                    prefix: SSH_OPEN_PREFIX,
+                    label: short_link_label(&url),
+                    url,
+                };
             }
             Err(msg) => {
                 self.ec.send(AppEvent::NotifyError(msg));
@@ -1662,5 +1734,16 @@ mod tests {
         let dummy_key_event = KeyEvent::from(KeyCode::Enter); // KeyEvent is not used in the logic
         let actual = process_numeric_prefix(numeric_prefix, user_event, dummy_key_event);
         assert_eq!(actual, expected);
+    }
+
+    #[rstest]
+    #[case("https://github.com/o/r/issues/123", "[#123]")]
+    #[case("https://github.com/o/r/pull/456", "[#456]")]
+    #[case("https://github.com/o/r/issues/123/", "[#123]")]
+    #[case("https://github.com/o/r/commit/abcd1234", "[open]")]
+    #[case("https://example.com/", "[open]")]
+    #[case("https://github.com/o/r/issues/not-a-number", "[open]")]
+    fn short_link_label_extracts_issue_pr_number(#[case] url: &str, #[case] expected: &str) {
+        assert_eq!(short_link_label(url), expected);
     }
 }
