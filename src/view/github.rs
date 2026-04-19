@@ -410,11 +410,8 @@ impl<'a> GitHubView<'a> {
                 self.preview_offset = 0;
                 self.adjust_scroll();
             }
-            UserEvent::Confirm => {
-                // Enter → switch to Preview focus
-                if self.current_list_len() > 0 {
-                    self.focus = GitHubFocus::Preview;
-                }
+            UserEvent::Confirm if self.current_list_len() > 0 => {
+                self.focus = GitHubFocus::Preview;
             }
             UserEvent::PageDown => {
                 let page = self.height.saturating_sub(3).max(1);

@@ -341,7 +341,7 @@ pub fn toggle_checkboxes(body: &str, indices: &[usize]) -> String {
         .iter()
         .filter(|item| indices.contains(&item.index))
         .collect();
-    targets.sort_by(|a, b| b.byte_offset.cmp(&a.byte_offset));
+    targets.sort_by_key(|t| std::cmp::Reverse(t.byte_offset));
     for item in targets {
         let replacement = if item.checked { "[ ]" } else { "[x]" };
         result.replace_range(item.byte_offset..item.byte_offset + 3, replacement);

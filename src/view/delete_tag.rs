@@ -72,15 +72,13 @@ impl<'a> DeleteTagView<'a> {
             UserEvent::Confirm => {
                 self.delete_selected();
             }
-            UserEvent::NavigateDown | UserEvent::SelectDown => {
-                if self.selected_index < self.tags.len().saturating_sub(1) {
-                    self.selected_index += 1;
-                }
+            UserEvent::NavigateDown | UserEvent::SelectDown
+                if self.selected_index < self.tags.len().saturating_sub(1) =>
+            {
+                self.selected_index += 1;
             }
-            UserEvent::NavigateUp | UserEvent::SelectUp => {
-                if self.selected_index > 0 {
-                    self.selected_index -= 1;
-                }
+            UserEvent::NavigateUp | UserEvent::SelectUp if self.selected_index > 0 => {
+                self.selected_index -= 1;
             }
             UserEvent::NavigateRight | UserEvent::NavigateLeft => {
                 self.delete_from_remote = !self.delete_from_remote;

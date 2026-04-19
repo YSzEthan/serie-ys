@@ -182,16 +182,14 @@ impl<'a> ListView<'a> {
             UserEvent::Fetch => {
                 self.tx.send(AppEvent::FetchAll);
             }
-            UserEvent::Checkout => {
-                if !self.as_list_state().is_virtual_row_selected() {
-                    let refs = self.as_list_state().selected_commit_refs();
-                    let hash = self
-                        .as_list_state()
-                        .selected_commit_hash()
-                        .as_str()
-                        .to_string();
-                    dispatch_checkout(&self.tx, refs, &hash);
-                }
+            UserEvent::Checkout if !self.as_list_state().is_virtual_row_selected() => {
+                let refs = self.as_list_state().selected_commit_refs();
+                let hash = self
+                    .as_list_state()
+                    .selected_commit_hash()
+                    .as_str()
+                    .to_string();
+                dispatch_checkout(&self.tx, refs, &hash);
             }
             UserEvent::Refresh => {
                 self.refresh();

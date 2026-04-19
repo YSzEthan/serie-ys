@@ -106,12 +106,10 @@ impl<'a> CreateTagView<'a> {
             UserEvent::NavigateUp => {
                 self.focus_prev();
             }
-            UserEvent::NavigateRight | UserEvent::NavigateLeft => {
-                if self.focused_field == FocusedField::PushCheckbox {
-                    self.push_to_remote = !self.push_to_remote;
-                } else {
-                    self.handle_input(key);
-                }
+            UserEvent::NavigateRight | UserEvent::NavigateLeft
+                if self.focused_field == FocusedField::PushCheckbox =>
+            {
+                self.push_to_remote = !self.push_to_remote;
             }
             _ => {
                 self.handle_input(key);
