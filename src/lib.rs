@@ -22,9 +22,9 @@ use graph::{Graph, GraphImageManager};
 use rustc_hash::FxHashSet;
 use serde::Deserialize;
 
-/// Serie - A rich git commit graph in your terminal, like magic 📚
+/// ysgit - A rich git commit graph in your terminal, like magic 📚
 #[derive(Parser)]
-#[command(version)]
+#[command(name = "ysgit", version)]
 struct Args {
     /// Path to git repository [default: current directory]
     #[arg(default_value = ".")]

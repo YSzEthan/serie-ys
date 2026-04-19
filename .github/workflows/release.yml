@@ -1,5 +1,5 @@
 name: Release
-  
+
 on:
   push:
     tags:
@@ -11,63 +11,82 @@ env:
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
-        targets:
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-          - target: x86_64-unknown-linux-musl
-            os: ubuntu-latest
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-          - target: aarch64-unknown-linux-musl
-            os: ubuntu-latest
-          - target: x86_64-apple-darwin
-            os: macos-latest
+        t:
           - target: aarch64-apple-darwin
-            os: macos-latest
-    runs-on: ${{ matrix.targets.os }}
+            runner: macos-latest
+            archive: tar.gz
+            bin_ext: ""
+            shell: "zsh -e {0}"
+            archive_cmd: tar -czf "$ARCHIVE" ysgit
+          - target: x86_64-apple-darwin
+            runner: macos-latest
+            archive: tar.gz
+            bin_ext: ""
+            shell: "zsh -e {0}"
+            archive_cmd: tar -czf "$ARCHIVE" ysgit
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            archive: tar.gz
+            bin_ext: ""
+            shell: bash
+            archive_cmd: tar -czf "$ARCHIVE" ysgit
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            archive: zip
+            bin_ext: ".exe"
+            shell: pwsh
+            archive_cmd: Compress-Archive -Path ysgit.exe -DestinationPath $env:ARCHIVE
+    runs-on: ${{ matrix.t.runner }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-      - name: Setup
-        run: rustup target add ${{ matrix.targets.target }}
+      - name: Setup rust target
+        run: rustup target add ${{ matrix.t.target }}
       - name: Build
         uses: houseabsolute/actions-rust-cross@v1.0.0
         with:
           command: build
-          target: ${{ matrix.targets.target }}
+          target: ${{ matrix.t.target }}
           args: "--release"
-      - name: Set release version
-        run: echo "RELEASE_VERSION=${GITHUB_REF_NAME#v}" >> ${GITHUB_ENV}
+      - name: Vars
+        shell: bash
+        run: |
+          VER="${GITHUB_REF_NAME#v}"
+          echo "RELEASE_VERSION=$VER" >> "$GITHUB_ENV"
+          echo "ARCHIVE=ysgit-$VER-${{ matrix.t.target }}.${{ matrix.t.archive }}" >> "$GITHUB_ENV"
+      - name: Stage
+        shell: bash
+        run: cp "target/${{ matrix.t.target }}/release/ysgit${{ matrix.t.bin_ext }}" "ysgit${{ matrix.t.bin_ext }}"
       - name: Archive
-        run: tar -czf serie-${{ env.RELEASE_VERSION }}-${{ matrix.targets.target }}.tar.gz -C target/${{ matrix.targets.target }}/release serie
-      - name: Checksum
-        run: shasum -a 256 serie-${{ env.RELEASE_VERSION }}-${{ matrix.targets.target }}.tar.gz
+        shell: ${{ matrix.t.shell }}
+        run: ${{ matrix.t.archive_cmd }}
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: release-${{ matrix.targets.target }}
-          path: serie-${{ env.RELEASE_VERSION }}-${{ matrix.targets.target }}.tar.gz
+          name: release-${{ matrix.t.target }}
+          path: ${{ env.ARCHIVE }}
           if-no-files-found: error
+
   release:
     permissions:
       contents: write
     runs-on: ubuntu-latest
     needs: build
     steps:
-      - name: Download artifact
+      - name: Download artifacts
         uses: actions/download-artifact@v4
         with:
           path: releases
           pattern: release-*
           merge-multiple: true
       - name: Checksum
-        run: sha256sum releases/* > ./releases/checksum.txt
-      - name: Create Draft Release
+        run: cd releases && sha256sum * > checksum.txt
+      - name: Create Release
         uses: softprops/action-gh-release@v2.0.4
         with:
           draft: true
           generate_release_notes: true
           make_latest: true
-          files: |
-            releases/*
+          files: releases/*

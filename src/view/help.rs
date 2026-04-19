@@ -18,13 +18,33 @@ use crate::{
     view::View,
 };
 
+#[derive(Debug, Default)]
+struct HelpRow {
+    cn: Line<'static>,
+    keys: Line<'static>,
+    en: Line<'static>,
+}
+
+struct BindingSpec {
+    events: Vec<UserEvent>,
+    cn: String,
+    en: String,
+}
+
+fn b(events: Vec<UserEvent>, cn: &str, en: &str) -> BindingSpec {
+    BindingSpec {
+        events,
+        cn: cn.to_string(),
+        en: en.to_string(),
+    }
+}
+
 #[derive(Debug)]
 pub struct HelpView<'a> {
     before: View<'a>,
 
-    help_key_lines: Vec<Line<'static>>,
-    help_value_lines: Vec<Line<'static>>,
-    help_key_line_max_width: u16,
+    rows: Vec<HelpRow>,
+    key_col_width: u16,
 
     offset: usize,
     height: usize,
@@ -34,18 +54,16 @@ pub struct HelpView<'a> {
 
 impl HelpView<'_> {
     pub fn new<'a>(before: View<'a>, ctx: Rc<AppContext>, tx: Sender) -> HelpView<'a> {
-        let (help_key_lines, help_value_lines) =
-            build_lines(&ctx.color_theme, &ctx.keybind, &ctx.core_config);
-        let help_key_line_max_width = help_key_lines
+        let rows = build_rows(&ctx.color_theme, &ctx.keybind, &ctx.core_config);
+        let key_col_width = rows
             .iter()
-            .map(|line| line.width())
+            .map(|r| r.keys.width())
             .max()
             .unwrap_or_default() as u16;
         HelpView {
             before,
-            help_key_lines,
-            help_value_lines,
-            help_key_line_max_width,
+            rows,
+            key_col_width,
             offset: 0,
             height: 0,
             tx,
@@ -83,42 +101,42 @@ impl HelpView<'_> {
     pub fn render(&mut self, f: &mut Frame, area: Rect) {
         self.update_state(area);
 
-        let [mut key_area, mut value_area] =
-            Layout::horizontal([Constraint::Percentage(30), Constraint::Percentage(70)])
-                .areas(area);
+        let key_col = self.key_col_width + 2;
+        let [cn_area, keys_area, en_area] = Layout::horizontal([
+            Constraint::Min(10),
+            Constraint::Length(key_col),
+            Constraint::Min(10),
+        ])
+        .areas(area);
 
-        if key_area.width - 4 /* padding */ < self.help_key_line_max_width {
-            [key_area, value_area] = Layout::horizontal([
-                Constraint::Length(self.help_key_line_max_width + 4),
-                Constraint::Min(0),
-            ])
-            .areas(area);
+        let visible = self
+            .rows
+            .iter()
+            .skip(self.offset)
+            .take(area.height as usize);
+        let n = visible.clone().count();
+        let mut cn_lines = Vec::with_capacity(n);
+        let mut keys_lines = Vec::with_capacity(n);
+        let mut en_lines = Vec::with_capacity(n);
+        for r in visible {
+            cn_lines.push(r.cn.clone());
+            keys_lines.push(r.keys.clone());
+            en_lines.push(r.en.clone());
         }
 
-        let key_lines: Vec<Line> = self
-            .help_key_lines
-            .iter()
-            .skip(self.offset)
-            .take(area.height as usize)
-            .cloned()
-            .collect();
-        let value_lines: Vec<Line> = self
-            .help_value_lines
-            .iter()
-            .skip(self.offset)
-            .take(area.height as usize)
-            .cloned()
-            .collect();
-
-        let key_paragraph = Paragraph::new(key_lines)
+        let cn_paragraph = Paragraph::new(cn_lines)
             .block(Block::default().padding(Padding::new(3, 1, 0, 0)))
             .right_aligned();
-        let value_paragraph = Paragraph::new(value_lines)
+        let keys_paragraph = Paragraph::new(keys_lines)
+            .block(Block::default().padding(Padding::new(1, 1, 0, 0)))
+            .centered();
+        let en_paragraph = Paragraph::new(en_lines)
             .block(Block::default().padding(Padding::new(1, 3, 0, 0)))
             .left_aligned();
 
-        f.render_widget(key_paragraph, key_area);
-        f.render_widget(value_paragraph, value_area);
+        f.render_widget(cn_paragraph, cn_area);
+        f.render_widget(keys_paragraph, keys_area);
+        f.render_widget(en_paragraph, en_area);
     }
 }
 
@@ -128,7 +146,8 @@ impl<'a> HelpView<'a> {
     }
 
     fn scroll_down(&mut self) {
-        self.offset = self.offset.saturating_add(1);
+        let max_offset = self.rows.len().saturating_sub(self.height);
+        self.offset = self.offset.saturating_add(1).min(max_offset);
     }
 
     fn scroll_up(&mut self) {
@@ -137,17 +156,18 @@ impl<'a> HelpView<'a> {
 
     fn update_state(&mut self, area: Rect) {
         self.height = area.height as usize;
-        self.offset = self.offset.min(self.help_key_lines.len() - 1)
+        let max_offset = self.rows.len().saturating_sub(self.height);
+        self.offset = self.offset.min(max_offset);
     }
 }
 
 #[rustfmt::skip]
-fn build_lines(
+fn build_rows(
     color_theme: &ColorTheme,
     keybind: &KeyBind,
     core_config: &CoreConfig,
-) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
-    let user_command_help_items = keybind
+) -> Vec<HelpRow> {
+    let user_command_items: Vec<BindingSpec> = keybind
         .user_command_event_numbers()
         .into_iter()
         .flat_map(|n| {
@@ -155,169 +175,186 @@ fn build_lines(
                 .user_command
                 .commands
                 .get(&n.to_string())
-                .map(|c| format!("Execute user command {} - {}", n, c.name))
-                .map(|desc| (vec![UserEvent::UserCommand(n)], desc))
-        })
-        .collect::<Vec<_>>();
-
-    let common_helps = vec![
-        (vec![UserEvent::ForceQuit], "Force quit".into()),
-        (vec![UserEvent::Quit], "Quit (press twice)".into()),
-        (vec![UserEvent::HelpToggle], "Open help".into()),
-    ];
-    let (common_key_lines, common_value_lines) = build_block_lines("Common:", common_helps, color_theme, keybind);
-
-    let help_helps = vec![
-        (vec![UserEvent::HelpToggle, UserEvent::Cancel, UserEvent::Close, UserEvent::NavigateLeft], "Close help".into()),
-        (vec![UserEvent::NavigateDown, UserEvent::SelectDown], "Scroll down".into()),
-        (vec![UserEvent::NavigateUp, UserEvent::SelectUp], "Scroll up".into()),
-    ];
-    let (help_key_lines, help_value_lines) = build_block_lines("Help:", help_helps, color_theme, keybind);
-
-    let list_helps = vec![
-        (vec![UserEvent::NavigateDown], "Move down".into()),
-        (vec![UserEvent::NavigateUp], "Move up".into()),
-        (vec![UserEvent::ScrollDown], "Scroll down".into()),
-        (vec![UserEvent::GoToParent], "Scroll up".into()),
-        (vec![UserEvent::Confirm, UserEvent::NavigateRight], "Show commit details".into()),
-        (vec![UserEvent::RefList], "Open refs list".into()),
-        (vec![UserEvent::Search], "Start search".into()),
-        (vec![UserEvent::Filter], "Start filter".into()),
-        (vec![UserEvent::Cancel], "Cancel search/filter".into()),
-        (vec![UserEvent::GoToNext], "Go to next search match".into()),
-        (vec![UserEvent::GoToPrevious], "Go to previous search match".into()),
-        (vec![UserEvent::FuzzyToggle], "Toggle fuzzy match".into()),
-        (vec![UserEvent::ShortCopy], "Copy commit short hash".into()),
-        (vec![UserEvent::FullCopy], "Copy commit hash".into()),
-        (vec![UserEvent::BranchCopy], "Copy branch name (prefer local)".into()),
-        (vec![UserEvent::FullBranchCopy], "Copy remote branch name".into()),
-        (vec![UserEvent::TagCopy], "Copy tag name".into()),
-        (vec![UserEvent::CreateTag], "Create tag on commit".into()),
-        (vec![UserEvent::DeleteTag], "Delete tag from commit".into()),
-        (vec![UserEvent::RemoteRefsToggle], "Toggle remote refs".into()),
-        (vec![UserEvent::GitHubToggle], "Open GitHub issues/PRs".into()),
-        (vec![UserEvent::Refresh], "Refresh".into()),
-    ];
-    let (list_key_lines, list_value_lines) = build_block_lines("Commit List:", list_helps, color_theme, keybind);
-
-    let detail_helps = vec![
-        (vec![UserEvent::Cancel, UserEvent::Close, UserEvent::Confirm], "Close commit details".into()),
-        (vec![UserEvent::DetailPaneToggle], "Toggle detail pane".into()),
-        (vec![UserEvent::NavigateDown], "Scroll down".into()),
-        (vec![UserEvent::NavigateUp], "Scroll up".into()),
-        (vec![UserEvent::NavigateRight], "Select older commit".into()),
-        (vec![UserEvent::NavigateLeft], "Select newer commit".into()),
-        (vec![UserEvent::GoToParent], "Select parent commit".into()),
-        (vec![UserEvent::ShortCopy], "Copy commit short hash".into()),
-        (vec![UserEvent::FullCopy], "Copy commit hash".into()),
-        (vec![UserEvent::BranchCopy], "Copy branch name (prefer local)".into()),
-        (vec![UserEvent::FullBranchCopy], "Copy remote branch name".into()),
-        (vec![UserEvent::TagCopy], "Copy tag name".into()),
-        (vec![UserEvent::RemoteRefsToggle], "Toggle remote refs".into()),
-        (vec![UserEvent::HelpToggle], "Open help".into()),
-        (vec![UserEvent::Refresh], "Refresh".into()),
-    ];
-    let (detail_key_lines, detail_value_lines) = build_block_lines("Commit Detail:", detail_helps, color_theme, keybind);
-
-    let refs_helps = vec![
-        (vec![UserEvent::Cancel], "Close refs list".into()),
-        (vec![UserEvent::NavigateDown], "Move down".into()),
-        (vec![UserEvent::NavigateUp], "Move up".into()),
-        (vec![UserEvent::NavigateRight], "Open node".into()),
-        (vec![UserEvent::NavigateLeft], "Close node / Close refs".into()),
-        (vec![UserEvent::UserCommand(1)], "Delete ref".into()),
-        (vec![UserEvent::Refresh], "Refresh".into()),
-    ];
-    let (refs_key_lines, refs_value_lines) = build_block_lines("Refs List:", refs_helps, color_theme, keybind);
-
-    let mut user_command_helps = vec![
-        (vec![UserEvent::Cancel, UserEvent::Close], "Close user command".into()),
-        (vec![UserEvent::NavigateDown], "Scroll down".into()),
-        (vec![UserEvent::NavigateUp], "Scroll up".into()),
-        (vec![UserEvent::PageDown], "Scroll page down".into()),
-        (vec![UserEvent::PageUp], "Scroll page up".into()),
-        (vec![UserEvent::HalfPageDown], "Scroll half page down".into()),
-        (vec![UserEvent::HalfPageUp], "Scroll half page up".into()),
-        (vec![UserEvent::GoToTop], "Go to top".into()),
-        (vec![UserEvent::GoToBottom], "Go to bottom".into()),
-        (vec![UserEvent::SelectDown], "Select older commit".into()),
-        (vec![UserEvent::SelectUp], "Select newer commit".into()),
-        (vec![UserEvent::GoToParent], "Select parent commit".into()),
-        (vec![UserEvent::Refresh], "Refresh".into()),
-        (vec![UserEvent::Confirm], "Show commit details".into()),
-    ];
-    user_command_helps.extend(user_command_help_items);
-    let (user_command_key_lines, user_command_value_lines) = build_block_lines("User Command:", user_command_helps, color_theme, keybind);
-
-    let key_lines = join_line_groups_with_empty(vec![
-        common_key_lines,
-        help_key_lines,
-        list_key_lines,
-        detail_key_lines,
-        refs_key_lines,
-        user_command_key_lines,
-    ]);
-    let value_lines = join_line_groups_with_empty(vec![
-        common_value_lines,
-        help_value_lines,
-        list_value_lines,
-        detail_value_lines,
-        refs_value_lines,
-        user_command_value_lines,
-    ]);
-
-    (key_lines, value_lines)
-}
-
-fn build_block_lines(
-    title: &'static str,
-    helps: Vec<(Vec<UserEvent>, String)>,
-    color_theme: &ColorTheme,
-    keybind: &KeyBind,
-) -> (Vec<Line<'static>>, Vec<Line<'static>>) {
-    let mut key_lines = Vec::new();
-    let mut value_lines = Vec::new();
-
-    let key_title_lines = vec![Line::from(title)
-        .fg(color_theme.help_block_title_fg)
-        .add_modifier(Modifier::BOLD)];
-    let value_title_lines = vec![Line::from("")];
-    let key_binding_lines: Vec<Line> = helps
-        .clone()
-        .into_iter()
-        .map(|(events, _)| {
-            join_span_groups_with_space(
-                events
-                    .iter()
-                    .flat_map(|event| keybind.keys_for_event(*event))
-                    .map(|key| vec!["<".into(), key.fg(color_theme.help_key_fg), ">".into()])
-                    .collect(),
-            )
+                .map(|c| BindingSpec {
+                    events: vec![UserEvent::UserCommand(n)],
+                    cn: format!("執行 user command {} - {}", n, c.name),
+                    en: format!("Execute user command {} - {}", n, c.name),
+                })
         })
         .collect();
-    let value_binding_lines: Vec<Line> = helps
-        .into_iter()
-        .map(|(_, value)| Line::raw(value))
-        .collect();
 
-    key_lines.extend(key_title_lines);
-    key_lines.extend(key_binding_lines);
-    value_lines.extend(value_title_lines);
-    value_lines.extend(value_binding_lines);
+    let common = vec![
+        b(vec![UserEvent::ForceQuit],   "強制離開",      "Force quit"),
+        b(vec![UserEvent::Quit],        "離開（按兩下）", "Quit (press twice)"),
+        b(vec![UserEvent::HelpToggle],  "開啟說明",      "Open help"),
+    ];
 
-    (key_lines, value_lines)
-}
+    let help = vec![
+        b(vec![UserEvent::HelpToggle, UserEvent::Cancel, UserEvent::Close, UserEvent::NavigateLeft],
+            "關閉說明", "Close help"),
+        b(vec![UserEvent::NavigateDown, UserEvent::SelectDown], "向下捲動", "Scroll down"),
+        b(vec![UserEvent::NavigateUp,   UserEvent::SelectUp],   "向上捲動", "Scroll up"),
+    ];
 
-fn join_line_groups_with_empty(line_groups: Vec<Vec<Line<'static>>>) -> Vec<Line<'static>> {
-    let mut result = Vec::new();
-    let n = line_groups.len();
-    for (i, lines) in line_groups.into_iter().enumerate() {
-        result.extend(lines);
-        if i < n - 1 {
-            result.push(Line::raw(""));
+    let list = vec![
+        b(vec![UserEvent::NavigateDown],                          "向下移動",            "Move down"),
+        b(vec![UserEvent::NavigateUp],                            "向上移動",            "Move up"),
+        b(vec![UserEvent::ScrollDown],                            "graph 向下捲動",      "Scroll down"),
+        b(vec![UserEvent::GoToParent],                            "graph 向上捲動",      "Scroll up"),
+        b(vec![UserEvent::Confirm, UserEvent::NavigateRight],     "顯示 commit 詳情",    "Show commit details"),
+        b(vec![UserEvent::RefList],                               "開啟 refs 清單",      "Open refs list"),
+        b(vec![UserEvent::Search],                                "開始搜尋",            "Start search"),
+        b(vec![UserEvent::Filter],                                "開始過濾",            "Start filter"),
+        b(vec![UserEvent::Cancel],                                "取消搜尋／過濾",      "Cancel search/filter"),
+        b(vec![UserEvent::GoToNext],                              "下一個符合項",        "Go to next search match"),
+        b(vec![UserEvent::GoToPrevious],                          "上一個符合項",        "Go to previous search match"),
+        b(vec![UserEvent::FuzzyToggle],                           "切換模糊比對",        "Toggle fuzzy match"),
+        b(vec![UserEvent::ShortCopy],                             "複製 commit short hash", "Copy commit short hash"),
+        b(vec![UserEvent::FullCopy],                              "複製 commit hash",    "Copy commit hash"),
+        b(vec![UserEvent::BranchCopy],                            "複製 branch 名稱（優先 local）", "Copy branch name (prefer local)"),
+        b(vec![UserEvent::FullBranchCopy],                        "複製 remote branch 名稱", "Copy remote branch name"),
+        b(vec![UserEvent::TagCopy],                               "複製 tag 名稱",       "Copy tag name"),
+        b(vec![UserEvent::CreateTag],                             "在 commit 上建立 tag", "Create tag on commit"),
+        b(vec![UserEvent::DeleteTag],                             "刪除 commit 上的 tag", "Delete tag from commit"),
+        b(vec![UserEvent::RemoteRefsToggle],                      "切換 remote refs",    "Toggle remote refs"),
+        b(vec![UserEvent::GitHubToggle],                          "開啟 GitHub issues/PRs", "Open GitHub issues/PRs"),
+        b(vec![UserEvent::TaskListToggle],                        "切換工作清單",        "Toggle task list"),
+        b(vec![UserEvent::Fetch],                                 "fetch 所有 remote",   "Fetch all remotes"),
+        b(vec![UserEvent::Checkout],                              "checkout 選取的 commit/ref", "Checkout selected commit/ref"),
+        b(vec![UserEvent::Refresh],                               "重新整理",            "Refresh"),
+    ];
+
+    let detail = vec![
+        b(vec![UserEvent::Cancel, UserEvent::Close, UserEvent::Confirm], "關閉 commit 詳情", "Close commit details"),
+        b(vec![UserEvent::DetailPaneToggle],                             "切換詳情區塊",     "Toggle detail pane"),
+        b(vec![UserEvent::NavigateDown],                                 "向下捲動",         "Scroll down"),
+        b(vec![UserEvent::NavigateUp],                                   "向上捲動",         "Scroll up"),
+        b(vec![UserEvent::NavigateRight],                                "選擇較舊 commit",  "Select older commit"),
+        b(vec![UserEvent::NavigateLeft],                                 "選擇較新 commit",  "Select newer commit"),
+        b(vec![UserEvent::GoToParent],                                   "選擇 parent commit", "Select parent commit"),
+        b(vec![UserEvent::ShortCopy],                                    "複製 commit short hash", "Copy commit short hash"),
+        b(vec![UserEvent::FullCopy],                                     "複製 commit hash",  "Copy commit hash"),
+        b(vec![UserEvent::BranchCopy],                                   "複製 branch 名稱（優先 local）", "Copy branch name (prefer local)"),
+        b(vec![UserEvent::FullBranchCopy],                               "複製 remote branch 名稱", "Copy remote branch name"),
+        b(vec![UserEvent::TagCopy],                                      "複製 tag 名稱",     "Copy tag name"),
+        b(vec![UserEvent::RemoteRefsToggle],                             "切換 remote refs",  "Toggle remote refs"),
+        b(vec![UserEvent::HelpToggle],                                   "開啟說明",          "Open help"),
+        b(vec![UserEvent::Refresh],                                      "重新整理",          "Refresh"),
+    ];
+
+    let refs = vec![
+        b(vec![UserEvent::Cancel],                    "關閉 refs 清單",         "Close refs list"),
+        b(vec![UserEvent::NavigateDown],              "向下移動",               "Move down"),
+        b(vec![UserEvent::NavigateUp],                "向上移動",               "Move up"),
+        b(vec![UserEvent::NavigateRight],             "展開節點",               "Open node"),
+        b(vec![UserEvent::NavigateLeft],              "收合節點／關閉",         "Close node / Close refs"),
+        b(vec![UserEvent::UserCommand(1)],            "刪除 ref",               "Delete ref"),
+        b(vec![UserEvent::Refresh],                   "重新整理",               "Refresh"),
+    ];
+
+    let github = vec![
+        b(vec![UserEvent::GitHubToggle, UserEvent::Cancel, UserEvent::Close], "關閉 GitHub view", "Close GitHub view"),
+        b(vec![UserEvent::RefList],                  "切換 Issue／PR 分頁",     "Switch issue/PR tab"),
+        b(vec![UserEvent::NavigateDown, UserEvent::SelectDown], "向下移動",     "Move down"),
+        b(vec![UserEvent::NavigateUp,   UserEvent::SelectUp],   "向上移動",     "Move up"),
+        b(vec![UserEvent::PageDown],                  "向下一頁",               "Page down"),
+        b(vec![UserEvent::PageUp],                    "向上一頁",               "Page up"),
+        b(vec![UserEvent::HalfPageDown],              "向下半頁",               "Half page down"),
+        b(vec![UserEvent::HalfPageUp],                "向上半頁",               "Half page up"),
+        b(vec![UserEvent::GoToTop],                   "跳到頂端",               "Go to top"),
+        b(vec![UserEvent::GoToBottom],                "跳到底端",               "Go to bottom"),
+        b(vec![UserEvent::Confirm],                   "預覽內容／切換 checkbox", "Preview / toggle checkbox"),
+        b(vec![UserEvent::Search],                    "搜尋",                   "Search"),
+        b(vec![UserEvent::Filter],                    "過濾",                   "Filter"),
+        b(vec![UserEvent::ShortCopy],                 "複製 issue/PR URL",      "Copy issue/PR URL"),
+        b(vec![UserEvent::FullCopy],                  "在瀏覽器開啟 issue/PR",  "Open issue/PR in browser"),
+        b(vec![UserEvent::BranchCopy],                "輸入 #num 開啟對應 issue/PR", "Open #num issue/PR"),
+        b(vec![UserEvent::Refresh],                   "重新整理",               "Refresh"),
+    ];
+
+    let tag_edit = vec![
+        b(vec![UserEvent::Confirm],                   "確定建立／刪除",          "Confirm create/delete"),
+        b(vec![UserEvent::Cancel],                    "取消並關閉",              "Cancel and close"),
+        b(vec![UserEvent::NavigateDown, UserEvent::NavigateUp], "切換輸入欄位",  "Switch input field"),
+        b(vec![UserEvent::NavigateRight, UserEvent::NavigateLeft], "切換選項",  "Toggle option"),
+    ];
+
+    let delete_ref = vec![
+        b(vec![UserEvent::Confirm],                                    "確定刪除 ref",     "Confirm delete ref"),
+        b(vec![UserEvent::Cancel],                                     "取消",             "Cancel"),
+        b(vec![UserEvent::NavigateRight, UserEvent::NavigateLeft, UserEvent::NavigateDown],
+                                                                       "切換 yes／no",      "Toggle yes/no"),
+    ];
+
+    let mut user_command = vec![
+        b(vec![UserEvent::Cancel, UserEvent::Close], "關閉 user command",  "Close user command"),
+        b(vec![UserEvent::NavigateDown],              "向下捲動",           "Scroll down"),
+        b(vec![UserEvent::NavigateUp],                "向上捲動",           "Scroll up"),
+        b(vec![UserEvent::PageDown],                  "向下一頁",           "Scroll page down"),
+        b(vec![UserEvent::PageUp],                    "向上一頁",           "Scroll page up"),
+        b(vec![UserEvent::HalfPageDown],              "向下半頁",           "Scroll half page down"),
+        b(vec![UserEvent::HalfPageUp],                "向上半頁",           "Scroll half page up"),
+        b(vec![UserEvent::GoToTop],                   "跳到頂端",           "Go to top"),
+        b(vec![UserEvent::GoToBottom],                "跳到底端",           "Go to bottom"),
+        b(vec![UserEvent::SelectDown],                "選擇較舊 commit",    "Select older commit"),
+        b(vec![UserEvent::SelectUp],                  "選擇較新 commit",    "Select newer commit"),
+        b(vec![UserEvent::GoToParent],                "選擇 parent commit", "Select parent commit"),
+        b(vec![UserEvent::Refresh],                   "重新整理",           "Refresh"),
+        b(vec![UserEvent::Confirm],                   "顯示 commit 詳情",   "Show commit details"),
+    ];
+    user_command.extend(user_command_items);
+
+    let blocks: Vec<(&str, Vec<BindingSpec>)> = vec![
+        ("共通",        common),
+        ("說明頁",      help),
+        ("Commit 清單", list),
+        ("Commit 詳情", detail),
+        ("Refs 清單",   refs),
+        ("GitHub View", github),
+        ("Create/Delete Tag", tag_edit),
+        ("Delete Ref",  delete_ref),
+        ("User Command", user_command),
+    ];
+
+    let mut rows: Vec<HelpRow> = Vec::new();
+    let n = blocks.len();
+    for (i, (title, specs)) in blocks.into_iter().enumerate() {
+        push_block(&mut rows, title, specs, color_theme, keybind);
+        if i + 1 < n {
+            rows.push(HelpRow::default());
         }
     }
-    result
+    rows
+}
+
+fn push_block(
+    rows: &mut Vec<HelpRow>,
+    title: &str,
+    specs: Vec<BindingSpec>,
+    color_theme: &ColorTheme,
+    keybind: &KeyBind,
+) {
+    rows.push(HelpRow {
+        cn: Line::default(),
+        keys: Line::from(format!("── {title} ──"))
+            .fg(color_theme.help_block_title_fg)
+            .add_modifier(Modifier::BOLD),
+        en: Line::default(),
+    });
+    for spec in specs {
+        let keys = join_span_groups_with_space(
+            spec.events
+                .iter()
+                .flat_map(|event| keybind.keys_for_event(*event))
+                .map(|key| vec!["<".into(), key.fg(color_theme.help_key_fg), ">".into()])
+                .collect(),
+        );
+        rows.push(HelpRow {
+            cn: Line::raw(spec.cn),
+            keys,
+            en: Line::raw(spec.en),
+        });
+    }
 }
 
 fn join_span_groups_with_space(span_groups: Vec<Vec<Span<'static>>>) -> Line<'static> {

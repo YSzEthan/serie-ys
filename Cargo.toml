@@ -1,6 +1,6 @@
 [package]
 name = "serie"
-version = "0.7.2"
+version = "1.0.0"
 description = "A rich git commit graph in your terminal, like magic"
 authors = ["Kyosuke Fujimoto <kyoro.f@gmail.com>"]
 homepage = "https://github.com/lusingander/serie"
@@ -13,6 +13,10 @@ edition = "2021"
 rust-version = "1.88.0"
 
 exclude = ["/.github", "/img"]
+
+[[bin]]
+name = "ysgit"
+path = "src/main.rs"
 
 [dependencies]
 ansi-to-tui = "8.0.1"
