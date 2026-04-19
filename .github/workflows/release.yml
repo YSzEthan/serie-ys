@@ -18,26 +18,18 @@ jobs:
             runner: macos-latest
             archive: tar.gz
             bin_ext: ""
-            shell: "zsh -e {0}"
-            archive_cmd: tar -czf "$ARCHIVE" ysgit
           - target: x86_64-apple-darwin
             runner: macos-latest
             archive: tar.gz
             bin_ext: ""
-            shell: "zsh -e {0}"
-            archive_cmd: tar -czf "$ARCHIVE" ysgit
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
             archive: tar.gz
             bin_ext: ""
-            shell: "bash -e {0}"
-            archive_cmd: tar -czf "$ARCHIVE" ysgit
           - target: x86_64-pc-windows-msvc
             runner: windows-latest
             archive: zip
             bin_ext: ".exe"
-            shell: pwsh
-            archive_cmd: Compress-Archive -Path ysgit.exe -DestinationPath $env:ARCHIVE
     runs-on: ${{ matrix.t.runner }}
     steps:
       - name: Checkout
@@ -62,9 +54,18 @@ jobs:
       - name: Stage
         shell: bash
         run: cp "target/${{ matrix.t.target }}/release/ysgit${{ matrix.t.bin_ext }}" "ysgit${{ matrix.t.bin_ext }}"
-      - name: Archive
-        shell: ${{ matrix.t.shell }}
-        run: ${{ matrix.t.archive_cmd }}
+      - name: Archive (macOS)
+        if: runner.os == 'macOS'
+        shell: zsh -e {0}
+        run: tar -czf "$ARCHIVE" ysgit
+      - name: Archive (Linux)
+        if: runner.os == 'Linux'
+        shell: bash -e {0}
+        run: tar -czf "$ARCHIVE" ysgit
+      - name: Archive (Windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: Compress-Archive -Path ysgit.exe -DestinationPath $env:ARCHIVE
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
