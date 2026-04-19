@@ -16,20 +16,20 @@ jobs:
         t:
           - target: aarch64-apple-darwin
             runner: macos-latest
-            archive: tar.gz
             bin_ext: ""
+            label: macos-arm64
           - target: x86_64-apple-darwin
             runner: macos-latest
-            archive: tar.gz
             bin_ext: ""
+            label: macos-x64
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
-            archive: tar.gz
             bin_ext: ""
+            label: linux
           - target: x86_64-pc-windows-msvc
             runner: windows-latest
-            archive: zip
             bin_ext: ".exe"
+            label: windows
     runs-on: ${{ matrix.t.runner }}
     steps:
       - name: Checkout
@@ -45,32 +45,18 @@ jobs:
           command: build
           target: ${{ matrix.t.target }}
           args: "--release"
-      - name: Vars
+      - name: Stage
         shell: bash
         run: |
           VER="${GITHUB_REF_NAME#v}"
-          echo "RELEASE_VERSION=$VER" >> "$GITHUB_ENV"
-          echo "ARCHIVE=ysgit-$VER-${{ matrix.t.target }}.${{ matrix.t.archive }}" >> "$GITHUB_ENV"
-      - name: Stage
-        shell: bash
-        run: cp "target/${{ matrix.t.target }}/release/ysgit${{ matrix.t.bin_ext }}" "ysgit${{ matrix.t.bin_ext }}"
-      - name: Archive (macOS)
-        if: runner.os == 'macOS'
-        shell: zsh -e {0}
-        run: tar -czf "$ARCHIVE" ysgit
-      - name: Archive (Linux)
-        if: runner.os == 'Linux'
-        shell: bash -e {0}
-        run: tar -czf "$ARCHIVE" ysgit
-      - name: Archive (Windows)
-        if: runner.os == 'Windows'
-        shell: pwsh
-        run: Compress-Archive -Path ysgit.exe -DestinationPath $env:ARCHIVE
+          ASSET="ysgit_${VER}-${{ matrix.t.label }}${{ matrix.t.bin_ext }}"
+          cp "target/${{ matrix.t.target }}/release/ysgit${{ matrix.t.bin_ext }}" "$ASSET"
+          echo "ASSET=$ASSET" >> "$GITHUB_ENV"
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: release-${{ matrix.t.target }}
-          path: ${{ env.ARCHIVE }}
+          path: ${{ env.ASSET }}
           if-no-files-found: error
 
   release:
