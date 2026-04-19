@@ -40,9 +40,18 @@ pub struct GhAuthor {
     pub login: String,
 }
 
-#[allow(dead_code)]
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct GhRelatedIssue {
+    pub number: u64,
+    pub title: String,
+    pub state: String,
+    #[serde(default)]
+    pub url: String,
+}
+
+#[allow(dead_code)]
+#[derive(Debug, Clone, PartialEq)]
 pub struct GhIssue {
     pub number: u64,
     pub title: String,
@@ -50,14 +59,12 @@ pub struct GhIssue {
     pub labels: Vec<GhLabel>,
     pub author: GhAuthor,
     pub created_at: String,
-    #[serde(default)]
     pub body: String,
-    #[serde(default)]
     pub url: String,
-    #[serde(default)]
     pub closed_at: Option<String>,
-    #[serde(default)]
     pub updated_at: String,
+    pub parent: Option<GhRelatedIssue>,
+    pub sub_issues: Vec<GhRelatedIssue>,
 }
 
 #[allow(dead_code)]
@@ -103,21 +110,142 @@ fn run_gh(path: &Path, args: &[&str], force_tty: bool) -> Result<String, String>
 }
 
 pub fn list_issues(path: &Path, state: &str) -> Result<Vec<GhIssue>, String> {
+    let (owner, name) = fetch_repo_name_with_owner(path)?;
+    let states = match state {
+        "open" => "[OPEN]",
+        "closed" => "[CLOSED]",
+        _ => "[OPEN, CLOSED]",
+    };
+    let query = format!(
+        r#"query($owner:String!,$name:String!){{
+            repository(owner:$owner,name:$name){{
+                issues(first:50,states:{states},orderBy:{{field:CREATED_AT,direction:DESC}}){{
+                    nodes {{
+                        number title state body url createdAt closedAt updatedAt
+                        author {{ login }}
+                        labels(first:20) {{ nodes {{ name color }} }}
+                        parent {{ number title state url }}
+                        subIssues(first:20) {{ nodes {{ number title state url }} }}
+                    }}
+                }}
+            }}
+        }}"#
+    );
     let json = run_gh(
         path,
         &[
-            "issue",
-            "list",
-            "--state",
-            state,
-            "--limit",
-            "50",
-            "--json",
-            "number,title,state,labels,author,createdAt,body,url,closedAt,updatedAt",
+            "api",
+            "graphql",
+            "-F",
+            &format!("owner={owner}"),
+            "-F",
+            &format!("name={name}"),
+            "-f",
+            &format!("query={query}"),
         ],
         false,
     )?;
-    serde_json::from_str(&json).map_err(|e| format!("JSON parse error: {e}"))
+    parse_issues_graphql(&json)
+}
+
+fn fetch_repo_name_with_owner(path: &Path) -> Result<(String, String), String> {
+    let out = run_gh(
+        path,
+        &[
+            "repo",
+            "view",
+            "--json",
+            "nameWithOwner",
+            "--jq",
+            ".nameWithOwner",
+        ],
+        false,
+    )?;
+    let s = out.trim();
+    let (owner, name) = s
+        .split_once('/')
+        .ok_or_else(|| format!("Unexpected nameWithOwner: {s}"))?;
+    Ok((owner.to_string(), name.to_string()))
+}
+
+fn parse_issues_graphql(json: &str) -> Result<Vec<GhIssue>, String> {
+    let resp: GqlIssuesResp =
+        serde_json::from_str(json).map_err(|e| format!("JSON parse error: {e}"))?;
+    Ok(resp
+        .data
+        .repository
+        .issues
+        .nodes
+        .into_iter()
+        .map(GqlIssueNode::into_gh_issue)
+        .collect())
+}
+
+// ── GraphQL response wrapper types ──
+
+#[derive(Deserialize)]
+struct GqlIssuesResp {
+    data: GqlData,
+}
+#[derive(Deserialize)]
+struct GqlData {
+    repository: GqlRepo,
+}
+#[derive(Deserialize)]
+struct GqlRepo {
+    issues: GqlIssueList,
+}
+#[derive(Deserialize)]
+struct GqlIssueList {
+    nodes: Vec<GqlIssueNode>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlIssueNode {
+    number: u64,
+    title: String,
+    state: String,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    url: Option<String>,
+    created_at: String,
+    #[serde(default)]
+    closed_at: Option<String>,
+    #[serde(default)]
+    updated_at: Option<String>,
+    author: Option<GhAuthor>,
+    labels: GqlConnection<GhLabel>,
+    #[serde(default)]
+    parent: Option<GhRelatedIssue>,
+    sub_issues: GqlConnection<GhRelatedIssue>,
+}
+
+#[derive(Deserialize)]
+struct GqlConnection<T> {
+    nodes: Vec<T>,
+}
+
+impl GqlIssueNode {
+    fn into_gh_issue(self) -> GhIssue {
+        GhIssue {
+            number: self.number,
+            title: self.title,
+            state: self.state,
+            labels: self.labels.nodes,
+            author: self.author.unwrap_or(GhAuthor {
+                login: "ghost".to_string(),
+            }),
+            created_at: self.created_at,
+            body: self.body.unwrap_or_default(),
+            url: self.url.unwrap_or_default(),
+            closed_at: self.closed_at,
+            updated_at: self.updated_at.unwrap_or_default(),
+            parent: self.parent,
+            sub_issues: self.sub_issues.nodes,
+        }
+    }
 }
 
 pub fn list_pull_requests(path: &Path, state: &str) -> Result<Vec<GhPullRequest>, String> {
@@ -244,4 +372,75 @@ pub fn update_body(path: &Path, number: u64, kind: GhItemKind, body: &str) -> Re
         return Err(format!("gh edit failed: {stderr}"));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_graphql_issue_with_relations() {
+        let json = r#"{
+            "data": {
+                "repository": {
+                    "issues": {
+                        "nodes": [{
+                            "number": 7,
+                            "title": "Epic",
+                            "state": "OPEN",
+                            "body": "parent body",
+                            "url": "https://github.com/o/r/issues/7",
+                            "createdAt": "2026-01-01T00:00:00Z",
+                            "closedAt": null,
+                            "updatedAt": "2026-01-02T00:00:00Z",
+                            "author": {"login": "alice"},
+                            "labels": {"nodes": [{"name": "bug", "color": "ff0000"}]},
+                            "parent": null,
+                            "subIssues": {"nodes": [
+                                {"number": 10, "title": "First", "state": "OPEN"},
+                                {"number": 11, "title": "Second", "state": "CLOSED"}
+                            ]}
+                        }]
+                    }
+                }
+            }
+        }"#;
+        let issues = parse_issues_graphql(json).unwrap();
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].number, 7);
+        assert!(issues[0].parent.is_none());
+        assert_eq!(issues[0].sub_issues.len(), 2);
+        assert_eq!(issues[0].sub_issues[0].number, 10);
+        assert_eq!(issues[0].sub_issues[1].state, "CLOSED");
+    }
+
+    #[test]
+    fn parse_graphql_issue_with_parent_no_children() {
+        let json = r#"{
+            "data": {
+                "repository": {
+                    "issues": {
+                        "nodes": [{
+                            "number": 10,
+                            "title": "Child",
+                            "state": "OPEN",
+                            "body": "",
+                            "url": "",
+                            "createdAt": "2026-01-01T00:00:00Z",
+                            "closedAt": null,
+                            "updatedAt": null,
+                            "author": null,
+                            "labels": {"nodes": []},
+                            "parent": {"number": 7, "title": "Epic", "state": "OPEN"},
+                            "subIssues": {"nodes": []}
+                        }]
+                    }
+                }
+            }
+        }"#;
+        let issues = parse_issues_graphql(json).unwrap();
+        assert_eq!(issues[0].parent.as_ref().unwrap().number, 7);
+        assert!(issues[0].sub_issues.is_empty());
+        assert_eq!(issues[0].author.login, "ghost");
+    }
 }

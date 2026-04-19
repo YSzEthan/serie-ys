@@ -56,7 +56,30 @@ impl<'a> View<'a> {
             View::DeleteTag(view) => view.render(f, area),
             View::DeleteRef(view) => view.render(f, area),
             View::Help(view) => view.render(f, area),
-            View::GitHub(view) => view.render(f, area),
+            View::GitHub(view) => view.render(f, area, marquee_frame),
+        }
+    }
+
+    /// Stringified identity for marquee reset. Changes when the user navigates
+    /// to a different selection and the marquee should start from frame 0.
+    pub fn marquee_id(&self) -> Option<std::sync::Arc<str>> {
+        match self {
+            View::List(view) => {
+                let hash = view.as_list_state().selected_commit_hash();
+                Some(std::sync::Arc::from(hash.as_str()))
+            }
+            View::GitHub(view) => view.marquee_id(),
+            _ => None,
+        }
+    }
+
+    /// Whether the last render marked a selected row as overflowing — i.e.
+    /// the marquee ticker should keep running.
+    pub fn marquee_needed(&self) -> bool {
+        match self {
+            View::List(view) => view.as_list_state().selected_row_overflows.get(),
+            View::GitHub(view) => view.marquee_needed(),
+            _ => false,
         }
     }
 

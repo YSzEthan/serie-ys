@@ -149,7 +149,7 @@ pub struct App<'a> {
     ec: &'a EventController,
     marquee_frame: u64,
     marquee_needed: bool,
-    last_marquee_hash: Option<CommitHash>,
+    last_marquee_id: Option<std::sync::Arc<str>>,
 }
 
 #[derive(Debug)]
@@ -252,7 +252,7 @@ impl<'a> App<'a> {
             ec,
             marquee_frame: 0,
             marquee_needed: false,
-            last_marquee_hash: None,
+            last_marquee_id: None,
         };
 
         if let Some(context) = refresh_view_context {
@@ -278,13 +278,10 @@ impl App<'_> {
         let mut skip_draw = false;
         loop {
             if !skip_draw {
-                let current_hash = match &self.view {
-                    View::List(lv) => Some(lv.as_list_state().selected_commit_hash().clone()),
-                    _ => None,
-                };
-                if self.last_marquee_hash != current_hash {
+                let current_id = self.view.marquee_id();
+                if self.last_marquee_id != current_id {
                     self.marquee_frame = 0;
-                    self.last_marquee_hash = current_hash;
+                    self.last_marquee_id = current_id;
                 }
 
                 if self.view.take_graph_clear() {
@@ -296,10 +293,7 @@ impl App<'_> {
                 }
                 terminal.draw(|f| self.render(f))?;
 
-                self.marquee_needed = match &self.view {
-                    View::List(lv) => lv.as_list_state().selected_row_overflows.get(),
-                    _ => false,
-                };
+                self.marquee_needed = self.view.marquee_needed();
             }
             skip_draw = false;
 

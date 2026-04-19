@@ -7,6 +7,7 @@ mod detail;
 mod github;
 mod help;
 mod list;
+mod markdown;
 mod refs;
 mod user_command;
 

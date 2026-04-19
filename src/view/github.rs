@@ -1,3 +1,4 @@
+use std::cell::Cell;
 use std::rc::Rc;
 
 use ratatui::{
@@ -5,7 +6,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Padding, Paragraph},
+    widgets::{Block, Borders, Padding, Paragraph, Wrap},
     Frame,
 };
 use tui_input::{backend::crossterm::EventHandler, Input};
@@ -110,6 +111,10 @@ pub struct GitHubView<'a> {
 
     flash_message: Option<(String, bool)>,
 
+    /// Render-time overflow flag (selected row's title+author wider than
+    /// available). App reads this to decide whether to tick `marquee_frame`.
+    selected_row_overflows: Cell<bool>,
+
     ctx: Rc<AppContext>,
     tx: Sender,
 }
@@ -144,9 +149,27 @@ impl<'a> GitHubView<'a> {
             task_panel: None,
             load_state,
             flash_message: None,
+            selected_row_overflows: Cell::new(false),
             ctx,
             tx,
         }
+    }
+
+    pub fn marquee_id(&self) -> Option<std::sync::Arc<str>> {
+        let tab = match self.active_tab {
+            GitHubTab::Issues => "issues",
+            GitHubTab::PullRequests => "prs",
+        };
+        let idx = self.actual_index(self.selected_index);
+        let num = match self.active_tab {
+            GitHubTab::Issues => self.issues.get(idx).map(|i| i.number)?,
+            GitHubTab::PullRequests => self.pull_requests.get(idx).map(|p| p.number)?,
+        };
+        Some(std::sync::Arc::from(format!("gh:{tab}:{num}")))
+    }
+
+    pub fn marquee_needed(&self) -> bool {
+        self.selected_row_overflows.get()
     }
 
     pub fn take_before_view(&mut self) -> View<'a> {
@@ -694,8 +717,11 @@ impl<'a> GitHubView<'a> {
         }
     }
 
-    pub fn render(&mut self, f: &mut Frame, area: Rect) {
+    pub fn render(&mut self, f: &mut Frame, area: Rect, marquee_frame: u64) {
         self.height = area.height as usize;
+        // Render is the single source of truth for overflow — reset at entry
+        // so focuses that skip render_list (CheckboxEdit, Prompt) auto-clear.
+        self.selected_row_overflows.set(false);
 
         // ── 三區 split：頂部 tab/prompt + 下半 list|preview ──
         let [header_area, content_area] =
@@ -719,7 +745,7 @@ impl<'a> GitHubView<'a> {
             Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
                 .areas(content_area);
 
-        self.render_list(f, list_area);
+        self.render_list(f, list_area, marquee_frame);
         self.render_preview(f, preview_area);
 
         // ── Flash message ──
@@ -816,7 +842,7 @@ impl<'a> GitHubView<'a> {
         }
     }
 
-    fn render_list(&self, f: &mut Frame, area: Rect) {
+    fn render_list(&self, f: &mut Frame, area: Rect, marquee_frame: u64) {
         let list_border_color = if self.focus == GitHubFocus::List {
             Color::Cyan
         } else {
@@ -828,55 +854,159 @@ impl<'a> GitHubView<'a> {
         let inner = block.inner(area);
         f.render_widget(block, area);
 
-        let visible_height = inner.height as usize;
-        let items: Vec<Line> = if !self.has_active_filter() {
-            // No filter: iterate all items
-            match self.active_tab {
-                GitHubTab::Issues => self
-                    .issues
-                    .iter()
-                    .enumerate()
-                    .skip(self.offset)
-                    .take(visible_height)
-                    .map(|(i, issue)| render_issue_line(issue, i == self.selected_index))
-                    .collect(),
-                GitHubTab::PullRequests => self
-                    .pull_requests
-                    .iter()
-                    .enumerate()
-                    .skip(self.offset)
-                    .take(visible_height)
-                    .map(|(i, pr)| render_pr_line(pr, i == self.selected_index))
-                    .collect(),
+        let rows = self.current_viewport_rows(inner.height as usize, inner.width, marquee_frame);
+        let lines: Vec<Line<'static>> = rows.iter().map(|r| r.line.clone()).collect();
+        let list_paragraph =
+            Paragraph::new(lines).block(Block::default().padding(Padding::horizontal(1)));
+        f.render_widget(list_paragraph, inner);
+
+        // OSC 8 overlay on `#N` for each visible row. Cell layout lives in
+        // `LIST_LINK_COL_OFFSET` — keep in sync with the indicator + padding.
+        let buf = f.buffer_mut();
+        let x = inner.left().saturating_add(LIST_LINK_COL_OFFSET);
+        if x >= inner.right() {
+            return;
+        }
+        let remaining = inner.right() - x;
+        for (i, row) in rows.iter().enumerate() {
+            if row.url.is_empty() {
+                continue;
             }
-        } else {
-            // Filter active: iterate through filtered indices
-            let indices = self.current_filtered_indices();
-            match self.active_tab {
-                GitHubTab::Issues => indices
-                    .iter()
-                    .enumerate()
-                    .skip(self.offset)
-                    .take(visible_height)
-                    .map(|(vis_i, &data_i)| {
-                        render_issue_line(&self.issues[data_i], vis_i == self.selected_index)
-                    })
-                    .collect(),
-                GitHubTab::PullRequests => indices
-                    .iter()
-                    .enumerate()
-                    .skip(self.offset)
-                    .take(visible_height)
-                    .map(|(vis_i, &data_i)| {
-                        render_pr_line(&self.pull_requests[data_i], vis_i == self.selected_index)
-                    })
-                    .collect(),
+            let y = inner.top() + i as u16;
+            if y >= inner.bottom() {
+                break;
             }
+            let label = format!("#{}", row.number);
+            let label_width = console::measure_text_width(&label) as u16;
+            // Too narrow to fit the whole `#N` — skip overlay (partial hyperlink is worse than none)
+            if label_width > remaining {
+                continue;
+            }
+            let payload = crate::external::format_osc8_hyperlink(&row.url, &label);
+            buf[(x, y)].set_symbol(&payload);
+            for j in 1..label_width {
+                buf[(x + j, y)].set_skip(true);
+            }
+        }
+    }
+
+    fn labels_pad_width_for_tab(&self) -> usize {
+        match self.active_tab {
+            GitHubTab::Issues => self
+                .issues
+                .iter()
+                .map(|i| labels_display_width(&i.labels))
+                .max()
+                .unwrap_or(0),
+            GitHubTab::PullRequests => self
+                .pull_requests
+                .iter()
+                .map(|p| labels_display_width(&p.labels))
+                .max()
+                .unwrap_or(0),
+        }
+    }
+
+    fn current_viewport_rows(
+        &self,
+        visible_height: usize,
+        inner_width: u16,
+        marquee_frame: u64,
+    ) -> Vec<RowData> {
+        let pad = self.labels_pad_width_for_tab();
+        // Paragraph has Padding::horizontal(1) inside → inner content width is -2.
+        let content_width = inner_width.saturating_sub(2) as usize;
+        let mut rows = Vec::with_capacity(visible_height);
+        let mut overflow = false;
+
+        let make_issue = |issue: &GhIssue, vis_i: usize| -> (RowData, bool) {
+            let is_selected = vis_i == self.selected_index;
+            let frame = is_selected.then_some(marquee_frame);
+            let (line, did_scroll) =
+                render_issue_line(issue, is_selected, pad, content_width, frame);
+            (
+                RowData {
+                    line,
+                    url: issue.url.clone(),
+                    number: issue.number,
+                },
+                did_scroll,
+            )
+        };
+        let make_pr = |pr: &GhPullRequest, vis_i: usize| -> (RowData, bool) {
+            let is_selected = vis_i == self.selected_index;
+            let frame = is_selected.then_some(marquee_frame);
+            let (line, did_scroll) = render_pr_line(pr, is_selected, pad, content_width, frame);
+            (
+                RowData {
+                    line,
+                    url: pr.url.clone(),
+                    number: pr.number,
+                },
+                did_scroll,
+            )
         };
 
-        let list_paragraph =
-            Paragraph::new(items).block(Block::default().padding(Padding::horizontal(1)));
-        f.render_widget(list_paragraph, inner);
+        if !self.has_active_filter() {
+            match self.active_tab {
+                GitHubTab::Issues => {
+                    for (i, issue) in self
+                        .issues
+                        .iter()
+                        .enumerate()
+                        .skip(self.offset)
+                        .take(visible_height)
+                    {
+                        let (row, ovf) = make_issue(issue, i);
+                        overflow |= ovf;
+                        rows.push(row);
+                    }
+                }
+                GitHubTab::PullRequests => {
+                    for (i, pr) in self
+                        .pull_requests
+                        .iter()
+                        .enumerate()
+                        .skip(self.offset)
+                        .take(visible_height)
+                    {
+                        let (row, ovf) = make_pr(pr, i);
+                        overflow |= ovf;
+                        rows.push(row);
+                    }
+                }
+            }
+        } else {
+            let indices = self.current_filtered_indices();
+            match self.active_tab {
+                GitHubTab::Issues => {
+                    for (vis_i, &data_i) in indices
+                        .iter()
+                        .enumerate()
+                        .skip(self.offset)
+                        .take(visible_height)
+                    {
+                        let (row, ovf) = make_issue(&self.issues[data_i], vis_i);
+                        overflow |= ovf;
+                        rows.push(row);
+                    }
+                }
+                GitHubTab::PullRequests => {
+                    for (vis_i, &data_i) in indices
+                        .iter()
+                        .enumerate()
+                        .skip(self.offset)
+                        .take(visible_height)
+                    {
+                        let (row, ovf) = make_pr(&self.pull_requests[data_i], vis_i);
+                        overflow |= ovf;
+                        rows.push(row);
+                    }
+                }
+            }
+        }
+        self.selected_row_overflows.set(overflow);
+        rows
     }
 
     fn render_preview(&mut self, f: &mut Frame, area: Rect) {
@@ -889,7 +1019,7 @@ impl<'a> GitHubView<'a> {
         let inner = block.inner(area);
         f.render_widget(block, area);
 
-        let preview_lines = self.build_preview_lines();
+        let (preview_lines, overlays) = self.build_preview_content();
 
         // Clamp preview_offset to avoid scrolling past content
         let max_offset = preview_lines.len().saturating_sub(inner.height as usize);
@@ -901,8 +1031,32 @@ impl<'a> GitHubView<'a> {
             .take(inner.height as usize)
             .collect();
 
-        let paragraph = Paragraph::new(visible);
+        let paragraph = Paragraph::new(visible).wrap(Wrap { trim: false });
         f.render_widget(paragraph, inner);
+
+        // Overlay `#N` cells with OSC 8 hyperlinks. Must run after Paragraph
+        // render so we overwrite the pre-drawn plain `#N` glyph.
+        let buf = f.buffer_mut();
+        for ov in &overlays {
+            let Some(rel) = ov.line_idx.checked_sub(self.preview_offset) else {
+                continue;
+            };
+            if rel as u16 >= inner.height {
+                continue;
+            }
+            let y = inner.top() + rel as u16;
+            let x = inner.left().saturating_add(ov.x_offset);
+            if x >= inner.right() {
+                continue;
+            }
+            let payload = crate::external::format_osc8_hyperlink(&ov.url, &ov.label);
+            let label_width = console::measure_text_width(&ov.label) as u16;
+            buf[(x, y)].set_symbol(&payload);
+            let remaining = inner.right() - x;
+            for i in 1..label_width.min(remaining) {
+                buf[(x + i, y)].set_skip(true);
+            }
+        }
     }
 
     fn render_checkbox_preview(&self, f: &mut Frame, area: Rect) {
@@ -973,7 +1127,7 @@ impl<'a> GitHubView<'a> {
     #[allow(clippy::type_complexity)]
     fn selected_item_fields(
         &self,
-    ) -> Option<(&str, &str, &str, &[crate::github::GhLabel], &str, u64)> {
+    ) -> Option<(&str, &str, &str, &[crate::github::GhLabel], &str, u64, &str)> {
         let idx = self.actual_index(self.selected_index);
         match self.active_tab {
             GitHubTab::Issues => self.issues.get(idx).map(|i| {
@@ -984,6 +1138,7 @@ impl<'a> GitHubView<'a> {
                     i.labels.as_slice(),
                     i.body.as_str(),
                     i.number,
+                    i.url.as_str(),
                 )
             }),
             GitHubTab::PullRequests => self.pull_requests.get(idx).map(|p| {
@@ -994,29 +1149,43 @@ impl<'a> GitHubView<'a> {
                     p.labels.as_slice(),
                     p.body.as_str(),
                     p.number,
+                    p.url.as_str(),
                 )
             }),
         }
     }
 
-    fn build_preview_lines(&self) -> Vec<Line<'static>> {
-        let Some((title, state, author, labels, body, number)) = self.selected_item_fields() else {
-            return vec![Line::styled(
-                "(no item selected)",
-                Style::default().fg(Color::DarkGray),
-            )];
+    fn build_preview_content(&self) -> (Vec<Line<'static>>, Vec<PreviewOverlay>) {
+        let mut overlays: Vec<PreviewOverlay> = Vec::new();
+        let Some((title, state, author, labels, body, number, url)) = self.selected_item_fields()
+        else {
+            return (
+                vec![Line::styled(
+                    "(no item selected)",
+                    Style::default().fg(Color::DarkGray),
+                )],
+                overlays,
+            );
         };
 
-        // Convert borrowed fields to owned for 'static Line requirement
         let title = title.to_string();
         let state = state.to_string();
         let author = author.to_string();
         let body = body.to_string();
+        let url = url.to_string();
         let labels: Vec<crate::github::GhLabel> = labels.to_vec();
 
         let mut lines = Vec::new();
 
-        // Header: #number title
+        // Header: #number title  (#N hyperlink overlay at x=0)
+        if !url.is_empty() {
+            overlays.push(PreviewOverlay {
+                line_idx: lines.len(),
+                x_offset: 0,
+                url: url.clone(),
+                label: format!("#{number}"),
+            });
+        }
         lines.push(Line::from(vec![
             Span::styled(format!("#{number} "), Style::default().fg(Color::DarkGray)),
             Span::styled(
@@ -1027,15 +1196,11 @@ impl<'a> GitHubView<'a> {
             ),
         ]));
 
-        // Metadata: state @author
-        let state_color = match state.as_str() {
-            "OPEN" => Color::Green,
-            "CLOSED" => Color::Red,
-            "MERGED" => Color::Magenta,
-            _ => Color::Gray,
-        };
         let mut meta_spans = vec![
-            Span::styled(state.to_lowercase(), Style::default().fg(state_color)),
+            Span::styled(
+                state.to_lowercase(),
+                Style::default().fg(state_color(&state)),
+            ),
             Span::styled(format!("  @{author}"), Style::default().fg(Color::DarkGray)),
         ];
         if !labels.is_empty() {
@@ -1044,45 +1209,134 @@ impl<'a> GitHubView<'a> {
         }
         lines.push(Line::from(meta_spans));
 
-        // Separator
         lines.push(Line::styled(
             "─".repeat(40),
             Style::default().fg(Color::DarkGray),
         ));
 
-        // Body: raw markdown with minimal highlighting
+        if let GitHubTab::Issues = self.active_tab {
+            let idx = self.actual_index(self.selected_index);
+            if let Some(issue) = self.issues.get(idx) {
+                append_relation_lines(&mut lines, &mut overlays, issue);
+            }
+        }
+
         if body.is_empty() {
             lines.push(Line::styled(
                 "(no body)",
                 Style::default().fg(Color::DarkGray),
             ));
         } else {
-            for line in body.lines() {
-                if line.starts_with('#') {
-                    // Heading → bold
-                    lines.push(Line::styled(
-                        line.to_string(),
-                        Style::default().add_modifier(Modifier::BOLD),
-                    ));
-                } else if line.starts_with("---") || line.starts_with("___") {
-                    // Separator
-                    lines.push(Line::styled(
-                        "─".repeat(40),
-                        Style::default().fg(Color::DarkGray),
-                    ));
-                } else {
-                    lines.push(Line::raw(line.to_string()));
-                }
-            }
+            lines.extend(super::markdown::render(&body));
         }
 
-        lines
+        (lines, overlays)
     }
 
     fn clear_image_area(&self, area: Rect) {
         for y in area.top()..area.bottom() {
             self.ctx.image_protocol.clear_line(y);
         }
+    }
+}
+
+#[derive(Debug, Clone)]
+struct PreviewOverlay {
+    line_idx: usize,
+    x_offset: u16,
+    url: String,
+    label: String,
+}
+
+#[derive(Debug, Clone)]
+struct RowData {
+    line: Line<'static>,
+    url: String,
+    number: u64,
+}
+
+/// List row cell layout: paragraph padding (1) + indicator (2).
+/// Keep in sync with `render_issue_line` / `render_pr_line` — if the indicator
+/// width or the Paragraph padding changes, adjust this constant too.
+const LIST_LINK_COL_OFFSET: u16 = 3;
+
+fn state_color(state: &str) -> Color {
+    match state {
+        "OPEN" => Color::Green,
+        "CLOSED" => Color::Red,
+        "MERGED" => Color::Magenta,
+        _ => Color::Gray,
+    }
+}
+
+fn related_issue_line(indent: &'static str, r: &crate::github::GhRelatedIssue) -> Line<'static> {
+    Line::from(vec![
+        Span::raw(indent),
+        Span::styled(
+            format!("#{} ", r.number),
+            Style::default().fg(Color::DarkGray),
+        ),
+        Span::raw(r.title.clone()),
+        Span::raw(" "),
+        Span::styled(
+            format!("({})", r.state.to_lowercase()),
+            Style::default().fg(state_color(&r.state)),
+        ),
+    ])
+}
+
+fn append_relation_lines(
+    lines: &mut Vec<Line<'static>>,
+    overlays: &mut Vec<PreviewOverlay>,
+    issue: &GhIssue,
+) {
+    if let Some(ref parent) = issue.parent {
+        let prefix = "Parent: ";
+        if !parent.url.is_empty() {
+            overlays.push(PreviewOverlay {
+                line_idx: lines.len(),
+                x_offset: console::measure_text_width(prefix) as u16,
+                url: parent.url.clone(),
+                label: format!("#{}", parent.number),
+            });
+        }
+        lines.push(Line::from(vec![
+            Span::styled(prefix, Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                format!("#{} ", parent.number),
+                Style::default().fg(Color::DarkGray),
+            ),
+            Span::raw(parent.title.clone()),
+            Span::raw(" "),
+            Span::styled(
+                format!("({})", parent.state.to_lowercase()),
+                Style::default().fg(state_color(&parent.state)),
+            ),
+        ]));
+    }
+    if !issue.sub_issues.is_empty() {
+        let indent = "  ";
+        lines.push(Line::styled(
+            format!("Sub-issues ({}):", issue.sub_issues.len()),
+            Style::default().fg(Color::DarkGray),
+        ));
+        for sub in &issue.sub_issues {
+            if !sub.url.is_empty() {
+                overlays.push(PreviewOverlay {
+                    line_idx: lines.len(),
+                    x_offset: console::measure_text_width(indent) as u16,
+                    url: sub.url.clone(),
+                    label: format!("#{}", sub.number),
+                });
+            }
+            lines.push(related_issue_line(indent, sub));
+        }
+    }
+    if issue.parent.is_some() || !issue.sub_issues.is_empty() {
+        lines.push(Line::styled(
+            "─".repeat(40),
+            Style::default().fg(Color::DarkGray),
+        ));
     }
 }
 
@@ -1136,7 +1390,15 @@ fn label_spans(labels: &[crate::github::GhLabel]) -> Vec<Span<'static>> {
     spans
 }
 
-fn render_issue_line(issue: &GhIssue, selected: bool) -> Line<'static> {
+/// Returns `(line, scrolled)`. `scrolled=true` means the title+author tail
+/// got a marquee treatment due to overflow — caller keeps the ticker alive.
+fn render_issue_line(
+    issue: &GhIssue,
+    selected: bool,
+    labels_pad_width: usize,
+    content_width: usize,
+    marquee_frame: Option<u64>,
+) -> (Line<'static>, bool) {
     let indicator = if selected { "▸ " } else { "  " };
     let state_color = match issue.state.as_str() {
         "OPEN" => Color::Green,
@@ -1156,21 +1418,61 @@ fn render_issue_line(issue: &GhIssue, selected: bool) -> Line<'static> {
             Style::default().fg(Color::DarkGray),
         ),
         Span::styled(
-            format!("{:<8} ", issue.state.to_lowercase()),
+            format!("{:<6}", issue.state.to_lowercase()),
             Style::default().fg(state_color),
         ),
-        Span::styled(issue.title.clone(), style),
     ];
     spans.extend(label_spans(&issue.labels));
-    spans.push(Span::styled(
-        format!("  @{}", issue.author.login),
-        Style::default().fg(Color::DarkGray),
-    ));
+    let used = labels_display_width(&issue.labels);
+    if labels_pad_width > used {
+        spans.push(Span::raw(" ".repeat(labels_pad_width - used)));
+    }
+    spans.push(Span::raw(" "));
 
-    Line::from(spans)
+    let tail = format!("{}  @{}", issue.title, issue.author.login);
+    // 2 (indicator) + 7 (#N block `#XXXXX `) + 6 (state `{:<6}`) + labels_pad + 1 (space)
+    let prefix_width = 2 + 7 + 6 + labels_pad_width + 1;
+    let (tail_spans, scrolled) = tail_spans(
+        &tail,
+        content_width.saturating_sub(prefix_width),
+        marquee_frame,
+        style,
+    );
+    spans.extend(tail_spans);
+    (Line::from(spans), scrolled)
 }
 
-fn render_pr_line(pr: &GhPullRequest, selected: bool) -> Line<'static> {
+/// Render `title  @author` (or similar) either truncated/untouched when not
+/// overflowing, or scrolled via marquee when selected + overflow + frame.
+fn tail_spans(
+    tail: &str,
+    available: usize,
+    marquee_frame: Option<u64>,
+    style_title: Style,
+) -> (Vec<Span<'static>>, bool) {
+    let tail_width = console::measure_text_width(tail);
+    if available == 0 {
+        return (vec![], false);
+    }
+    if tail_width > available {
+        if let Some(frame) = marquee_frame {
+            let slice = crate::widget::marquee::scroll_window(tail, available, frame);
+            return (vec![Span::styled(slice.text, style_title)], true);
+        }
+        // Non-selected overflow row: truncate with ellipsis
+        let truncated = console::truncate_str(tail, available, "…").to_string();
+        return (vec![Span::styled(truncated, style_title)], false);
+    }
+    (vec![Span::styled(tail.to_string(), style_title)], false)
+}
+
+fn render_pr_line(
+    pr: &GhPullRequest,
+    selected: bool,
+    labels_pad_width: usize,
+    content_width: usize,
+    marquee_frame: Option<u64>,
+) -> (Line<'static>, bool) {
     let indicator = if selected { "▸ " } else { "  " };
     let (state_color, state_label) = if pr.is_draft {
         (Color::Gray, "draft".to_string())
@@ -1196,20 +1498,39 @@ fn render_pr_line(pr: &GhPullRequest, selected: bool) -> Line<'static> {
             Style::default().fg(Color::DarkGray),
         ),
         Span::styled(
-            format!("{state_label:<8} "),
+            format!("{state_label:<6}"),
             Style::default().fg(state_color),
         ),
-        Span::styled(pr.title.clone(), style),
     ];
     spans.extend(label_spans(&pr.labels));
-    spans.push(Span::styled(
-        format!("  ← {}", pr.head_ref_name),
-        Style::default().fg(Color::Blue),
-    ));
-    spans.push(Span::styled(
-        format!("  @{}", pr.author.login),
-        Style::default().fg(Color::DarkGray),
-    ));
+    let used = labels_display_width(&pr.labels);
+    if labels_pad_width > used {
+        spans.push(Span::raw(" ".repeat(labels_pad_width - used)));
+    }
+    spans.push(Span::raw(" "));
 
-    Line::from(spans)
+    let tail = format!("{}  ← {}  @{}", pr.title, pr.head_ref_name, pr.author.login);
+    let prefix_width = 2 + 7 + 6 + labels_pad_width + 1;
+    let (tail_spans, scrolled) = tail_spans(
+        &tail,
+        content_width.saturating_sub(prefix_width),
+        marquee_frame,
+        style,
+    );
+    spans.extend(tail_spans);
+    (Line::from(spans), scrolled)
+}
+
+/// Sum of the visible cells occupied by `label_spans(labels)`: `" [a, b]"`.
+fn labels_display_width(labels: &[crate::github::GhLabel]) -> usize {
+    if labels.is_empty() {
+        return 0;
+    }
+    let names: usize = labels
+        .iter()
+        .map(|l| console::measure_text_width(&l.name))
+        .sum();
+    let seps = labels.len().saturating_sub(1) * 2; // ", "
+                                                   // " [" + names + seps + "]"
+    3 + names + seps
 }
