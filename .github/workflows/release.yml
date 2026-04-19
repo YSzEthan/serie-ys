@@ -30,7 +30,7 @@ jobs:
             runner: ubuntu-latest
             archive: tar.gz
             bin_ext: ""
-            shell: bash
+            shell: "bash -e {0}"
             archive_cmd: tar -czf "$ARCHIVE" ysgit
           - target: x86_64-pc-windows-msvc
             runner: windows-latest
@@ -44,6 +44,9 @@ jobs:
         uses: actions/checkout@v4
       - name: Setup rust target
         run: rustup target add ${{ matrix.t.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.t.target }}
       - name: Build
         uses: houseabsolute/actions-rust-cross@v1.0.0
         with:
