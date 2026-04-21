@@ -38,6 +38,10 @@ struct Args {
     #[arg(short, long, value_name = "TYPE")]
     protocol: Option<ImageProtocolType>,
 
+    /// Force text mode (shortcut for --protocol text)
+    #[arg(short = 't', long = "text", conflicts_with = "protocol")]
+    text: bool,
+
     /// Commit ordering algorithm [default: chrono]
     #[arg(short, long, value_name = "TYPE")]
     order: Option<CommitOrderType>,
@@ -360,11 +364,14 @@ pub fn run() -> Result<()> {
         prev_hook(info);
     }));
 
-    let args = Args::parse();
+    let mut args = Args::parse();
     let (core_config, ui_config, graph_config, color_theme, keybind_patch) = config::load()?;
     let keybind = keybind::KeyBind::new(keybind_patch);
 
     let max_count = args.max_count;
+    if args.text {
+        args.protocol = Some(ImageProtocolType::Text);
+    }
     let image_protocol = args.protocol.or(core_config.option.protocol).into();
     let order = args.order.or(core_config.option.order).into();
     let graph_width = args.graph_width.or(core_config.option.graph_width);

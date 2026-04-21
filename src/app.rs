@@ -15,7 +15,8 @@ use crate::{
     color::{ColorTheme, GraphColorSet},
     config::{CoreConfig, CursorType, UiConfig, UserCommand, UserCommandType},
     event::{
-        AppEvent, CheckoutPickKind, EventController, RefCopyKind, UserEvent, UserEventWithCount,
+        AppEvent, CheckoutPickKind, EventController, RefCopyKind, RelatedItem, UserEvent,
+        UserEventWithCount,
     },
     external::{
         copy_to_clipboard, exec_user_command, exec_user_command_suspend, ExternalCommandParameters,
@@ -89,6 +90,9 @@ enum StatusLine {
     CheckoutPicker {
         options: Vec<String>,
         kind: CheckoutPickKind,
+    },
+    RelatedPicker {
+        items: Vec<RelatedItem>,
     },
     NotificationInfo(String),
     NotificationSuccess(String),
@@ -332,6 +336,10 @@ impl App<'_> {
                                 self.handle_checkout_picker_key(key);
                                 continue;
                             }
+                            StatusLine::RelatedPicker { .. } => {
+                                self.handle_related_picker_key(key);
+                                continue;
+                            }
                             _ => {}
                         }
                     }
@@ -340,7 +348,8 @@ impl App<'_> {
                         StatusLine::None
                         | StatusLine::Input(_, _, _)
                         | StatusLine::RefPicker { .. }
-                        | StatusLine::CheckoutPicker { .. } => {
+                        | StatusLine::CheckoutPicker { .. }
+                        | StatusLine::RelatedPicker { .. } => {
                             // do nothing
                         }
                         StatusLine::NotificationInfo(_)
@@ -588,6 +597,22 @@ impl App<'_> {
                 AppEvent::OpenCheckoutPicker { options, kind } => {
                     self.app_status.status_line = StatusLine::CheckoutPicker { options, kind };
                 }
+                AppEvent::OpenRelatedPicker { items } => {
+                    if items.is_empty() {
+                        self.info_notification("No related issues".into());
+                    } else {
+                        self.app_status.status_line = StatusLine::RelatedPicker { items };
+                    }
+                }
+                AppEvent::GitHubJumpToIssue { number } => {
+                    if let View::GitHub(ref mut view) = self.view {
+                        if !view.jump_to_issue(number) {
+                            self.ec.send(AppEvent::NotifyWarn(format!(
+                                "Issue #{number} not in current list (check state filter)"
+                            )));
+                        }
+                    }
+                }
             }
         }
     }
@@ -651,6 +676,7 @@ impl App<'_> {
             StatusLine::CheckoutPicker { options, kind } => {
                 self.render_picker_line(kind.picker_prompt(), options)
             }
+            StatusLine::RelatedPicker { items } => self.render_related_picker_line(items),
             StatusLine::NotificationInfo(msg) => {
                 Line::raw(msg).fg(self.ctx.color_theme.status_info_fg)
             }
@@ -716,6 +742,36 @@ impl App<'_> {
         for i in 1..label_width.min(remaining) {
             buf[(x0 + i, inner.top())].set_skip(true);
         }
+    }
+
+    fn render_related_picker_line<'s>(&self, items: &'s [RelatedItem]) -> Line<'s> {
+        use crate::event::RelatedGroup;
+        let mut spans: Vec<Span<'s>> = Vec::new();
+        let mut last_group: Option<RelatedGroup> = None;
+        for (i, item) in items.iter().enumerate() {
+            if last_group != Some(item.group) {
+                if last_group.is_some() {
+                    spans.push(" ; ".into());
+                }
+                spans.push(format!("{} - ", item.group.label()).into());
+                last_group = Some(item.group);
+            } else {
+                spans.push("、".into());
+            }
+            spans.push(format!("{}", i + 1).fg(self.ctx.color_theme.status_input_transient_fg));
+            let num = format!(":#{}", item.number);
+            let span: Span = if item.state.eq_ignore_ascii_case("CLOSED")
+                || item.state.eq_ignore_ascii_case("MERGED")
+            {
+                num.add_modifier(Modifier::DIM)
+            } else {
+                num.into()
+            };
+            spans.push(span);
+        }
+        spans.push("  ".into());
+        spans.push("(Esc to cancel)".fg(self.ctx.color_theme.status_input_transient_fg));
+        Line::from(spans)
     }
 
     fn render_picker_line<'s>(&self, prompt: &'s str, options: &'s [String]) -> Line<'s> {
@@ -811,6 +867,7 @@ impl App<'_> {
             StatusLine::Input(_, _, _)
                 | StatusLine::RefPicker { .. }
                 | StatusLine::CheckoutPicker { .. }
+                | StatusLine::RelatedPicker { .. }
         ) || matches!(self.view, View::CreateTag(_))
     }
 
@@ -830,6 +887,27 @@ impl App<'_> {
         let value = name.clone();
         self.app_status.status_line = StatusLine::None;
         self.copy_to_clipboard(label.into(), value);
+    }
+
+    fn handle_related_picker_key(&mut self, key: KeyEvent) {
+        if let Some(UserEvent::Cancel) = self.ctx.keybind.get(&key) {
+            self.app_status.status_line = StatusLine::None;
+            return;
+        }
+        if let Some(UserEvent::DetailPaneToggle) = self.ctx.keybind.get(&key) {
+            self.app_status.status_line = StatusLine::None;
+            return;
+        }
+        let StatusLine::RelatedPicker { items } = &self.app_status.status_line else {
+            return;
+        };
+        let Some(idx) = picker_digit_index(key) else {
+            return;
+        };
+        let Some(item) = items.get(idx) else { return };
+        let number = item.number;
+        self.app_status.status_line = StatusLine::None;
+        self.ec.send(AppEvent::GitHubJumpToIssue { number });
     }
 
     fn handle_checkout_picker_key(&mut self, key: KeyEvent) {

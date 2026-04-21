@@ -44,7 +44,9 @@ pub struct GhAuthor {
 #[serde(rename_all = "camelCase")]
 pub struct GhRelatedIssue {
     pub number: u64,
+    #[serde(default)]
     pub title: String,
+    #[serde(default)]
     pub state: String,
     #[serde(default)]
     pub url: String,
@@ -86,6 +88,8 @@ pub struct GhPullRequest {
     pub closed_at: Option<String>,
     #[serde(default)]
     pub updated_at: String,
+    #[serde(default, rename = "closingIssuesReferences")]
+    pub linked_issues: Vec<GhRelatedIssue>,
 }
 
 // ── CLI 包裝 ──
@@ -259,7 +263,7 @@ pub fn list_pull_requests(path: &Path, state: &str) -> Result<Vec<GhPullRequest>
             "--limit",
             "50",
             "--json",
-            "number,title,state,labels,author,headRefName,isDraft,body,url,closedAt,updatedAt",
+            "number,title,state,labels,author,headRefName,isDraft,body,url,closedAt,updatedAt,closingIssuesReferences",
         ],
         false,
     )?;

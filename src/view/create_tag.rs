@@ -315,15 +315,14 @@ impl<'a> CreateTagView<'a> {
         ]);
         f.render_widget(Paragraph::new(push_line), push_area);
 
-        // Hints
-        let hint_line = Line::from(vec![
-            Span::raw("Enter/y").fg(self.ctx.color_theme.help_key_fg),
-            Span::raw(" submit  ").fg(self.ctx.color_theme.fg),
-            Span::raw("Esc/n").fg(self.ctx.color_theme.help_key_fg),
-            Span::raw(" cancel  ").fg(self.ctx.color_theme.fg),
-            Span::raw("Tab/↑↓").fg(self.ctx.color_theme.help_key_fg),
-            Span::raw(" nav").fg(self.ctx.color_theme.fg),
-        ]);
+        let hint_line = crate::widget::build_hint_line(
+            &self.ctx.color_theme,
+            &[
+                ("Enter/y", "submit"),
+                ("Esc/n", "cancel"),
+                ("Tab/↑↓", "nav"),
+            ],
+        );
         f.render_widget(Paragraph::new(hint_line).centered(), hint_area);
 
         // Cursor positioning

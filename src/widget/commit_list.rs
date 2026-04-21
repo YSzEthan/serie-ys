@@ -1391,7 +1391,7 @@ impl CommitList<'_> {
                 .first_visible_commit_hash()
                 .and_then(|h| self.graph_text_head_col(state, h))
                 .unwrap_or(0);
-            self.put_text_cell(buf, area, y, col, '│', VIRTUAL_ROW_COLOR);
+            self.put_text_cell(buf, area, y, col, TEXT_HEAD_DOT, VIRTUAL_ROW_COLOR);
             if state.selected == 0 && gap > 0 {
                 apply_row_bg(buf, area, y, selected_bg);
             }

@@ -104,6 +104,36 @@ pub enum AppEvent {
         options: Vec<String>,
         kind: CheckoutPickKind,
     },
+    OpenRelatedPicker {
+        items: Vec<RelatedItem>,
+    },
+    GitHubJumpToIssue {
+        number: u64,
+    },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RelatedGroup {
+    Parent,
+    Sub,
+    Linked,
+}
+
+impl RelatedGroup {
+    pub fn label(self) -> &'static str {
+        match self {
+            RelatedGroup::Parent => "Parent",
+            RelatedGroup::Sub => "Sub",
+            RelatedGroup::Linked => "Linked",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RelatedItem {
+    pub number: u64,
+    pub state: String,
+    pub group: RelatedGroup,
 }
 
 #[derive(Debug, Clone, Copy)]

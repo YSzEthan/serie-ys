@@ -13,7 +13,7 @@ use tui_input::{backend::crossterm::EventHandler, Input};
 
 use crate::{
     app::AppContext,
-    event::{AppEvent, Sender, UserEvent, UserEventWithCount},
+    event::{AppEvent, RelatedGroup, RelatedItem, Sender, UserEvent, UserEventWithCount},
     fuzzy::SearchMatcher,
     github::{self, CheckboxItem, GhIssue, GhItemKind, GhPullRequest},
     view::View,
@@ -245,15 +245,19 @@ impl<'a> GitHubView<'a> {
                         ],
                     };
                 }
-                vec![
+                let mut hints = vec![
                     (UserEvent::RefList, "switch tab"),
                     (UserEvent::Search, "search"),
                     (UserEvent::Confirm, "preview"),
                     (UserEvent::Refresh, "refresh"),
                     (UserEvent::Filter, "filter"),
                     (UserEvent::ShortCopy, "copy url / C open / v #num"),
-                    (UserEvent::GitHubToggle, "close"),
-                ]
+                ];
+                if self.selected_has_related() {
+                    hints.push((UserEvent::DetailPaneToggle, "related"));
+                }
+                hints.push((UserEvent::GitHubToggle, "close"));
+                hints
             }
         }
     }
@@ -476,8 +480,87 @@ impl<'a> GitHubView<'a> {
                     });
                 }
             }
+            UserEvent::DetailPaneToggle => {
+                let items = self.selected_related_items();
+                self.tx.send(AppEvent::OpenRelatedPicker { items });
+            }
             _ => {}
         }
+    }
+
+    pub fn jump_to_issue(&mut self, number: u64) -> bool {
+        let Some(raw_idx) = self.issues.iter().position(|i| i.number == number) else {
+            return false;
+        };
+        self.active_tab = GitHubTab::Issues;
+        self.focus = GitHubFocus::List;
+        self.search_input.reset();
+        self.filtered_issue_indices.clear();
+        self.filtered_pr_indices.clear();
+        self.selected_index = raw_idx;
+        self.offset = 0;
+        self.preview_offset = 0;
+        self.adjust_scroll();
+        true
+    }
+
+    fn selected_has_related(&self) -> bool {
+        let idx = self.actual_index(self.selected_index);
+        match self.active_tab {
+            GitHubTab::Issues => self
+                .issues
+                .get(idx)
+                .is_some_and(|i| i.parent.is_some() || !i.sub_issues.is_empty()),
+            GitHubTab::PullRequests => self
+                .pull_requests
+                .get(idx)
+                .is_some_and(|p| !p.linked_issues.is_empty()),
+        }
+    }
+
+    fn selected_related_items(&self) -> Vec<RelatedItem> {
+        let idx = self.actual_index(self.selected_index);
+        let mut items: Vec<RelatedItem> = Vec::new();
+        match self.active_tab {
+            GitHubTab::Issues => {
+                let Some(issue) = self.issues.get(idx) else {
+                    return items;
+                };
+                if let Some(p) = &issue.parent {
+                    items.push(RelatedItem {
+                        number: p.number,
+                        state: p.state.clone(),
+                        group: RelatedGroup::Parent,
+                    });
+                }
+                for s in &issue.sub_issues {
+                    items.push(RelatedItem {
+                        number: s.number,
+                        state: s.state.clone(),
+                        group: RelatedGroup::Sub,
+                    });
+                    if items.len() >= 9 {
+                        break;
+                    }
+                }
+            }
+            GitHubTab::PullRequests => {
+                let Some(pr) = self.pull_requests.get(idx) else {
+                    return items;
+                };
+                for l in &pr.linked_issues {
+                    items.push(RelatedItem {
+                        number: l.number,
+                        state: l.state.clone(),
+                        group: RelatedGroup::Linked,
+                    });
+                    if items.len() >= 9 {
+                        break;
+                    }
+                }
+            }
+        }
+        items
     }
 
     fn handle_prompt_event(&mut self, event: UserEvent, count: usize, key: KeyEvent) {

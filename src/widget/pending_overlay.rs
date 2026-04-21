@@ -64,10 +64,10 @@ impl Widget for PendingOverlay<'_> {
         let mut lines = vec![Line::raw("")];
         lines.extend(message_lines);
         lines.push(Line::raw(""));
-        lines.push(Line::from(vec![
-            Span::raw("Esc").fg(self.color_theme.help_key_fg),
-            Span::raw(" hide").fg(self.color_theme.fg),
-        ]));
+        lines.push(crate::widget::build_hint_line(
+            self.color_theme,
+            &[("Esc", "hide")],
+        ));
 
         Paragraph::new(lines).centered().render(inner_area, buf);
     }
