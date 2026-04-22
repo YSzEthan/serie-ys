@@ -1384,41 +1384,60 @@ impl CommitList<'_> {
         let head_hash = mgr.head_commit_hash().cloned();
         let selected_bg = ratatui_color_to_rgb(self.ctx.color_theme.list_selected_bg);
 
-        // Virtual row: single gray vertical line at the HEAD column.
-        if state.has_virtual_row() && state.offset == 0 {
+        let head_col = head_hash
+            .as_ref()
+            .and_then(|h| self.graph_text_head_col(state, h));
+        let virtual_row_visible = state.has_virtual_row() && state.offset == 0;
+
+        if virtual_row_visible {
             let y = area.top();
-            let col = state
-                .first_visible_commit_hash()
-                .and_then(|h| self.graph_text_head_col(state, h))
-                .unwrap_or(0);
+            // ◯ fallback 次序：HEAD column → 第一個可見 commit 的 dot column → 0
+            let col = head_col.unwrap_or_else(|| {
+                state
+                    .first_visible_commit_hash()
+                    .and_then(|h| self.graph_text_head_col(state, h))
+                    .unwrap_or(0)
+            });
             self.put_text_cell(buf, area, y, col, TEXT_HEAD_DOT, VIRTUAL_ROW_COLOR);
             if state.selected == 0 && gap > 0 {
                 apply_row_bg(buf, area, y, selected_bg);
             }
         }
 
-        self.rendering_commit_info_iter(state)
-            .for_each(|(display_i, _, commit_info)| {
-                let y_offset = if gap > 0 && display_i > state.selected {
-                    gap
-                } else {
-                    0
-                };
-                let y = area.top() + display_i as u16 + y_offset;
-                if y >= area.bottom() {
-                    return;
+        let head_line_col = head_col.filter(|_| virtual_row_visible);
+        let mut seen_head = false;
+        for (display_i, _, commit_info) in self.rendering_commit_info_iter(state) {
+            let y_offset = if gap > 0 && display_i > state.selected {
+                gap
+            } else {
+                0
+            };
+            let y = area.top() + display_i as u16 + y_offset;
+            if y >= area.bottom() {
+                continue;
+            }
+            let hash = &commit_info.commit.commit_hash;
+            let Some(cells) = mgr.text_cells(hash) else {
+                continue;
+            };
+            let is_head = head_hash.as_ref() == Some(hash);
+            let is_selected = display_i == state.selected;
+            self.put_text_cells(buf, area, y, cells, is_head);
+
+            if !seen_head {
+                if is_head {
+                    seen_head = true;
+                } else if let Some(hc) = head_line_col {
+                    if cells.get(hc).is_some_and(|c| c.ch == ' ') {
+                        self.put_text_cell(buf, area, y, hc, TEXT_VERT, VIRTUAL_ROW_COLOR);
+                    }
                 }
-                let hash = &commit_info.commit.commit_hash;
-                let Some(cells) = mgr.text_cells(hash) else {
-                    return;
-                };
-                let is_head = head_hash.as_ref() == Some(hash);
-                let is_selected = display_i == state.selected;
-                self.put_text_cells(buf, area, y, cells, is_head);
-                if is_selected && gap > 0 {
-                    apply_row_bg(buf, area, y, selected_bg);
-                }
-            });
+            }
+
+            if is_selected && gap > 0 {
+                apply_row_bg(buf, area, y, selected_bg);
+            }
+        }
 
         // Spacer rows (inline detail gap): draw `│` at each active column.
         if gap > 0 {
