@@ -698,6 +698,7 @@ pub fn load_working_changes(path: &Path) -> Result<WorkingChanges> {
     let mut cmd = Command::new("git")
         .arg("status")
         .arg("--porcelain=v1")
+        .arg("--untracked-files=all")
         .current_dir(path)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
