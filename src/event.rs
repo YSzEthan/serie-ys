@@ -110,6 +110,16 @@ pub enum AppEvent {
     GitHubJumpToIssue {
         number: u64,
     },
+    OpenDeleteBranch {
+        names: Vec<String>,
+    },
+    OpenDeleteBranchPicker {
+        options: Vec<String>,
+        total: usize,
+    },
+    OpenDeleteBranchConfirm {
+        name: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -555,6 +565,7 @@ pub enum UserEvent {
     TagCopy,
     CreateTag,
     DeleteTag,
+    DeleteRef,
     RemoteRefsToggle,
     GitHubToggle,
     TaskListToggle,
@@ -630,6 +641,7 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "tag_copy" => Ok(UserEvent::TagCopy),
                         "create_tag" => Ok(UserEvent::CreateTag),
                         "delete_tag" => Ok(UserEvent::DeleteTag),
+                        "delete_ref" => Ok(UserEvent::DeleteRef),
                         "remote_refs_toggle" => Ok(UserEvent::RemoteRefsToggle),
                         "github_toggle" => Ok(UserEvent::GitHubToggle),
                         "task_list_toggle" => Ok(UserEvent::TaskListToggle),

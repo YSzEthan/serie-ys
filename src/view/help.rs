@@ -216,6 +216,7 @@ fn build_rows(
         b(vec![UserEvent::TagCopy],                               "複製 tag 名稱",       "Copy tag name"),
         b(vec![UserEvent::CreateTag],                             "在 commit 上建立 tag", "Create tag on commit"),
         b(vec![UserEvent::DeleteTag],                             "刪除 commit 上的 tag", "Delete tag from commit"),
+        b(vec![UserEvent::DeleteRef],                             "刪除 commit 上的 local branch", "Delete local branch from commit"),
         b(vec![UserEvent::RemoteRefsToggle],                      "切換 remote refs",    "Toggle remote refs"),
         b(vec![UserEvent::GitHubToggle],                          "開啟 GitHub issues/PRs", "Open GitHub issues/PRs"),
         b(vec![UserEvent::TaskListToggle],                        "切換工作清單",        "Toggle task list"),

@@ -19,6 +19,31 @@ use crate::{
     git::Ref,
 };
 
+pub(crate) fn dispatch_delete_branch(tx: &Sender, names: &[String], head_branch: Option<&str>) {
+    let candidates: Vec<&str> = names
+        .iter()
+        .map(String::as_str)
+        .filter(|n| Some(*n) != head_branch)
+        .collect();
+
+    match candidates.len() {
+        0 if !names.is_empty() => tx.send(AppEvent::NotifyWarn(
+            "Cannot delete the currently checked-out branch".into(),
+        )),
+        0 => tx.send(AppEvent::NotifyWarn(
+            "No local branch on this commit".into(),
+        )),
+        1 => tx.send(AppEvent::OpenDeleteBranchConfirm {
+            name: candidates[0].to_owned(),
+        }),
+        _ => {
+            let total = candidates.len();
+            let options: Vec<String> = candidates.iter().take(9).map(|s| (*s).to_owned()).collect();
+            tx.send(AppEvent::OpenDeleteBranchPicker { options, total });
+        }
+    }
+}
+
 /// 核心 send-or-picker 邏輯：候選 1 個直接 CopyToClipboard，>=2 送 OpenRefPicker
 /// （最多前 9 個），0 個靜默。branch/tag 的 dispatch wrapper 都最終呼這個。
 pub(crate) fn dispatch_ref_copy(tx: &Sender, candidates: &[&str], kind: RefCopyKind) {

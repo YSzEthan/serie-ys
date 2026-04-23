@@ -26,7 +26,7 @@ use crate::{
     graph::{CellWidthType, Graph, GraphImageManager},
     keybind::KeyBind,
     protocol::ImageProtocol,
-    view::{RefreshViewContext, RefsOrigin, View},
+    view::{dispatch_delete_branch, RefreshViewContext, RefsOrigin, View},
     widget::{
         commit_list::{CommitInfo, CommitListState, RawCommitIdx},
         pending_overlay::PendingOverlay,
@@ -90,6 +90,13 @@ enum StatusLine {
     CheckoutPicker {
         options: Vec<String>,
         kind: CheckoutPickKind,
+    },
+    DeleteBranchPicker {
+        options: Vec<String>,
+        total: usize,
+    },
+    DeleteBranchConfirm {
+        name: String,
     },
     RelatedPicker {
         items: Vec<RelatedItem>,
@@ -340,6 +347,14 @@ impl App<'_> {
                                 self.handle_related_picker_key(key);
                                 continue;
                             }
+                            StatusLine::DeleteBranchPicker { .. } => {
+                                self.handle_delete_branch_picker_key(key);
+                                continue;
+                            }
+                            StatusLine::DeleteBranchConfirm { .. } => {
+                                self.handle_delete_branch_confirm_key(key);
+                                continue;
+                            }
                             _ => {}
                         }
                     }
@@ -349,7 +364,9 @@ impl App<'_> {
                         | StatusLine::Input(_, _, _)
                         | StatusLine::RefPicker { .. }
                         | StatusLine::CheckoutPicker { .. }
-                        | StatusLine::RelatedPicker { .. } => {
+                        | StatusLine::RelatedPicker { .. }
+                        | StatusLine::DeleteBranchPicker { .. }
+                        | StatusLine::DeleteBranchConfirm { .. } => {
                             // do nothing
                         }
                         StatusLine::NotificationInfo(_)
@@ -604,6 +621,19 @@ impl App<'_> {
                         self.app_status.status_line = StatusLine::RelatedPicker { items };
                     }
                 }
+                AppEvent::OpenDeleteBranch { names } => {
+                    let head_branch = match self.repository.head() {
+                        Head::Branch { name } => Some(name.as_str()),
+                        _ => None,
+                    };
+                    dispatch_delete_branch(&self.ec.sender(), &names, head_branch);
+                }
+                AppEvent::OpenDeleteBranchPicker { options, total } => {
+                    self.app_status.status_line = StatusLine::DeleteBranchPicker { options, total };
+                }
+                AppEvent::OpenDeleteBranchConfirm { name } => {
+                    self.app_status.status_line = StatusLine::DeleteBranchConfirm { name };
+                }
                 AppEvent::GitHubJumpToIssue { number } => {
                     if let View::GitHub(ref mut view) = self.view {
                         if !view.jump_to_issue(number) {
@@ -677,6 +707,38 @@ impl App<'_> {
                 self.render_picker_line(kind.picker_prompt(), options)
             }
             StatusLine::RelatedPicker { items } => self.render_related_picker_line(items),
+            StatusLine::DeleteBranchPicker { options, total } => {
+                let mut spans: Vec<Span<'_>> = vec!["Delete branch: ".into()];
+                for (i, name) in options.iter().enumerate() {
+                    spans.push(
+                        format!("[{}]", i + 1).fg(self.ctx.color_theme.status_input_transient_fg),
+                    );
+                    spans.push(name.as_str().into());
+                    spans.push("  ".into());
+                }
+                if *total > options.len() {
+                    let extra = total - options.len();
+                    spans.push(
+                        format!("(+{extra} more, use tab view)")
+                            .fg(self.ctx.color_theme.status_input_transient_fg),
+                    );
+                } else {
+                    spans
+                        .push("(Esc to cancel)".fg(self.ctx.color_theme.status_input_transient_fg));
+                }
+                Line::from(spans)
+            }
+            StatusLine::DeleteBranchConfirm { name } => {
+                let hint_fg = self.ctx.color_theme.status_input_transient_fg;
+                Line::from(vec![
+                    format!("Delete '{name}'? ").into(),
+                    "[y]es".fg(hint_fg),
+                    " / ".into(),
+                    "[n]o".fg(hint_fg),
+                    " / ".into(),
+                    "[f]orce".fg(hint_fg),
+                ])
+            }
             StatusLine::NotificationInfo(msg) => {
                 Line::raw(msg).fg(self.ctx.color_theme.status_info_fg)
             }
@@ -868,6 +930,8 @@ impl App<'_> {
                 | StatusLine::RefPicker { .. }
                 | StatusLine::CheckoutPicker { .. }
                 | StatusLine::RelatedPicker { .. }
+                | StatusLine::DeleteBranchPicker { .. }
+                | StatusLine::DeleteBranchConfirm { .. }
         ) || matches!(self.view, View::CreateTag(_))
     }
 
@@ -925,6 +989,98 @@ impl App<'_> {
         let target = name.clone();
         self.app_status.status_line = StatusLine::None;
         self.checkout_commit(target);
+    }
+
+    fn handle_delete_branch_picker_key(&mut self, key: KeyEvent) {
+        if let Some(UserEvent::Cancel) = self.ctx.keybind.get(&key) {
+            self.app_status.status_line = StatusLine::None;
+            return;
+        }
+        let StatusLine::DeleteBranchPicker { options, .. } = &self.app_status.status_line else {
+            return;
+        };
+        let Some(idx) = picker_digit_index(key) else {
+            return;
+        };
+        let Some(name) = options.get(idx) else { return };
+        let name = name.clone();
+        self.app_status.status_line = StatusLine::DeleteBranchConfirm { name };
+    }
+
+    fn handle_delete_branch_confirm_key(&mut self, key: KeyEvent) {
+        let user_event = self.ctx.keybind.get(&key);
+        if matches!(user_event, Some(UserEvent::Cancel)) {
+            self.app_status.status_line = StatusLine::None;
+            return;
+        }
+        let StatusLine::DeleteBranchConfirm { name } = &self.app_status.status_line else {
+            return;
+        };
+        let name = name.clone();
+        match user_event {
+            Some(UserEvent::Confirm) => {
+                self.app_status.status_line = StatusLine::None;
+                self.spawn_delete_branch(name, false);
+            }
+            _ if matches!(key.code, KeyCode::Char('f') | KeyCode::Char('F')) => {
+                self.app_status.status_line = StatusLine::None;
+                self.spawn_delete_branch(name, true);
+            }
+            _ => {}
+        }
+    }
+
+    fn spawn_delete_branch(&self, name: String, force: bool) {
+        use crate::git::{delete_branch, delete_branch_force};
+
+        let repo_path = self.repository.path().to_path_buf();
+        let tx = self.ec.sender();
+        let list_context = self.current_list_refresh_context();
+
+        let pending = if force {
+            format!("Force deleting branch '{name}'...")
+        } else {
+            format!("Deleting branch '{name}'...")
+        };
+        self.ec
+            .send(AppEvent::ShowPendingOverlay { message: pending });
+
+        std::thread::spawn(move || {
+            let result = if force {
+                delete_branch_force(&repo_path, &name)
+            } else {
+                delete_branch(&repo_path, &name)
+            };
+            tx.send(AppEvent::HidePendingOverlay);
+            match result {
+                Ok(()) => {
+                    tx.send(AppEvent::NotifySuccess(format!("Branch '{name}' deleted")));
+                    tx.send(AppEvent::Refresh(RefreshViewContext::List { list_context }));
+                }
+                Err(e) => {
+                    let hint = if !force && e.contains("not fully merged") {
+                        format!("{e}  (press d → f to force delete)")
+                    } else {
+                        e
+                    };
+                    tx.send(AppEvent::NotifyError(hint));
+                }
+            }
+        });
+    }
+
+    fn current_list_refresh_context(&self) -> crate::view::ListRefreshViewContext {
+        use crate::view::ListRefreshViewContext;
+        match &self.view {
+            View::List(v) => ListRefreshViewContext::from(v.as_list_state()),
+            _ => ListRefreshViewContext {
+                commit_hash: CommitHash::default(),
+                selected: 0,
+                height: 0,
+                scroll_to_top: true,
+                show_remote_refs: true,
+            },
+        }
     }
 
     fn clear_image(&self, terminal: Option<&mut DefaultTerminal>) -> Result<(), std::io::Error> {

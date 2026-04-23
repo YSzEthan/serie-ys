@@ -33,7 +33,7 @@ ignore_case_toggle = ["alt-c"]
 fuzzy_toggle = ["x"]
 refresh = ["r"]
 
-user_command_1 = ["d"]
+delete_ref = ["d"]
 
 # copy part of information, ex: copy the short commit hash not all
 short_copy = ["c"]

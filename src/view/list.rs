@@ -182,6 +182,12 @@ impl<'a> ListView<'a> {
             UserEvent::Fetch => {
                 self.tx.send(AppEvent::FetchAll);
             }
+            UserEvent::DeleteRef if !self.as_list_state().is_virtual_row_selected() => {
+                let refs = self.as_list_state().selected_commit_refs();
+                let (local, _remote) = partition_branches(refs.iter().copied());
+                let names: Vec<String> = local.into_iter().map(str::to_owned).collect();
+                self.tx.send(AppEvent::OpenDeleteBranch { names });
+            }
             UserEvent::Checkout if !self.as_list_state().is_virtual_row_selected() => {
                 let refs = self.as_list_state().selected_commit_refs();
                 let hash = self
