@@ -230,7 +230,11 @@ impl<'a> GitHubView<'a> {
                 ]
             }
             GitHubFocus::Preview => {
-                vec![(UserEvent::Cancel, "back")]
+                let mut hints = vec![(UserEvent::Cancel, "back")];
+                if self.selected_has_related() {
+                    hints.push((UserEvent::DetailPaneToggle, "related"));
+                }
+                hints
             }
             GitHubFocus::List => {
                 if self.current_list_len() == 0 {
@@ -369,6 +373,9 @@ impl<'a> GitHubView<'a> {
                 // e key or Enter → try checkbox edit
                 self.try_enter_checkbox_edit();
             }
+            UserEvent::DetailPaneToggle => {
+                self.open_related_picker();
+            }
             _ => {}
         }
     }
@@ -481,11 +488,15 @@ impl<'a> GitHubView<'a> {
                 }
             }
             UserEvent::DetailPaneToggle => {
-                let items = self.selected_related_items();
-                self.tx.send(AppEvent::OpenRelatedPicker { items });
+                self.open_related_picker();
             }
             _ => {}
         }
+    }
+
+    fn open_related_picker(&self) {
+        let items = self.selected_related_items();
+        self.tx.send(AppEvent::OpenRelatedPicker { items });
     }
 
     pub fn jump_to_issue(&mut self, number: u64) -> bool {
