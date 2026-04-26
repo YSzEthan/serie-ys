@@ -144,14 +144,15 @@ impl<'a> DetailView<'a> {
         }
     }
 
-    pub fn render(&mut self, f: &mut Frame, area: Rect) {
+    pub fn render(&mut self, f: &mut Frame, area: Rect, marquee_frame: u64) {
         let max_height = (area.height.saturating_sub(2)).min(self.ctx.ui_config.detail.height);
         let content_height = match &self.content {
             DetailContent::Commit {
                 commit,
                 changes,
                 refs,
-            } => CommitDetail::new(commit, changes, refs, self.ctx.clone()).content_height(),
+            } => CommitDetail::new(commit, changes, refs, self.ctx.clone(), marquee_frame)
+                .content_height(),
             DetailContent::WorkingChanges(wc) => {
                 WorkingChangesDetail::new(wc, self.ctx.clone()).content_height()
             }
@@ -198,7 +199,8 @@ impl<'a> DetailView<'a> {
                     changes,
                     refs,
                 } => {
-                    let commit_detail = CommitDetail::new(commit, changes, refs, self.ctx.clone());
+                    let commit_detail =
+                        CommitDetail::new(commit, changes, refs, self.ctx.clone(), marquee_frame);
                     f.render_stateful_widget(
                         commit_detail,
                         detail_rect,

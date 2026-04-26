@@ -69,6 +69,7 @@ pub struct CommitDetail<'a> {
     changes: &'a Vec<FileChange>,
     refs: &'a Vec<Ref>,
     ctx: Rc<AppContext>,
+    marquee_frame: u64,
 }
 
 impl<'a> CommitDetail<'a> {
@@ -77,12 +78,14 @@ impl<'a> CommitDetail<'a> {
         changes: &'a Vec<FileChange>,
         refs: &'a Vec<Ref>,
         ctx: Rc<AppContext>,
+        marquee_frame: u64,
     ) -> Self {
         Self {
             commit,
             changes,
             refs,
             ctx,
+            marquee_frame,
         }
     }
 }
@@ -102,7 +105,8 @@ impl StatefulWidget for CommitDetail<'_> {
         let left_active = active == DetailPane::Left;
         let right_active = active == DetailPane::Right;
 
-        let left_lines = self.info_lines();
+        let available = left_area.width.saturating_sub(2) as usize;
+        let left_lines = self.info_lines(available);
         let right_lines = self.changes_lines();
 
         let area_height = area.height as usize;
@@ -154,12 +158,12 @@ impl StatefulWidget for CommitDetail<'_> {
 
 impl CommitDetail<'_> {
     pub fn content_height(&self) -> u16 {
-        let left = self.info_lines().len();
+        let left = self.info_lines(usize::MAX).len();
         let right = self.changes_lines().len();
         (left.max(right) + 2) as u16 // +2 for top/bottom borders
     }
 
-    fn info_lines(&self) -> Vec<Line<'_>> {
+    fn info_lines(&self, marquee_width: usize) -> Vec<Line<'_>> {
         let mut lines: Vec<Line> = Vec::new();
 
         // Author
@@ -254,7 +258,12 @@ impl CommitDetail<'_> {
 
         // Divider + commit message
         lines.push(Line::raw(""));
-        lines.push(Line::from(self.commit.subject.as_str().bold()));
+        let subject_slice = crate::widget::marquee::scroll_window(
+            &self.commit.subject,
+            marquee_width,
+            self.marquee_frame,
+        );
+        lines.push(Line::from(Span::raw(subject_slice.text).bold()));
 
         if !self.commit.body.is_empty() {
             lines.push(Line::raw(""));

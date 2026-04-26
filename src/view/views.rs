@@ -49,7 +49,7 @@ impl<'a> View<'a> {
         match self {
             View::Default => {}
             View::List(view) => view.render(f, area, marquee_frame),
-            View::Detail(view) => view.render(f, area),
+            View::Detail(view) => view.render(f, area, marquee_frame),
             View::UserCommand(view) => view.render(f, area),
             View::Refs(view) => view.render(f, area),
             View::CreateTag(view) => view.render(f, area),
