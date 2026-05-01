@@ -378,6 +378,16 @@ pub fn update_body(path: &Path, number: u64, kind: GhItemKind, body: &str) -> Re
     Ok(())
 }
 
+pub fn merge_pr(path: &Path, number: u64, method: &str, delete_branch: bool) -> Result<(), String> {
+    let num_str = number.to_string();
+    let mut args = vec!["pr", "merge", &num_str, method, "--yes"];
+    if delete_branch {
+        args.push("--delete-branch");
+    }
+    run_gh(path, &args, false)?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

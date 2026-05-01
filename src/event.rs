@@ -120,6 +120,11 @@ pub enum AppEvent {
     OpenDeleteBranchConfirm {
         name: String,
     },
+    OpenMergePrMethodPicker {
+        number: u64,
+        head_ref: String,
+        state: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -572,6 +577,7 @@ pub enum UserEvent {
     DetailPaneToggle,
     Fetch,
     Checkout,
+    MergePr,
     Unknown,
 }
 
@@ -648,6 +654,7 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "detail_pane_toggle" => Ok(UserEvent::DetailPaneToggle),
                         "fetch" => Ok(UserEvent::Fetch),
                         "checkout" => Ok(UserEvent::Checkout),
+                        "merge_pr" => Ok(UserEvent::MergePr),
                         _ => {
                             let msg = format!("Unknown user event: {value}");
                             Err(de::Error::custom(msg))

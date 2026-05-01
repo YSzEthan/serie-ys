@@ -260,6 +260,9 @@ impl<'a> GitHubView<'a> {
                 if self.selected_has_related() {
                     hints.push((UserEvent::DetailPaneToggle, "related"));
                 }
+                if matches!(self.active_tab, GitHubTab::PullRequests) {
+                    hints.push((UserEvent::MergePr, "merge"));
+                }
                 hints.push((UserEvent::GitHubToggle, "close"));
                 hints
             }
@@ -489,6 +492,28 @@ impl<'a> GitHubView<'a> {
             }
             UserEvent::DetailPaneToggle => {
                 self.open_related_picker();
+            }
+            UserEvent::MergePr if matches!(self.active_tab, GitHubTab::PullRequests) => {
+                let idx = self.actual_index(self.selected_index);
+                let Some(pr) = self.pull_requests.get(idx) else {
+                    return;
+                };
+                if pr.is_draft {
+                    self.set_flash(format!("PR #{} is draft", pr.number), true);
+                    return;
+                }
+                if pr.state != "OPEN" {
+                    self.set_flash(
+                        format!("PR #{} is {}", pr.number, pr.state.to_lowercase()),
+                        true,
+                    );
+                    return;
+                }
+                self.tx.send(AppEvent::OpenMergePrMethodPicker {
+                    number: pr.number,
+                    head_ref: pr.head_ref_name.clone(),
+                    state: self.state_filter.as_str().to_string(),
+                });
             }
             _ => {}
         }

@@ -22,7 +22,7 @@ use crate::{
         copy_to_clipboard, exec_user_command, exec_user_command_suspend, ExternalCommandParameters,
     },
     git::{Commit, CommitHash, FileChange, Head, Ref, RefType, Repository},
-    github::GhItemKind,
+    github::{merge_pr, GhItemKind},
     graph::{CellWidthType, Graph, GraphImageManager},
     keybind::KeyBind,
     protocol::ImageProtocol,
@@ -78,6 +78,43 @@ pub(crate) fn clear_image_area(
     terminal.clear()
 }
 
+#[derive(Debug, Clone, Copy)]
+enum MergeMethod {
+    Merge,
+    Squash,
+    Rebase,
+}
+
+impl MergeMethod {
+    fn as_flag(self) -> &'static str {
+        match self {
+            MergeMethod::Merge => "--merge",
+            MergeMethod::Squash => "--squash",
+            MergeMethod::Rebase => "--rebase",
+        }
+    }
+
+    fn display(self) -> &'static str {
+        match self {
+            MergeMethod::Merge => "merge",
+            MergeMethod::Squash => "squash",
+            MergeMethod::Rebase => "rebase",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+enum MergePrStage {
+    PickMethod,
+    AskDeleteBranch {
+        method: MergeMethod,
+    },
+    Confirm {
+        method: MergeMethod,
+        delete_branch: bool,
+    },
+}
+
 #[derive(Debug, Default)]
 enum StatusLine {
     #[default]
@@ -97,6 +134,12 @@ enum StatusLine {
     },
     DeleteBranchConfirm {
         name: String,
+    },
+    MergePrPrompt {
+        number: u64,
+        head_ref: String,
+        state: String,
+        stage: MergePrStage,
     },
     RelatedPicker {
         items: Vec<RelatedItem>,
@@ -355,6 +398,10 @@ impl App<'_> {
                                 self.handle_delete_branch_confirm_key(key);
                                 continue;
                             }
+                            StatusLine::MergePrPrompt { .. } => {
+                                self.handle_merge_pr_prompt_key(key);
+                                continue;
+                            }
                             _ => {}
                         }
                     }
@@ -366,7 +413,8 @@ impl App<'_> {
                         | StatusLine::CheckoutPicker { .. }
                         | StatusLine::RelatedPicker { .. }
                         | StatusLine::DeleteBranchPicker { .. }
-                        | StatusLine::DeleteBranchConfirm { .. } => {
+                        | StatusLine::DeleteBranchConfirm { .. }
+                        | StatusLine::MergePrPrompt { .. } => {
                             // do nothing
                         }
                         StatusLine::NotificationInfo(_)
@@ -634,6 +682,18 @@ impl App<'_> {
                 AppEvent::OpenDeleteBranchConfirm { name } => {
                     self.app_status.status_line = StatusLine::DeleteBranchConfirm { name };
                 }
+                AppEvent::OpenMergePrMethodPicker {
+                    number,
+                    head_ref,
+                    state,
+                } => {
+                    self.app_status.status_line = StatusLine::MergePrPrompt {
+                        number,
+                        head_ref,
+                        state,
+                        stage: MergePrStage::PickMethod,
+                    };
+                }
                 AppEvent::GitHubJumpToIssue { number } => {
                     if let View::GitHub(ref mut view) = self.view {
                         if !view.jump_to_issue(number) {
@@ -738,6 +798,54 @@ impl App<'_> {
                     " / ".into(),
                     "[f]orce".fg(hint_fg),
                 ])
+            }
+            StatusLine::MergePrPrompt {
+                number,
+                head_ref,
+                stage,
+                ..
+            } => {
+                let hint_fg = self.ctx.color_theme.status_input_transient_fg;
+                match stage {
+                    MergePrStage::PickMethod => Line::from(vec![
+                        format!("Merge PR #{number} ({head_ref}): ").into(),
+                        "[m]".fg(hint_fg),
+                        "erge  ".into(),
+                        "[s]".fg(hint_fg),
+                        "quash  ".into(),
+                        "[r]".fg(hint_fg),
+                        "ebase  ".into(),
+                        "(Esc cancel)".fg(hint_fg),
+                    ]),
+                    MergePrStage::AskDeleteBranch { method } => Line::from(vec![
+                        format!(
+                            "Delete branch '{head_ref}' after {} merge? ",
+                            method.display()
+                        )
+                        .into(),
+                        "[y]es".fg(hint_fg),
+                        " / ".into(),
+                        "[n]o".fg(hint_fg),
+                        "  (Esc cancel)".fg(hint_fg),
+                    ]),
+                    MergePrStage::Confirm {
+                        method,
+                        delete_branch,
+                    } => {
+                        let del = if *delete_branch { "yes" } else { "no" };
+                        Line::from(vec![
+                            format!(
+                                "Merge #{number} with {}, delete branch: {del}  ",
+                                method.display()
+                            )
+                            .into(),
+                            "[y/Enter]".fg(hint_fg),
+                            " execute  ".into(),
+                            "[Esc]".fg(hint_fg),
+                            " cancel".into(),
+                        ])
+                    }
+                }
             }
             StatusLine::NotificationInfo(msg) => {
                 Line::raw(msg).fg(self.ctx.color_theme.status_info_fg)
@@ -1028,6 +1136,91 @@ impl App<'_> {
             }
             _ => {}
         }
+    }
+
+    fn handle_merge_pr_prompt_key(&mut self, key: KeyEvent) {
+        if matches!(self.ctx.keybind.get(&key), Some(UserEvent::Cancel)) {
+            self.app_status.status_line = StatusLine::None;
+            return;
+        }
+        let StatusLine::MergePrPrompt {
+            number,
+            ref head_ref,
+            ref state,
+            stage,
+        } = self.app_status.status_line
+        else {
+            return;
+        };
+        let (number, head_ref, state, stage) = (number, head_ref.clone(), state.clone(), stage);
+        match stage {
+            MergePrStage::PickMethod => {
+                let method = match key.code {
+                    KeyCode::Char('m') | KeyCode::Char('M') => MergeMethod::Merge,
+                    KeyCode::Char('s') | KeyCode::Char('S') => MergeMethod::Squash,
+                    KeyCode::Char('r') | KeyCode::Char('R') => MergeMethod::Rebase,
+                    _ => return,
+                };
+                self.app_status.status_line = StatusLine::MergePrPrompt {
+                    number,
+                    head_ref,
+                    state,
+                    stage: MergePrStage::AskDeleteBranch { method },
+                };
+            }
+            MergePrStage::AskDeleteBranch { method } => {
+                let delete_branch = match key.code {
+                    KeyCode::Char('y') | KeyCode::Char('Y') => true,
+                    KeyCode::Char('n') | KeyCode::Char('N') => false,
+                    _ => return,
+                };
+                self.app_status.status_line = StatusLine::MergePrPrompt {
+                    number,
+                    head_ref,
+                    state,
+                    stage: MergePrStage::Confirm {
+                        method,
+                        delete_branch,
+                    },
+                };
+            }
+            MergePrStage::Confirm {
+                method,
+                delete_branch,
+            } => {
+                let is_confirm = matches!(self.ctx.keybind.get(&key), Some(UserEvent::Confirm))
+                    || matches!(key.code, KeyCode::Enter);
+                if !is_confirm {
+                    return;
+                }
+                self.app_status.status_line = StatusLine::None;
+                self.spawn_merge_pr(number, state, method, delete_branch);
+            }
+        }
+    }
+
+    fn spawn_merge_pr(&self, number: u64, state: String, method: MergeMethod, delete_branch: bool) {
+        let repo_path = self.repository.path().to_path_buf();
+        let tx = self.ec.sender();
+        self.ec.send(AppEvent::ShowPendingOverlay {
+            message: format!("Merging PR #{number}..."),
+        });
+        std::thread::spawn(move || {
+            let result = merge_pr(&repo_path, number, method.as_flag(), delete_branch);
+            tx.send(AppEvent::HidePendingOverlay);
+            match result {
+                Ok(()) => {
+                    tx.send(AppEvent::NotifySuccess(format!(
+                        "PR #{number} merged ({})",
+                        method.display()
+                    )));
+                    tx.send(AppEvent::RefreshGitHub { state });
+                }
+                Err(e) => {
+                    tx.send(AppEvent::NotifyError(e));
+                }
+            }
+        });
     }
 
     fn spawn_delete_branch(&self, name: String, force: bool) {
