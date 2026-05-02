@@ -51,4 +51,4 @@ fetch = ["f"]
 checkout = ["space"]
 
 detail_pane_toggle = ["u"]
-merge_pr = ["shift-p"]
+merge_pr = ["p"]
