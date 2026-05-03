@@ -802,7 +802,7 @@ impl App<'_> {
                 let mut spans: Vec<Span<'_>> = vec!["Delete branch: ".into()];
                 for (i, name) in options.iter().enumerate() {
                     spans.push(
-                        format!("[{}]", i + 1).fg(self.ctx.color_theme.status_input_transient_fg),
+                        format!("[{}]", i + 1).fg(self.ctx.color_theme.status_interactive_fg),
                     );
                     spans.push(name.as_str().into());
                     spans.push("  ".into());
@@ -811,16 +811,15 @@ impl App<'_> {
                     let extra = total - options.len();
                     spans.push(
                         format!("(+{extra} more, use tab view)")
-                            .fg(self.ctx.color_theme.status_input_transient_fg),
+                            .fg(self.ctx.color_theme.status_interactive_fg),
                     );
                 } else {
-                    spans
-                        .push("(Esc to cancel)".fg(self.ctx.color_theme.status_input_transient_fg));
+                    spans.push("(Esc to cancel)".fg(self.ctx.color_theme.status_interactive_fg));
                 }
                 Line::from(spans)
             }
             StatusLine::DeleteBranchConfirm { name } => {
-                let hint_fg = self.ctx.color_theme.status_input_transient_fg;
+                let hint_fg = self.ctx.color_theme.status_interactive_fg;
                 Line::from(vec![
                     format!("Delete '{name}'? ").into(),
                     "[y]es".fg(hint_fg),
@@ -836,7 +835,7 @@ impl App<'_> {
                 stage,
                 ..
             } => {
-                let hint_fg = self.ctx.color_theme.status_input_transient_fg;
+                let hint_fg = self.ctx.color_theme.status_interactive_fg;
                 match stage {
                     MergePrStage::PickMethod => Line::from(vec![
                         format!("Merge PR #{number} ({head_ref}): ").into(),
@@ -959,7 +958,7 @@ impl App<'_> {
             } else {
                 spans.push("、".into());
             }
-            spans.push(format!("{}", i + 1).fg(self.ctx.color_theme.status_input_transient_fg));
+            spans.push(format!("{}", i + 1).fg(self.ctx.color_theme.status_interactive_fg));
             let num = format!(":#{}", item.number);
             let span: Span = if item.state.eq_ignore_ascii_case("CLOSED")
                 || item.state.eq_ignore_ascii_case("MERGED")
@@ -971,18 +970,18 @@ impl App<'_> {
             spans.push(span);
         }
         spans.push("  ".into());
-        spans.push("(Esc to cancel)".fg(self.ctx.color_theme.status_input_transient_fg));
+        spans.push("(Esc to cancel)".fg(self.ctx.color_theme.status_interactive_fg));
         Line::from(spans)
     }
 
     fn render_picker_line<'s>(&self, prompt: &'s str, options: &'s [String]) -> Line<'s> {
         let mut spans: Vec<Span<'s>> = vec![prompt.into()];
         for (i, name) in options.iter().enumerate() {
-            spans.push(format!("[{}]", i + 1).fg(self.ctx.color_theme.status_input_transient_fg));
+            spans.push(format!("[{}]", i + 1).fg(self.ctx.color_theme.status_interactive_fg));
             spans.push(name.as_str().into());
             spans.push("  ".into());
         }
-        spans.push("(Esc to cancel)".fg(self.ctx.color_theme.status_input_transient_fg));
+        spans.push("(Esc to cancel)".fg(self.ctx.color_theme.status_interactive_fg));
         Line::from(spans)
     }
 
