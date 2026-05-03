@@ -81,7 +81,7 @@ pub struct ColorTheme {
     pub virtual_cursor_fg: RatatuiColor,
     #[default(RatatuiColor::Reset)]
     pub status_input_fg: RatatuiColor,
-    #[default(RatatuiColor::DarkGray)]
+    #[default(RatatuiColor::Yellow)]
     pub status_input_transient_fg: RatatuiColor,
     #[default(RatatuiColor::Cyan)]
     pub status_info_fg: RatatuiColor,
