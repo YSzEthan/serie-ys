@@ -87,6 +87,7 @@ pub struct GhPullRequest {
     pub labels: Vec<GhLabel>,
     pub author: GhAuthor,
     pub head_ref_name: String,
+    pub base_ref_name: String,
     pub is_draft: bool,
     #[serde(default)]
     pub body: String,
@@ -297,7 +298,7 @@ pub fn list_pull_requests(
                 pullRequests(first:50,after:$after,states:{states},orderBy:{{field:CREATED_AT,direction:DESC}}){{
                     pageInfo {{ hasNextPage endCursor }}
                     nodes {{
-                        number title state body url closedAt updatedAt headRefName isDraft
+                        number title state body url closedAt updatedAt headRefName baseRefName isDraft
                         author {{ login }}
                         labels(first:20) {{ nodes {{ name color }} }}
                         closingIssuesReferences(first:20) {{ nodes {{ number title state url }} }}
@@ -371,6 +372,7 @@ struct GqlPrNode {
     #[serde(default)]
     url: Option<String>,
     head_ref_name: String,
+    base_ref_name: String,
     is_draft: bool,
     #[serde(default)]
     closed_at: Option<String>,
@@ -392,6 +394,7 @@ impl GqlPrNode {
                 login: "ghost".to_string(),
             }),
             head_ref_name: self.head_ref_name,
+            base_ref_name: self.base_ref_name,
             is_draft: self.is_draft,
             body: self.body.unwrap_or_default(),
             url: self.url.unwrap_or_default(),

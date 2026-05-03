@@ -1430,6 +1430,17 @@ impl<'a> GitHubView<'a> {
         }
         lines.push(Line::from(meta_spans));
 
+        if let GitHubTab::PullRequests = self.active_tab {
+            let idx = self.actual_index(self.selected_index);
+            if let Some(pr) = self.pull_requests.get(idx) {
+                lines.push(Line::from(vec![
+                    Span::styled(pr.base_ref_name.clone(), Style::default().fg(Color::Cyan)),
+                    Span::styled("  ←  ", Style::default().fg(Color::DarkGray)),
+                    Span::styled(pr.head_ref_name.clone(), Style::default().fg(Color::Cyan)),
+                ]));
+            }
+        }
+
         lines.push(Line::styled(
             "─".repeat(40),
             Style::default().fg(Color::DarkGray),
