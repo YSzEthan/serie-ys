@@ -261,7 +261,7 @@ impl<'a> GitHubView<'a> {
                     hints.push((UserEvent::DetailPaneToggle, "related"));
                 }
                 if matches!(self.active_tab, GitHubTab::PullRequests) {
-                    hints.push((UserEvent::MergePr, "merge"));
+                    hints.push((UserEvent::MergePr, "merge PR"));
                 }
                 hints.push((UserEvent::GitHubToggle, "close"));
                 hints

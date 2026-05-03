@@ -271,7 +271,7 @@ fn build_rows(
         b(vec![UserEvent::FullCopy],                  "在瀏覽器開啟 issue/PR",  "Open issue/PR in browser"),
         b(vec![UserEvent::BranchCopy],                "輸入 #num 開啟對應 issue/PR", "Open #num issue/PR"),
         b(vec![UserEvent::Refresh],                   "重新整理",               "Refresh"),
-        b(vec![UserEvent::MergePr],                   "Merge PR（open、非 draft）", "Merge PR (open, non-draft)"),
+        b(vec![UserEvent::MergePr],                   "三階段 merge PR：選 method、刪 branch、確認", "3-stage merge PR: pick method, delete branch, confirm"),
     ];
 
     let tag_edit = vec![
