@@ -3,6 +3,14 @@ use std::process::{Command, Stdio};
 
 use serde::Deserialize;
 
+// ── 分頁回傳 ──
+
+pub struct GhPage<T> {
+    pub items: Vec<T>,
+    /// Some(cursor) 代表還有下一頁；None 代表已到底
+    pub next_cursor: Option<String>,
+}
+
 // ── Item Kind ──
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -113,7 +121,11 @@ fn run_gh(path: &Path, args: &[&str], force_tty: bool) -> Result<String, String>
     String::from_utf8(output.stdout).map_err(|e| format!("Invalid UTF-8: {e}"))
 }
 
-pub fn list_issues(path: &Path, state: &str) -> Result<Vec<GhIssue>, String> {
+pub fn list_issues(
+    path: &Path,
+    state: &str,
+    after: Option<&str>,
+) -> Result<GhPage<GhIssue>, String> {
     let (owner, name) = fetch_repo_name_with_owner(path)?;
     let states = match state {
         "open" => "[OPEN]",
@@ -121,9 +133,10 @@ pub fn list_issues(path: &Path, state: &str) -> Result<Vec<GhIssue>, String> {
         _ => "[OPEN, CLOSED]",
     };
     let query = format!(
-        r#"query($owner:String!,$name:String!){{
+        r#"query($owner:String!,$name:String!,$after:String){{
             repository(owner:$owner,name:$name){{
-                issues(first:50,states:{states},orderBy:{{field:CREATED_AT,direction:DESC}}){{
+                issues(first:50,after:$after,states:{states},orderBy:{{field:CREATED_AT,direction:DESC}}){{
+                    pageInfo {{ hasNextPage endCursor }}
                     nodes {{
                         number title state body url createdAt closedAt updatedAt
                         author {{ login }}
@@ -135,20 +148,19 @@ pub fn list_issues(path: &Path, state: &str) -> Result<Vec<GhIssue>, String> {
             }}
         }}"#
     );
-    let json = run_gh(
-        path,
-        &[
-            "api",
-            "graphql",
-            "-F",
-            &format!("owner={owner}"),
-            "-F",
-            &format!("name={name}"),
-            "-f",
-            &format!("query={query}"),
-        ],
-        false,
-    )?;
+    let owner_f = format!("owner={owner}");
+    let name_f = format!("name={name}");
+    let query_f = format!("query={query}");
+    let mut args = vec![
+        "api", "graphql", "-F", &owner_f, "-F", &name_f, "-f", &query_f,
+    ];
+    let after_f;
+    if let Some(cursor) = after {
+        after_f = format!("after={cursor}");
+        args.push("-f");
+        args.push(&after_f);
+    }
+    let json = run_gh(path, &args, false)?;
     parse_issues_graphql(&json)
 }
 
@@ -172,35 +184,51 @@ fn fetch_repo_name_with_owner(path: &Path) -> Result<(String, String), String> {
     Ok((owner.to_string(), name.to_string()))
 }
 
-fn parse_issues_graphql(json: &str) -> Result<Vec<GhIssue>, String> {
+fn parse_issues_graphql(json: &str) -> Result<GhPage<GhIssue>, String> {
     let resp: GqlIssuesResp =
         serde_json::from_str(json).map_err(|e| format!("JSON parse error: {e}"))?;
-    Ok(resp
-        .data
-        .repository
-        .issues
-        .nodes
-        .into_iter()
-        .map(GqlIssueNode::into_gh_issue)
-        .collect())
+    let list = resp.data.repository.issues;
+    let next_cursor = if list.page_info.has_next_page {
+        list.page_info.end_cursor
+    } else {
+        None
+    };
+    Ok(GhPage {
+        items: list
+            .nodes
+            .into_iter()
+            .map(GqlIssueNode::into_gh_issue)
+            .collect(),
+        next_cursor,
+    })
 }
 
 // ── GraphQL response wrapper types ──
 
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct GqlPageInfo {
+    has_next_page: bool,
+    end_cursor: Option<String>,
+}
+
 #[derive(Deserialize)]
 struct GqlIssuesResp {
-    data: GqlData,
+    data: GqlIssuesData,
 }
 #[derive(Deserialize)]
-struct GqlData {
-    repository: GqlRepo,
+struct GqlIssuesData {
+    repository: GqlIssuesRepo,
 }
 #[derive(Deserialize)]
-struct GqlRepo {
+struct GqlIssuesRepo {
     issues: GqlIssueList,
 }
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct GqlIssueList {
+    #[serde(default)]
+    page_info: GqlPageInfo,
     nodes: Vec<GqlIssueNode>,
 }
 
@@ -252,22 +280,126 @@ impl GqlIssueNode {
     }
 }
 
-pub fn list_pull_requests(path: &Path, state: &str) -> Result<Vec<GhPullRequest>, String> {
-    let json = run_gh(
-        path,
-        &[
-            "pr",
-            "list",
-            "--state",
-            state,
-            "--limit",
-            "50",
-            "--json",
-            "number,title,state,labels,author,headRefName,isDraft,body,url,closedAt,updatedAt,closingIssuesReferences",
-        ],
-        false,
-    )?;
-    serde_json::from_str(&json).map_err(|e| format!("JSON parse error: {e}"))
+pub fn list_pull_requests(
+    path: &Path,
+    state: &str,
+    after: Option<&str>,
+) -> Result<GhPage<GhPullRequest>, String> {
+    let (owner, name) = fetch_repo_name_with_owner(path)?;
+    let states = match state {
+        "open" => "[OPEN]",
+        "closed" => "[CLOSED, MERGED]",
+        _ => "[OPEN, CLOSED, MERGED]",
+    };
+    let query = format!(
+        r#"query($owner:String!,$name:String!,$after:String){{
+            repository(owner:$owner,name:$name){{
+                pullRequests(first:50,after:$after,states:{states},orderBy:{{field:CREATED_AT,direction:DESC}}){{
+                    pageInfo {{ hasNextPage endCursor }}
+                    nodes {{
+                        number title state body url closedAt updatedAt headRefName isDraft
+                        author {{ login }}
+                        labels(first:20) {{ nodes {{ name color }} }}
+                        closingIssuesReferences(first:20) {{ nodes {{ number title state url }} }}
+                    }}
+                }}
+            }}
+        }}"#
+    );
+    let owner_f = format!("owner={owner}");
+    let name_f = format!("name={name}");
+    let query_f = format!("query={query}");
+    let mut args = vec![
+        "api", "graphql", "-F", &owner_f, "-F", &name_f, "-f", &query_f,
+    ];
+    let after_f;
+    if let Some(cursor) = after {
+        after_f = format!("after={cursor}");
+        args.push("-f");
+        args.push(&after_f);
+    }
+    let json = run_gh(path, &args, false)?;
+    parse_prs_graphql(&json)
+}
+
+fn parse_prs_graphql(json: &str) -> Result<GhPage<GhPullRequest>, String> {
+    let resp: GqlPrsResp =
+        serde_json::from_str(json).map_err(|e| format!("JSON parse error: {e}"))?;
+    let list = resp.data.repository.pull_requests;
+    let next_cursor = if list.page_info.has_next_page {
+        list.page_info.end_cursor
+    } else {
+        None
+    };
+    Ok(GhPage {
+        items: list.nodes.into_iter().map(GqlPrNode::into_gh_pr).collect(),
+        next_cursor,
+    })
+}
+
+// ── GraphQL PR response wrapper types ──
+
+#[derive(Deserialize)]
+struct GqlPrsResp {
+    data: GqlPrsData,
+}
+#[derive(Deserialize)]
+struct GqlPrsData {
+    repository: GqlPrsRepo,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlPrsRepo {
+    pull_requests: GqlPrList,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlPrList {
+    #[serde(default)]
+    page_info: GqlPageInfo,
+    nodes: Vec<GqlPrNode>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlPrNode {
+    number: u64,
+    title: String,
+    state: String,
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    url: Option<String>,
+    head_ref_name: String,
+    is_draft: bool,
+    #[serde(default)]
+    closed_at: Option<String>,
+    #[serde(default)]
+    updated_at: Option<String>,
+    author: Option<GhAuthor>,
+    labels: GqlConnection<GhLabel>,
+    closing_issues_references: GqlConnection<GhRelatedIssue>,
+}
+
+impl GqlPrNode {
+    fn into_gh_pr(self) -> GhPullRequest {
+        GhPullRequest {
+            number: self.number,
+            title: self.title,
+            state: self.state,
+            labels: self.labels.nodes,
+            author: self.author.unwrap_or(GhAuthor {
+                login: "ghost".to_string(),
+            }),
+            head_ref_name: self.head_ref_name,
+            is_draft: self.is_draft,
+            body: self.body.unwrap_or_default(),
+            url: self.url.unwrap_or_default(),
+            closed_at: self.closed_at,
+            updated_at: self.updated_at.unwrap_or_default(),
+            linked_issues: self.closing_issues_references.nodes,
+        }
+    }
 }
 
 // ── Checkbox / Task List ──
@@ -419,7 +551,8 @@ mod tests {
                 }
             }
         }"#;
-        let issues = parse_issues_graphql(json).unwrap();
+        let page = parse_issues_graphql(json).unwrap();
+        let issues = page.items;
         assert_eq!(issues.len(), 1);
         assert_eq!(issues[0].number, 7);
         assert!(issues[0].parent.is_none());
@@ -452,7 +585,8 @@ mod tests {
                 }
             }
         }"#;
-        let issues = parse_issues_graphql(json).unwrap();
+        let page = parse_issues_graphql(json).unwrap();
+        let issues = page.items;
         assert_eq!(issues[0].parent.as_ref().unwrap().number, 7);
         assert!(issues[0].sub_issues.is_empty());
         assert_eq!(issues[0].author.login, "ghost");

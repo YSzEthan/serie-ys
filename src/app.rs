@@ -211,6 +211,8 @@ struct GitHubCache {
     issues: Vec<crate::github::GhIssue>,
     pull_requests: Vec<crate::github::GhPullRequest>,
     state_filter: String,
+    issues_next_cursor: Option<String>,
+    prs_next_cursor: Option<String>,
 }
 
 impl<'a> App<'a> {
@@ -575,8 +577,37 @@ impl App<'_> {
                     issues,
                     pull_requests,
                     warnings,
+                    issues_cursor,
+                    prs_cursor,
                 } => {
-                    self.on_github_data_loaded(issues, pull_requests, warnings);
+                    self.on_github_data_loaded(
+                        issues,
+                        pull_requests,
+                        warnings,
+                        issues_cursor,
+                        prs_cursor,
+                    );
+                }
+                AppEvent::LoadMoreGitHub { kind, generation } => {
+                    self.load_more_github(kind, generation);
+                }
+                AppEvent::GitHubMoreIssuesLoaded {
+                    items,
+                    next_cursor,
+                    generation,
+                } => {
+                    if let View::GitHub(ref mut view) = self.view {
+                        view.append_issues(items, next_cursor, generation);
+                    }
+                }
+                AppEvent::GitHubMorePrsLoaded {
+                    items,
+                    next_cursor,
+                    generation,
+                } => {
+                    if let View::GitHub(ref mut view) = self.view {
+                        view.append_pull_requests(items, next_cursor, generation);
+                    }
                 }
                 AppEvent::GitHubFlash { message, is_error } => {
                     if let View::GitHub(ref mut view) = self.view {
@@ -1662,15 +1693,28 @@ impl App<'_> {
     }
 
     fn open_github(&mut self) {
-        let (issues, prs) = if let Some(ref cache) = self.github_cache {
-            (cache.issues.clone(), cache.pull_requests.clone())
+        let (issues, prs, issues_cursor, prs_cursor) = if let Some(ref cache) = self.github_cache {
+            (
+                cache.issues.clone(),
+                cache.pull_requests.clone(),
+                cache.issues_next_cursor.clone(),
+                cache.prs_next_cursor.clone(),
+            )
         } else {
             self.refresh_github("open");
-            (Vec::new(), Vec::new())
+            (Vec::new(), Vec::new(), None, None)
         };
 
         let before_view = std::mem::take(&mut self.view);
-        self.view = View::of_github(before_view, issues, prs, self.ctx.clone(), self.ec.sender());
+        self.view = View::of_github(
+            before_view,
+            issues,
+            prs,
+            issues_cursor,
+            prs_cursor,
+            self.ctx.clone(),
+            self.ec.sender(),
+        );
     }
 
     fn on_github_data_loaded(
@@ -1678,6 +1722,8 @@ impl App<'_> {
         issues: Vec<crate::github::GhIssue>,
         pull_requests: Vec<crate::github::GhPullRequest>,
         warnings: Vec<String>,
+        issues_cursor: Option<String>,
+        prs_cursor: Option<String>,
     ) {
         self.github_loading = false;
         // 檢查是否與快取相同
@@ -1690,18 +1736,22 @@ impl App<'_> {
         if let Some(ref mut cache) = self.github_cache {
             cache.issues = issues.clone();
             cache.pull_requests = pull_requests.clone();
+            cache.issues_next_cursor = issues_cursor.clone();
+            cache.prs_next_cursor = prs_cursor.clone();
         } else {
             self.github_cache = Some(GitHubCache {
                 issues: issues.clone(),
                 pull_requests: pull_requests.clone(),
                 state_filter: "open".to_string(),
+                issues_next_cursor: issues_cursor.clone(),
+                prs_next_cursor: prs_cursor.clone(),
             });
         }
 
         if let View::GitHub(ref mut view) = self.view {
             // 已在 GitHub 視圖：有變更才就地更新
             if changed {
-                view.update_data(issues, pull_requests);
+                view.update_data(issues, pull_requests, issues_cursor, prs_cursor);
             }
             if !warnings.is_empty() {
                 view.set_flash(warnings.join("; "), false);
@@ -1724,30 +1774,30 @@ impl App<'_> {
         let state = state.to_string();
 
         std::thread::spawn(move || {
-            let issues_result = crate::github::list_issues(&repo_path, &state);
-            let prs_result = crate::github::list_pull_requests(&repo_path, &state);
+            let issues_result = crate::github::list_issues(&repo_path, &state, None);
+            let prs_result = crate::github::list_pull_requests(&repo_path, &state, None);
 
             let mut any_ok = false;
             let mut warnings = Vec::new();
 
-            let issues = match issues_result {
-                Ok(v) => {
+            let (issues, issues_cursor) = match issues_result {
+                Ok(page) => {
                     any_ok = true;
-                    v
+                    (page.items, page.next_cursor)
                 }
                 Err(e) => {
                     warnings.push(format!("GitHub issues unavailable: {e}"));
-                    Vec::new()
+                    (Vec::new(), None)
                 }
             };
-            let pull_requests = match prs_result {
-                Ok(v) => {
+            let (pull_requests, prs_cursor) = match prs_result {
+                Ok(page) => {
                     any_ok = true;
-                    v
+                    (page.items, page.next_cursor)
                 }
                 Err(e) => {
                     warnings.push(format!("GitHub PRs unavailable: {e}"));
-                    Vec::new()
+                    (Vec::new(), None)
                 }
             };
 
@@ -1756,11 +1806,56 @@ impl App<'_> {
                     issues,
                     pull_requests,
                     warnings,
+                    issues_cursor,
+                    prs_cursor,
                 });
             } else {
                 tx.send(AppEvent::GitHubLoadFailed {
                     error: warnings.join("; "),
                 });
+            }
+        });
+    }
+
+    fn load_more_github(&mut self, kind: GhItemKind, generation: u64) {
+        let Some(ref cache) = self.github_cache else {
+            return;
+        };
+        let state = cache.state_filter.clone();
+        let cursor = match kind {
+            GhItemKind::Issue => cache.issues_next_cursor.clone(),
+            GhItemKind::PullRequest => cache.prs_next_cursor.clone(),
+        };
+        let Some(cursor) = cursor else { return };
+        let repo_path = self.repository.path().to_path_buf();
+        let tx = self.ec.sender();
+
+        std::thread::spawn(move || match kind {
+            GhItemKind::Issue => {
+                match crate::github::list_issues(&repo_path, &state, Some(&cursor)) {
+                    Ok(page) => tx.send(AppEvent::GitHubMoreIssuesLoaded {
+                        items: page.items,
+                        next_cursor: page.next_cursor,
+                        generation,
+                    }),
+                    Err(e) => tx.send(AppEvent::GitHubFlash {
+                        message: format!("Load more failed: {e}"),
+                        is_error: true,
+                    }),
+                }
+            }
+            GhItemKind::PullRequest => {
+                match crate::github::list_pull_requests(&repo_path, &state, Some(&cursor)) {
+                    Ok(page) => tx.send(AppEvent::GitHubMorePrsLoaded {
+                        items: page.items,
+                        next_cursor: page.next_cursor,
+                        generation,
+                    }),
+                    Err(e) => tx.send(AppEvent::GitHubFlash {
+                        message: format!("Load more failed: {e}"),
+                        is_error: true,
+                    }),
+                }
             }
         });
     }

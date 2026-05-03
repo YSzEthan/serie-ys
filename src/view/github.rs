@@ -19,6 +19,8 @@ use crate::{
     view::View,
 };
 
+const PREFETCH_THRESHOLD: usize = 5;
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StateFilter {
     Open,
@@ -115,6 +117,11 @@ pub struct GitHubView<'a> {
     /// available). App reads this to decide whether to tick `marquee_frame`.
     selected_row_overflows: Cell<bool>,
 
+    issues_next_cursor: Option<String>,
+    prs_next_cursor: Option<String>,
+    loading_more: bool,
+    request_generation: u64,
+
     ctx: Rc<AppContext>,
     tx: Sender,
 }
@@ -124,6 +131,8 @@ impl<'a> GitHubView<'a> {
         before: View<'a>,
         issues: Vec<GhIssue>,
         pull_requests: Vec<GhPullRequest>,
+        issues_next_cursor: Option<String>,
+        prs_next_cursor: Option<String>,
         ctx: Rc<AppContext>,
         tx: Sender,
     ) -> GitHubView<'a> {
@@ -150,6 +159,10 @@ impl<'a> GitHubView<'a> {
             load_state,
             flash_message: None,
             selected_row_overflows: Cell::new(false),
+            issues_next_cursor,
+            prs_next_cursor,
+            loading_more: false,
+            request_generation: 0,
             ctx,
             tx,
         }
@@ -186,16 +199,81 @@ impl<'a> GitHubView<'a> {
         }
     }
 
-    pub fn update_data(&mut self, issues: Vec<GhIssue>, pull_requests: Vec<GhPullRequest>) {
+    pub fn update_data(
+        &mut self,
+        issues: Vec<GhIssue>,
+        pull_requests: Vec<GhPullRequest>,
+        issues_next_cursor: Option<String>,
+        prs_next_cursor: Option<String>,
+    ) {
         self.load_state = LoadState::Idle;
         self.issues = issues;
         self.pull_requests = pull_requests;
+        self.issues_next_cursor = issues_next_cursor;
+        self.prs_next_cursor = prs_next_cursor;
+        self.bump_generation();
         // 修正選取索引避免越界
         let max = self.current_list_len().saturating_sub(1);
         if self.selected_index > max {
             self.selected_index = max;
         }
         self.preview_offset = 0;
+    }
+
+    pub fn append_issues(
+        &mut self,
+        items: Vec<GhIssue>,
+        next_cursor: Option<String>,
+        generation: u64,
+    ) {
+        if generation != self.request_generation {
+            return;
+        }
+        self.issues.extend(items);
+        self.issues_next_cursor = next_cursor;
+        self.loading_more = false;
+    }
+
+    pub fn append_pull_requests(
+        &mut self,
+        items: Vec<GhPullRequest>,
+        next_cursor: Option<String>,
+        generation: u64,
+    ) {
+        if generation != self.request_generation {
+            return;
+        }
+        self.pull_requests.extend(items);
+        self.prs_next_cursor = next_cursor;
+        self.loading_more = false;
+    }
+
+    fn bump_generation(&mut self) {
+        self.request_generation = self.request_generation.wrapping_add(1);
+        self.loading_more = false;
+    }
+
+    fn maybe_load_more(&mut self) {
+        if self.loading_more || self.has_active_filter() {
+            return;
+        }
+        let cursor_is_some = match self.active_tab {
+            GitHubTab::Issues => self.issues_next_cursor.is_some(),
+            GitHubTab::PullRequests => self.prs_next_cursor.is_some(),
+        };
+        if !cursor_is_some {
+            return;
+        }
+        let threshold = self.current_list_len().saturating_sub(PREFETCH_THRESHOLD);
+        if self.selected_index < threshold {
+            return;
+        }
+        self.loading_more = true;
+        let kind = self.active_tab.kind();
+        self.tx.send(AppEvent::LoadMoreGitHub {
+            kind,
+            generation: self.request_generation,
+        });
     }
 
     pub fn update_body_for_item(&mut self, number: u64, kind: GhItemKind, new_body: String) {
@@ -396,6 +474,7 @@ impl<'a> GitHubView<'a> {
                 self.selected_index = 0;
                 self.offset = 0;
                 self.preview_offset = 0;
+                self.bump_generation();
             }
             UserEvent::NavigateDown | UserEvent::SelectDown => {
                 let max = self.current_list_len().saturating_sub(1);
@@ -406,6 +485,7 @@ impl<'a> GitHubView<'a> {
                 }
                 self.preview_offset = 0;
                 self.adjust_scroll();
+                self.maybe_load_more();
             }
             UserEvent::NavigateUp | UserEvent::SelectUp => {
                 for _ in 0..count {
@@ -423,6 +503,7 @@ impl<'a> GitHubView<'a> {
                 self.selected_index = self.current_list_len().saturating_sub(1);
                 self.preview_offset = 0;
                 self.adjust_scroll();
+                self.maybe_load_more();
             }
             UserEvent::Confirm if self.current_list_len() > 0 => {
                 self.focus = GitHubFocus::Preview;
@@ -433,6 +514,7 @@ impl<'a> GitHubView<'a> {
                 self.selected_index = (self.selected_index + page).min(max);
                 self.preview_offset = 0;
                 self.adjust_scroll();
+                self.maybe_load_more();
             }
             UserEvent::PageUp => {
                 let page = self.height.saturating_sub(3).max(1);
@@ -446,6 +528,7 @@ impl<'a> GitHubView<'a> {
                 self.selected_index = (self.selected_index + half).min(max);
                 self.preview_offset = 0;
                 self.adjust_scroll();
+                self.maybe_load_more();
             }
             UserEvent::HalfPageUp => {
                 let half = self.height.saturating_sub(3).max(1) / 2;
@@ -462,6 +545,7 @@ impl<'a> GitHubView<'a> {
                 self.offset = 0;
                 self.preview_offset = 0;
                 self.load_state = LoadState::Loading;
+                self.bump_generation();
                 self.tx.send(AppEvent::RefreshGitHub {
                     state: self.state_filter.as_str().to_string(),
                 });
@@ -970,8 +1054,29 @@ impl<'a> GitHubView<'a> {
         let inner = block.inner(area);
         f.render_widget(block, area);
 
-        let rows = self.current_viewport_rows(inner.height as usize, inner.width, marquee_frame);
-        let lines: Vec<Line<'static>> = rows.iter().map(|r| r.line.clone()).collect();
+        let has_next = match self.active_tab {
+            GitHubTab::Issues => self.issues_next_cursor.is_some(),
+            GitHubTab::PullRequests => self.prs_next_cursor.is_some(),
+        };
+        // Reserve one row for the load-more indicator when there's a next page
+        let visible_height = if has_next {
+            (inner.height as usize).saturating_sub(1)
+        } else {
+            inner.height as usize
+        };
+
+        let rows = self.current_viewport_rows(visible_height, inner.width, marquee_frame);
+        let mut lines: Vec<Line<'static>> = rows.iter().map(|r| r.line.clone()).collect();
+
+        if has_next {
+            let hint = if self.loading_more {
+                " Loading more…"
+            } else {
+                " ↓ more"
+            };
+            lines.push(Line::styled(hint, Style::default().fg(Color::DarkGray)));
+        }
+
         let list_paragraph =
             Paragraph::new(lines).block(Block::default().padding(Padding::horizontal(1)));
         f.render_widget(list_paragraph, inner);

@@ -54,6 +54,22 @@ pub enum AppEvent {
         issues: Vec<crate::github::GhIssue>,
         pull_requests: Vec<crate::github::GhPullRequest>,
         warnings: Vec<String>,
+        issues_cursor: Option<String>,
+        prs_cursor: Option<String>,
+    },
+    LoadMoreGitHub {
+        kind: crate::github::GhItemKind,
+        generation: u64,
+    },
+    GitHubMoreIssuesLoaded {
+        items: Vec<crate::github::GhIssue>,
+        next_cursor: Option<String>,
+        generation: u64,
+    },
+    GitHubMorePrsLoaded {
+        items: Vec<crate::github::GhPullRequest>,
+        next_cursor: Option<String>,
+        generation: u64,
     },
     GitHubFlash {
         message: String,
