@@ -1,5 +1,17 @@
 # Changelog
 
+## [1.2.0](https://github.com/YSzEthan/serie-ys/compare/v1.1.0...v1.2.0) (2026-05-03)
+
+
+### Features
+
+* PR detail 顯示 merge target（base ← head ref） ([549e2d4](https://github.com/YSzEthan/serie-ys/commit/549e2d430832b22ff3ca3526c7a1263921abfffc))
+
+
+### Bug Fixes
+
+* 互動狀態提示顏色由 DarkGray 改為 Yellow 增加辨識度 ([8ec56fd](https://github.com/YSzEthan/serie-ys/commit/8ec56fdedd81e42c34b24d0c363c7390ca09b580))
+
 ## [1.1.0](https://github.com/YSzEthan/serie-ys/compare/v1.0.0...v1.1.0) (2026-05-03)
 
 
