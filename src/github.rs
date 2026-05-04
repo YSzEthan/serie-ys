@@ -105,7 +105,7 @@ pub struct GhPullRequest {
 
 fn run_gh(path: &Path, args: &[&str], force_tty: bool) -> Result<String, String> {
     let mut cmd = Command::new("gh");
-    cmd.args(args).current_dir(path);
+    cmd.args(args).current_dir(path).stdin(Stdio::null());
     if force_tty {
         cmd.env("GH_FORCE_TTY", "200");
     }
@@ -511,6 +511,11 @@ pub fn update_body(path: &Path, number: u64, kind: GhItemKind, body: &str) -> Re
         return Err(format!("gh edit failed: {stderr}"));
     }
     Ok(())
+}
+
+pub fn is_merge_conflict_error(msg: &str) -> bool {
+    let lower = msg.to_lowercase();
+    lower.contains("conflict") || lower.contains("not mergeable")
 }
 
 pub fn merge_pr(path: &Path, number: u64, method: &str, delete_branch: bool) -> Result<(), String> {

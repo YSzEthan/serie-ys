@@ -22,7 +22,7 @@ use crate::{
         copy_to_clipboard, exec_user_command, exec_user_command_suspend, ExternalCommandParameters,
     },
     git::{Commit, CommitHash, FileChange, Head, Ref, RefType, Repository},
-    github::{merge_pr, GhItemKind},
+    github::{is_merge_conflict_error, merge_pr, GhItemKind},
     graph::{CellWidthType, Graph, GraphImageManager},
     keybind::KeyBind,
     protocol::ImageProtocol,
@@ -1247,7 +1247,13 @@ impl App<'_> {
                     tx.send(AppEvent::RefreshGitHub { state });
                 }
                 Err(e) => {
-                    tx.send(AppEvent::NotifyError(e));
+                    if is_merge_conflict_error(&e) {
+                        tx.send(AppEvent::NotifyWarn(format!(
+                            "PR #{number} has conflicts — resolve before merging"
+                        )));
+                    } else {
+                        tx.send(AppEvent::NotifyError(e));
+                    }
                 }
             }
         });
