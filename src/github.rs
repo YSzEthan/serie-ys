@@ -518,6 +518,24 @@ pub fn is_merge_conflict_error(msg: &str) -> bool {
     lower.contains("conflict") || lower.contains("not mergeable")
 }
 
+// ── Issue state toggle ──
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum IssueAction {
+    Close,
+    Reopen,
+}
+
+pub fn close_issue(path: &Path, number: u64) -> Result<(), String> {
+    run_gh(path, &["issue", "close", &number.to_string()], false)?;
+    Ok(())
+}
+
+pub fn reopen_issue(path: &Path, number: u64) -> Result<(), String> {
+    run_gh(path, &["issue", "reopen", &number.to_string()], false)?;
+    Ok(())
+}
+
 pub fn merge_pr(path: &Path, number: u64, method: &str, delete_branch: bool) -> Result<(), String> {
     let num_str = number.to_string();
     let mut args = vec!["pr", "merge", &num_str, method];

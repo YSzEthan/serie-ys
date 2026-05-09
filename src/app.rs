@@ -22,7 +22,9 @@ use crate::{
         copy_to_clipboard, exec_user_command, exec_user_command_suspend, ExternalCommandParameters,
     },
     git::{Commit, CommitHash, FileChange, Head, Ref, RefType, Repository},
-    github::{is_merge_conflict_error, merge_pr, GhItemKind},
+    github::{
+        close_issue, is_merge_conflict_error, merge_pr, reopen_issue, GhItemKind, IssueAction,
+    },
     graph::{CellWidthType, Graph, GraphImageManager},
     keybind::KeyBind,
     protocol::ImageProtocol,
@@ -140,6 +142,11 @@ enum StatusLine {
         head_ref: String,
         state: String,
         stage: MergePrStage,
+    },
+    ToggleIssuePrompt {
+        number: u64,
+        action: IssueAction,
+        filter_state: String,
     },
     RelatedPicker {
         items: Vec<RelatedItem>,
@@ -404,6 +411,10 @@ impl App<'_> {
                                 self.handle_merge_pr_prompt_key(key);
                                 continue;
                             }
+                            StatusLine::ToggleIssuePrompt { .. } => {
+                                self.handle_toggle_issue_prompt_key(key);
+                                continue;
+                            }
                             _ => {}
                         }
                     }
@@ -416,7 +427,8 @@ impl App<'_> {
                         | StatusLine::RelatedPicker { .. }
                         | StatusLine::DeleteBranchPicker { .. }
                         | StatusLine::DeleteBranchConfirm { .. }
-                        | StatusLine::MergePrPrompt { .. } => {
+                        | StatusLine::MergePrPrompt { .. }
+                        | StatusLine::ToggleIssuePrompt { .. } => {
                             // do nothing
                         }
                         StatusLine::NotificationInfo(_)
@@ -725,6 +737,17 @@ impl App<'_> {
                         stage: MergePrStage::PickMethod,
                     };
                 }
+                AppEvent::OpenToggleIssuePrompt {
+                    number,
+                    action,
+                    filter_state,
+                } => {
+                    self.app_status.status_line = StatusLine::ToggleIssuePrompt {
+                        number,
+                        action,
+                        filter_state,
+                    };
+                }
                 AppEvent::GitHubJumpToIssue { number } => {
                     if let View::GitHub(ref mut view) = self.view {
                         if !view.jump_to_issue(number) {
@@ -876,6 +899,20 @@ impl App<'_> {
                         ])
                     }
                 }
+            }
+            StatusLine::ToggleIssuePrompt { number, action, .. } => {
+                let hint_fg = self.ctx.color_theme.status_interactive_fg;
+                let prompt = match action {
+                    IssueAction::Close => format!("Close issue #{number}? "),
+                    IssueAction::Reopen => format!("Reopen issue #{number}? "),
+                };
+                Line::from(vec![
+                    prompt.into(),
+                    "[y/Enter]".fg(hint_fg),
+                    " confirm  ".into(),
+                    "[n/Esc]".fg(hint_fg),
+                    " cancel".into(),
+                ])
             }
             StatusLine::NotificationInfo(msg) => {
                 Line::raw(msg).fg(self.ctx.color_theme.status_info_fg)
@@ -1254,6 +1291,70 @@ impl App<'_> {
                     } else {
                         tx.send(AppEvent::NotifyError(e));
                     }
+                }
+            }
+        });
+    }
+
+    fn handle_toggle_issue_prompt_key(&mut self, key: KeyEvent) {
+        if matches!(self.ctx.keybind.get(&key), Some(UserEvent::Cancel))
+            || matches!(key.code, KeyCode::Char('n') | KeyCode::Char('N'))
+        {
+            self.app_status.status_line = StatusLine::None;
+            return;
+        }
+        let StatusLine::ToggleIssuePrompt {
+            number,
+            action,
+            ref filter_state,
+        } = self.app_status.status_line
+        else {
+            return;
+        };
+        let (number, action, filter_state) = (number, action, filter_state.clone());
+        let is_confirm = matches!(self.ctx.keybind.get(&key), Some(UserEvent::Confirm))
+            || matches!(
+                key.code,
+                KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y')
+            );
+        if !is_confirm {
+            return;
+        }
+        self.app_status.status_line = StatusLine::None;
+        self.spawn_toggle_issue(number, action, filter_state);
+    }
+
+    fn spawn_toggle_issue(&self, number: u64, action: IssueAction, filter_state: String) {
+        let repo_path = self.repository.path().to_path_buf();
+        let tx = self.ec.sender();
+        let pending_msg = match action {
+            IssueAction::Close => format!("Closing issue #{number}..."),
+            IssueAction::Reopen => format!("Reopening issue #{number}..."),
+        };
+        self.ec.send(AppEvent::ShowPendingOverlay {
+            message: pending_msg,
+        });
+        std::thread::spawn(move || {
+            let result = match action {
+                IssueAction::Close => close_issue(&repo_path, number),
+                IssueAction::Reopen => reopen_issue(&repo_path, number),
+            };
+            tx.send(AppEvent::HidePendingOverlay);
+            match result {
+                Ok(()) => {
+                    let past_tense = match action {
+                        IssueAction::Close => "closed",
+                        IssueAction::Reopen => "reopened",
+                    };
+                    tx.send(AppEvent::NotifySuccess(format!(
+                        "Issue #{number} {past_tense}"
+                    )));
+                    tx.send(AppEvent::RefreshGitHub {
+                        state: filter_state,
+                    });
+                }
+                Err(e) => {
+                    tx.send(AppEvent::NotifyError(e));
                 }
             }
         });

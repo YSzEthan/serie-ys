@@ -15,7 +15,7 @@ use crate::{
     app::AppContext,
     event::{AppEvent, RelatedGroup, RelatedItem, Sender, UserEvent, UserEventWithCount},
     fuzzy::SearchMatcher,
-    github::{self, CheckboxItem, GhIssue, GhItemKind, GhPullRequest},
+    github::{self, CheckboxItem, GhIssue, GhItemKind, GhPullRequest, IssueAction},
     view::View,
 };
 
@@ -312,6 +312,21 @@ impl<'a> GitHubView<'a> {
                 if self.selected_has_related() {
                     hints.push((UserEvent::DetailPaneToggle, "related"));
                 }
+                match self.active_tab {
+                    GitHubTab::PullRequests => {
+                        let idx = self.actual_index(self.selected_index);
+                        if let Some(pr) = self.pull_requests.get(idx) {
+                            if !pr.is_draft && pr.state == "OPEN" {
+                                hints.push((UserEvent::MergePr, "merge PR"));
+                            }
+                        }
+                    }
+                    GitHubTab::Issues => {
+                        if let Some(label) = self.selected_issue_action_label() {
+                            hints.push((UserEvent::ToggleIssueState, label));
+                        }
+                    }
+                }
                 hints
             }
             GitHubFocus::List => {
@@ -338,8 +353,20 @@ impl<'a> GitHubView<'a> {
                 if self.selected_has_related() {
                     hints.push((UserEvent::DetailPaneToggle, "related"));
                 }
-                if matches!(self.active_tab, GitHubTab::PullRequests) {
-                    hints.push((UserEvent::MergePr, "merge PR"));
+                match self.active_tab {
+                    GitHubTab::PullRequests => {
+                        let idx = self.actual_index(self.selected_index);
+                        if let Some(pr) = self.pull_requests.get(idx) {
+                            if !pr.is_draft && pr.state == "OPEN" {
+                                hints.push((UserEvent::MergePr, "merge PR"));
+                            }
+                        }
+                    }
+                    GitHubTab::Issues => {
+                        if let Some(label) = self.selected_issue_action_label() {
+                            hints.push((UserEvent::ToggleIssueState, label));
+                        }
+                    }
                 }
                 hints.push((UserEvent::GitHubToggle, "close"));
                 hints
@@ -451,11 +478,16 @@ impl<'a> GitHubView<'a> {
                 self.preview_offset = 0;
             }
             UserEvent::Confirm => {
-                // e key or Enter → try checkbox edit
                 self.try_enter_checkbox_edit();
             }
             UserEvent::DetailPaneToggle => {
                 self.open_related_picker();
+            }
+            UserEvent::ToggleIssueState if matches!(self.active_tab, GitHubTab::Issues) => {
+                self.trigger_toggle_issue();
+            }
+            UserEvent::MergePr if matches!(self.active_tab, GitHubTab::PullRequests) => {
+                self.try_merge_selected_pr();
             }
             _ => {}
         }
@@ -578,29 +610,64 @@ impl<'a> GitHubView<'a> {
                 self.open_related_picker();
             }
             UserEvent::MergePr if matches!(self.active_tab, GitHubTab::PullRequests) => {
-                let idx = self.actual_index(self.selected_index);
-                let Some(pr) = self.pull_requests.get(idx) else {
-                    return;
-                };
-                if pr.is_draft {
-                    self.set_flash(format!("PR #{} is draft", pr.number), true);
-                    return;
-                }
-                if pr.state != "OPEN" {
-                    self.set_flash(
-                        format!("PR #{} is {}", pr.number, pr.state.to_lowercase()),
-                        true,
-                    );
-                    return;
-                }
-                self.tx.send(AppEvent::OpenMergePrMethodPicker {
-                    number: pr.number,
-                    head_ref: pr.head_ref_name.clone(),
-                    state: self.state_filter.as_str().to_string(),
-                });
+                self.try_merge_selected_pr();
+            }
+            UserEvent::ToggleIssueState if matches!(self.active_tab, GitHubTab::Issues) => {
+                self.trigger_toggle_issue();
             }
             _ => {}
         }
+    }
+
+    fn try_merge_selected_pr(&mut self) {
+        let idx = self.actual_index(self.selected_index);
+        let Some(pr) = self.pull_requests.get(idx) else {
+            return;
+        };
+        if pr.is_draft {
+            self.set_flash(format!("PR #{} is draft", pr.number), true);
+            return;
+        }
+        if pr.state != "OPEN" {
+            self.set_flash(
+                format!("PR #{} is {}", pr.number, pr.state.to_lowercase()),
+                true,
+            );
+            return;
+        }
+        self.tx.send(AppEvent::OpenMergePrMethodPicker {
+            number: pr.number,
+            head_ref: pr.head_ref_name.clone(),
+            state: self.state_filter.as_str().to_string(),
+        });
+    }
+
+    fn trigger_toggle_issue(&self) {
+        let idx = self.actual_index(self.selected_index);
+        let Some(issue) = self.issues.get(idx) else {
+            return;
+        };
+        let action = if issue.state == "OPEN" {
+            IssueAction::Close
+        } else {
+            IssueAction::Reopen
+        };
+        self.tx.send(AppEvent::OpenToggleIssuePrompt {
+            number: issue.number,
+            action,
+            filter_state: self.state_filter.as_str().to_string(),
+        });
+    }
+
+    fn selected_issue_action_label(&self) -> Option<&'static str> {
+        let idx = self.actual_index(self.selected_index);
+        self.issues.get(idx).map(|i| {
+            if i.state == "OPEN" {
+                "close issue"
+            } else {
+                "reopen issue"
+            }
+        })
     }
 
     fn open_related_picker(&self) {

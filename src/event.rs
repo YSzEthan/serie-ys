@@ -141,6 +141,11 @@ pub enum AppEvent {
         head_ref: String,
         state: String,
     },
+    OpenToggleIssuePrompt {
+        number: u64,
+        action: crate::github::IssueAction,
+        filter_state: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -594,6 +599,7 @@ pub enum UserEvent {
     Fetch,
     Checkout,
     MergePr,
+    ToggleIssueState,
     Unknown,
 }
 
@@ -671,6 +677,7 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "fetch" => Ok(UserEvent::Fetch),
                         "checkout" => Ok(UserEvent::Checkout),
                         "merge_pr" => Ok(UserEvent::MergePr),
+                        "toggle_issue_state" => Ok(UserEvent::ToggleIssueState),
                         _ => {
                             let msg = format!("Unknown user event: {value}");
                             Err(de::Error::custom(msg))
