@@ -312,20 +312,8 @@ impl<'a> GitHubView<'a> {
                 if self.selected_has_related() {
                     hints.push((UserEvent::DetailPaneToggle, "related"));
                 }
-                match self.active_tab {
-                    GitHubTab::PullRequests => {
-                        let idx = self.actual_index(self.selected_index);
-                        if let Some(pr) = self.pull_requests.get(idx) {
-                            if !pr.is_draft && pr.state == "OPEN" {
-                                hints.push((UserEvent::MergePr, "merge PR"));
-                            }
-                        }
-                    }
-                    GitHubTab::Issues => {
-                        if let Some(label) = self.selected_issue_action_label() {
-                            hints.push((UserEvent::ToggleIssueState, label));
-                        }
-                    }
+                if let Some(h) = self.action_hint() {
+                    hints.push(h);
                 }
                 hints
             }
@@ -353,20 +341,8 @@ impl<'a> GitHubView<'a> {
                 if self.selected_has_related() {
                     hints.push((UserEvent::DetailPaneToggle, "related"));
                 }
-                match self.active_tab {
-                    GitHubTab::PullRequests => {
-                        let idx = self.actual_index(self.selected_index);
-                        if let Some(pr) = self.pull_requests.get(idx) {
-                            if !pr.is_draft && pr.state == "OPEN" {
-                                hints.push((UserEvent::MergePr, "merge PR"));
-                            }
-                        }
-                    }
-                    GitHubTab::Issues => {
-                        if let Some(label) = self.selected_issue_action_label() {
-                            hints.push((UserEvent::ToggleIssueState, label));
-                        }
-                    }
+                if let Some(h) = self.action_hint() {
+                    hints.push(h);
                 }
                 hints.push((UserEvent::GitHubToggle, "close"));
                 hints
@@ -657,6 +633,20 @@ impl<'a> GitHubView<'a> {
             action,
             filter_state: self.state_filter.as_str().to_string(),
         });
+    }
+
+    fn action_hint(&self) -> Option<(UserEvent, &'static str)> {
+        match self.active_tab {
+            GitHubTab::PullRequests => {
+                let idx = self.actual_index(self.selected_index);
+                self.pull_requests.get(idx).and_then(|pr| {
+                    (!pr.is_draft && pr.state == "OPEN").then_some((UserEvent::MergePr, "merge PR"))
+                })
+            }
+            GitHubTab::Issues => self
+                .selected_issue_action_label()
+                .map(|label| (UserEvent::ToggleIssueState, label)),
+        }
     }
 
     fn selected_issue_action_label(&self) -> Option<&'static str> {

@@ -520,7 +520,7 @@ pub fn is_merge_conflict_error(msg: &str) -> bool {
 
 // ── Issue state toggle ──
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy)]
 pub enum IssueAction {
     Close,
     Reopen,

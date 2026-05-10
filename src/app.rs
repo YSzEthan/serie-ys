@@ -1297,12 +1297,6 @@ impl App<'_> {
     }
 
     fn handle_toggle_issue_prompt_key(&mut self, key: KeyEvent) {
-        if matches!(self.ctx.keybind.get(&key), Some(UserEvent::Cancel))
-            || matches!(key.code, KeyCode::Char('n') | KeyCode::Char('N'))
-        {
-            self.app_status.status_line = StatusLine::None;
-            return;
-        }
         let StatusLine::ToggleIssuePrompt {
             number,
             action,
@@ -1312,6 +1306,12 @@ impl App<'_> {
             return;
         };
         let (number, action, filter_state) = (number, action, filter_state.clone());
+        if matches!(self.ctx.keybind.get(&key), Some(UserEvent::Cancel))
+            || matches!(key.code, KeyCode::Char('n') | KeyCode::Char('N'))
+        {
+            self.app_status.status_line = StatusLine::None;
+            return;
+        }
         let is_confirm = matches!(self.ctx.keybind.get(&key), Some(UserEvent::Confirm))
             || matches!(
                 key.code,
