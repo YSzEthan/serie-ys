@@ -26,7 +26,6 @@ pub enum DetailPane {
 
 #[derive(Debug, Default)]
 pub struct CommitDetailState {
-    height: usize,
     left_offset: usize,
     right_offset: usize,
     active_pane: Option<DetailPane>,
@@ -50,6 +49,13 @@ impl CommitDetailState {
     pub fn select_first(&mut self) {
         self.left_offset = 0;
         self.right_offset = 0;
+    }
+
+    fn clamp_offsets(&mut self, left_len: usize, right_len: usize, inner_height: usize) {
+        self.left_offset = self.left_offset.min(left_len.saturating_sub(inner_height));
+        self.right_offset = self
+            .right_offset
+            .min(right_len.saturating_sub(inner_height));
     }
 
     pub fn active_pane(&self) -> DetailPane {
@@ -109,14 +115,9 @@ impl StatefulWidget for CommitDetail<'_> {
         let left_lines = self.info_lines(available);
         let right_lines = self.changes_lines();
 
-        let area_height = area.height as usize;
-        state.height = area_height;
-        state.left_offset = state
-            .left_offset
-            .min(left_lines.len().saturating_sub(area_height));
-        state.right_offset = state
-            .right_offset
-            .min(right_lines.len().saturating_sub(area_height));
+        let block = detail_block(self.ctx.color_theme.divider_fg);
+        let inner_h = block.inner(area).height as usize;
+        state.clamp_offsets(left_lines.len(), right_lines.len(), inner_h);
 
         let left_lines: Vec<Line> = left_lines.into_iter().skip(state.left_offset).collect();
         let right_lines: Vec<Line> = right_lines.into_iter().skip(state.right_offset).collect();
@@ -133,12 +134,7 @@ impl StatefulWidget for CommitDetail<'_> {
 
         let left_paragraph = Paragraph::new(left_lines)
             .style(Style::default().fg(self.ctx.color_theme.fg))
-            .block(
-                Block::default()
-                    .borders(Borders::TOP | Borders::BOTTOM)
-                    .style(Style::default().fg(self.ctx.color_theme.divider_fg))
-                    .padding(Padding::new(1, 1, 0, 0)),
-            );
+            .block(block.clone());
         left_paragraph.render(left_area, buf);
 
         // Render vertical divider
@@ -146,12 +142,7 @@ impl StatefulWidget for CommitDetail<'_> {
 
         let right_paragraph = Paragraph::new(right_lines)
             .style(Style::default().fg(self.ctx.color_theme.fg))
-            .block(
-                Block::default()
-                    .borders(Borders::TOP | Borders::BOTTOM)
-                    .style(Style::default().fg(self.ctx.color_theme.divider_fg))
-                    .padding(Padding::new(1, 1, 0, 0)),
-            );
+            .block(block);
         right_paragraph.render(right_area, buf);
     }
 }
@@ -360,6 +351,13 @@ fn render_vertical_divider(area: Rect, buf: &mut Buffer, fg: Color) {
     }
 }
 
+fn detail_block(divider_fg: Color) -> Block<'static> {
+    Block::default()
+        .borders(Borders::TOP | Borders::BOTTOM)
+        .style(Style::default().fg(divider_fg))
+        .padding(Padding::new(1, 1, 0, 0))
+}
+
 fn is_author_committer_different(commit: &Commit) -> bool {
     commit.author_name != commit.committer_name
         || commit.author_email != commit.committer_email
@@ -411,14 +409,9 @@ impl StatefulWidget for WorkingChangesDetail<'_> {
         let left_lines = self.info_lines();
         let right_lines = self.file_lines();
 
-        let area_height = area.height as usize;
-        state.height = area_height;
-        state.left_offset = state
-            .left_offset
-            .min(left_lines.len().saturating_sub(area_height));
-        state.right_offset = state
-            .right_offset
-            .min(right_lines.len().saturating_sub(area_height));
+        let block = detail_block(self.ctx.color_theme.divider_fg);
+        let inner_h = block.inner(area).height as usize;
+        state.clamp_offsets(left_lines.len(), right_lines.len(), inner_h);
 
         let left_lines: Vec<Line> = left_lines.into_iter().skip(state.left_offset).collect();
         let right_lines: Vec<Line> = right_lines.into_iter().skip(state.right_offset).collect();
@@ -435,12 +428,7 @@ impl StatefulWidget for WorkingChangesDetail<'_> {
 
         let left_paragraph = Paragraph::new(left_lines)
             .style(Style::default().fg(self.ctx.color_theme.fg))
-            .block(
-                Block::default()
-                    .borders(Borders::TOP | Borders::BOTTOM)
-                    .style(Style::default().fg(self.ctx.color_theme.divider_fg))
-                    .padding(Padding::new(1, 1, 0, 0)),
-            );
+            .block(block.clone());
         left_paragraph.render(left_area, buf);
 
         // Render vertical divider
@@ -448,12 +436,7 @@ impl StatefulWidget for WorkingChangesDetail<'_> {
 
         let right_paragraph = Paragraph::new(right_lines)
             .style(Style::default().fg(self.ctx.color_theme.fg))
-            .block(
-                Block::default()
-                    .borders(Borders::TOP | Borders::BOTTOM)
-                    .style(Style::default().fg(self.ctx.color_theme.divider_fg))
-                    .padding(Padding::new(1, 1, 0, 0)),
-            );
+            .block(block);
         right_paragraph.render(right_area, buf);
     }
 }

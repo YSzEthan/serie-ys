@@ -27,6 +27,17 @@ enum DetailContent {
     WorkingChanges(WorkingChanges),
 }
 
+impl DetailContent {
+    /// Working Changes 是 virtual row（list 第 0 行），上下無 commit 需要看，
+    /// 給滿可用高度；Commit Detail 受 cfg 限制，保留 commit row 給導航。
+    fn max_height(&self, area_cap: u16, cfg_height: u16) -> u16 {
+        match self {
+            DetailContent::Commit { .. } => area_cap.min(cfg_height),
+            DetailContent::WorkingChanges(_) => area_cap,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct DetailView<'a> {
     commit_list_state: Option<CommitListState<'a>>,
@@ -145,7 +156,10 @@ impl<'a> DetailView<'a> {
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect, marquee_frame: u64) {
-        let max_height = (area.height.saturating_sub(2)).min(self.ctx.ui_config.detail.height);
+        let area_cap = area.height.saturating_sub(2);
+        let max_height = self
+            .content
+            .max_height(area_cap, self.ctx.ui_config.detail.height);
         let content_height = match &self.content {
             DetailContent::Commit {
                 commit,
