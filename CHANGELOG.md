@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.3.0](https://github.com/YSzEthan/serie-ys/compare/v1.2.1...v1.3.0) (2026-05-11)
+
+
+### Features
+
+* GitHub view 支援關閉與重新開啟 issue ([5641a05](https://github.com/YSzEthan/serie-ys/commit/5641a05c947366d6984e7c0a12f3d72e2eb18e8b))
+
+
+### Bug Fixes
+
+* Detail 高度上限與 scroll clamp 邊界修正 ([9f4fecc](https://github.com/YSzEthan/serie-ys/commit/9f4fecc5270dfea3a6e7f321216c91de6ae4865e))
+* PR merge 選擇不刪 branch 時整個流程被取消，並新增衝突提醒 ([ea68f10](https://github.com/YSzEthan/serie-ys/commit/ea68f109cc3ce2e513548f0fb391889d801b185c))
+* toggle_issue_state 鍵位由 x 改為 shift-x 避免與 fuzzy_toggle 衝突 ([1cd58cf](https://github.com/YSzEthan/serie-ys/commit/1cd58cf3b2a2f099a7fdc64857f9d60f4865af04))
+
 ## [1.2.1](https://github.com/YSzEthan/serie-ys/compare/v1.2.0...v1.2.1) (2026-05-03)
 
 
