@@ -1,5 +1,13 @@
 # Changelog
 
+## [1.4.0](https://github.com/YSzEthan/serie-ys/compare/v1.3.0...v1.4.0) (2026-05-12)
+
+
+### Features
+
+* GitHub view preview 顯示 issue/PR 留言 ([eb1e272](https://github.com/YSzEthan/serie-ys/commit/eb1e27211e6647091739876b954bb1383d856576))
+* GitHub view 支援 `:` + 數字跳號到對應 issue/PR ([da68dd4](https://github.com/YSzEthan/serie-ys/commit/da68dd426d198a66d6e41f775288451614d3f1ec))
+
 ## [1.3.0](https://github.com/YSzEthan/serie-ys/compare/v1.2.1...v1.3.0) (2026-05-11)
 
 
