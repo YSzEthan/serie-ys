@@ -265,7 +265,7 @@ fn build_rows(
         b(vec![UserEvent::GoToTop],                   "跳到頂端",               "Go to top"),
         b(vec![UserEvent::GoToBottom],                "跳到底端",               "Go to bottom"),
         b(vec![UserEvent::Confirm],                   "預覽內容／切換 checkbox", "Preview / toggle checkbox"),
-        b(vec![UserEvent::Search],                    "搜尋",                   "Search"),
+        b(vec![UserEvent::Search],                    "搜尋／輸入純數字跳到 #N", "Search / type number to jump to #N"),
         b(vec![UserEvent::Filter],                    "過濾",                   "Filter"),
         b(vec![UserEvent::ShortCopy],                 "複製 issue/PR URL",      "Copy issue/PR URL"),
         b(vec![UserEvent::FullCopy],                  "在瀏覽器開啟 issue/PR",  "Open issue/PR in browser"),

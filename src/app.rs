@@ -608,8 +608,16 @@ impl App<'_> {
                     next_cursor,
                     generation,
                 } => {
-                    if let View::GitHub(ref mut view) = self.view {
-                        view.append_issues(items, next_cursor, generation);
+                    let accepted = if let View::GitHub(ref mut view) = self.view {
+                        view.append_issues(items.clone(), next_cursor.clone(), generation)
+                    } else {
+                        false
+                    };
+                    if accepted {
+                        if let Some(ref mut cache) = self.github_cache {
+                            cache.issues.extend(items);
+                            cache.issues_next_cursor = next_cursor;
+                        }
                     }
                 }
                 AppEvent::GitHubMorePrsLoaded {
@@ -617,8 +625,16 @@ impl App<'_> {
                     next_cursor,
                     generation,
                 } => {
-                    if let View::GitHub(ref mut view) = self.view {
-                        view.append_pull_requests(items, next_cursor, generation);
+                    let accepted = if let View::GitHub(ref mut view) = self.view {
+                        view.append_pull_requests(items.clone(), next_cursor.clone(), generation)
+                    } else {
+                        false
+                    };
+                    if accepted {
+                        if let Some(ref mut cache) = self.github_cache {
+                            cache.pull_requests.extend(items);
+                            cache.prs_next_cursor = next_cursor;
+                        }
                     }
                 }
                 AppEvent::GitHubFlash { message, is_error } => {

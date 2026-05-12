@@ -122,6 +122,8 @@ pub struct GitHubView<'a> {
     loading_more: bool,
     request_generation: u64,
 
+    pending_jump: Option<u64>,
+
     ctx: Rc<AppContext>,
     tx: Sender,
 }
@@ -163,6 +165,7 @@ impl<'a> GitHubView<'a> {
             prs_next_cursor,
             loading_more: false,
             request_generation: 0,
+            pending_jump: None,
             ctx,
             tx,
         }
@@ -220,18 +223,25 @@ impl<'a> GitHubView<'a> {
         self.preview_offset = 0;
     }
 
+    /// Returns `true` when the page was accepted (generation matched and
+    /// state updated). Caller uses this to decide whether to also sync the
+    /// cache, keeping view ↔ cache in lockstep.
     pub fn append_issues(
         &mut self,
         items: Vec<GhIssue>,
         next_cursor: Option<String>,
         generation: u64,
-    ) {
+    ) -> bool {
         if generation != self.request_generation {
-            return;
+            return false;
         }
         self.issues.extend(items);
         self.issues_next_cursor = next_cursor;
         self.loading_more = false;
+        if self.pending_jump.is_some() {
+            self.try_resolve_jump();
+        }
+        true
     }
 
     pub fn append_pull_requests(
@@ -239,41 +249,97 @@ impl<'a> GitHubView<'a> {
         items: Vec<GhPullRequest>,
         next_cursor: Option<String>,
         generation: u64,
-    ) {
+    ) -> bool {
         if generation != self.request_generation {
-            return;
+            return false;
         }
         self.pull_requests.extend(items);
         self.prs_next_cursor = next_cursor;
         self.loading_more = false;
+        if self.pending_jump.is_some() {
+            self.try_resolve_jump();
+        }
+        true
     }
 
     fn bump_generation(&mut self) {
         self.request_generation = self.request_generation.wrapping_add(1);
         self.loading_more = false;
+        self.pending_jump = None;
     }
 
-    fn maybe_load_more(&mut self) {
-        if self.loading_more || self.has_active_filter() {
+    fn start_jump(&mut self, number: u64) {
+        self.pending_jump = Some(number);
+        self.try_resolve_jump();
+    }
+
+    fn try_resolve_jump(&mut self) {
+        let Some(number) = self.pending_jump else {
+            return;
+        };
+
+        let found = match self.active_tab {
+            GitHubTab::Issues => self.issues.iter().position(|i| i.number == number),
+            GitHubTab::PullRequests => self.pull_requests.iter().position(|p| p.number == number),
+        };
+        if let Some(idx) = found {
+            self.selected_index = idx;
+            self.preview_offset = 0;
+            self.adjust_scroll();
+            self.pending_jump = None;
             return;
         }
-        let cursor_is_some = match self.active_tab {
+
+        if self.current_has_next_cursor() {
+            if self.loading_more {
+                return;
+            }
+            self.dispatch_load_more();
+            return;
+        }
+
+        let tab = match self.active_tab {
+            GitHubTab::Issues => "issues",
+            GitHubTab::PullRequests => "PRs",
+        };
+        self.set_flash(
+            format!(
+                "No #{number} in {tab} (filter: {})",
+                self.state_filter.as_str()
+            ),
+            true,
+        );
+        self.pending_jump = None;
+    }
+
+    fn current_has_next_cursor(&self) -> bool {
+        match self.active_tab {
             GitHubTab::Issues => self.issues_next_cursor.is_some(),
             GitHubTab::PullRequests => self.prs_next_cursor.is_some(),
-        };
-        if !cursor_is_some {
-            return;
         }
-        let threshold = self.current_list_len().saturating_sub(PREFETCH_THRESHOLD);
-        if self.selected_index < threshold {
-            return;
-        }
+    }
+
+    fn dispatch_load_more(&mut self) {
         self.loading_more = true;
         let kind = self.active_tab.kind();
         self.tx.send(AppEvent::LoadMoreGitHub {
             kind,
             generation: self.request_generation,
         });
+    }
+
+    fn maybe_load_more(&mut self) {
+        if self.loading_more || self.has_active_filter() {
+            return;
+        }
+        if !self.current_has_next_cursor() {
+            return;
+        }
+        let threshold = self.current_list_len().saturating_sub(PREFETCH_THRESHOLD);
+        if self.selected_index < threshold {
+            return;
+        }
+        self.dispatch_load_more();
     }
 
     pub fn update_body_for_item(&mut self, number: u64, kind: GhItemKind, new_body: String) {
@@ -758,8 +824,16 @@ impl<'a> GitHubView<'a> {
                 }
             }
             UserEvent::Confirm => {
-                // Keep query, switch to List focus
-                self.focus = GitHubFocus::List;
+                let trimmed = self.search_input.value().trim();
+                if let Ok(number) = trimmed.parse::<u64>() {
+                    self.search_input.reset();
+                    self.filtered_issue_indices.clear();
+                    self.filtered_pr_indices.clear();
+                    self.focus = GitHubFocus::List;
+                    self.start_jump(number);
+                } else {
+                    self.focus = GitHubFocus::List;
+                }
             }
             UserEvent::NavigateDown | UserEvent::SelectDown => {
                 // Move list selection without leaving prompt
@@ -1111,10 +1185,7 @@ impl<'a> GitHubView<'a> {
         let inner = block.inner(area);
         f.render_widget(block, area);
 
-        let has_next = match self.active_tab {
-            GitHubTab::Issues => self.issues_next_cursor.is_some(),
-            GitHubTab::PullRequests => self.prs_next_cursor.is_some(),
-        };
+        let has_next = self.current_has_next_cursor();
         // Reserve one row for the load-more indicator when there's a next page
         let visible_height = if has_next {
             (inner.height as usize).saturating_sub(1)
