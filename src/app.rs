@@ -637,6 +637,32 @@ impl App<'_> {
                         }
                     }
                 }
+                AppEvent::LoadGitHubComments {
+                    number,
+                    kind,
+                    after,
+                } => {
+                    self.load_github_comments(number, kind, after);
+                }
+                AppEvent::GitHubCommentsLoaded {
+                    number,
+                    kind,
+                    items,
+                    next_cursor,
+                } => {
+                    if let View::GitHub(ref mut view) = self.view {
+                        view.append_comments(number, kind, items, next_cursor);
+                    }
+                }
+                AppEvent::GitHubCommentsFailed {
+                    number,
+                    kind,
+                    error,
+                } => {
+                    if let View::GitHub(ref mut view) = self.view {
+                        view.set_comments_error(number, kind, error);
+                    }
+                }
                 AppEvent::GitHubFlash { message, is_error } => {
                     if let View::GitHub(ref mut view) = self.view {
                         view.set_flash(message, is_error);
@@ -1978,6 +2004,26 @@ impl App<'_> {
                         is_error: true,
                     }),
                 }
+            }
+        });
+    }
+
+    fn load_github_comments(&self, number: u64, kind: GhItemKind, after: Option<String>) {
+        let repo_path = self.repository.path().to_path_buf();
+        let tx = self.ec.sender();
+        std::thread::spawn(move || {
+            match crate::github::get_comments(&repo_path, number, kind, after.as_deref()) {
+                Ok(page) => tx.send(AppEvent::GitHubCommentsLoaded {
+                    number,
+                    kind,
+                    items: page.items,
+                    next_cursor: page.next_cursor,
+                }),
+                Err(e) => tx.send(AppEvent::GitHubCommentsFailed {
+                    number,
+                    kind,
+                    error: e,
+                }),
             }
         });
     }

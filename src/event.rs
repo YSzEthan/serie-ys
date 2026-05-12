@@ -71,6 +71,22 @@ pub enum AppEvent {
         next_cursor: Option<String>,
         generation: u64,
     },
+    LoadGitHubComments {
+        number: u64,
+        kind: crate::github::GhItemKind,
+        after: Option<String>,
+    },
+    GitHubCommentsLoaded {
+        number: u64,
+        kind: crate::github::GhItemKind,
+        items: Vec<crate::github::GhComment>,
+        next_cursor: Option<String>,
+    },
+    GitHubCommentsFailed {
+        number: u64,
+        kind: crate::github::GhItemKind,
+        error: String,
+    },
     GitHubFlash {
         message: String,
         is_error: bool,

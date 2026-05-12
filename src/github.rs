@@ -13,7 +13,7 @@ pub struct GhPage<T> {
 
 // ── Item Kind ──
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GhItemKind {
     Issue,
     PullRequest,
@@ -405,6 +405,140 @@ impl GqlPrNode {
     }
 }
 
+// ── Comments ──
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct GhComment {
+    pub author: GhAuthor,
+    pub body: String,
+    pub created_at: String,
+    pub url: String,
+}
+
+pub fn get_comments(
+    path: &Path,
+    number: u64,
+    kind: GhItemKind,
+    after: Option<&str>,
+) -> Result<GhPage<GhComment>, String> {
+    let (owner, name) = fetch_repo_name_with_owner(path)?;
+    let item_field = match kind {
+        GhItemKind::Issue => "issue",
+        GhItemKind::PullRequest => "pullRequest",
+    };
+    let query = format!(
+        r#"query($owner:String!,$name:String!,$number:Int!,$after:String){{
+            repository(owner:$owner,name:$name){{
+                {item_field}(number:$number){{
+                    comments(first:50,after:$after){{
+                        pageInfo {{ hasNextPage endCursor }}
+                        nodes {{
+                            body createdAt url
+                            author {{ login }}
+                        }}
+                    }}
+                }}
+            }}
+        }}"#
+    );
+    let owner_f = format!("owner={owner}");
+    let name_f = format!("name={name}");
+    let number_f = format!("number={number}");
+    let query_f = format!("query={query}");
+    let mut args = vec![
+        "api", "graphql", "-F", &owner_f, "-F", &name_f, "-F", &number_f, "-f", &query_f,
+    ];
+    let after_f;
+    if let Some(cursor) = after {
+        after_f = format!("after={cursor}");
+        args.push("-f");
+        args.push(&after_f);
+    }
+    let json = run_gh(path, &args, false)?;
+    parse_comments_graphql(&json, kind)
+}
+
+fn parse_comments_graphql(json: &str, kind: GhItemKind) -> Result<GhPage<GhComment>, String> {
+    let resp: GqlCommentsResp =
+        serde_json::from_str(json).map_err(|e| format!("JSON parse error: {e}"))?;
+    let conn = match kind {
+        GhItemKind::Issue => resp.data.repository.issue.map(|i| i.comments),
+        GhItemKind::PullRequest => resp.data.repository.pull_request.map(|p| p.comments),
+    };
+    let Some(conn) = conn else {
+        return Ok(GhPage {
+            items: Vec::new(),
+            next_cursor: None,
+        });
+    };
+    let next_cursor = if conn.page_info.has_next_page {
+        conn.page_info.end_cursor
+    } else {
+        None
+    };
+    Ok(GhPage {
+        items: conn
+            .nodes
+            .into_iter()
+            .map(GqlCommentNode::into_gh)
+            .collect(),
+        next_cursor,
+    })
+}
+
+#[derive(Deserialize)]
+struct GqlCommentsResp {
+    data: GqlCommentsData,
+}
+#[derive(Deserialize)]
+struct GqlCommentsData {
+    repository: GqlCommentsRepo,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlCommentsRepo {
+    #[serde(default)]
+    issue: Option<GqlCommentsContainer>,
+    #[serde(default)]
+    pull_request: Option<GqlCommentsContainer>,
+}
+#[derive(Deserialize)]
+struct GqlCommentsContainer {
+    comments: GqlCommentsConn,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlCommentsConn {
+    #[serde(default)]
+    page_info: GqlPageInfo,
+    nodes: Vec<GqlCommentNode>,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlCommentNode {
+    #[serde(default)]
+    body: Option<String>,
+    #[serde(default)]
+    created_at: Option<String>,
+    #[serde(default)]
+    url: Option<String>,
+    author: Option<GhAuthor>,
+}
+
+impl GqlCommentNode {
+    fn into_gh(self) -> GhComment {
+        GhComment {
+            author: self.author.unwrap_or(GhAuthor {
+                login: "ghost".to_string(),
+            }),
+            body: self.body.unwrap_or_default(),
+            created_at: self.created_at.unwrap_or_default(),
+            url: self.url.unwrap_or_default(),
+        }
+    }
+}
+
 // ── Checkbox / Task List ──
 
 #[derive(Debug, Clone)]
@@ -616,5 +750,59 @@ mod tests {
         assert_eq!(issues[0].parent.as_ref().unwrap().number, 7);
         assert!(issues[0].sub_issues.is_empty());
         assert_eq!(issues[0].author.login, "ghost");
+    }
+
+    #[test]
+    fn parse_comments_issue_with_next_page() {
+        let json = r#"{
+            "data": {
+                "repository": {
+                    "issue": {
+                        "comments": {
+                            "pageInfo": {"hasNextPage": true, "endCursor": "C2"},
+                            "nodes": [
+                                {
+                                    "body": "first",
+                                    "createdAt": "2026-01-01T00:00:00Z",
+                                    "url": "https://github.com/o/r/issues/1#issuecomment-1",
+                                    "author": {"login": "alice"}
+                                },
+                                {
+                                    "body": "second",
+                                    "createdAt": "2026-01-02T00:00:00Z",
+                                    "url": "https://github.com/o/r/issues/1#issuecomment-2",
+                                    "author": null
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        }"#;
+        let page = parse_comments_graphql(json, GhItemKind::Issue).unwrap();
+        assert_eq!(page.next_cursor.as_deref(), Some("C2"));
+        assert_eq!(page.items.len(), 2);
+        assert_eq!(page.items[0].body, "first");
+        assert_eq!(page.items[0].author.login, "alice");
+        assert_eq!(page.items[1].author.login, "ghost");
+    }
+
+    #[test]
+    fn parse_comments_pr_no_next_page() {
+        let json = r#"{
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "comments": {
+                            "pageInfo": {"hasNextPage": false, "endCursor": null},
+                            "nodes": []
+                        }
+                    }
+                }
+            }
+        }"#;
+        let page = parse_comments_graphql(json, GhItemKind::PullRequest).unwrap();
+        assert!(page.next_cursor.is_none());
+        assert!(page.items.is_empty());
     }
 }

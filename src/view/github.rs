@@ -9,17 +9,19 @@ use ratatui::{
     widgets::{Block, Borders, Padding, Paragraph, Wrap},
     Frame,
 };
+use rustc_hash::FxHashMap;
 use tui_input::{backend::crossterm::EventHandler, Input};
 
 use crate::{
     app::AppContext,
     event::{AppEvent, RelatedGroup, RelatedItem, Sender, UserEvent, UserEventWithCount},
     fuzzy::SearchMatcher,
-    github::{self, CheckboxItem, GhIssue, GhItemKind, GhPullRequest, IssueAction},
+    github::{self, CheckboxItem, GhComment, GhIssue, GhItemKind, GhPullRequest, IssueAction},
     view::View,
 };
 
 const PREFETCH_THRESHOLD: usize = 5;
+const COMMENTS_LOAD_MORE_THRESHOLD: usize = 5;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StateFilter {
@@ -86,6 +88,23 @@ enum LoadState {
     Error(String),
 }
 
+#[derive(Debug, Default, PartialEq, Eq)]
+enum CommentLoad {
+    #[default]
+    NotRequested,
+    Loading,
+    Loaded,
+    Error(String),
+}
+
+#[derive(Debug, Default)]
+struct CommentEntry {
+    state: CommentLoad,
+    items: Vec<GhComment>,
+    next_cursor: Option<String>,
+    loading_more: bool,
+}
+
 #[derive(Debug)]
 pub struct GitHubView<'a> {
     before: View<'a>,
@@ -123,6 +142,9 @@ pub struct GitHubView<'a> {
     request_generation: u64,
 
     pending_jump: Option<u64>,
+
+    comments: FxHashMap<(GhItemKind, u64), CommentEntry>,
+    last_preview_len: usize,
 
     ctx: Rc<AppContext>,
     tx: Sender,
@@ -166,6 +188,8 @@ impl<'a> GitHubView<'a> {
             loading_more: false,
             request_generation: 0,
             pending_jump: None,
+            comments: FxHashMap::default(),
+            last_preview_len: 0,
             ctx,
             tx,
         }
@@ -214,6 +238,7 @@ impl<'a> GitHubView<'a> {
         self.pull_requests = pull_requests;
         self.issues_next_cursor = issues_next_cursor;
         self.prs_next_cursor = prs_next_cursor;
+        self.comments.clear();
         self.bump_generation();
         // 修正選取索引避免越界
         let max = self.current_list_len().saturating_sub(1);
@@ -221,6 +246,7 @@ impl<'a> GitHubView<'a> {
             self.selected_index = max;
         }
         self.preview_offset = 0;
+        self.request_comments_for_selected();
     }
 
     /// Returns `true` when the page was accepted (generation matched and
@@ -287,6 +313,7 @@ impl<'a> GitHubView<'a> {
             self.preview_offset = 0;
             self.adjust_scroll();
             self.pending_jump = None;
+            self.request_comments_for_selected();
             return;
         }
 
@@ -310,6 +337,68 @@ impl<'a> GitHubView<'a> {
             true,
         );
         self.pending_jump = None;
+    }
+
+    fn request_comments_for_selected(&mut self) {
+        let Some((number, kind)) = self.selected_number_and_kind() else {
+            return;
+        };
+        let entry = self.comments.entry((kind, number)).or_default();
+        if matches!(entry.state, CommentLoad::NotRequested) {
+            entry.state = CommentLoad::Loading;
+            self.tx.send(AppEvent::LoadGitHubComments {
+                number,
+                kind,
+                after: None,
+            });
+        }
+    }
+
+    fn maybe_load_more_comments(&mut self) {
+        let visible = self.height.saturating_sub(2);
+        let near_bottom = self
+            .preview_offset
+            .saturating_add(visible)
+            .saturating_add(COMMENTS_LOAD_MORE_THRESHOLD)
+            >= self.last_preview_len;
+        if !near_bottom {
+            return;
+        }
+        let Some((number, kind)) = self.selected_number_and_kind() else {
+            return;
+        };
+        let Some(entry) = self.comments.get_mut(&(kind, number)) else {
+            return;
+        };
+        if entry.state != CommentLoad::Loaded || entry.loading_more || entry.next_cursor.is_none() {
+            return;
+        }
+        let cursor = entry.next_cursor.clone();
+        entry.loading_more = true;
+        self.tx.send(AppEvent::LoadGitHubComments {
+            number,
+            kind,
+            after: cursor,
+        });
+    }
+
+    pub fn append_comments(
+        &mut self,
+        number: u64,
+        kind: GhItemKind,
+        items: Vec<GhComment>,
+        next_cursor: Option<String>,
+    ) {
+        let entry = self.comments.entry((kind, number)).or_default();
+        entry.items.extend(items);
+        entry.next_cursor = next_cursor;
+        entry.state = CommentLoad::Loaded;
+        entry.loading_more = false;
+    }
+
+    pub fn set_comments_error(&mut self, number: u64, kind: GhItemKind, error: String) {
+        let entry = self.comments.entry((kind, number)).or_default();
+        entry.state = CommentLoad::Error(error);
     }
 
     fn current_has_next_cursor(&self) -> bool {
@@ -427,11 +516,15 @@ impl<'a> GitHubView<'a> {
 
         self.flash_message = None;
 
+        let before = (self.active_tab, self.selected_index);
         match self.focus {
             GitHubFocus::CheckboxEdit => self.handle_checkbox_edit_event(event, count),
             GitHubFocus::Preview => self.handle_preview_event(event, count),
             GitHubFocus::Prompt => self.handle_prompt_event(event, count, key),
             GitHubFocus::List => self.handle_list_event(event, count),
+        }
+        if (self.active_tab, self.selected_index) != before {
+            self.request_comments_for_selected();
         }
     }
 
@@ -494,6 +587,7 @@ impl<'a> GitHubView<'a> {
                 for _ in 0..count {
                     self.preview_offset = self.preview_offset.saturating_add(1);
                 }
+                self.maybe_load_more_comments();
             }
             UserEvent::NavigateUp | UserEvent::SelectUp => {
                 for _ in 0..count {
@@ -503,6 +597,7 @@ impl<'a> GitHubView<'a> {
             UserEvent::PageDown => {
                 let page = self.height.saturating_sub(2).max(1);
                 self.preview_offset = self.preview_offset.saturating_add(page);
+                self.maybe_load_more_comments();
             }
             UserEvent::PageUp => {
                 let page = self.height.saturating_sub(2).max(1);
@@ -511,6 +606,7 @@ impl<'a> GitHubView<'a> {
             UserEvent::HalfPageDown => {
                 let half = self.height.saturating_sub(2).max(1) / 2;
                 self.preview_offset = self.preview_offset.saturating_add(half);
+                self.maybe_load_more_comments();
             }
             UserEvent::HalfPageUp => {
                 let half = self.height.saturating_sub(2).max(1) / 2;
@@ -1369,6 +1465,7 @@ impl<'a> GitHubView<'a> {
         f.render_widget(block, area);
 
         let (preview_lines, overlays) = self.build_preview_content();
+        self.last_preview_len = preview_lines.len();
 
         // Clamp preview_offset to avoid scrolling past content
         let max_offset = preview_lines.len().saturating_sub(inner.height as usize);
@@ -1590,6 +1687,11 @@ impl<'a> GitHubView<'a> {
             lines.extend(super::markdown::render(&body));
         }
 
+        let entry = self
+            .selected_number_and_kind()
+            .and_then(|(n, k)| self.comments.get(&(k, n)));
+        append_comment_lines(&mut lines, &mut overlays, entry);
+
         (lines, overlays)
     }
 
@@ -1597,6 +1699,94 @@ impl<'a> GitHubView<'a> {
         for y in area.top()..area.bottom() {
             self.ctx.image_protocol.clear_line(y);
         }
+    }
+}
+
+fn append_comment_lines(
+    lines: &mut Vec<Line<'static>>,
+    overlays: &mut Vec<PreviewOverlay>,
+    entry: Option<&CommentEntry>,
+) {
+    lines.push(Line::styled(
+        "─".repeat(40),
+        Style::default().fg(Color::DarkGray),
+    ));
+
+    let entry = match entry {
+        Some(e) => e,
+        None => {
+            lines.push(Line::styled(
+                "(loading comments…)",
+                Style::default().fg(Color::DarkGray),
+            ));
+            return;
+        }
+    };
+
+    match &entry.state {
+        CommentLoad::NotRequested | CommentLoad::Loading => {
+            lines.push(Line::styled(
+                "(loading comments…)",
+                Style::default().fg(Color::DarkGray),
+            ));
+            return;
+        }
+        CommentLoad::Error(e) => {
+            lines.push(Line::styled(
+                format!("(comments failed: {e})"),
+                Style::default().fg(Color::Red),
+            ));
+            return;
+        }
+        CommentLoad::Loaded => {}
+    }
+
+    if entry.items.is_empty() {
+        lines.push(Line::styled(
+            "(no comments)",
+            Style::default().fg(Color::DarkGray),
+        ));
+        return;
+    }
+
+    for (i, c) in entry.items.iter().enumerate() {
+        let header_idx = lines.len();
+        if !c.url.is_empty() {
+            overlays.push(PreviewOverlay {
+                line_idx: header_idx,
+                x_offset: 0,
+                url: c.url.clone(),
+                label: format!("@{}", c.author.login),
+            });
+        }
+        lines.push(Line::from(vec![
+            Span::styled(
+                format!("@{}", c.author.login),
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!("  {}", c.created_at),
+                Style::default().fg(Color::DarkGray),
+            ),
+        ]));
+        lines.extend(super::markdown::render(&c.body));
+        if i + 1 < entry.items.len() {
+            lines.push(Line::styled(
+                "·".repeat(20),
+                Style::default().fg(Color::DarkGray),
+            ));
+        }
+    }
+
+    if entry.next_cursor.is_some() {
+        let suffix = if entry.loading_more {
+            "(loading more…)"
+        } else {
+            "(more comments — scroll down to load)"
+        };
+        lines.push(Line::styled(suffix, Style::default().fg(Color::DarkGray)));
     }
 }
 
