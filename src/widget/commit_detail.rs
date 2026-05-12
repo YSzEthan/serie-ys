@@ -121,8 +121,13 @@ impl StatefulWidget for CommitDetail<'_> {
         let right_active = active == DetailPane::Right;
 
         let available = left_area.width.saturating_sub(2) as usize;
+        let right_available = right_area.width.saturating_sub(2) as usize;
         let left_lines = self.info_lines(LineMode::Render(available));
-        let right_lines = self.changes_lines();
+        let right_lines: Vec<Line> = self
+            .changes_lines()
+            .into_iter()
+            .flat_map(|l| wrap_line_spans(l, right_available))
+            .collect();
 
         let block = detail_block(self.ctx.color_theme.divider_fg);
         let inner_h = block.inner(area).height as usize;
@@ -164,74 +169,101 @@ impl CommitDetail<'_> {
     }
 
     fn info_lines(&self, mode: LineMode) -> Vec<Line<'_>> {
-        let (marquee_width, body_wrap) = match mode {
+        fn push_wrapped<'a>(lines: &mut Vec<Line<'a>>, line: Line<'a>, wrap_at: Option<usize>) {
+            match wrap_at {
+                Some(w) => lines.extend(wrap_line_spans(line, w)),
+                None => lines.push(line),
+            }
+        }
+
+        let (marquee_width, wrap_at) = match mode {
             LineMode::Render(w) => (w, Some(w)),
             LineMode::Measure => (usize::MAX, None),
         };
         let mut lines: Vec<Line> = Vec::new();
 
         // Author
-        lines.push(Line::from(vec![
-            Span::styled(
-                "Author: ",
-                Style::default().fg(self.ctx.color_theme.detail_label_fg),
-            ),
-            self.commit
-                .author_name
-                .as_str()
-                .fg(self.ctx.color_theme.detail_name_fg),
-            " <".into(),
-            self.commit
-                .author_email
-                .as_str()
-                .fg(self.ctx.color_theme.detail_email_fg),
-            ">".into(),
-        ]));
-        lines.push(Line::from(vec![
-            Span::raw("        "),
-            Span::styled(
-                self.format_date(&self.commit.author_date),
-                Style::default().fg(self.ctx.color_theme.detail_date_fg),
-            ),
-        ]));
-
-        if is_author_committer_different(self.commit) {
-            lines.push(Line::from(vec![
+        push_wrapped(
+            &mut lines,
+            Line::from(vec![
                 Span::styled(
-                    "Committer: ",
+                    "Author: ",
                     Style::default().fg(self.ctx.color_theme.detail_label_fg),
                 ),
                 self.commit
-                    .committer_name
+                    .author_name
                     .as_str()
                     .fg(self.ctx.color_theme.detail_name_fg),
                 " <".into(),
                 self.commit
-                    .committer_email
+                    .author_email
                     .as_str()
                     .fg(self.ctx.color_theme.detail_email_fg),
                 ">".into(),
-            ]));
-            lines.push(Line::from(vec![
-                Span::raw("           "),
+            ]),
+            wrap_at,
+        );
+        push_wrapped(
+            &mut lines,
+            Line::from(vec![
+                Span::raw("        "),
                 Span::styled(
-                    self.format_date(&self.commit.committer_date),
+                    self.format_date(&self.commit.author_date),
                     Style::default().fg(self.ctx.color_theme.detail_date_fg),
                 ),
-            ]));
+            ]),
+            wrap_at,
+        );
+
+        if is_author_committer_different(self.commit) {
+            push_wrapped(
+                &mut lines,
+                Line::from(vec![
+                    Span::styled(
+                        "Committer: ",
+                        Style::default().fg(self.ctx.color_theme.detail_label_fg),
+                    ),
+                    self.commit
+                        .committer_name
+                        .as_str()
+                        .fg(self.ctx.color_theme.detail_name_fg),
+                    " <".into(),
+                    self.commit
+                        .committer_email
+                        .as_str()
+                        .fg(self.ctx.color_theme.detail_email_fg),
+                    ">".into(),
+                ]),
+                wrap_at,
+            );
+            push_wrapped(
+                &mut lines,
+                Line::from(vec![
+                    Span::raw("           "),
+                    Span::styled(
+                        self.format_date(&self.commit.committer_date),
+                        Style::default().fg(self.ctx.color_theme.detail_date_fg),
+                    ),
+                ]),
+                wrap_at,
+            );
         }
 
         // SHA
-        lines.push(Line::from(vec![
-            Span::styled(
-                "Commit: ",
-                Style::default().fg(self.ctx.color_theme.detail_label_fg),
-            ),
-            self.commit
-                .commit_hash
-                .as_str()
-                .fg(self.ctx.color_theme.detail_hash_fg),
-        ]));
+        push_wrapped(
+            &mut lines,
+            Line::from(vec![
+                Span::styled(
+                    "Commit: ",
+                    Style::default().fg(self.ctx.color_theme.detail_label_fg),
+                ),
+                self.commit
+                    .commit_hash
+                    .as_str()
+                    .fg(self.ctx.color_theme.detail_hash_fg),
+            ]),
+            wrap_at,
+        );
 
         // Parents
         if has_parent(self.commit) {
@@ -246,21 +278,26 @@ impl CommitDetail<'_> {
                     spans.push(Span::raw(" "));
                 }
             }
-            lines.push(Line::from(spans));
+            push_wrapped(&mut lines, Line::from(spans), wrap_at);
         }
 
         // Refs
         if has_refs(self.refs) {
-            lines.push(Line::from(vec![
-                Span::styled(
-                    "Refs: ",
-                    Style::default().fg(self.ctx.color_theme.detail_label_fg),
-                ),
-                self.refs_span(),
-            ]));
+            push_wrapped(
+                &mut lines,
+                Line::from(vec![
+                    Span::styled(
+                        "Refs: ",
+                        Style::default().fg(self.ctx.color_theme.detail_label_fg),
+                    ),
+                    self.refs_span(),
+                ]),
+                wrap_at,
+            );
         }
 
-        // Divider + commit message
+        // Divider + commit message. Subject is marquee-trimmed to `marquee_width`,
+        // so wrapping is a no-op; push raw to avoid the wrap-vs-no-wrap branch.
         lines.push(Line::raw(""));
         let subject_slice = crate::widget::marquee::scroll_window(
             &self.commit.subject,
@@ -272,7 +309,7 @@ impl CommitDetail<'_> {
         if !self.commit.body.is_empty() {
             lines.push(Line::raw(""));
             for body_line in self.commit.body.lines() {
-                match body_wrap {
+                match wrap_at {
                     Some(w) => lines.extend(wrap_to_width(body_line, w).into_iter().map(Line::raw)),
                     None => lines.push(Line::raw(body_line)),
                 }
@@ -424,8 +461,13 @@ impl StatefulWidget for WorkingChangesDetail<'_> {
         let left_active = active == DetailPane::Left;
         let right_active = active == DetailPane::Right;
 
+        let right_available = right_area.width.saturating_sub(2) as usize;
         let left_lines = self.info_lines();
-        let right_lines = self.file_lines();
+        let right_lines: Vec<Line> = self
+            .file_lines()
+            .into_iter()
+            .flat_map(|l| wrap_line_spans(l, right_available))
+            .collect();
 
         let block = detail_block(self.ctx.color_theme.divider_fg);
         let inner_h = block.inner(area).height as usize;
@@ -692,9 +734,83 @@ fn wrap_to_width(text: &str, width: usize) -> Vec<String> {
     lines
 }
 
+fn span_width(span: &Span<'_>) -> usize {
+    span.content
+        .chars()
+        .map(|c| UnicodeWidthChar::width(c).unwrap_or(0))
+        .sum()
+}
+
+fn split_span_at_width<'a>(span: Span<'a>, max_w: usize) -> (Span<'a>, Option<Span<'a>>) {
+    let style = span.style;
+    let s: &str = span.content.as_ref();
+    let mut split_byte = s.len();
+    let mut acc_w = 0usize;
+    for (i, c) in s.char_indices() {
+        let cw = UnicodeWidthChar::width(c).unwrap_or(0);
+        if cw > 0 && acc_w + cw > max_w {
+            split_byte = i;
+            break;
+        }
+        acc_w += cw;
+    }
+    let head = Span::styled(s[..split_byte].to_string(), style);
+    let tail = if split_byte == s.len() {
+        None
+    } else {
+        Some(Span::styled(s[split_byte..].to_string(), style))
+    };
+    (head, tail)
+}
+
+/// Wrap a multi-span line at `width` cells, preserving each span's style and `line.style`.
+/// Continuation lines are flush-left (no indent alignment).
+/// Contract: `width == 0` or empty `line.spans` returns `vec![line]` unchanged — these are
+/// real states under aggressive terminal resize / blank lines, not caller bugs.
+fn wrap_line_spans<'a>(line: Line<'a>, width: usize) -> Vec<Line<'a>> {
+    if width == 0 || line.spans.is_empty() || line.width() <= width {
+        return vec![line];
+    }
+    let line_style = line.style;
+    let mut result: Vec<Line<'a>> = Vec::new();
+    let mut current: Vec<Span<'a>> = Vec::new();
+    let mut current_w = 0usize;
+    for span in line.spans {
+        let mut remaining = Some(span);
+        while let Some(s) = remaining.take() {
+            let s_w = span_width(&s);
+            if current_w + s_w <= width {
+                current.push(s);
+                current_w += s_w;
+                continue;
+            }
+            let (head, tail) = split_span_at_width(s, width - current_w);
+            if !head.content.is_empty() {
+                current.push(head);
+            }
+            let mut l = Line::from(std::mem::take(&mut current));
+            l.style = line_style;
+            result.push(l);
+            current_w = 0;
+            remaining = tail;
+        }
+    }
+    if !current.is_empty() || result.is_empty() {
+        let mut l = Line::from(current);
+        l.style = line_style;
+        result.push(l);
+    }
+    result
+}
+
 #[cfg(test)]
 mod tests {
-    use super::wrap_to_width;
+    use ratatui::{
+        style::{Color, Modifier, Style},
+        text::{Line, Span},
+    };
+
+    use super::{wrap_line_spans, wrap_to_width};
 
     #[test]
     fn wraps_ascii() {
@@ -717,5 +833,83 @@ mod tests {
     #[test]
     fn empty_input_returns_single_blank_line() {
         assert_eq!(wrap_to_width("", 80), vec![String::new()]);
+    }
+
+    #[test]
+    fn wrap_lines_single_span_short() {
+        let line = Line::from(Span::raw("hi"));
+        assert_eq!(wrap_line_spans(line, 10).len(), 1);
+    }
+
+    #[test]
+    fn wrap_lines_single_span_split() {
+        let line = Line::from(Span::raw("abcdef"));
+        let r = wrap_line_spans(line, 3);
+        assert_eq!(r.len(), 2);
+        assert_eq!(r[0].spans[0].content, "abc");
+        assert_eq!(r[1].spans[0].content, "def");
+    }
+
+    #[test]
+    fn wrap_lines_preserves_span_style_across_split() {
+        let red = Style::default().fg(Color::Red);
+        let line = Line::from(Span::styled("abcdef", red));
+        let r = wrap_line_spans(line, 3);
+        assert_eq!(r[0].spans[0].style, red);
+        assert_eq!(r[1].spans[0].style, red);
+    }
+
+    #[test]
+    fn wrap_lines_preserves_line_style() {
+        let bold = Style::default().add_modifier(Modifier::BOLD);
+        let mut line = Line::from(Span::raw("abcdef"));
+        line.style = bold;
+        let r = wrap_line_spans(line, 3);
+        assert_eq!(r[0].style, bold);
+        assert_eq!(r[1].style, bold);
+    }
+
+    #[test]
+    fn wrap_lines_splits_across_multiple_spans() {
+        let line = Line::from(vec![Span::raw("AB"), Span::raw("CDE")]);
+        let r = wrap_line_spans(line, 3);
+        assert_eq!(r.len(), 2);
+        assert_eq!(r[0].spans.len(), 2);
+        assert_eq!(r[0].spans[0].content, "AB");
+        assert_eq!(r[0].spans[1].content, "C");
+        assert_eq!(r[1].spans[0].content, "DE");
+    }
+
+    #[test]
+    fn wrap_lines_cjk_double_width() {
+        let line = Line::from(Span::raw("中文中文"));
+        let r = wrap_line_spans(line, 4);
+        assert_eq!(r.len(), 2);
+        assert_eq!(r[0].spans[0].content, "中文");
+        assert_eq!(r[1].spans[0].content, "中文");
+    }
+
+    #[test]
+    fn wrap_lines_combining_mark_stays_with_base() {
+        let line = Line::from(Span::raw("e\u{0301}fg"));
+        let r = wrap_line_spans(line, 2);
+        assert_eq!(r.len(), 2);
+        assert_eq!(r[0].spans[0].content, "e\u{0301}f");
+        assert_eq!(r[1].spans[0].content, "g");
+    }
+
+    #[test]
+    fn wrap_lines_empty_returns_self() {
+        let line = Line::from(Vec::<Span>::new());
+        let r = wrap_line_spans(line, 10);
+        assert_eq!(r.len(), 1);
+        assert!(r[0].spans.is_empty());
+    }
+
+    #[test]
+    fn wrap_lines_zero_width_returns_self() {
+        let line = Line::from(Span::raw("anything"));
+        let r = wrap_line_spans(line, 0);
+        assert_eq!(r.len(), 1);
     }
 }
