@@ -11,6 +11,7 @@ use umbra::optional;
 
 use crate::{
     color::{ColorTheme, OptionalColorTheme},
+    graph::GraphImageWidthMode,
     keybind::KeyBind,
     CommitOrderType, GraphStyle, GraphWidthType, ImageProtocolType, InitialSelection, Result,
 };
@@ -384,6 +385,9 @@ pub struct UiRefsConfig {
 #[optional(derives = [Deserialize])]
 #[derive(Debug, Default, Clone, PartialEq, Eq, Validate)]
 pub struct GraphConfig {
+    #[garde(skip)]
+    pub row_image_width: GraphImageWidthMode,
+
     #[garde(dive)]
     #[nested]
     pub color: GraphColorConfig,
@@ -481,6 +485,7 @@ mod tests {
                 refs: UiRefsConfig { width: 26 },
             },
             graph: GraphConfig {
+                row_image_width: GraphImageWidthMode::Fixed,
                 color: GraphColorConfig {
                     branches: vec![
                         "#E06C76".into(),
@@ -630,6 +635,7 @@ mod tests {
                 refs: UiRefsConfig { width: 40 },
             },
             graph: GraphConfig {
+                row_image_width: GraphImageWidthMode::Fixed,
                 color: GraphColorConfig {
                     branches: vec!["#ff0000".into(), "#00ff00".into(), "#0000ff".into()],
                     edge: "#000000".into(),
@@ -713,6 +719,7 @@ mod tests {
                 refs: UiRefsConfig { width: 26 },
             },
             graph: GraphConfig {
+                row_image_width: GraphImageWidthMode::Fixed,
                 color: GraphColorConfig {
                     branches: vec![
                         "#E06C76".into(),

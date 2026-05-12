@@ -208,6 +208,7 @@ pub struct GraphRenderCtx<'a> {
     pub cell_width_type: graph::CellWidthType,
     pub image_protocol: protocol::ImageProtocol,
     pub graph_style: graph::GraphStyle,
+    pub image_width_mode: graph::GraphImageWidthMode,
     pub selected_bg_color: image::Rgba<u8>,
 }
 
@@ -247,6 +248,7 @@ pub fn compute_filtered_graph_from(
         ctx.color_set,
         ctx.cell_width_type,
         ctx.graph_style,
+        ctx.image_width_mode,
         ctx.image_protocol,
         head_commit_hash,
         ctx.selected_bg_color,
@@ -284,6 +286,7 @@ fn build_graph_artifacts(
         ctx.color_set,
         ctx.cell_width_type,
         ctx.graph_style,
+        ctx.image_width_mode,
         ctx.image_protocol,
         head_commit_hash.clone(),
         ctx.selected_bg_color,
@@ -417,6 +420,7 @@ pub fn run() -> Result<()> {
         cell_width_type,
         image_protocol,
         graph_style,
+        image_width_mode: graph_config.row_image_width,
         selected_bg_color,
     };
     let (mut graph_image_manager, mut filtered_graph, mut remote_only_commits) =

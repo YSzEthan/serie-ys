@@ -49,6 +49,14 @@ pub enum GraphStyle {
     Angular,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum GraphImageWidthMode {
+    Compact,
+    #[default]
+    Fixed,
+}
+
 const IMAGE_CACHE_CAPACITY: usize = 512;
 
 pub struct GraphImageManager {
@@ -67,6 +75,7 @@ pub struct GraphImageManager {
     graph: Rc<Graph>,
     cell_width_type: CellWidthType,
     graph_style: GraphStyle,
+    image_width_mode: GraphImageWidthMode,
     image_params: ImageParams,
     drawing_pixels: DrawingPixels,
     image_protocol: ImageProtocol,
@@ -91,6 +100,7 @@ impl GraphImageManager {
         graph_color_set: &GraphColorSet,
         cell_width_type: CellWidthType,
         graph_style: GraphStyle,
+        image_width_mode: GraphImageWidthMode,
         image_protocol: ImageProtocol,
         head_commit_hash: Option<CommitHash>,
         selected_bg_color: image::Rgba<u8>,
@@ -116,6 +126,7 @@ impl GraphImageManager {
             graph,
             cell_width_type,
             graph_style,
+            image_width_mode,
             image_params,
             drawing_pixels,
             image_protocol,
@@ -201,6 +212,7 @@ impl GraphImageManager {
             self.graph_style,
             commit_hash,
             is_head,
+            self.image_width_mode,
         );
         let image = graph_row_image.encode(self.cell_width_type, self.image_protocol);
         self.encoded_image_map.put(commit_hash.clone(), image);
@@ -249,6 +261,7 @@ impl GraphImageManager {
             self.graph_style,
             commit_hash,
             is_head,
+            self.image_width_mode,
         );
         let image = graph_row_image.encode(self.cell_width_type, self.image_protocol);
         self.selected_image = Some((commit_hash.clone(), image));
@@ -628,11 +641,15 @@ fn build_single_graph_row_image(
     graph_style: GraphStyle,
     commit_hash: &CommitHash,
     is_head: bool,
+    image_width_mode: GraphImageWidthMode,
 ) -> GraphRowImage {
     let (pos_x, pos_y) = graph.commit_pos_map[commit_hash];
     let edges = &graph.edges[pos_y];
 
-    let cell_count = graph.max_pos_x + 1;
+    let cell_count = match image_width_mode {
+        GraphImageWidthMode::Fixed => graph.max_pos_x + 1,
+        GraphImageWidthMode::Compact => edges.iter().map(|e| e.pos_x).fold(pos_x, usize::max) + 1,
+    };
 
     calc_graph_row_image(
         pos_x,
