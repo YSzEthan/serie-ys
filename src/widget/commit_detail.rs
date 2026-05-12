@@ -8,6 +8,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Padding, Paragraph, StatefulWidget, Widget},
 };
+use unicode_width::UnicodeWidthChar;
 
 use crate::{
     app::AppContext,
@@ -22,6 +23,14 @@ const ICON_FOLDER: &str = "\u{f0770} ";
 pub enum DetailPane {
     Left,
     Right,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum LineMode {
+    /// Render with marquee + body wrap at this width.
+    Render(usize),
+    /// Measure logical line count: no marquee scroll, no body wrap.
+    Measure,
 }
 
 #[derive(Debug, Default)]
@@ -112,7 +121,7 @@ impl StatefulWidget for CommitDetail<'_> {
         let right_active = active == DetailPane::Right;
 
         let available = left_area.width.saturating_sub(2) as usize;
-        let left_lines = self.info_lines(available);
+        let left_lines = self.info_lines(LineMode::Render(available));
         let right_lines = self.changes_lines();
 
         let block = detail_block(self.ctx.color_theme.divider_fg);
@@ -149,12 +158,16 @@ impl StatefulWidget for CommitDetail<'_> {
 
 impl CommitDetail<'_> {
     pub fn content_height(&self) -> u16 {
-        let left = self.info_lines(usize::MAX).len();
+        let left = self.info_lines(LineMode::Measure).len();
         let right = self.changes_lines().len();
         (left.max(right) + 2) as u16 // +2 for top/bottom borders
     }
 
-    fn info_lines(&self, marquee_width: usize) -> Vec<Line<'_>> {
+    fn info_lines(&self, mode: LineMode) -> Vec<Line<'_>> {
+        let (marquee_width, body_wrap) = match mode {
+            LineMode::Render(w) => (w, Some(w)),
+            LineMode::Measure => (usize::MAX, None),
+        };
         let mut lines: Vec<Line> = Vec::new();
 
         // Author
@@ -258,7 +271,12 @@ impl CommitDetail<'_> {
 
         if !self.commit.body.is_empty() {
             lines.push(Line::raw(""));
-            lines.extend(self.commit.body.lines().map(Line::raw));
+            for body_line in self.commit.body.lines() {
+                match body_wrap {
+                    Some(w) => lines.extend(wrap_to_width(body_line, w).into_iter().map(Line::raw)),
+                    None => lines.push(Line::raw(body_line)),
+                }
+            }
         }
 
         lines
@@ -648,4 +666,56 @@ fn build_tree_lines<'a>(
 ) -> Vec<Line<'static>> {
     let tree = build_file_tree(changes);
     flatten_tree_to_lines(tree, 0, color_theme)
+}
+
+fn wrap_to_width(text: &str, width: usize) -> Vec<String> {
+    debug_assert!(width > 0, "wrap_to_width requires non-zero width");
+    if width == 0 {
+        return vec![text.to_string()];
+    }
+    let mut lines = Vec::new();
+    let mut current = String::new();
+    let mut current_w = 0usize;
+    for c in text.chars() {
+        let cw = UnicodeWidthChar::width(c).unwrap_or(0);
+        if cw > 0 && current_w + cw > width && !current.is_empty() {
+            lines.push(std::mem::take(&mut current));
+            current_w = 0;
+        }
+        current.push(c);
+        current_w += cw;
+    }
+    // Always emit at least one line; preserves blank body lines (paragraph breaks).
+    if !current.is_empty() || lines.is_empty() {
+        lines.push(current);
+    }
+    lines
+}
+
+#[cfg(test)]
+mod tests {
+    use super::wrap_to_width;
+
+    #[test]
+    fn wraps_ascii() {
+        assert_eq!(wrap_to_width("abcdef", 3), vec!["abc", "def"]);
+    }
+
+    #[test]
+    fn wraps_cjk_double_width() {
+        assert_eq!(
+            wrap_to_width("中文中文中文", 4),
+            vec!["中文", "中文", "中文"]
+        );
+    }
+
+    #[test]
+    fn wraps_mixed_width() {
+        assert_eq!(wrap_to_width("a中b", 2), vec!["a", "中", "b"]);
+    }
+
+    #[test]
+    fn empty_input_returns_single_blank_line() {
+        assert_eq!(wrap_to_width("", 80), vec![String::new()]);
+    }
 }
