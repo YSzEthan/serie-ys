@@ -64,10 +64,8 @@ impl<'a> View<'a> {
     /// to a different selection and the marquee should start from frame 0.
     pub fn marquee_id(&self) -> Option<std::sync::Arc<str>> {
         match self {
-            View::List(view) => {
-                let hash = view.as_list_state().selected_commit_hash();
-                Some(std::sync::Arc::from(hash.as_str()))
-            }
+            View::List(view) => Some(view.as_list_state().selected_commit_hash().as_arc()),
+            View::Detail(view) => view.marquee_id(),
             View::GitHub(view) => view.marquee_id(),
             _ => None,
         }
@@ -78,6 +76,7 @@ impl<'a> View<'a> {
     pub fn marquee_needed(&self) -> bool {
         match self {
             View::List(view) => view.as_list_state().selected_row_overflows.get(),
+            View::Detail(view) => view.marquee_needed(),
             View::GitHub(view) => view.marquee_needed(),
             _ => false,
         }

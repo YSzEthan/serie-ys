@@ -272,6 +272,17 @@ impl<'a> DetailView<'a> {
         self.commit_list_state.as_ref().unwrap()
     }
 
+    pub fn marquee_id(&self) -> Option<std::sync::Arc<str>> {
+        match &self.content {
+            DetailContent::Commit { commit, .. } => Some(commit.commit_hash.as_arc()),
+            DetailContent::WorkingChanges(_) => None,
+        }
+    }
+
+    pub fn marquee_needed(&self) -> bool {
+        self.commit_detail_state.subject_overflows()
+    }
+
     pub fn select_older_commit(&mut self, repository: &Repository) {
         self.update_selected_commit(repository, |state| state.select_next());
     }

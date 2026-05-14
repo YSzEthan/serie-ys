@@ -25,6 +25,10 @@ impl CommitHash {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    pub fn as_arc(&self) -> Arc<str> {
+        self.0.clone()
+    }
 }
 
 impl Default for CommitHash {

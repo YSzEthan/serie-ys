@@ -38,6 +38,9 @@ pub struct CommitDetailState {
     left_offset: usize,
     right_offset: usize,
     active_pane: Option<DetailPane>,
+    /// 上次 render 時 subject 是否超過 marquee 可用寬度。App tick 迴圈讀這個
+    /// 決定要不要繼續推進 marquee_frame。
+    subject_overflows: std::cell::Cell<bool>,
 }
 
 impl CommitDetailState {
@@ -76,6 +79,10 @@ impl CommitDetailState {
             DetailPane::Left => DetailPane::Right,
             DetailPane::Right => DetailPane::Left,
         });
+    }
+
+    pub fn subject_overflows(&self) -> bool {
+        self.subject_overflows.get()
     }
 }
 
@@ -122,6 +129,9 @@ impl StatefulWidget for CommitDetail<'_> {
 
         let available = left_area.width.saturating_sub(2) as usize;
         let right_available = right_area.width.saturating_sub(2) as usize;
+        state
+            .subject_overflows
+            .set(console::measure_text_width(&self.commit.subject) > available);
         let left_lines = self.info_lines(LineMode::Render(available));
         let right_lines: Vec<Line> = self
             .changes_lines()
