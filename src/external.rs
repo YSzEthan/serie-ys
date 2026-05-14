@@ -28,7 +28,7 @@ thread_local! {
 pub fn copy_to_clipboard(value: String, config: &ClipboardConfig) -> Result<(), String> {
     match config {
         ClipboardConfig::Auto => {
-            if is_ssh_session() {
+            if should_use_osc52() {
                 copy_to_clipboard_osc52(&value)
             } else {
                 copy_to_clipboard_auto(value)
@@ -41,6 +41,16 @@ pub fn copy_to_clipboard(value: String, config: &ClipboardConfig) -> Result<(), 
 
 fn is_ssh_session() -> bool {
     env::var_os("SSH_CONNECTION").is_some() || env::var_os("SSH_TTY").is_some()
+}
+
+fn is_tmux() -> bool {
+    env::var_os("TMUX").is_some()
+}
+
+// tmux session 可能在 SSH 前就存在、看不到 SSH_* env，導致 arboard 寫不到 host
+// 剪貼簿；只要在 tmux 內，一律改走 OSC52 讓外層終端處理。
+fn should_use_osc52() -> bool {
+    is_ssh_session() || is_tmux()
 }
 
 // tmux DCS passthrough：把 inner 所有 \x1b 替換成 \x1b\x1b，包在 \x1bPtmux;...\x1b\\ 裡。
@@ -57,11 +67,7 @@ fn format_osc52_raw(value: &str) -> String {
 
 fn copy_to_clipboard_osc52(value: &str) -> Result<(), String> {
     let raw = format_osc52_raw(value);
-    let sequence = if env::var_os("TMUX").is_some() {
-        wrap_for_tmux(&raw)
-    } else {
-        raw
-    };
+    let sequence = if is_tmux() { wrap_for_tmux(&raw) } else { raw };
     let mut stdout = io::stdout().lock();
     stdout
         .write_all(sequence.as_bytes())
@@ -154,7 +160,7 @@ pub fn open_url(url: &str) -> Result<OpenUrlOutcome, String> {
 /// a clickable link. tmux gets DCS-passthrough wrapping.
 pub fn format_osc8_hyperlink(url: &str, label: &str) -> String {
     let raw = format!("\x1b]8;;{url}\x1b\\{label}\x1b]8;;\x1b\\");
-    if env::var_os("TMUX").is_some() {
+    if is_tmux() {
         wrap_for_tmux(&raw)
     } else {
         raw
@@ -290,7 +296,7 @@ mod tests {
     #[test]
     fn format_osc8_hyperlink_plain_no_tmux() {
         // 跑 test 通常不在 tmux 內；若在 tmux 下請跳過此檢查。
-        if env::var_os("TMUX").is_some() {
+        if is_tmux() {
             return;
         }
         assert_eq!(

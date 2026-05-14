@@ -6,7 +6,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::{Block, Borders, Padding, Paragraph, Wrap},
+    widgets::{Block, Borders, Clear, Padding, Paragraph, Wrap},
     Frame,
 };
 use rustc_hash::FxHashMap;
@@ -1270,6 +1270,10 @@ impl<'a> GitHubView<'a> {
     }
 
     fn render_list(&self, f: &mut Frame, area: Rect, marquee_frame: u64) {
+        // 內層 Paragraph 的 Padding 不覆蓋最左欄，會留下 list view text-mode
+        // graph 的字元；先 Clear 整個 list area 擋住殘留。
+        f.render_widget(Clear, area);
+
         let list_border_color = if self.focus == GitHubFocus::List {
             Color::Cyan
         } else {
