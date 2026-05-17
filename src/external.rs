@@ -43,7 +43,7 @@ fn is_ssh_session() -> bool {
     env::var_os("SSH_CONNECTION").is_some() || env::var_os("SSH_TTY").is_some()
 }
 
-fn is_tmux() -> bool {
+pub fn is_tmux() -> bool {
     env::var_os("TMUX").is_some()
 }
 

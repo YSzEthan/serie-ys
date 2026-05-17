@@ -1311,6 +1311,11 @@ impl<'a> GitHubView<'a> {
 
         // OSC 8 overlay on `#N` for each visible row. Cell layout lives in
         // `LIST_LINK_COL_OFFSET` — keep in sync with the indicator + padding.
+        // tmux DCS passthrough loses cursor positioning, so the host terminal
+        // renders the label at an arbitrary column — skip overlay inside tmux.
+        if crate::external::is_tmux() {
+            return;
+        }
         let buf = f.buffer_mut();
         let x = inner.left().saturating_add(LIST_LINK_COL_OFFSET);
         if x >= inner.right() {
@@ -1486,6 +1491,11 @@ impl<'a> GitHubView<'a> {
 
         // Overlay `#N` cells with OSC 8 hyperlinks. Must run after Paragraph
         // render so we overwrite the pre-drawn plain `#N` glyph.
+        // tmux DCS passthrough loses cursor positioning, so the host terminal
+        // renders the label at an arbitrary column — skip overlay inside tmux.
+        if crate::external::is_tmux() {
+            return;
+        }
         let buf = f.buffer_mut();
         for ov in &overlays {
             let Some(rel) = ov.line_idx.checked_sub(self.preview_offset) else {
