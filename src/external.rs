@@ -1,6 +1,7 @@
 use std::{
     cell::RefCell,
     env,
+    fs::OpenOptions,
     io::{self, Write},
     process::Command,
 };
@@ -67,15 +68,68 @@ fn format_osc52_raw(value: &str) -> String {
 
 fn copy_to_clipboard_osc52(value: &str) -> Result<(), String> {
     let raw = format_osc52_raw(value);
-    let sequence = if is_tmux() { wrap_for_tmux(&raw) } else { raw };
+    let in_tmux = is_tmux();
+
+    // /dev/tty 永遠先寫一次：在純 SSH 或非 tmux 環境下這就是終端，bytes 直達外層解析剪貼簿。
+    // tmux 內的 /dev/tty 是 pane pty，bytes 會被 set-clipboard 攔截 — 由下面 list-clients 路徑兜底。
+    let mut wrote_any = write_to_tty("/dev/tty", &raw).is_ok();
+
+    // tmux 場景（含 nested popup / floax）：tmux 只把 OSC52 轉發給 attached client，popup chain
+    // 會把字節當視覺內容吞掉。直接 enumerate 所有 client tty，把 bytes 灌到每個 client 的 pty slave，
+    // 完全繞過 set-clipboard 與 allow-passthrough 邏輯。任一 tty 寫失敗都靜默忽略。
+    if in_tmux {
+        for tty in tmux_client_ttys() {
+            if write_to_tty(&tty, &raw).is_ok() {
+                wrote_any = true;
+            }
+        }
+    }
+
+    if wrote_any {
+        return Ok(());
+    }
+
+    // 兩條路徑都沒成功：退回 stdout（外加 tmux 下的 DCS-wrapped fallback）。
+    let sequence = if in_tmux {
+        format!("{raw}{}", wrap_for_tmux(&raw))
+    } else {
+        raw
+    };
+    write_to_stdout(&sequence)
+}
+
+fn write_to_tty(path: &str, s: &str) -> io::Result<()> {
+    let mut f = OpenOptions::new().write(true).open(path)?;
+    f.write_all(s.as_bytes())?;
+    f.flush()
+}
+
+fn write_to_stdout(s: &str) -> Result<(), String> {
     let mut stdout = io::stdout().lock();
     stdout
-        .write_all(sequence.as_bytes())
+        .write_all(s.as_bytes())
         .map_err(|e| format!("Failed to write OSC 52 sequence: {e}"))?;
     stdout
         .flush()
         .map_err(|e| format!("Failed to flush stdout: {e}"))?;
     Ok(())
+}
+
+fn tmux_client_ttys() -> Vec<String> {
+    let Ok(out) = Command::new("tmux")
+        .args(["list-clients", "-F", "#{client_tty}"])
+        .output()
+    else {
+        return Vec::new();
+    };
+    if !out.status.success() {
+        return Vec::new();
+    }
+    String::from_utf8_lossy(&out.stdout)
+        .lines()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty())
+        .collect()
 }
 
 fn copy_to_clipboard_custom(value: String, commands: &[String]) -> Result<(), String> {
