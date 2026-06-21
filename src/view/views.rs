@@ -269,6 +269,7 @@ impl<'a> View<'a> {
         pull_requests: Vec<crate::github::GhPullRequest>,
         issues_next_cursor: Option<String>,
         prs_next_cursor: Option<String>,
+        state_filter: &str,
         ctx: Rc<AppContext>,
         tx: Sender,
     ) -> Self {
@@ -278,6 +279,7 @@ impl<'a> View<'a> {
             pull_requests,
             issues_next_cursor,
             prs_next_cursor,
+            state_filter,
             ctx,
             tx,
         )))

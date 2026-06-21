@@ -1841,17 +1841,19 @@ impl App<'_> {
     }
 
     fn open_github(&mut self) {
-        let (issues, prs, issues_cursor, prs_cursor) = if let Some(ref cache) = self.github_cache {
-            (
-                cache.issues.clone(),
-                cache.pull_requests.clone(),
-                cache.issues_next_cursor.clone(),
-                cache.prs_next_cursor.clone(),
-            )
-        } else {
-            self.refresh_github("open");
-            (Vec::new(), Vec::new(), None, None)
-        };
+        let (issues, prs, issues_cursor, prs_cursor, state_filter) =
+            if let Some(ref cache) = self.github_cache {
+                (
+                    cache.issues.clone(),
+                    cache.pull_requests.clone(),
+                    cache.issues_next_cursor.clone(),
+                    cache.prs_next_cursor.clone(),
+                    cache.state_filter.clone(),
+                )
+            } else {
+                self.refresh_github("open");
+                (Vec::new(), Vec::new(), None, None, "open".to_string())
+            };
 
         let before_view = std::mem::take(&mut self.view);
         self.view = View::of_github(
@@ -1860,6 +1862,7 @@ impl App<'_> {
             prs,
             issues_cursor,
             prs_cursor,
+            &state_filter,
             self.ctx.clone(),
             self.ec.sender(),
         );

@@ -46,6 +46,14 @@ impl StateFilter {
             StateFilter::All => "all",
         }
     }
+
+    fn from_arg(s: &str) -> Self {
+        match s {
+            "closed" => Self::Closed,
+            "all" => Self::All,
+            _ => Self::Open,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -157,6 +165,7 @@ impl<'a> GitHubView<'a> {
         pull_requests: Vec<GhPullRequest>,
         issues_next_cursor: Option<String>,
         prs_next_cursor: Option<String>,
+        state_filter: &str,
         ctx: Rc<AppContext>,
         tx: Sender,
     ) -> GitHubView<'a> {
@@ -165,6 +174,7 @@ impl<'a> GitHubView<'a> {
         } else {
             LoadState::Idle
         };
+        let state_filter = StateFilter::from_arg(state_filter);
         GitHubView {
             before,
             focus: GitHubFocus::List,
@@ -178,7 +188,7 @@ impl<'a> GitHubView<'a> {
             search_input: Input::default(),
             filtered_issue_indices: Vec::new(),
             filtered_pr_indices: Vec::new(),
-            state_filter: StateFilter::Open,
+            state_filter,
             task_panel: None,
             load_state,
             flash_message: None,
