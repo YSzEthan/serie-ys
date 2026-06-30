@@ -206,6 +206,7 @@ pub struct App<'a> {
     pending_message: Option<String>,
     github_cache: Option<GitHubCache>,
     github_loading: bool,
+    pending_github_state: Option<String>,
     ctx: Rc<AppContext>,
     ec: &'a EventController,
     marquee_frame: u64,
@@ -311,6 +312,7 @@ impl<'a> App<'a> {
             pending_message: None,
             github_cache: None,
             github_loading: false,
+            pending_github_state: None,
             ctx,
             ec,
             marquee_frame: 0,
@@ -1877,6 +1879,13 @@ impl App<'_> {
         prs_cursor: Option<String>,
     ) {
         self.github_loading = false;
+
+        // 有 pending filter 變更（載入中使用者又切換了 filter）→ 丟棄這批資料，重新 fetch
+        if let Some(pending) = self.pending_github_state.take() {
+            self.refresh_github(&pending);
+            return;
+        }
+
         // 檢查是否與快取相同
         let changed = match &self.github_cache {
             Some(cache) => cache.issues != issues || cache.pull_requests != pull_requests,
@@ -1912,8 +1921,13 @@ impl App<'_> {
 
     fn refresh_github(&mut self, state: &str) {
         if self.github_loading {
+            if let Some(ref mut cache) = self.github_cache {
+                cache.state_filter = state.to_string();
+            }
+            self.pending_github_state = Some(state.to_string());
             return;
         }
+        self.pending_github_state = None;
         self.github_loading = true;
 
         if let Some(ref mut cache) = self.github_cache {

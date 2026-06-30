@@ -1344,35 +1344,39 @@ impl CommitList<'_> {
             }
         }
 
-        // Load spacer image for selected commit when inline detail is active
-        // When virtual row is selected, use the first commit's spacer for gap continuation
-        if state.inline_detail_height > 0 {
-            let is_vr = state.is_virtual_row_selected();
-            let hash = if is_vr {
-                first_hash_opt
+        // Load the selected row's graph image (with the selection background baked
+        // into the PNG) so the highlight covers the graph column. Needed both with
+        // inline detail (gap > 0) and in the common no-detail (gap == 0) case.
+        // Spacer images only fill the inline-detail gap rows, so they stay gated on
+        // gap > 0. selected_virtual_row_image / selected_first_commit_with_up_image
+        // are already loaded unconditionally in the has_virtual_row() block above.
+        let gap = state.inline_detail_height;
+        let is_vr = state.is_virtual_row_selected();
+        let hash = if is_vr {
+            first_hash_opt
+        } else {
+            Some(
+                state
+                    .commit(state.current_selected_raw())
+                    .commit
+                    .commit_hash
+                    .clone(),
+            )
+        };
+        if let Some(hash) = hash {
+            let mgr = if use_filtered {
+                state.filtered_graph_image_manager.as_mut().unwrap()
             } else {
-                Some(
-                    state
-                        .commit(state.current_selected_raw())
-                        .commit
-                        .commit_hash
-                        .clone(),
-                )
+                &mut state.graph_image_manager
             };
-            if let Some(hash) = hash {
-                if use_filtered {
-                    let mgr = state.filtered_graph_image_manager.as_mut().unwrap();
-                    if is_vr {
-                        mgr.load_gray_spacer_image(&hash);
-                    } else {
-                        mgr.load_spacer_image(&hash);
-                        mgr.load_selected_image(&hash);
-                    }
-                } else if is_vr {
-                    state.graph_image_manager.load_gray_spacer_image(&hash);
-                } else {
-                    state.graph_image_manager.load_spacer_image(&hash);
-                    state.graph_image_manager.load_selected_image(&hash);
+            if is_vr {
+                if gap > 0 {
+                    mgr.load_gray_spacer_image(&hash);
+                }
+            } else {
+                mgr.load_selected_image(&hash);
+                if gap > 0 {
+                    mgr.load_spacer_image(&hash);
                 }
             }
         }
@@ -1399,7 +1403,7 @@ impl CommitList<'_> {
                     .unwrap_or(0)
             });
             self.put_text_cell(buf, area, y, col, TEXT_HEAD_DOT, VIRTUAL_ROW_COLOR);
-            if state.selected == 0 && gap > 0 {
+            if state.selected == 0 {
                 apply_row_bg(buf, area, y, selected_bg);
             }
         }
@@ -1434,7 +1438,7 @@ impl CommitList<'_> {
                 }
             }
 
-            if is_selected && gap > 0 {
+            if is_selected {
                 apply_row_bg(buf, area, y, selected_bg);
             }
         }
@@ -1570,10 +1574,11 @@ impl CommitList<'_> {
             return;
         }
         let gap = state.inline_detail_height;
+        let selected_bg = ratatui_color_to_rgb(self.ctx.color_theme.list_selected_bg);
         // Virtual row: render PNG image (gray hollow circle)
         if state.has_virtual_row() && state.offset == 0 {
             let y = area.top();
-            let image = if state.selected == 0 && gap > 0 {
+            let image = if state.selected == 0 {
                 state
                     .current_image_manager()
                     .selected_virtual_row_image()
@@ -1586,11 +1591,9 @@ impl CommitList<'_> {
                 for w in 1..area.width - 1 {
                     buf[(area.left() + w, y)].set_skip(true);
                 }
-                if state.selected == 0 && gap > 0 && area.width >= 2 {
-                    buf[(area.left() + area.width - 1, y)].set_style(
-                        Style::default()
-                            .bg(ratatui_color_to_rgb(self.ctx.color_theme.list_selected_bg)),
-                    );
+                if state.selected == 0 && area.width >= 2 {
+                    buf[(area.left() + area.width - 1, y)]
+                        .set_style(Style::default().bg(selected_bg));
                 }
             }
         }
@@ -1603,10 +1606,11 @@ impl CommitList<'_> {
                     0
                 };
                 let y = area.top() + display_i as u16 + y_offset;
+                let is_selected = display_i == state.selected;
                 if y < area.bottom() {
                     let image = if use_up_image && raw.0 == 0 {
                         // First commit with Up edge for virtual row connection
-                        if gap > 0 && display_i == state.selected {
+                        if is_selected {
                             state
                                 .current_image_manager()
                                 .selected_first_commit_with_up_image()
@@ -1617,7 +1621,7 @@ impl CommitList<'_> {
                                 .first_commit_with_up_image()
                                 .unwrap_or_else(|| state.encoded_image(commit_info))
                         }
-                    } else if gap > 0 && display_i == state.selected {
+                    } else if is_selected {
                         state
                             .selected_image()
                             .unwrap_or_else(|| state.encoded_image(commit_info))
@@ -1628,11 +1632,9 @@ impl CommitList<'_> {
                     for w in 1..area.width - 1 {
                         buf[(area.left() + w, y)].set_skip(true);
                     }
-                    if display_i == state.selected && gap > 0 && area.width >= 2 {
-                        buf[(area.left() + area.width - 1, y)].set_style(
-                            Style::default()
-                                .bg(ratatui_color_to_rgb(self.ctx.color_theme.list_selected_bg)),
-                        );
+                    if is_selected && area.width >= 2 {
+                        buf[(area.left() + area.width - 1, y)]
+                            .set_style(Style::default().bg(selected_bg));
                     }
                 }
             });
@@ -1677,7 +1679,7 @@ impl CommitList<'_> {
         let mut items: Vec<ListItem> = Vec::new();
         if state.has_virtual_row() && state.offset == 0 {
             let mut line = Line::from("│".fg(Color::Gray));
-            if state.selected == 0 && gap > 0 {
+            if state.selected == 0 {
                 line = line
                     .bg(ratatui_color_to_rgb(self.ctx.color_theme.list_selected_bg))
                     .fg(Color::Gray);
@@ -1694,7 +1696,7 @@ impl CommitList<'_> {
             .for_each(|(display_i, _, commit_info)| {
                 let color = state.marker_color(commit_info);
                 let mut line = Line::from("│".fg(color));
-                if display_i == state.selected && gap > 0 {
+                if display_i == state.selected {
                     line = line.bg(ratatui_color_to_rgb(self.ctx.color_theme.list_selected_bg));
                 }
                 items.push(ListItem::new(line));
@@ -1944,12 +1946,9 @@ impl CommitList<'_> {
         spans.push(Span::raw(" "));
         let mut line = Line::from(spans);
         if i == state.selected {
-            let bg = if state.inline_detail_height > 0 {
-                ratatui_color_to_rgb(self.ctx.color_theme.list_selected_bg)
-            } else {
-                self.ctx.color_theme.list_selected_bg
-            };
-            line = line.bg(bg).fg(self.ctx.color_theme.list_selected_fg);
+            line = line
+                .bg(ratatui_color_to_rgb(self.ctx.color_theme.list_selected_bg))
+                .fg(self.ctx.color_theme.list_selected_fg);
         }
         ListItem::new(line)
     }
