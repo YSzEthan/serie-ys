@@ -63,7 +63,7 @@ They will be replaced with their respective values command is executed.
   - The hashes of all parents of the selected commit, separated by a space.
   - example: `c103d9744df8ebf100773a11345f011152ec5581 a1b2c3d4e5f67890123456789abcdef0123456789`
 - `{{refs}}`
-  - The names of all refs (branches, tags, stashes) pointing to the selected commit, separated by a space.
+  - The names of all refs (branches, remote branches, tags) pointing to the selected commit, separated by a space.
   - example: `master v1.0.0`
 - `{{branches}}`
   - The names of all branches pointing to the selected commit, separated by a space.
@@ -74,6 +74,9 @@ They will be replaced with their respective values command is executed.
 - `{{tags}}`
   - The names of all tags pointing to the selected commit, separated by a space.
   - example: `v1.0.0 v1.0.1`
+- `{{stash}}`
+  - The name of the stash when the selected commit is a stash commit. Otherwise, this is an empty string.
+  - example: `stash@{0}`
 - `{{area_width}}`
   - Width of the user command display area (number of cells).
   - example: `80`
