@@ -362,4 +362,46 @@ mod tests {
             "\x1b]8;;https://x.com\x1b\\[#1]\x1b]8;;\x1b\\"
         );
     }
+
+    fn params_with_stash<'a>(
+        command: &'a [String],
+        stash: Option<&'a str>,
+    ) -> ExternalCommandParameters<'a> {
+        ExternalCommandParameters {
+            command,
+            target_hash: "abc123",
+            parent_hashes: vec![],
+            all_refs: vec![],
+            branches: vec![],
+            remote_branches: vec![],
+            tags: vec![],
+            stash,
+            area_width: 80,
+            area_height: 30,
+        }
+    }
+
+    #[test]
+    fn build_user_command_expands_stash_marker_when_selected() {
+        // 選取 stash commit：{{stash}} 替換為 stash 名稱
+        let command = [
+            "git".to_string(),
+            "stash".to_string(),
+            "show".to_string(),
+            "{{stash}}".to_string(),
+        ];
+        let params = params_with_stash(&command, Some("stash@{0}"));
+        assert_eq!(
+            build_user_command(&params),
+            vec!["git", "stash", "show", "stash@{0}"]
+        );
+    }
+
+    #[test]
+    fn build_user_command_stash_marker_empty_when_not_stash() {
+        // 非 stash commit：{{stash}} 替換為空字串
+        let command = ["echo".to_string(), "[{{stash}}]".to_string()];
+        let params = params_with_stash(&command, None);
+        assert_eq!(build_user_command(&params), vec!["echo", "[]"]);
+    }
 }
