@@ -1,5 +1,25 @@
 # Changelog
 
+## [1.5.0](https://github.com/YSzEthan/serie-ys/compare/v1.4.0...v1.5.0) (2026-06-30)
+
+
+### Features
+
+* 新增 {{stash}} user command 變數 ([5f67b37](https://github.com/YSzEthan/serie-ys/commit/5f67b377195a0881faa7984df439077e9b1080e6))
+* 新增 graph.row_image_width 設定（port 上游 [#156](https://github.com/YSzEthan/serie-ys/issues/156)） ([332c469](https://github.com/YSzEthan/serie-ys/commit/332c469815fa6377de7ec494088533834bf80850))
+
+
+### Bug Fixes
+
+* Detail view commit body 長文字 wrap 顯示 ([9528bbb](https://github.com/YSzEthan/serie-ys/commit/9528bbb383aed5c4d18fdb4912fc327bf7e424d4))
+* Detail view commit subject 過長時跑馬燈不動 ([4564807](https://github.com/YSzEthan/serie-ys/commit/456480707e7cafd83e25b7487e85955fce69b62b))
+* Detail view header / file tree 的 Span-aware wrap ([1b9ce94](https://github.com/YSzEthan/serie-ys/commit/1b9ce94554450db3b4f715971cd14d47c0733e9d))
+* GitHub view text-mode graph 殘留與 tmux 內剪貼簿失效 ([5ec101e](https://github.com/YSzEthan/serie-ys/commit/5ec101e8ebd0259c965bb01053f28a16104fdd9c))
+* GitHub view 在 tmux 內 #N 連結錯位至右側 ([705de05](https://github.com/YSzEthan/serie-ys/commit/705de05bde62921559a60eb1debbd947c7c6ae3d))
+* GitHub view 重開後 state_filter 未還原為 closed/all ([cb4f72d](https://github.com/YSzEthan/serie-ys/commit/cb4f72d688b2bfe2ac25a4785bf637435f21ea9c))
+* tmux nested popup OSC52 改為廣播到所有 client tty ([c37e0da](https://github.com/YSzEthan/serie-ys/commit/c37e0da3b760a6912e549a3874ad4f7c97d93b6f))
+* 選取列背景色延伸至 graph 與 marker 欄 ([a5e2b97](https://github.com/YSzEthan/serie-ys/commit/a5e2b97cc691ffb4a5dd9dd6c5c126b17f0fb0ab))
+
 ## [1.4.0](https://github.com/YSzEthan/serie-ys/compare/v1.3.0...v1.4.0) (2026-05-12)
 
 
