@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.5.1](https://github.com/YSzEthan/serie-ys/compare/v1.5.0...v1.5.1) (2026-07-06)
+
+
+### Bug Fixes
+
+* gh pr merge 選不刪除分支不再取消整個 merge ([29b2b3f](https://github.com/YSzEthan/serie-ys/commit/29b2b3f1428c7cfbe69ec9afbffbaeeb48ed93f9))
+
 ## [1.5.0](https://github.com/YSzEthan/serie-ys/compare/v1.4.0...v1.5.0) (2026-06-30)
 
 
