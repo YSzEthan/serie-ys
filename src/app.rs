@@ -1250,10 +1250,6 @@ impl App<'_> {
     }
 
     fn handle_merge_pr_prompt_key(&mut self, key: KeyEvent) {
-        if matches!(self.ctx.keybind.get(&key), Some(UserEvent::Cancel)) {
-            self.app_status.status_line = StatusLine::None;
-            return;
-        }
         let StatusLine::MergePrPrompt {
             number,
             ref head_ref,
@@ -1263,50 +1259,56 @@ impl App<'_> {
         else {
             return;
         };
-        let (number, head_ref, state, stage) = (number, head_ref.clone(), state.clone(), stage);
-        match stage {
-            MergePrStage::PickMethod => {
-                let method = match key.code {
-                    KeyCode::Char('m') | KeyCode::Char('M') => MergeMethod::Merge,
-                    KeyCode::Char('s') | KeyCode::Char('S') => MergeMethod::Squash,
-                    KeyCode::Char('r') | KeyCode::Char('R') => MergeMethod::Rebase,
-                    _ => return,
-                };
-                self.app_status.status_line = StatusLine::MergePrPrompt {
-                    number,
-                    head_ref,
-                    state,
-                    stage: MergePrStage::AskDeleteBranch { method },
-                };
+        let (number, head_ref, state) = (number, head_ref.clone(), state.clone());
+
+        // 每個 stage 先消化自己的答案鍵（優先於全域 cancel，因為 cancel 預設含 'n'，
+        // 會與 AskDeleteBranch 的「no」撞鍵），回傳「下一個 stage」；
+        // Confirm 是終點（執行/取消），自行早退。
+        let next = match stage {
+            MergePrStage::PickMethod => match key.code {
+                KeyCode::Char('m') | KeyCode::Char('M') => Some(MergeMethod::Merge),
+                KeyCode::Char('s') | KeyCode::Char('S') => Some(MergeMethod::Squash),
+                KeyCode::Char('r') | KeyCode::Char('R') => Some(MergeMethod::Rebase),
+                _ => None,
             }
-            MergePrStage::AskDeleteBranch { method } => {
-                let delete_branch = match key.code {
-                    KeyCode::Char('y') | KeyCode::Char('Y') => true,
-                    KeyCode::Char('n') | KeyCode::Char('N') => false,
-                    _ => return,
-                };
-                self.app_status.status_line = StatusLine::MergePrPrompt {
-                    number,
-                    head_ref,
-                    state,
-                    stage: MergePrStage::Confirm {
-                        method,
-                        delete_branch,
-                    },
-                };
+            .map(|method| MergePrStage::AskDeleteBranch { method }),
+
+            MergePrStage::AskDeleteBranch { method } => match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => Some(true),
+                KeyCode::Char('n') | KeyCode::Char('N') => Some(false),
+                _ => None,
             }
+            .map(|delete_branch| MergePrStage::Confirm {
+                method,
+                delete_branch,
+            }),
+
             MergePrStage::Confirm {
                 method,
                 delete_branch,
             } => {
                 let is_confirm = matches!(self.ctx.keybind.get(&key), Some(UserEvent::Confirm))
                     || matches!(key.code, KeyCode::Enter);
-                if !is_confirm {
-                    return;
+                if is_confirm {
+                    self.app_status.status_line = StatusLine::None;
+                    self.spawn_merge_pr(number, state, method, delete_branch);
+                } else if matches!(self.ctx.keybind.get(&key), Some(UserEvent::Cancel)) {
+                    self.app_status.status_line = StatusLine::None;
                 }
-                self.app_status.status_line = StatusLine::None;
-                self.spawn_merge_pr(number, state, method, delete_branch);
+                return;
             }
+        };
+
+        if let Some(stage) = next {
+            self.app_status.status_line = StatusLine::MergePrPrompt {
+                number,
+                head_ref,
+                state,
+                stage,
+            };
+        } else if matches!(self.ctx.keybind.get(&key), Some(UserEvent::Cancel)) {
+            // 這顆鍵不是本階段的答案 → 才輪到全域 cancel
+            self.app_status.status_line = StatusLine::None;
         }
     }
 
