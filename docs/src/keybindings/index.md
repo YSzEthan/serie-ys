@@ -33,7 +33,8 @@ The default key bindings can be overridden.
 | <kbd>Ctrl-g</kbd>                    | Toggle ignore case (if searching)                  | `ignore_case_toggle`                         |
 | <kbd>Ctrl-x</kbd>                    | Toggle fuzzy match (if searching)                  | `fuzzy_toggle`                               |
 | <kbd>R</kbd>                         | Refresh                                            | `refresh`                                    |
-| <kbd>c/C</kbd>                       | Copy commit short/full hash                        | `short_copy` `full_copy`                     |
+| <kbd>c</kbd>                         | Copy commit short hash                             | `short_copy`                                 |
+| <kbd>C</kbd>                         | Copy commit subject                                | `full_copy`                                  |
 | <kbd>d</kbd>                         | Toggle custom user command view                    | `user_command_1`                             |
 
 #### Commit Detail
@@ -48,7 +49,8 @@ The default key bindings can be overridden.
 | <kbd>J/K</kbd>                       | Select older/newer commit       | `select_down` `select_up`       |
 | <kbd>Alt-Down</kbd> <kbd>Alt-j</kbd> | Select parent commit            | `go_to_parent`                  |
 | <kbd>R</kbd>                         | Refresh                         | `refresh`                       |
-| <kbd>c/C</kbd>                       | Copy commit short/full hash     | `short_copy` `full_copy`        |
+| <kbd>c</kbd>                         | Copy commit short hash          | `short_copy`                    |
+| <kbd>C</kbd>                         | Copy commit subject             | `full_copy`                     |
 | <kbd>d</kbd>                         | Toggle custom user command view | `user_command_1`                |
 
 #### Refs List

@@ -117,7 +117,7 @@ impl<'a> DetailView<'a> {
                 self.copy_commit_short_hash();
             }
             UserEvent::FullCopy => {
-                self.copy_commit_hash();
+                self.copy_commit_subject();
             }
             UserEvent::BranchCopy => {
                 self.handle_branch_copy(false);
@@ -331,9 +331,9 @@ impl<'a> DetailView<'a> {
         }
     }
 
-    fn copy_commit_hash(&self) {
+    fn copy_commit_subject(&self) {
         if let DetailContent::Commit { commit, .. } = &self.content {
-            self.copy_to_clipboard("Commit SHA".into(), commit.commit_hash.as_str().into());
+            self.copy_to_clipboard("Commit Subject".into(), commit.subject.clone());
         }
     }
 

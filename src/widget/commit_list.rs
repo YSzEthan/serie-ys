@@ -638,6 +638,12 @@ impl<'a> CommitListState<'a> {
         &self.commit(self.current_selected_raw()).commit.commit_hash
     }
 
+    pub fn selected_commit_subject(&self) -> &str {
+        // 鏡像 selected_commit_hash：虛擬行時回 fallback，由 caller 以
+        // is_virtual_row_selected() 擋掉。
+        &self.commit(self.current_selected_raw()).commit.subject
+    }
+
     pub fn selected_commit_refs(&self) -> &[&'a Ref] {
         if self.is_virtual_row_selected() {
             return &[];

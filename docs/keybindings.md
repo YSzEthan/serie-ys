@@ -45,7 +45,7 @@
 | `shift-n` | 上一筆搜尋結果 |
 | `esc` | 取消搜尋/過濾 |
 | `c` | 複製 short commit hash |
-| `shift-c` | 複製完整 commit hash |
+| `shift-c` | 複製 commit subject |
 | `t` | 開啟 CreateTag 對話框 |
 | `ctrl-t` | 開啟 DeleteTag 對話框 |
 | `o` | 切換遠端 refs 顯示 |
@@ -102,7 +102,7 @@
 | `shift-k` | 選取更新的 commit |
 | `alt-j` / `alt-down` | 選取父 commit |
 | `c` | 複製 short commit hash |
-| `shift-c` | 複製完整 commit hash |
+| `shift-c` | 複製 commit subject |
 | `o` | 切換遠端 refs 顯示 |
 | `?` | 開啟 Help |
 | `r` / `shift-r` | 重新整理 |
