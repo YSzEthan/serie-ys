@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.0](https://github.com/YSzEthan/serie-ys/compare/v1.5.1...v1.6.0) (2026-07-11)
+
+
+### Features
+
+* Shift-C 改為複製 commit subject ([4d632a3](https://github.com/YSzEthan/serie-ys/commit/4d632a3b9500c6c8e39bc7252734e4d90aa11736))
+
 ## [1.5.1](https://github.com/YSzEthan/serie-ys/compare/v1.5.0...v1.5.1) (2026-07-06)
 
 
