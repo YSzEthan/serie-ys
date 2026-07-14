@@ -1911,9 +1911,11 @@ impl App<'_> {
         }
 
         if let View::GitHub(ref mut view) = self.view {
-            // 已在 GitHub 視圖：有變更才就地更新
+            // 已在 GitHub 視圖：有變更才就地更新；無變更也要收尾 Loading 指示器
             if changed {
                 view.update_data(issues, pull_requests, issues_cursor, prs_cursor);
+            } else {
+                view.finish_loading();
             }
             if !warnings.is_empty() {
                 view.set_flash(warnings.join("; "), false);

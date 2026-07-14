@@ -259,6 +259,13 @@ impl<'a> GitHubView<'a> {
         self.request_comments_for_selected();
     }
 
+    /// Refresh 完成但資料無變更時（`update_data` 不會被呼叫）用來清掉 Loading 指示器。
+    pub fn finish_loading(&mut self) {
+        if matches!(self.load_state, LoadState::Loading) {
+            self.load_state = LoadState::Idle;
+        }
+    }
+
     /// Returns `true` when the page was accepted (generation matched and
     /// state updated). Caller uses this to decide whether to also sync the
     /// cache, keeping view ↔ cache in lockstep.
@@ -1243,6 +1250,11 @@ impl<'a> GitHubView<'a> {
                     format!("  {count} matched"),
                     Style::default().fg(Color::DarkGray),
                 )
+            } else {
+                Span::raw("")
+            },
+            if matches!(self.load_state, LoadState::Loading) {
+                Span::styled("  ⟳ 重新抓取中…", Style::default().fg(Color::Yellow))
             } else {
                 Span::raw("")
             },
