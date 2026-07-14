@@ -1,5 +1,12 @@
 # Changelog
 
+## [1.6.1](https://github.com/YSzEthan/serie-ys/compare/v1.6.0...v1.6.1) (2026-07-14)
+
+
+### Bug Fixes
+
+* GitHub view 重新整理時顯示 loading 指示器並修正卡死 ([7d85b01](https://github.com/YSzEthan/serie-ys/commit/7d85b01f6266c32f3f034b9e83219f1c4400133f))
+
 ## [1.6.0](https://github.com/YSzEthan/serie-ys/compare/v1.5.1...v1.6.0) (2026-07-11)
 
 
