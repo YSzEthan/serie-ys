@@ -848,11 +848,15 @@ impl<'a> GitHubView<'a> {
         }
     }
 
-    fn trigger_toggle_state(&self) {
+    fn trigger_toggle_state(&mut self) {
         let Some((number, kind, state)) = self.selected_state_target() else {
             return;
         };
         let Some(action) = StateAction::for_state(state) else {
+            // merged 的 PR 不能 reopen。要有回饋，否則按下去毫無反應 ——
+            // 與同分頁的 merge / draft 切換遇到不可操作狀態時的行為一致。
+            let msg = format!("{} #{number} is {}", kind.noun(), state.to_lowercase());
+            self.set_flash(msg, true);
             return;
         };
         self.tx.send(AppEvent::OpenToggleStatePrompt {
