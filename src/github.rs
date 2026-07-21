@@ -33,6 +33,16 @@ impl GhItemKind {
             GhItemKind::PullRequest => "Pull Request",
         }
     }
+
+    /// 句中名詞，例如 "Close PR #12?"。與 [`Self::as_str`]（gh argv）和
+    /// [`Self::display_name`]（標題式標籤）是三條各自獨立的輸出通道 ——
+    /// 合併任兩條就會讓文案的改動洩漏到 argv 上。
+    pub fn noun(self) -> &'static str {
+        match self {
+            GhItemKind::Issue => "issue",
+            GhItemKind::PullRequest => "PR",
+        }
+    }
 }
 
 // ── 列表項目 ──
@@ -652,44 +662,80 @@ pub fn is_merge_conflict_error(msg: &str) -> bool {
     lower.contains("conflict") || lower.contains("not mergeable")
 }
 
-// ── Issue state toggle ──
+// ── Issue／PR state toggle ──
 
-#[derive(Debug, Clone, Copy)]
-pub enum IssueAction {
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StateAction {
     Close,
     Reopen,
 }
 
-impl IssueAction {
-    pub fn prompt(self, number: u64) -> String {
-        match self {
-            IssueAction::Close => format!("Close issue #{number}? "),
-            IssueAction::Reopen => format!("Reopen issue #{number}? "),
+impl StateAction {
+    /// 對某個狀態該執行的切換，`None` 代表不可切換。
+    ///
+    /// 這是「狀態 → 動作」的唯一來源：hint 與實際動作都吃它，就不可能指向
+    /// 相反的方向，也不會有一邊擋了 MERGED 另一邊沒擋。
+    pub fn for_state(state: &str) -> Option<Self> {
+        match state {
+            "OPEN" => Some(StateAction::Close),
+            "CLOSED" => Some(StateAction::Reopen),
+            // MERGED 的 PR：GitHub 不允許 reopen
+            _ => None,
         }
     }
 
-    pub fn pending(self, number: u64) -> String {
+    fn verb(self) -> &'static str {
         match self {
-            IssueAction::Close => format!("Closing issue #{number}..."),
-            IssueAction::Reopen => format!("Reopening issue #{number}..."),
+            StateAction::Close => "close",
+            StateAction::Reopen => "reopen",
         }
     }
 
-    pub fn success(self, number: u64) -> String {
-        match self {
-            IssueAction::Close => format!("Issue #{number} closed"),
-            IssueAction::Reopen => format!("Issue #{number} reopened"),
+    pub fn prompt(self, kind: GhItemKind, number: u64) -> String {
+        let verb = match self {
+            StateAction::Close => "Close",
+            StateAction::Reopen => "Reopen",
+        };
+        format!("{verb} {} #{number}? ", kind.noun())
+    }
+
+    pub fn pending(self, kind: GhItemKind, number: u64) -> String {
+        let verb = match self {
+            StateAction::Close => "Closing",
+            StateAction::Reopen => "Reopening",
+        };
+        format!("{verb} {} #{number}...", kind.noun())
+    }
+
+    pub fn success(self, kind: GhItemKind, number: u64) -> String {
+        let verb = match self {
+            StateAction::Close => "Closed",
+            StateAction::Reopen => "Reopened",
+        };
+        format!("{verb} {} #{number}", kind.noun())
+    }
+
+    pub fn hint_label(self, kind: GhItemKind) -> &'static str {
+        match (self, kind) {
+            (StateAction::Close, GhItemKind::Issue) => "close issue",
+            (StateAction::Reopen, GhItemKind::Issue) => "reopen issue",
+            (StateAction::Close, GhItemKind::PullRequest) => "close PR",
+            (StateAction::Reopen, GhItemKind::PullRequest) => "reopen PR",
         }
     }
 }
 
-pub fn close_issue(path: &Path, number: u64) -> Result<(), String> {
-    run_gh(path, &["issue", "close", &number.to_string()], false)?;
-    Ok(())
-}
-
-pub fn reopen_issue(path: &Path, number: u64) -> Result<(), String> {
-    run_gh(path, &["issue", "reopen", &number.to_string()], false)?;
+pub fn set_item_state(
+    path: &Path,
+    kind: GhItemKind,
+    number: u64,
+    action: StateAction,
+) -> Result<(), String> {
+    run_gh(
+        path,
+        &[kind.as_str(), action.verb(), &number.to_string()],
+        false,
+    )?;
     Ok(())
 }
 
@@ -770,6 +816,60 @@ pub fn set_pr_draft(path: &Path, number: u64, action: PrDraftAction) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 狀態 → 動作的映射是 hint 與實際動作的唯一來源，錯了兩邊會一起錯。
+    #[test]
+    fn state_action_for_state() {
+        assert_eq!(StateAction::for_state("OPEN"), Some(StateAction::Close));
+        assert_eq!(StateAction::for_state("CLOSED"), Some(StateAction::Reopen));
+        // merged 的 PR 不能 reopen —— None 同時擋掉動作與 hint
+        assert_eq!(StateAction::for_state("MERGED"), None);
+    }
+
+    /// argv 第 0 格接的是 `kind.as_str()`。這裡打錯會讓 `gh issue close` 被送去
+    /// 關一個 PR（或反過來），而文案看起來完全正常。
+    #[test]
+    fn state_action_verb_and_kind_argv() {
+        assert_eq!(GhItemKind::Issue.as_str(), "issue");
+        assert_eq!(GhItemKind::PullRequest.as_str(), "pr");
+        assert_eq!(StateAction::Close.verb(), "close");
+        assert_eq!(StateAction::Reopen.verb(), "reopen");
+    }
+
+    /// 三條輸出通道各自獨立：argv 用小寫 `pr`，句中名詞用 `PR`，標籤用完整名稱。
+    #[test]
+    fn item_kind_has_three_distinct_channels() {
+        let pr = GhItemKind::PullRequest;
+        assert_eq!(
+            (pr.as_str(), pr.noun(), pr.display_name()),
+            ("pr", "PR", "Pull Request")
+        );
+        let issue = GhItemKind::Issue;
+        assert_eq!(
+            (issue.as_str(), issue.noun(), issue.display_name()),
+            ("issue", "issue", "Issue")
+        );
+    }
+
+    #[test]
+    fn state_action_messages_name_the_right_kind() {
+        assert_eq!(
+            StateAction::Close.prompt(GhItemKind::PullRequest, 12),
+            "Close PR #12? "
+        );
+        assert_eq!(
+            StateAction::Close.prompt(GhItemKind::Issue, 12),
+            "Close issue #12? "
+        );
+        assert_eq!(
+            StateAction::Reopen.success(GhItemKind::PullRequest, 12),
+            "Reopened PR #12"
+        );
+        assert_eq!(
+            StateAction::Close.pending(GhItemKind::Issue, 12),
+            "Closing issue #12..."
+        );
+    }
 
     #[test]
     fn parse_graphql_issue_with_relations() {

@@ -17,8 +17,8 @@ use crate::{
     event::{AppEvent, RelatedGroup, RelatedItem, Sender, UserEvent, UserEventWithCount},
     fuzzy::SearchMatcher,
     github::{
-        self, CheckboxItem, GhComment, GhIssue, GhItemKind, GhPullRequest, IssueAction,
-        PrDraftAction,
+        self, CheckboxItem, GhComment, GhIssue, GhItemKind, GhPullRequest, PrDraftAction,
+        StateAction,
     },
     view::View,
 };
@@ -639,8 +639,8 @@ impl<'a> GitHubView<'a> {
             UserEvent::DetailPaneToggle => {
                 self.open_related_picker();
             }
-            UserEvent::ToggleIssueState if matches!(self.active_tab, GitHubTab::Issues) => {
-                self.trigger_toggle_issue();
+            UserEvent::ToggleIssueState => {
+                self.trigger_toggle_state();
             }
             UserEvent::MergePr if matches!(self.active_tab, GitHubTab::PullRequests) => {
                 self.try_merge_selected_pr();
@@ -771,8 +771,8 @@ impl<'a> GitHubView<'a> {
             UserEvent::MergePr if matches!(self.active_tab, GitHubTab::PullRequests) => {
                 self.try_merge_selected_pr();
             }
-            UserEvent::ToggleIssueState if matches!(self.active_tab, GitHubTab::Issues) => {
-                self.trigger_toggle_issue();
+            UserEvent::ToggleIssueState => {
+                self.trigger_toggle_state();
             }
             UserEvent::TogglePrDraft if matches!(self.active_tab, GitHubTab::PullRequests) => {
                 self.try_toggle_pr_draft();
@@ -833,57 +833,59 @@ impl<'a> GitHubView<'a> {
         }
     }
 
-    fn trigger_toggle_issue(&self) {
+    /// 選取項目的 (編號, 型別, 狀態)，兩個分頁共用。
+    fn selected_state_target(&self) -> Option<(u64, GhItemKind, &str)> {
         let idx = self.actual_index(self.selected_index);
-        let Some(issue) = self.issues.get(idx) else {
+        match self.active_tab {
+            GitHubTab::Issues => self
+                .issues
+                .get(idx)
+                .map(|i| (i.number, GhItemKind::Issue, i.state.as_str())),
+            GitHubTab::PullRequests => self
+                .pull_requests
+                .get(idx)
+                .map(|p| (p.number, GhItemKind::PullRequest, p.state.as_str())),
+        }
+    }
+
+    fn trigger_toggle_state(&self) {
+        let Some((number, kind, state)) = self.selected_state_target() else {
             return;
         };
-        let action = if issue.state == "OPEN" {
-            IssueAction::Close
-        } else {
-            IssueAction::Reopen
+        let Some(action) = StateAction::for_state(state) else {
+            return;
         };
-        self.tx.send(AppEvent::OpenToggleIssuePrompt {
-            number: issue.number,
+        self.tx.send(AppEvent::OpenToggleStatePrompt {
+            number,
+            kind,
             action,
             filter_state: self.state_filter.as_str().to_string(),
         });
     }
 
     fn action_hints(&self) -> Vec<(UserEvent, &'static str)> {
-        match self.active_tab {
-            GitHubTab::PullRequests => {
-                let idx = self.actual_index(self.selected_index);
-                let Some(pr) = self.pull_requests.get(idx) else {
-                    return Vec::new();
-                };
-                if pr.state != "OPEN" {
-                    return Vec::new();
-                }
-                let mut hints = Vec::new();
+        let Some((_, kind, state)) = self.selected_state_target() else {
+            return Vec::new();
+        };
+        let mut hints = Vec::new();
+
+        // merge 與 draft 切換只對 open 的 PR 有意義
+        if matches!(self.active_tab, GitHubTab::PullRequests) && state == "OPEN" {
+            let idx = self.actual_index(self.selected_index);
+            if let Some(pr) = self.pull_requests.get(idx) {
                 if !pr.is_draft {
                     hints.push((UserEvent::MergePr, "merge PR"));
                 }
-                let toggle = PrDraftAction::for_pr(pr.is_draft);
-                hints.push((UserEvent::TogglePrDraft, toggle.hint_label()));
-                hints
+                hints.push((
+                    UserEvent::TogglePrDraft,
+                    PrDraftAction::for_pr(pr.is_draft).hint_label(),
+                ));
             }
-            GitHubTab::Issues => self
-                .selected_issue_action_label()
-                .map(|label| vec![(UserEvent::ToggleIssueState, label)])
-                .unwrap_or_default(),
         }
-    }
-
-    fn selected_issue_action_label(&self) -> Option<&'static str> {
-        let idx = self.actual_index(self.selected_index);
-        self.issues.get(idx).map(|i| {
-            if i.state == "OPEN" {
-                "close issue"
-            } else {
-                "reopen issue"
-            }
-        })
+        if let Some(action) = StateAction::for_state(state) {
+            hints.push((UserEvent::ToggleIssueState, action.hint_label(kind)));
+        }
+        hints
     }
 
     fn open_related_picker(&self) {

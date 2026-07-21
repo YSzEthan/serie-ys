@@ -23,8 +23,8 @@ use crate::{
     },
     git::{Commit, CommitHash, FileChange, Head, Ref, RefType, Repository},
     github::{
-        close_issue, is_merge_conflict_error, merge_pr, reopen_issue, set_pr_draft, GhItemKind,
-        IssueAction, PrDraftAction,
+        is_merge_conflict_error, merge_pr, set_item_state, set_pr_draft, GhItemKind, PrDraftAction,
+        StateAction,
     },
     graph::{CellWidthType, Graph, GraphImageManager},
     keybind::KeyBind,
@@ -163,9 +163,10 @@ enum StatusLine {
         state: String,
         stage: MergePrStage,
     },
-    ToggleIssuePrompt {
+    ToggleStatePrompt {
         number: u64,
-        action: IssueAction,
+        kind: GhItemKind,
+        action: StateAction,
         filter_state: String,
     },
     TogglePrDraftPrompt {
@@ -438,7 +439,7 @@ impl App<'_> {
                                 self.handle_merge_pr_prompt_key(key);
                                 continue;
                             }
-                            StatusLine::ToggleIssuePrompt { .. }
+                            StatusLine::ToggleStatePrompt { .. }
                             | StatusLine::TogglePrDraftPrompt { .. } => {
                                 self.handle_yes_no_prompt_key(key);
                                 continue;
@@ -464,7 +465,7 @@ impl App<'_> {
                         | StatusLine::DeleteBranchPicker { .. }
                         | StatusLine::DeleteBranchConfirm { .. }
                         | StatusLine::MergePrPrompt { .. }
-                        | StatusLine::ToggleIssuePrompt { .. }
+                        | StatusLine::ToggleStatePrompt { .. }
                         | StatusLine::TogglePrDraftPrompt { .. } => {
                             // do nothing
                         }
@@ -816,13 +817,15 @@ impl App<'_> {
                         stage: MergePrStage::PickMethod,
                     };
                 }
-                AppEvent::OpenToggleIssuePrompt {
+                AppEvent::OpenToggleStatePrompt {
                     number,
+                    kind,
                     action,
                     filter_state,
                 } => {
-                    self.app_status.status_line = StatusLine::ToggleIssuePrompt {
+                    self.app_status.status_line = StatusLine::ToggleStatePrompt {
                         number,
+                        kind,
                         action,
                         filter_state,
                     };
@@ -1002,8 +1005,13 @@ impl App<'_> {
                     }
                 }
             }
-            StatusLine::ToggleIssuePrompt { number, action, .. } => confirm_line(
-                action.prompt(*number),
+            StatusLine::ToggleStatePrompt {
+                number,
+                kind,
+                action,
+                ..
+            } => confirm_line(
+                action.prompt(*kind, *number),
                 self.ctx.color_theme.status_interactive_fg,
             ),
             StatusLine::TogglePrDraftPrompt { number, action, .. } => confirm_line(
@@ -1425,11 +1433,12 @@ impl App<'_> {
             return;
         }
         match prompt {
-            StatusLine::ToggleIssuePrompt {
+            StatusLine::ToggleStatePrompt {
                 number,
+                kind,
                 action,
                 filter_state,
-            } => self.spawn_toggle_issue(number, action, filter_state),
+            } => self.spawn_toggle_state(number, kind, action, filter_state),
             StatusLine::TogglePrDraftPrompt {
                 number,
                 action,
@@ -1466,21 +1475,24 @@ impl App<'_> {
         });
     }
 
-    fn spawn_toggle_issue(&self, number: u64, action: IssueAction, filter_state: String) {
+    fn spawn_toggle_state(
+        &self,
+        number: u64,
+        kind: GhItemKind,
+        action: StateAction,
+        filter_state: String,
+    ) {
         let repo_path = self.repository.path().to_path_buf();
         let tx = self.ec.sender();
         self.ec.send(AppEvent::ShowPendingOverlay {
-            message: action.pending(number),
+            message: action.pending(kind, number),
         });
         std::thread::spawn(move || {
-            let result = match action {
-                IssueAction::Close => close_issue(&repo_path, number),
-                IssueAction::Reopen => reopen_issue(&repo_path, number),
-            };
+            let result = set_item_state(&repo_path, kind, number, action);
             tx.send(AppEvent::HidePendingOverlay);
             match result {
                 Ok(()) => {
-                    tx.send(AppEvent::NotifySuccess(action.success(number)));
+                    tx.send(AppEvent::NotifySuccess(action.success(kind, number)));
                     tx.send(AppEvent::RefreshGitHub {
                         state: filter_state,
                     });

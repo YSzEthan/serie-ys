@@ -157,9 +157,10 @@ pub enum AppEvent {
         head_ref: String,
         state: String,
     },
-    OpenToggleIssuePrompt {
+    OpenToggleStatePrompt {
         number: u64,
-        action: crate::github::IssueAction,
+        kind: crate::github::GhItemKind,
+        action: crate::github::StateAction,
         filter_state: String,
     },
     OpenTogglePrDraftPrompt {

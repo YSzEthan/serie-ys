@@ -364,7 +364,7 @@ fn help_blocks(
         b(vec![UserEvent::DetailPaneToggle],          "開啟相關 issue/PR 選單",  "Open related issue/PR picker"),
         b(vec![UserEvent::Refresh],                   "重新整理",               "Refresh"),
         b(vec![UserEvent::MergePr],                   "三階段 merge PR：選 method、刪 branch、確認", "3-stage merge PR: pick method, delete branch, confirm"),
-        b(vec![UserEvent::ToggleIssueState],          "關閉／重開 issue",        "Close/reopen issue"),
+        b(vec![UserEvent::ToggleIssueState],          "關閉／重開 issue 或 PR",  "Close/reopen issue or PR"),
         b(vec![UserEvent::TogglePrDraft],             "PR 定案／打回草稿",       "Mark PR ready / back to draft"),
     ];
 

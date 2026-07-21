@@ -118,7 +118,7 @@ The keys below are the defaults; see
 | <kbd>u</kbd> | Open related issue/PR picker | `detail_pane_toggle` |
 | <kbd>r</kbd> | Refresh | `refresh` |
 | <kbd>p</kbd> | 3-stage merge PR: pick method, delete branch, confirm | `merge_pr` |
-| <kbd>X</kbd> | Close/reopen issue | `toggle_issue_state` |
+| <kbd>X</kbd> | Close/reopen issue or PR | `toggle_issue_state` |
 | <kbd>P</kbd> | Mark PR ready / back to draft | `toggle_pr_draft` |
 
 ### Create Tag
