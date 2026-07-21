@@ -124,7 +124,7 @@ impl<'a> ListView<'a> {
             }
             UserEvent::GoToParent => {
                 for _ in 0..count {
-                    self.as_mut_list_state().scroll_up();
+                    self.as_mut_list_state().select_parent();
                 }
             }
             UserEvent::ShortCopy => {

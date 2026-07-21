@@ -598,6 +598,12 @@
         "go_to_parent": {
           "$ref": "#/definitions/keybindArray"
         },
+        "select_up": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "select_down": {
+          "$ref": "#/definitions/keybindArray"
+        },
         "go_to_top": {
           "$ref": "#/definitions/keybindArray"
         },
@@ -605,9 +611,6 @@
           "$ref": "#/definitions/keybindArray"
         },
         "scroll_down": {
-          "$ref": "#/definitions/keybindArray"
-        },
-        "scroll_up": {
           "$ref": "#/definitions/keybindArray"
         },
         "page_up": {
@@ -643,7 +646,14 @@
         "ref_list": {
           "$ref": "#/definitions/keybindArray"
         },
+        "ref_list_toggle": {
+          "description": "Alias of 'ref_list'.",
+          "$ref": "#/definitions/keybindArray"
+        },
         "search": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "filter": {
           "$ref": "#/definitions/keybindArray"
         },
         "ignore_case_toggle": {
@@ -652,10 +662,58 @@
         "fuzzy_toggle": {
           "$ref": "#/definitions/keybindArray"
         },
+        "refresh": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "delete_ref": {
+          "$ref": "#/definitions/keybindArray"
+        },
         "short_copy": {
           "$ref": "#/definitions/keybindArray"
         },
         "full_copy": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "branch_copy": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "full_branch_copy": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "tag_copy": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "create_tag": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "delete_tag": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "remote_refs_toggle": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "github_toggle": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "task_list_toggle": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "fetch": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "checkout": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "detail_pane_toggle": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "merge_pr": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "toggle_issue_state": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "toggle_pr_draft": {
           "$ref": "#/definitions/keybindArray"
         }
       },

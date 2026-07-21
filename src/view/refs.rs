@@ -107,7 +107,7 @@ impl<'a> RefsView<'a> {
                     self.update_commit_list_selected();
                 }
             }
-            UserEvent::UserCommand(_) | UserEvent::DeleteTag => {
+            UserEvent::DeleteRef | UserEvent::DeleteTag => {
                 self.open_delete_ref();
             }
             UserEvent::Checkout => {

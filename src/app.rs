@@ -1137,9 +1137,9 @@ impl App<'_> {
                 (UserEvent::HelpToggle, "help"),
             ],
             View::Refs(_) => vec![
-                (UserEvent::ShortCopy, "copy"),
-                (UserEvent::UserCommand(1), "delete"),
-                (UserEvent::Close, "close"),
+                (UserEvent::Checkout, "checkout"),
+                (UserEvent::DeleteRef, "delete"),
+                (UserEvent::Cancel, "close"),
                 (UserEvent::HelpToggle, "help"),
             ],
             View::CreateTag(_) | View::DeleteTag(_) | View::DeleteRef(_) => vec![

@@ -39,6 +39,75 @@ fn b(events: Vec<UserEvent>, cn: &str, en: &str) -> BindingSpec {
     }
 }
 
+/// 說明頁的分區。用 enum 而非字串當 key，是為了讓「新增一個分區」在
+/// `title()` 與 `source_files()` 兩個窮盡 match 同時不編譯 —— 兩份可能
+/// 不同步的清單被壓成一份不可能不同步的。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum HelpBlock {
+    Common,
+    Help,
+    List,
+    Detail,
+    Refs,
+    GitHub,
+    CreateTag,
+    DeleteTag,
+    DeleteRef,
+    UserCommand,
+}
+
+impl HelpBlock {
+    fn title(self) -> &'static str {
+        match self {
+            HelpBlock::Common => "共通",
+            HelpBlock::Help => "說明頁",
+            HelpBlock::List => "Commit 清單",
+            HelpBlock::Detail => "Commit 詳情",
+            HelpBlock::Refs => "Refs 清單",
+            HelpBlock::GitHub => "GitHub View",
+            HelpBlock::CreateTag => "Create Tag",
+            HelpBlock::DeleteTag => "Delete Tag",
+            HelpBlock::DeleteRef => "Delete Ref",
+            HelpBlock::UserCommand => "User Command",
+        }
+    }
+
+    /// 給 mdBook 英文文件用的標題（in-app help 是中文介面）。
+    #[cfg(test)]
+    fn title_en(self) -> &'static str {
+        match self {
+            HelpBlock::Common => "Common",
+            HelpBlock::Help => "Help",
+            HelpBlock::List => "Commit List",
+            HelpBlock::Detail => "Commit Detail",
+            HelpBlock::Refs => "Refs List",
+            HelpBlock::GitHub => "GitHub View",
+            HelpBlock::CreateTag => "Create Tag",
+            HelpBlock::DeleteTag => "Delete Tag",
+            HelpBlock::DeleteRef => "Delete Ref",
+            HelpBlock::UserCommand => "User Command",
+        }
+    }
+
+    /// 實作這個分區 keymap 的原始碼。一致性測試據此比對宣稱與實作。
+    #[cfg(test)]
+    fn source_files(self) -> &'static [&'static str] {
+        match self {
+            // 共通鍵由事件迴圈直接處理，不屬於任何 view
+            HelpBlock::Common => &["src/app.rs"],
+            HelpBlock::Help => &["src/view/help.rs"],
+            HelpBlock::List => &["src/view/list.rs"],
+            HelpBlock::Detail => &["src/view/detail.rs"],
+            HelpBlock::Refs => &["src/view/refs.rs"],
+            HelpBlock::GitHub => &["src/view/github.rs"],
+            HelpBlock::CreateTag => &["src/view/create_tag.rs"],
+            HelpBlock::DeleteTag => &["src/view/delete_tag.rs"],
+            HelpBlock::DeleteRef => &["src/view/delete_ref.rs"],
+            HelpBlock::UserCommand => &["src/view/user_command.rs"],
+        }
+    }
+}
+
 #[derive(Debug)]
 pub struct HelpView<'a> {
     before: View<'a>,
@@ -161,12 +230,29 @@ impl<'a> HelpView<'a> {
     }
 }
 
-#[rustfmt::skip]
 fn build_rows(
     color_theme: &ColorTheme,
     keybind: &KeyBind,
     core_config: &CoreConfig,
 ) -> Vec<HelpRow> {
+    let blocks = help_blocks(keybind, core_config);
+    let mut rows: Vec<HelpRow> = Vec::new();
+    let n = blocks.len();
+    for (i, (block, specs)) in blocks.into_iter().enumerate() {
+        push_block(&mut rows, block.title(), specs, color_theme, keybind);
+        if i + 1 < n {
+            rows.push(HelpRow::default());
+        }
+    }
+    rows
+}
+
+/// 說明頁的全部內容 —— 純資料，不涉及渲染。一致性測試直接吃這份。
+#[rustfmt::skip]
+fn help_blocks(
+    keybind: &KeyBind,
+    core_config: &CoreConfig,
+) -> Vec<(HelpBlock, Vec<BindingSpec>)> {
     let user_command_items: Vec<BindingSpec> = keybind
         .user_command_event_numbers()
         .into_iter()
@@ -197,10 +283,12 @@ fn build_rows(
     ];
 
     let list = vec![
-        b(vec![UserEvent::NavigateDown],                          "向下移動",            "Move down"),
-        b(vec![UserEvent::NavigateUp],                            "向上移動",            "Move up"),
+        b(vec![UserEvent::NavigateDown, UserEvent::SelectDown],    "向下移動",            "Move down"),
+        b(vec![UserEvent::NavigateUp,   UserEvent::SelectUp],      "向上移動",            "Move up"),
+        b(vec![UserEvent::GoToTop],                               "跳到頂端",            "Go to top"),
+        b(vec![UserEvent::GoToBottom],                             "跳到底端",            "Go to bottom"),
         b(vec![UserEvent::ScrollDown],                            "graph 向下捲動",      "Scroll down"),
-        b(vec![UserEvent::GoToParent],                            "graph 向上捲動",      "Scroll up"),
+        b(vec![UserEvent::GoToParent],                            "選擇 parent commit",  "Select parent commit"),
         b(vec![UserEvent::Confirm, UserEvent::NavigateRight],     "顯示 commit 詳情",    "Show commit details"),
         b(vec![UserEvent::RefList],                               "開啟 refs 清單",      "Open refs list"),
         b(vec![UserEvent::Search],                                "開始搜尋",            "Start search"),
@@ -209,6 +297,7 @@ fn build_rows(
         b(vec![UserEvent::GoToNext],                              "下一個符合項",        "Go to next search match"),
         b(vec![UserEvent::GoToPrevious],                          "上一個符合項",        "Go to previous search match"),
         b(vec![UserEvent::FuzzyToggle],                           "切換模糊比對",        "Toggle fuzzy match"),
+        b(vec![UserEvent::IgnoreCaseToggle],                      "切換大小寫忽略",      "Toggle ignore case"),
         b(vec![UserEvent::ShortCopy],                             "複製 commit short hash", "Copy commit short hash"),
         b(vec![UserEvent::FullCopy],                              "複製 commit subject", "Copy commit subject"),
         b(vec![UserEvent::BranchCopy],                            "複製 branch 名稱（優先 local）", "Copy branch name (prefer local)"),
@@ -219,7 +308,6 @@ fn build_rows(
         b(vec![UserEvent::DeleteRef],                             "刪除 commit 上的 local branch", "Delete local branch from commit"),
         b(vec![UserEvent::RemoteRefsToggle],                      "切換 remote refs",    "Toggle remote refs"),
         b(vec![UserEvent::GitHubToggle],                          "開啟 GitHub issues/PRs", "Open GitHub issues/PRs"),
-        b(vec![UserEvent::TaskListToggle],                        "切換工作清單",        "Toggle task list"),
         b(vec![UserEvent::Fetch],                                 "fetch 所有 remote",   "Fetch all remotes"),
         b(vec![UserEvent::Checkout],                              "checkout 選取的 commit/ref", "Checkout selected commit/ref"),
         b(vec![UserEvent::Refresh],                               "重新整理",            "Refresh"),
@@ -239,17 +327,19 @@ fn build_rows(
         b(vec![UserEvent::FullBranchCopy],                               "複製 remote branch 名稱", "Copy remote branch name"),
         b(vec![UserEvent::TagCopy],                                      "複製 tag 名稱",     "Copy tag name"),
         b(vec![UserEvent::RemoteRefsToggle],                             "切換 remote refs",  "Toggle remote refs"),
+        b(vec![UserEvent::RefList],                                      "開啟 refs 清單",    "Open refs list"),
         b(vec![UserEvent::HelpToggle],                                   "開啟說明",          "Open help"),
         b(vec![UserEvent::Refresh],                                      "重新整理",          "Refresh"),
     ];
 
     let refs = vec![
         b(vec![UserEvent::Cancel],                    "關閉 refs 清單",         "Close refs list"),
-        b(vec![UserEvent::NavigateDown],              "向下移動",               "Move down"),
-        b(vec![UserEvent::NavigateUp],                "向上移動",               "Move up"),
+        b(vec![UserEvent::NavigateDown, UserEvent::SelectDown], "向下移動",     "Move down"),
+        b(vec![UserEvent::NavigateUp,   UserEvent::SelectUp],   "向上移動",     "Move up"),
         b(vec![UserEvent::NavigateRight],             "展開節點",               "Open node"),
         b(vec![UserEvent::NavigateLeft],              "收合節點／關閉",         "Close node / Close refs"),
-        b(vec![UserEvent::UserCommand(1)],            "刪除 ref",               "Delete ref"),
+        b(vec![UserEvent::Checkout],                  "checkout 選取的 branch", "Checkout selected branch"),
+        b(vec![UserEvent::DeleteRef, UserEvent::DeleteTag], "刪除 ref",         "Delete ref"),
         b(vec![UserEvent::Refresh],                   "重新整理",               "Refresh"),
     ];
 
@@ -264,21 +354,33 @@ fn build_rows(
         b(vec![UserEvent::HalfPageUp],                "向上半頁",               "Half page up"),
         b(vec![UserEvent::GoToTop],                   "跳到頂端",               "Go to top"),
         b(vec![UserEvent::GoToBottom],                "跳到底端",               "Go to bottom"),
-        b(vec![UserEvent::Confirm],                   "預覽內容／切換 checkbox", "Preview / toggle checkbox"),
+        b(vec![UserEvent::Confirm, UserEvent::NavigateRight], "預覽內容／切換 checkbox", "Preview / toggle checkbox"),
+        b(vec![UserEvent::NavigateLeft],              "返回／取消",             "Back / cancel"),
         b(vec![UserEvent::Search],                    "搜尋／輸入純數字跳到 #N", "Search / type number to jump to #N"),
         b(vec![UserEvent::Filter],                    "過濾",                   "Filter"),
         b(vec![UserEvent::ShortCopy],                 "複製 issue/PR URL",      "Copy issue/PR URL"),
         b(vec![UserEvent::FullCopy],                  "在瀏覽器開啟 issue/PR",  "Open issue/PR in browser"),
-        b(vec![UserEvent::BranchCopy],                "輸入 #num 開啟對應 issue/PR", "Open #num issue/PR"),
+        b(vec![UserEvent::TagCopy],                   "複製 issue/PR 編號 (#N)", "Copy issue/PR number (#N)"),
+        b(vec![UserEvent::DetailPaneToggle],          "開啟相關 issue/PR 選單",  "Open related issue/PR picker"),
         b(vec![UserEvent::Refresh],                   "重新整理",               "Refresh"),
         b(vec![UserEvent::MergePr],                   "三階段 merge PR：選 method、刪 branch、確認", "3-stage merge PR: pick method, delete branch, confirm"),
+        b(vec![UserEvent::ToggleIssueState],          "關閉／重開 issue",        "Close/reopen issue"),
+        b(vec![UserEvent::TogglePrDraft],             "PR 定案／打回草稿",       "Mark PR ready / back to draft"),
     ];
 
-    let tag_edit = vec![
-        b(vec![UserEvent::Confirm],                   "確定建立／刪除",          "Confirm create/delete"),
+    let create_tag = vec![
+        b(vec![UserEvent::Confirm],                   "確定建立",                "Confirm create"),
         b(vec![UserEvent::Cancel],                    "取消並關閉",              "Cancel and close"),
         b(vec![UserEvent::NavigateDown, UserEvent::NavigateUp], "切換輸入欄位",  "Switch input field"),
-        b(vec![UserEvent::NavigateRight, UserEvent::NavigateLeft], "切換選項",  "Toggle option"),
+        b(vec![UserEvent::NavigateRight, UserEvent::NavigateLeft], "切換 push 選項", "Toggle push option"),
+    ];
+
+    let delete_tag = vec![
+        b(vec![UserEvent::Confirm],                   "確定刪除",                "Confirm delete"),
+        b(vec![UserEvent::Cancel],                    "取消並關閉",              "Cancel and close"),
+        b(vec![UserEvent::NavigateDown, UserEvent::SelectDown], "選擇下一個 tag", "Select next tag"),
+        b(vec![UserEvent::NavigateUp,   UserEvent::SelectUp],   "選擇上一個 tag", "Select previous tag"),
+        b(vec![UserEvent::NavigateRight, UserEvent::NavigateLeft], "切換「從 remote 刪除」", "Toggle delete from remote"),
     ];
 
     let delete_ref = vec![
@@ -303,30 +405,22 @@ fn build_rows(
         b(vec![UserEvent::GoToParent],                "選擇 parent commit", "Select parent commit"),
         b(vec![UserEvent::Refresh],                   "重新整理",           "Refresh"),
         b(vec![UserEvent::Confirm],                   "顯示 commit 詳情",   "Show commit details"),
+        b(vec![UserEvent::HelpToggle],                "開啟說明",           "Open help"),
     ];
     user_command.extend(user_command_items);
 
-    let blocks: Vec<(&str, Vec<BindingSpec>)> = vec![
-        ("共通",        common),
-        ("說明頁",      help),
-        ("Commit 清單", list),
-        ("Commit 詳情", detail),
-        ("Refs 清單",   refs),
-        ("GitHub View", github),
-        ("Create/Delete Tag", tag_edit),
-        ("Delete Ref",  delete_ref),
-        ("User Command", user_command),
-    ];
-
-    let mut rows: Vec<HelpRow> = Vec::new();
-    let n = blocks.len();
-    for (i, (title, specs)) in blocks.into_iter().enumerate() {
-        push_block(&mut rows, title, specs, color_theme, keybind);
-        if i + 1 < n {
-            rows.push(HelpRow::default());
-        }
-    }
-    rows
+    vec![
+        (HelpBlock::Common,      common),
+        (HelpBlock::Help,        help),
+        (HelpBlock::List,        list),
+        (HelpBlock::Detail,      detail),
+        (HelpBlock::Refs,        refs),
+        (HelpBlock::GitHub,      github),
+        (HelpBlock::CreateTag,   create_tag),
+        (HelpBlock::DeleteTag,   delete_tag),
+        (HelpBlock::DeleteRef,   delete_ref),
+        (HelpBlock::UserCommand, user_command),
+    ]
 }
 
 fn push_block(
@@ -369,4 +463,248 @@ fn join_span_groups_with_space(span_groups: Vec<Vec<Span<'static>>>) -> Line<'st
         }
     }
     Line::from(spans)
+}
+
+/// 說明頁宣稱的鍵位與實作的一致性檢查。
+///
+/// 這是**靜態近似**：比對的是「原始碼裡有沒有出現這個 event 名稱」，不是
+/// 「這個 event 真的被 handle_event 處理」。名稱出現在 `status_hints()` 或
+/// 註解裡也會算數，所以只會漏抓、不會誤殺。
+///
+/// 真正的解是讓 `handle_event` 回報自己消化了什麼（keymap 契約測試），但那
+/// 需要為 9 個 view 建 fixture，且 `handle_event` 目前回傳 `()`、`AppEvent`
+/// 沒有 `PartialEq`，「未處理」與「處理了但無外顯副作用」無法區分。等到有
+/// 足夠理由付那個成本再說。
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::collections::BTreeSet;
+
+    /// `UserEvent` 的變體名稱。`UserCommand(1)` → `"UserCommand"`，
+    /// 好對上原始碼裡的 `UserEvent::UserCommand(_)`。
+    fn event_name(event: UserEvent) -> String {
+        let debug = format!("{event:?}");
+        match debug.split_once('(') {
+            Some((name, _)) => name.to_string(),
+            None => debug,
+        }
+    }
+
+    /// 掃出原始碼中所有 `UserEvent::Xxx` 的變體名稱。
+    fn events_in_source(src: &str) -> BTreeSet<String> {
+        const PREFIX: &str = "UserEvent::";
+        src.match_indices(PREFIX)
+            .map(|(i, _)| {
+                src[i + PREFIX.len()..]
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect::<String>()
+            })
+            .filter(|s| !s.is_empty())
+            .collect()
+    }
+
+    fn read_source(rel_path: &str) -> String {
+        let path = format!("{}/{}", env!("CARGO_MANIFEST_DIR"), rel_path);
+        std::fs::read_to_string(&path).unwrap_or_else(|e| panic!("讀不到 {path}: {e}"))
+    }
+
+    fn blocks() -> Vec<(HelpBlock, Vec<BindingSpec>)> {
+        help_blocks(&KeyBind::new(None), &CoreConfig::default())
+    }
+
+    /// 說明頁列出的每個動作都必須真的綁著按鍵。
+    ///
+    /// 沒綁鍵的條目在畫面上是「說明文字 + 空白按鍵欄」，使用者看得到功能卻按不出來。
+    #[test]
+    fn every_claimed_event_has_a_key() {
+        let keybind = KeyBind::new(None);
+        let mut unbound = Vec::new();
+        for (block, specs) in blocks() {
+            for spec in &specs {
+                for event in &spec.events {
+                    if keybind.keys_for_event(*event).is_empty() {
+                        unbound.push(format!(
+                            "「{}」的『{}』列出 {:?}，但沒有任何按鍵綁定",
+                            block.title(),
+                            spec.cn,
+                            event
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(unbound.is_empty(), "\n{}", unbound.join("\n"));
+    }
+
+    /// 說明頁宣稱的每個動作，都必須出現在該 view 的原始碼裡（不可亂宣稱）。
+    #[test]
+    fn claimed_events_exist_in_source() {
+        let mut missing = Vec::new();
+        for (block, specs) in blocks() {
+            // 說明頁分區的資料就住在本檔，自我比對是恆真式，沒有驗證價值
+            if block == HelpBlock::Help {
+                continue;
+            }
+            let sources: BTreeSet<String> = block
+                .source_files()
+                .iter()
+                .flat_map(|f| events_in_source(&read_source(f)))
+                .collect();
+            for spec in &specs {
+                for event in &spec.events {
+                    let name = event_name(*event);
+                    if !sources.contains(&name) && !app_level_ok(block, *event) {
+                        missing.push(format!(
+                            "「{}」宣稱 {:?}，但 {:?} 裡找不到",
+                            block.title(),
+                            event,
+                            block.source_files()
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(missing.is_empty(), "\n{}", missing.join("\n"));
+    }
+
+    /// view 實際處理的每個動作，說明頁都必須列出（不可漏宣稱）。
+    ///
+    /// 漏宣稱比亂宣稱嚴重：亂宣稱使用者按了沒反應會發現，漏宣稱使用者永遠
+    /// 不知道有這個功能。
+    #[test]
+    fn source_events_are_all_claimed() {
+        let mut unclaimed = Vec::new();
+        for (block, specs) in blocks() {
+            if block == HelpBlock::Help || block == HelpBlock::Common {
+                continue;
+            }
+            let claimed: BTreeSet<String> = specs
+                .iter()
+                .flat_map(|s| s.events.iter().map(|e| event_name(*e)))
+                .collect();
+            for file in block.source_files() {
+                for name in events_in_source(&read_source(file)) {
+                    if !claimed.contains(&name)
+                        && !NOT_USER_FACING.contains(&name.as_str())
+                        && !dynamically_claimed(block, &name)
+                    {
+                        unclaimed.push(format!(
+                            "{file} 處理 UserEvent::{name}，但「{}」沒有列出",
+                            block.title()
+                        ));
+                    }
+                }
+            }
+        }
+        assert!(unclaimed.is_empty(), "\n{}", unclaimed.join("\n"));
+    }
+
+    /// 這些 event 由 `App` 的事件迴圈直接處理，不會進 view —— 但只在
+    /// `is_browsing_view()` 的三個 view 生效（見 `view::views::is_browsing_view`）。
+    fn app_level_ok(block: HelpBlock, event: UserEvent) -> bool {
+        matches!(block, HelpBlock::List | HelpBlock::Detail | HelpBlock::Refs)
+            && matches!(event, UserEvent::HelpToggle | UserEvent::GitHubToggle)
+    }
+
+    /// mdBook 上的鍵位頁。內容由本測試產生 —— 那是全 repo 唯一有讀者的鍵位文件
+    /// （`docs/src/SUMMARY.md` 收錄、README 指過去）。
+    const DOC_PATH: &str = "docs/src/keybindings/index.md";
+
+    /// 無法透過 config 變更的按鍵。它們散落在 `app.rs` 的 status-line modal
+    /// 處理常式裡，不經過 `KeyBind`，所以進不了 `help_blocks`。
+    /// 不揭露就是產出一份「看起來完整但不完整」的文件。
+    const HARDCODED_KEYS_SECTION: &str = "\
+## Hardcoded keys
+
+These keys are fixed and cannot be changed via config, because they belong to
+transient prompts rather than a view's keymap.
+
+| Key | Where | Action |
+| --- | ----- | ------ |
+| <kbd>1</kbd>–<kbd>9</kbd> | Ref / checkout / related / branch pickers | Pick the n-th entry |
+| <kbd>m</kbd> <kbd>s</kbd> <kbd>r</kbd> | Merge PR prompt (step 1) | Merge / squash / rebase |
+| <kbd>y</kbd> <kbd>n</kbd> | Merge PR prompt (step 2) | Delete the branch after merging, or not |
+| <kbd>f</kbd> | Delete branch confirmation | Force delete |
+| <kbd>Tab</kbd> <kbd>Shift-Tab</kbd> | Create tag dialog | Move between fields |
+| <kbd>Space</kbd> | Create tag dialog (checkbox) | Toggle the checkbox |
+";
+
+    fn render_doc(keybind: &KeyBind, core_config: &CoreConfig) -> String {
+        let mut out = String::new();
+        out.push_str(
+            "# Keybindings\n\n\
+             <!-- Generated from `src/view/help.rs` by `cargo test`. Do not edit by hand. -->\n\
+             <!-- To regenerate: UPDATE_KEYBINDINGS_DOC=1 cargo test -->\n\n\
+             Press <kbd>?</kbd> in the app to see this list at any time, with your own\n\
+             overrides already applied.\n\n\
+             The keys below are the defaults; see\n\
+             [Custom Keybindings](./custom-keybindings.md) for how to change them.\n\n\
+             ## Default keybindings\n",
+        );
+
+        for (block, specs) in help_blocks(keybind, core_config) {
+            out.push_str(&format!("\n### {}\n\n", block.title_en()));
+            out.push_str("| Key | Description | Config key |\n| --- | --- | --- |\n");
+            for spec in specs {
+                let keys: Vec<String> = spec
+                    .events
+                    .iter()
+                    .flat_map(|e| keybind.keys_for_event(*e))
+                    .map(|k| format!("<kbd>{k}</kbd>"))
+                    .collect();
+                let names: Vec<String> = spec
+                    .events
+                    .iter()
+                    .filter_map(|e| e.config_name())
+                    .map(|n| format!("`{n}`"))
+                    .collect();
+                out.push_str(&format!(
+                    "| {} | {} | {} |\n",
+                    keys.join(" "),
+                    spec.en,
+                    names.join(" ")
+                ));
+            }
+        }
+
+        out.push('\n');
+        out.push_str(HARDCODED_KEYS_SECTION);
+        out
+    }
+
+    /// mdBook 的鍵位頁必須與 in-app help 一致。
+    ///
+    /// 這份文件過去是手寫的，漂移到幾乎每一項都錯（`/` vs `:`、`g` vs `i`、
+    /// `Ctrl-e/y` vs `,`/`.`）。現在由 `help_blocks` 產生，不可能再各自演化。
+    #[test]
+    fn generated_doc_matches_committed_file() {
+        let generated = render_doc(&KeyBind::new(None), &CoreConfig::default());
+        let path = format!("{}/{}", env!("CARGO_MANIFEST_DIR"), DOC_PATH);
+
+        if std::env::var_os("UPDATE_KEYBINDINGS_DOC").is_some() {
+            std::fs::write(&path, &generated).unwrap_or_else(|e| panic!("寫不進 {path}: {e}"));
+            return;
+        }
+
+        let committed = std::fs::read_to_string(&path).unwrap_or_default();
+        assert!(
+            committed == generated,
+            "{DOC_PATH} 與 in-app help 不一致。\n\
+             執行 `UPDATE_KEYBINDINGS_DOC=1 cargo test` 重新產生。"
+        );
+    }
+
+    /// 「User Command」分區的條目是依使用者設定的 `user_command_N` 動態產生的
+    /// （見 `help_blocks` 開頭的 `user_command_items`）。預設沒有任何 user command
+    /// 綁定，所以這個分區在預設 keybind 下必然列不出 `UserCommand`。
+    fn dynamically_claimed(block: HelpBlock, name: &str) -> bool {
+        block == HelpBlock::UserCommand && name == "UserCommand"
+    }
+
+    /// 出現在原始碼但不該出現在說明頁的 event。
+    const NOT_USER_FACING: &[&str] = &[
+        // 沒有對應按鍵的內部訊號：App 把「無綁定的按鍵」轉成這個丟給輸入模式的 view
+        "Unknown",
+    ];
 }

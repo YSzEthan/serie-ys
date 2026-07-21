@@ -630,6 +630,68 @@ pub enum UserEvent {
     Unknown,
 }
 
+impl UserEvent {
+    /// 這個事件在 config 檔中的名稱，與 `Deserialize` 接受的字串互為反向。
+    /// 窮盡 match：新增事件時這裡不編譯，就不會漏掉。
+    /// `Unknown` 沒有對應名稱（它是無綁定按鍵的內部訊號）。
+    pub fn config_name(self) -> Option<String> {
+        let name = match self {
+            UserEvent::ForceQuit => "force_quit",
+            UserEvent::Quit => "quit",
+            UserEvent::HelpToggle => "help_toggle",
+            UserEvent::Cancel => "cancel",
+            UserEvent::Close => "close",
+            UserEvent::NavigateUp => "navigate_up",
+            UserEvent::NavigateDown => "navigate_down",
+            UserEvent::NavigateRight => "navigate_right",
+            UserEvent::NavigateLeft => "navigate_left",
+            UserEvent::SelectUp => "select_up",
+            UserEvent::SelectDown => "select_down",
+            UserEvent::GoToTop => "go_to_top",
+            UserEvent::GoToBottom => "go_to_bottom",
+            UserEvent::GoToParent => "go_to_parent",
+            UserEvent::ScrollUp => "scroll_up",
+            UserEvent::ScrollDown => "scroll_down",
+            UserEvent::PageUp => "page_up",
+            UserEvent::PageDown => "page_down",
+            UserEvent::HalfPageUp => "half_page_up",
+            UserEvent::HalfPageDown => "half_page_down",
+            UserEvent::SelectTop => "select_top",
+            UserEvent::SelectMiddle => "select_middle",
+            UserEvent::SelectBottom => "select_bottom",
+            UserEvent::GoToNext => "go_to_next",
+            UserEvent::GoToPrevious => "go_to_previous",
+            UserEvent::Confirm => "confirm",
+            UserEvent::RefList => "ref_list",
+            UserEvent::Search => "search",
+            UserEvent::Filter => "filter",
+            UserEvent::UserCommand(n) => return Some(format!("user_command_{n}")),
+            UserEvent::IgnoreCaseToggle => "ignore_case_toggle",
+            UserEvent::FuzzyToggle => "fuzzy_toggle",
+            UserEvent::Refresh => "refresh",
+            UserEvent::ShortCopy => "short_copy",
+            UserEvent::FullCopy => "full_copy",
+            UserEvent::BranchCopy => "branch_copy",
+            UserEvent::FullBranchCopy => "full_branch_copy",
+            UserEvent::TagCopy => "tag_copy",
+            UserEvent::CreateTag => "create_tag",
+            UserEvent::DeleteTag => "delete_tag",
+            UserEvent::DeleteRef => "delete_ref",
+            UserEvent::RemoteRefsToggle => "remote_refs_toggle",
+            UserEvent::GitHubToggle => "github_toggle",
+            UserEvent::TaskListToggle => "task_list_toggle",
+            UserEvent::DetailPaneToggle => "detail_pane_toggle",
+            UserEvent::Fetch => "fetch",
+            UserEvent::Checkout => "checkout",
+            UserEvent::MergePr => "merge_pr",
+            UserEvent::ToggleIssueState => "toggle_issue_state",
+            UserEvent::TogglePrDraft => "toggle_pr_draft",
+            UserEvent::Unknown => return None,
+        };
+        Some(name.to_string())
+    }
+}
+
 impl<'de> Deserialize<'de> for UserEvent {
     fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
     where
@@ -802,5 +864,82 @@ mod tests {
 
         assert_eq!(event1, event2);
         assert_ne!(event1, event3);
+    }
+
+    /// `config_name()` 與 `Deserialize` 必須互為反向。少了這個測試，兩份對照
+    /// 表就會各自漂移 —— 而它們正是「config 檔怎麼寫」的唯一說明。
+    #[test]
+    fn config_name_round_trips_through_deserialize() {
+        // 沒有 Iterator 可列舉，所以逐一列出。漏掉任何一個，
+        // `config_name` 的窮盡 match 也不會提醒 —— 但 all_events 至少
+        // 讓遺漏集中在一處。
+        let all_events = [
+            UserEvent::ForceQuit,
+            UserEvent::Quit,
+            UserEvent::HelpToggle,
+            UserEvent::Cancel,
+            UserEvent::Close,
+            UserEvent::NavigateUp,
+            UserEvent::NavigateDown,
+            UserEvent::NavigateRight,
+            UserEvent::NavigateLeft,
+            UserEvent::SelectUp,
+            UserEvent::SelectDown,
+            UserEvent::GoToTop,
+            UserEvent::GoToBottom,
+            UserEvent::GoToParent,
+            UserEvent::ScrollUp,
+            UserEvent::ScrollDown,
+            UserEvent::PageUp,
+            UserEvent::PageDown,
+            UserEvent::HalfPageUp,
+            UserEvent::HalfPageDown,
+            UserEvent::SelectTop,
+            UserEvent::SelectMiddle,
+            UserEvent::SelectBottom,
+            UserEvent::GoToNext,
+            UserEvent::GoToPrevious,
+            UserEvent::Confirm,
+            UserEvent::RefList,
+            UserEvent::Search,
+            UserEvent::Filter,
+            UserEvent::UserCommand(1),
+            UserEvent::UserCommand(42),
+            UserEvent::IgnoreCaseToggle,
+            UserEvent::FuzzyToggle,
+            UserEvent::Refresh,
+            UserEvent::ShortCopy,
+            UserEvent::FullCopy,
+            UserEvent::BranchCopy,
+            UserEvent::FullBranchCopy,
+            UserEvent::TagCopy,
+            UserEvent::CreateTag,
+            UserEvent::DeleteTag,
+            UserEvent::DeleteRef,
+            UserEvent::RemoteRefsToggle,
+            UserEvent::GitHubToggle,
+            UserEvent::TaskListToggle,
+            UserEvent::DetailPaneToggle,
+            UserEvent::Fetch,
+            UserEvent::Checkout,
+            UserEvent::MergePr,
+            UserEvent::ToggleIssueState,
+            UserEvent::TogglePrDraft,
+        ];
+
+        for event in all_events {
+            let name = event
+                .config_name()
+                .unwrap_or_else(|| panic!("{event:?} 沒有 config 名稱"));
+            let line = format!("{name} = [\"a\"]");
+            let parsed: std::collections::HashMap<UserEvent, Vec<String>> = toml::from_str(&line)
+                .unwrap_or_else(|e| panic!("{event:?} 的名稱 {name:?} 無法反向解析: {e}"));
+            assert!(
+                parsed.contains_key(&event),
+                "{name:?} 解析回了不同的事件: {parsed:?}"
+            );
+        }
+
+        assert_eq!(UserEvent::Unknown.config_name(), None);
     }
 }
