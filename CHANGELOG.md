@@ -1,5 +1,19 @@
 # Changelog
 
+## [1.7.0](https://github.com/YSzEthan/serie-ys/compare/v1.6.1...v1.7.0) (2026-07-21)
+
+
+### Features
+
+* GitHub view 新增 draft PR 定案／打回草稿（shift-p） ([febebee](https://github.com/YSzEthan/serie-ys/commit/febebee25f2375ed2ac4b5509df5288686c66e33))
+* GitHub view 的 PR 分頁支援 close/reopen（shift-x） ([47226b4](https://github.com/YSzEthan/serie-ys/commit/47226b40b4b0edd4f2db3ce5bad71ee41947fa38))
+
+
+### Bug Fixes
+
+* merged PR 按狀態切換鍵時補上提示 ([d0c724d](https://github.com/YSzEthan/serie-ys/commit/d0c724d3cc7a2c6e27e4cdcf856d4375d26bdd39))
+* 鍵位說明與實作對齊，官網文件改由 in-app help 產生 ([362220c](https://github.com/YSzEthan/serie-ys/commit/362220c1a91fb5f6543cf5e63ae9374c69fd1634))
+
 ## [1.6.1](https://github.com/YSzEthan/serie-ys/compare/v1.6.0...v1.6.1) (2026-07-14)
 
 
