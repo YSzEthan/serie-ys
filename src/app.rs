@@ -4,7 +4,7 @@ use std::time::{Duration, Instant};
 use ratatui::{
     crossterm::event::{KeyCode, KeyEvent},
     layout::{Constraint, Layout, Rect},
-    style::{Modifier, Style, Stylize},
+    style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
     widgets::{Block, Borders, Padding, Paragraph},
     DefaultTerminal, Frame,
@@ -23,7 +23,8 @@ use crate::{
     },
     git::{Commit, CommitHash, FileChange, Head, Ref, RefType, Repository},
     github::{
-        close_issue, is_merge_conflict_error, merge_pr, reopen_issue, GhItemKind, IssueAction,
+        close_issue, is_merge_conflict_error, merge_pr, reopen_issue, set_pr_draft, GhItemKind,
+        IssueAction, PrDraftAction,
     },
     graph::{CellWidthType, Graph, GraphImageManager},
     keybind::KeyBind,
@@ -67,6 +68,17 @@ fn short_link_label(url: &str) -> String {
         return format!("[#{n}]");
     }
     "[open]".to_string()
+}
+
+/// 單階段 y/n 確認的狀態列，與 [`App::yes_no_answer`] 接受的鍵一致。
+fn confirm_line(prompt: String, hint_fg: Color) -> Line<'static> {
+    Line::from(vec![
+        prompt.into(),
+        "[y/Enter]".fg(hint_fg),
+        " confirm  ".into(),
+        "[n/Esc]".fg(hint_fg),
+        " cancel".into(),
+    ])
 }
 
 pub(crate) fn clear_image_area(
@@ -117,6 +129,14 @@ enum MergePrStage {
     },
 }
 
+/// 單階段 y/n 確認的答案。
+#[derive(Debug, Clone, Copy)]
+enum Answer {
+    Confirm,
+    Cancel,
+    Ignore,
+}
+
 #[derive(Debug, Default)]
 enum StatusLine {
     #[default]
@@ -146,6 +166,11 @@ enum StatusLine {
     ToggleIssuePrompt {
         number: u64,
         action: IssueAction,
+        filter_state: String,
+    },
+    TogglePrDraftPrompt {
+        number: u64,
+        action: PrDraftAction,
         filter_state: String,
     },
     RelatedPicker {
@@ -413,11 +438,20 @@ impl App<'_> {
                                 self.handle_merge_pr_prompt_key(key);
                                 continue;
                             }
-                            StatusLine::ToggleIssuePrompt { .. } => {
-                                self.handle_toggle_issue_prompt_key(key);
+                            StatusLine::ToggleIssuePrompt { .. }
+                            | StatusLine::TogglePrDraftPrompt { .. } => {
+                                self.handle_yes_no_prompt_key(key);
                                 continue;
                             }
-                            _ => {}
+                            // 明確列出不攔截的變體，而非 `_ => {}` — 漏接一個 modal
+                            // 只會讓它卡在畫面上完全不吃鍵，編譯器不會提醒。
+                            StatusLine::None
+                            | StatusLine::Input(_, _, _)
+                            | StatusLine::NotificationInfo(_)
+                            | StatusLine::NotificationSuccess(_)
+                            | StatusLine::NotificationWarn(_)
+                            | StatusLine::NotificationError(_)
+                            | StatusLine::NotificationHyperlink { .. } => {}
                         }
                     }
 
@@ -430,7 +464,8 @@ impl App<'_> {
                         | StatusLine::DeleteBranchPicker { .. }
                         | StatusLine::DeleteBranchConfirm { .. }
                         | StatusLine::MergePrPrompt { .. }
-                        | StatusLine::ToggleIssuePrompt { .. } => {
+                        | StatusLine::ToggleIssuePrompt { .. }
+                        | StatusLine::TogglePrDraftPrompt { .. } => {
                             // do nothing
                         }
                         StatusLine::NotificationInfo(_)
@@ -792,6 +827,29 @@ impl App<'_> {
                         filter_state,
                     };
                 }
+                AppEvent::OpenTogglePrDraftPrompt {
+                    number,
+                    action,
+                    filter_state,
+                } => {
+                    self.app_status.status_line = StatusLine::TogglePrDraftPrompt {
+                        number,
+                        action,
+                        filter_state,
+                    };
+                }
+                AppEvent::PrDraftToggled { number, is_draft } => {
+                    if let View::GitHub(ref mut view) = self.view {
+                        view.set_pr_draft_flag(number, is_draft);
+                    }
+                    if let Some(cache) = self.github_cache.as_mut() {
+                        if let Some(pr) =
+                            cache.pull_requests.iter_mut().find(|p| p.number == number)
+                        {
+                            pr.is_draft = is_draft;
+                        }
+                    }
+                }
                 AppEvent::GitHubJumpToIssue { number } => {
                     if let View::GitHub(ref mut view) = self.view {
                         if !view.jump_to_issue(number) {
@@ -944,20 +1002,14 @@ impl App<'_> {
                     }
                 }
             }
-            StatusLine::ToggleIssuePrompt { number, action, .. } => {
-                let hint_fg = self.ctx.color_theme.status_interactive_fg;
-                let prompt = match action {
-                    IssueAction::Close => format!("Close issue #{number}? "),
-                    IssueAction::Reopen => format!("Reopen issue #{number}? "),
-                };
-                Line::from(vec![
-                    prompt.into(),
-                    "[y/Enter]".fg(hint_fg),
-                    " confirm  ".into(),
-                    "[n/Esc]".fg(hint_fg),
-                    " cancel".into(),
-                ])
-            }
+            StatusLine::ToggleIssuePrompt { number, action, .. } => confirm_line(
+                action.prompt(*number),
+                self.ctx.color_theme.status_interactive_fg,
+            ),
+            StatusLine::TogglePrDraftPrompt { number, action, .. } => confirm_line(
+                action.prompt(*number),
+                self.ctx.color_theme.status_interactive_fg,
+            ),
             StatusLine::NotificationInfo(msg) => {
                 Line::raw(msg).fg(self.ctx.color_theme.status_info_fg)
             }
@@ -1342,43 +1394,83 @@ impl App<'_> {
         });
     }
 
-    fn handle_toggle_issue_prompt_key(&mut self, key: KeyEvent) {
-        let StatusLine::ToggleIssuePrompt {
-            number,
-            action,
-            ref filter_state,
-        } = self.app_status.status_line
-        else {
-            return;
-        };
-        let (number, action, filter_state) = (number, action, filter_state.clone());
+    /// 解讀 y/n 確認鍵。cancel 必須先判 — 預設 `cancel = ["esc", "n"]` 含 `n`，
+    /// 順序反了「no」就會被當成確認。把這個順序依賴收在這裡，呼叫端不必再記。
+    fn yes_no_answer(&self, key: KeyEvent) -> Answer {
         if matches!(self.ctx.keybind.get(&key), Some(UserEvent::Cancel))
             || matches!(key.code, KeyCode::Char('n') | KeyCode::Char('N'))
         {
-            self.app_status.status_line = StatusLine::None;
-            return;
+            return Answer::Cancel;
         }
-        let is_confirm = matches!(self.ctx.keybind.get(&key), Some(UserEvent::Confirm))
+        if matches!(self.ctx.keybind.get(&key), Some(UserEvent::Confirm))
             || matches!(
                 key.code,
                 KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y')
-            );
-        if !is_confirm {
+            )
+        {
+            return Answer::Confirm;
+        }
+        Answer::Ignore
+    }
+
+    /// 單階段 y/n 確認的 modal。答完就收掉狀態列，取出的 prompt 決定要跑什麼。
+    fn handle_yes_no_prompt_key(&mut self, key: KeyEvent) {
+        let answer = self.yes_no_answer(key);
+        if matches!(answer, Answer::Ignore) {
             return;
         }
-        self.app_status.status_line = StatusLine::None;
-        self.spawn_toggle_issue(number, action, filter_state);
+        // take 同時結束對 status_line 的借用並清掉 modal
+        let prompt = std::mem::take(&mut self.app_status.status_line);
+        if matches!(answer, Answer::Cancel) {
+            return;
+        }
+        match prompt {
+            StatusLine::ToggleIssuePrompt {
+                number,
+                action,
+                filter_state,
+            } => self.spawn_toggle_issue(number, action, filter_state),
+            StatusLine::TogglePrDraftPrompt {
+                number,
+                action,
+                filter_state,
+            } => self.spawn_toggle_pr_draft(number, action, filter_state),
+            _ => {}
+        }
+    }
+
+    fn spawn_toggle_pr_draft(&self, number: u64, action: PrDraftAction, filter_state: String) {
+        let repo_path = self.repository.path().to_path_buf();
+        let tx = self.ec.sender();
+        self.ec.send(AppEvent::ShowPendingOverlay {
+            message: action.pending(number),
+        });
+        std::thread::spawn(move || {
+            let result = set_pr_draft(&repo_path, number, action);
+            tx.send(AppEvent::HidePendingOverlay);
+            match result {
+                Ok(()) => {
+                    tx.send(AppEvent::NotifySuccess(action.success(number)));
+                    tx.send(AppEvent::PrDraftToggled {
+                        number,
+                        is_draft: action.result_is_draft(),
+                    });
+                    tx.send(AppEvent::RefreshGitHub {
+                        state: filter_state,
+                    });
+                }
+                Err(e) => {
+                    tx.send(AppEvent::NotifyError(e));
+                }
+            }
+        });
     }
 
     fn spawn_toggle_issue(&self, number: u64, action: IssueAction, filter_state: String) {
         let repo_path = self.repository.path().to_path_buf();
         let tx = self.ec.sender();
-        let pending_msg = match action {
-            IssueAction::Close => format!("Closing issue #{number}..."),
-            IssueAction::Reopen => format!("Reopening issue #{number}..."),
-        };
         self.ec.send(AppEvent::ShowPendingOverlay {
-            message: pending_msg,
+            message: action.pending(number),
         });
         std::thread::spawn(move || {
             let result = match action {
@@ -1388,13 +1480,7 @@ impl App<'_> {
             tx.send(AppEvent::HidePendingOverlay);
             match result {
                 Ok(()) => {
-                    let past_tense = match action {
-                        IssueAction::Close => "closed",
-                        IssueAction::Reopen => "reopened",
-                    };
-                    tx.send(AppEvent::NotifySuccess(format!(
-                        "Issue #{number} {past_tense}"
-                    )));
+                    tx.send(AppEvent::NotifySuccess(action.success(number)));
                     tx.send(AppEvent::RefreshGitHub {
                         state: filter_state,
                     });

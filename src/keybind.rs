@@ -248,6 +248,17 @@ fn key_event_to_string(key_event: KeyEvent) -> String {
 mod tests {
     use super::*;
 
+    /// 預設 TOML 由 `KeyBind::new()` 以 `.expect()` 解析 — 未知的 event 名稱或
+    /// 同一按鍵綁到兩個 event，都只會在啟動時 panic。這裡把它拉進 CI。
+    #[test]
+    fn default_keybind_parses() {
+        let keybind = KeyBind::new(None);
+        assert_eq!(
+            keybind.get(&KeyEvent::new(KeyCode::Char('P'), KeyModifiers::SHIFT)),
+            Some(&UserEvent::TogglePrDraft),
+        );
+    }
+
     #[rustfmt::skip]
     #[test]
     fn test_deserialize_keybind() {

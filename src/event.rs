@@ -162,6 +162,16 @@ pub enum AppEvent {
         action: crate::github::IssueAction,
         filter_state: String,
     },
+    OpenTogglePrDraftPrompt {
+        number: u64,
+        action: crate::github::PrDraftAction,
+        filter_state: String,
+    },
+    /// draft 切換成功後就地更新列表，補上 RefreshGitHub 完成前的空窗。
+    PrDraftToggled {
+        number: u64,
+        is_draft: bool,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -616,6 +626,7 @@ pub enum UserEvent {
     Checkout,
     MergePr,
     ToggleIssueState,
+    TogglePrDraft,
     Unknown,
 }
 
@@ -694,6 +705,7 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "checkout" => Ok(UserEvent::Checkout),
                         "merge_pr" => Ok(UserEvent::MergePr),
                         "toggle_issue_state" => Ok(UserEvent::ToggleIssueState),
+                        "toggle_pr_draft" => Ok(UserEvent::TogglePrDraft),
                         _ => {
                             let msg = format!("Unknown user event: {value}");
                             Err(de::Error::custom(msg))

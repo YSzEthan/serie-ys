@@ -660,6 +660,29 @@ pub enum IssueAction {
     Reopen,
 }
 
+impl IssueAction {
+    pub fn prompt(self, number: u64) -> String {
+        match self {
+            IssueAction::Close => format!("Close issue #{number}? "),
+            IssueAction::Reopen => format!("Reopen issue #{number}? "),
+        }
+    }
+
+    pub fn pending(self, number: u64) -> String {
+        match self {
+            IssueAction::Close => format!("Closing issue #{number}..."),
+            IssueAction::Reopen => format!("Reopening issue #{number}..."),
+        }
+    }
+
+    pub fn success(self, number: u64) -> String {
+        match self {
+            IssueAction::Close => format!("Issue #{number} closed"),
+            IssueAction::Reopen => format!("Issue #{number} reopened"),
+        }
+    }
+}
+
 pub fn close_issue(path: &Path, number: u64) -> Result<(), String> {
     run_gh(path, &["issue", "close", &number.to_string()], false)?;
     Ok(())
@@ -675,6 +698,70 @@ pub fn merge_pr(path: &Path, number: u64, method: &str, delete_branch: bool) -> 
     let mut args = vec!["pr", "merge", &num_str, method];
     if delete_branch {
         args.push("--delete-branch");
+    }
+    run_gh(path, &args, false)?;
+    Ok(())
+}
+
+// ── PR draft toggle ──
+
+#[derive(Debug, Clone, Copy)]
+pub enum PrDraftAction {
+    MarkReady,
+    ConvertToDraft,
+}
+
+impl PrDraftAction {
+    /// 對一個 draft／非 draft PR 該執行的切換方向。集中在這裡，UI 提示與實際
+    /// 動作就不可能指向相反的方向。
+    pub fn for_pr(is_draft: bool) -> Self {
+        if is_draft {
+            PrDraftAction::MarkReady
+        } else {
+            PrDraftAction::ConvertToDraft
+        }
+    }
+
+    pub fn prompt(self, number: u64) -> String {
+        match self {
+            PrDraftAction::MarkReady => format!("Mark PR #{number} ready for review? "),
+            PrDraftAction::ConvertToDraft => format!("Convert PR #{number} back to draft? "),
+        }
+    }
+
+    pub fn pending(self, number: u64) -> String {
+        match self {
+            PrDraftAction::MarkReady => format!("Marking PR #{number} ready..."),
+            PrDraftAction::ConvertToDraft => format!("Converting PR #{number} to draft..."),
+        }
+    }
+
+    pub fn success(self, number: u64) -> String {
+        match self {
+            PrDraftAction::MarkReady => format!("PR #{number} is ready for review"),
+            PrDraftAction::ConvertToDraft => format!("PR #{number} converted to draft"),
+        }
+    }
+
+    pub fn hint_label(self) -> &'static str {
+        match self {
+            PrDraftAction::MarkReady => "ready for review",
+            PrDraftAction::ConvertToDraft => "back to draft",
+        }
+    }
+
+    /// 動作成功後 PR 應有的 draft 狀態，供列表 in-place 更新使用。
+    /// 這也正是 `gh pr ready --undo` 的語意，所以 `set_pr_draft` 直接用它。
+    pub fn result_is_draft(self) -> bool {
+        matches!(self, PrDraftAction::ConvertToDraft)
+    }
+}
+
+pub fn set_pr_draft(path: &Path, number: u64, action: PrDraftAction) -> Result<(), String> {
+    let num_str = number.to_string();
+    let mut args = vec!["pr", "ready", &num_str];
+    if action.result_is_draft() {
+        args.push("--undo");
     }
     run_gh(path, &args, false)?;
     Ok(())

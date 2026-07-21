@@ -16,7 +16,10 @@ use crate::{
     app::AppContext,
     event::{AppEvent, RelatedGroup, RelatedItem, Sender, UserEvent, UserEventWithCount},
     fuzzy::SearchMatcher,
-    github::{self, CheckboxItem, GhComment, GhIssue, GhItemKind, GhPullRequest, IssueAction},
+    github::{
+        self, CheckboxItem, GhComment, GhIssue, GhItemKind, GhPullRequest, IssueAction,
+        PrDraftAction,
+    },
     view::View,
 };
 
@@ -481,11 +484,9 @@ impl<'a> GitHubView<'a> {
             }
             GitHubFocus::Preview => {
                 let mut hints = vec![(UserEvent::Cancel, "back")];
+                hints.extend(self.action_hints());
                 if self.selected_has_related() {
                     hints.push((UserEvent::DetailPaneToggle, "related"));
-                }
-                if let Some(h) = self.action_hint() {
-                    hints.push(h);
                 }
                 hints
             }
@@ -502,19 +503,19 @@ impl<'a> GitHubView<'a> {
                         ],
                     };
                 }
-                let mut hints = vec![
-                    (UserEvent::RefList, "switch tab"),
+                // contextual action 隨選取項目變動、使用者猜不到，排在靜態提示之前，
+                // 讓被終端寬度切掉的是 help 裡查得到的那些。
+                let mut hints = vec![(UserEvent::RefList, "switch tab")];
+                hints.extend(self.action_hints());
+                hints.extend([
                     (UserEvent::Search, "search"),
                     (UserEvent::Confirm, "preview"),
                     (UserEvent::Refresh, "refresh"),
                     (UserEvent::Filter, "filter"),
                     (UserEvent::ShortCopy, "copy url / C open / v #num"),
-                ];
+                ]);
                 if self.selected_has_related() {
                     hints.push((UserEvent::DetailPaneToggle, "related"));
-                }
-                if let Some(h) = self.action_hint() {
-                    hints.push(h);
                 }
                 hints.push((UserEvent::GitHubToggle, "close"));
                 hints
@@ -644,6 +645,9 @@ impl<'a> GitHubView<'a> {
             UserEvent::MergePr if matches!(self.active_tab, GitHubTab::PullRequests) => {
                 self.try_merge_selected_pr();
             }
+            UserEvent::TogglePrDraft if matches!(self.active_tab, GitHubTab::PullRequests) => {
+                self.try_toggle_pr_draft();
+            }
             _ => {}
         }
     }
@@ -770,6 +774,9 @@ impl<'a> GitHubView<'a> {
             UserEvent::ToggleIssueState if matches!(self.active_tab, GitHubTab::Issues) => {
                 self.trigger_toggle_issue();
             }
+            UserEvent::TogglePrDraft if matches!(self.active_tab, GitHubTab::PullRequests) => {
+                self.try_toggle_pr_draft();
+            }
             _ => {}
         }
     }
@@ -797,6 +804,35 @@ impl<'a> GitHubView<'a> {
         });
     }
 
+    fn try_toggle_pr_draft(&mut self) {
+        let idx = self.actual_index(self.selected_index);
+        let Some(pr) = self.pull_requests.get(idx) else {
+            return;
+        };
+        if pr.state != "OPEN" {
+            self.set_flash(
+                format!("PR #{} is {}", pr.number, pr.state.to_lowercase()),
+                true,
+            );
+            return;
+        }
+        let action = PrDraftAction::for_pr(pr.is_draft);
+        self.tx.send(AppEvent::OpenTogglePrDraftPrompt {
+            number: pr.number,
+            action,
+            filter_state: self.state_filter.as_str().to_string(),
+        });
+    }
+
+    /// 就地更新 draft 狀態。`RefreshGitHub` 是非同步的，成功通知到列表刷新之間
+    /// 若讀到過期的 `is_draft`，反向操作會挑錯方向，而 `gh pr ready` 對非 draft
+    /// PR 是 idempotent 成功 — 使用者不會收到任何錯誤提示。
+    pub fn set_pr_draft_flag(&mut self, number: u64, is_draft: bool) {
+        if let Some(pr) = self.pull_requests.iter_mut().find(|p| p.number == number) {
+            pr.is_draft = is_draft;
+        }
+    }
+
     fn trigger_toggle_issue(&self) {
         let idx = self.actual_index(self.selected_index);
         let Some(issue) = self.issues.get(idx) else {
@@ -814,17 +850,28 @@ impl<'a> GitHubView<'a> {
         });
     }
 
-    fn action_hint(&self) -> Option<(UserEvent, &'static str)> {
+    fn action_hints(&self) -> Vec<(UserEvent, &'static str)> {
         match self.active_tab {
             GitHubTab::PullRequests => {
                 let idx = self.actual_index(self.selected_index);
-                self.pull_requests.get(idx).and_then(|pr| {
-                    (!pr.is_draft && pr.state == "OPEN").then_some((UserEvent::MergePr, "merge PR"))
-                })
+                let Some(pr) = self.pull_requests.get(idx) else {
+                    return Vec::new();
+                };
+                if pr.state != "OPEN" {
+                    return Vec::new();
+                }
+                let mut hints = Vec::new();
+                if !pr.is_draft {
+                    hints.push((UserEvent::MergePr, "merge PR"));
+                }
+                let toggle = PrDraftAction::for_pr(pr.is_draft);
+                hints.push((UserEvent::TogglePrDraft, toggle.hint_label()));
+                hints
             }
             GitHubTab::Issues => self
                 .selected_issue_action_label()
-                .map(|label| (UserEvent::ToggleIssueState, label)),
+                .map(|label| vec![(UserEvent::ToggleIssueState, label)])
+                .unwrap_or_default(),
         }
     }
 
