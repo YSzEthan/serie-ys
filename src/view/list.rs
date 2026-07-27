@@ -117,6 +117,9 @@ impl<'a> ListView<'a> {
             UserEvent::GoToBottom => {
                 self.as_mut_list_state().select_last();
             }
+            UserEvent::GoToHead => {
+                self.as_mut_list_state().select_head();
+            }
             UserEvent::ScrollDown => {
                 for _ in 0..count {
                     self.as_mut_list_state().scroll_down();

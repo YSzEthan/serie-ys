@@ -14,6 +14,7 @@ select_down = ["shift-j"]
 
 go_to_top = ["i"]
 go_to_bottom = ["shift-g"]
+go_to_head = ["."]
 scroll_down = [","]
 page_up = ["ctrl-b", "pageup"]
 page_down = ["ctrl-f", "pagedown"]

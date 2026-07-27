@@ -287,6 +287,7 @@ fn help_blocks(
         b(vec![UserEvent::NavigateUp,   UserEvent::SelectUp],      "向上移動",            "Move up"),
         b(vec![UserEvent::GoToTop],                               "跳到頂端",            "Go to top"),
         b(vec![UserEvent::GoToBottom],                             "跳到底端",            "Go to bottom"),
+        b(vec![UserEvent::GoToHead],                              "回到 HEAD",           "Go to HEAD"),
         b(vec![UserEvent::ScrollDown],                            "graph 向下捲動",      "Scroll down"),
         b(vec![UserEvent::GoToParent],                            "選擇 parent commit",  "Select parent commit"),
         b(vec![UserEvent::Confirm, UserEvent::NavigateRight],     "顯示 commit 詳情",    "Show commit details"),

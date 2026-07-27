@@ -690,6 +690,14 @@ impl<'a> CommitListState<'a> {
         }
     }
 
+    /// 把游標移到 HEAD 指向的 commit。HEAD 不存在或被 filter 濾掉時靜默不動。
+    pub fn select_head(&mut self) {
+        let head = self.current_image_manager().head_commit_hash().cloned();
+        if let Some(head) = head {
+            self.select_commit_hash(&head);
+        }
+    }
+
     pub fn search_state(&self) -> SearchState {
         self.search_state
     }

@@ -35,6 +35,7 @@ The keys below are the defaults; see
 | <kbd>Up</kbd> <kbd>k</kbd> <kbd>K</kbd> | Move up | `navigate_up` `select_up` |
 | <kbd>i</kbd> | Go to top | `go_to_top` |
 | <kbd>G</kbd> | Go to bottom | `go_to_bottom` |
+| <kbd>.</kbd> | Go to HEAD | `go_to_head` |
 | <kbd>,</kbd> | Scroll down | `scroll_down` |
 | <kbd>m</kbd> | Select parent commit | `go_to_parent` |
 | <kbd>Enter</kbd> <kbd>y</kbd> <kbd>Right</kbd> <kbd>l</kbd> | Show commit details | `confirm` `navigate_right` |

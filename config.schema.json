@@ -610,6 +610,9 @@
         "go_to_bottom": {
           "$ref": "#/definitions/keybindArray"
         },
+        "go_to_head": {
+          "$ref": "#/definitions/keybindArray"
+        },
         "scroll_down": {
           "$ref": "#/definitions/keybindArray"
         },
