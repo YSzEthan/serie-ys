@@ -628,15 +628,6 @@
         "half_page_down": {
           "$ref": "#/definitions/keybindArray"
         },
-        "select_top": {
-          "$ref": "#/definitions/keybindArray"
-        },
-        "select_middle": {
-          "$ref": "#/definitions/keybindArray"
-        },
-        "select_bottom": {
-          "$ref": "#/definitions/keybindArray"
-        },
         "go_to_next": {
           "$ref": "#/definitions/keybindArray"
         },
