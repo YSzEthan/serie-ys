@@ -1,5 +1,18 @@
 # Changelog
 
+## [1.8.0](https://github.com/YSzEthan/serie-ys/compare/v1.7.0...v1.8.0) (2026-07-29)
+
+
+### Features
+
+* commit list 新增一鍵回到 HEAD（.） ([cb8fadf](https://github.com/YSzEthan/serie-ys/commit/cb8fadf2eaa9e720777573bcd86a8ea39821a029))
+* commit list 的 shift-j/shift-k 改為捲動圖表，並綁 e 開啟 git diff ([2976a9b](https://github.com/YSzEthan/serie-ys/commit/2976a9b8cea8a74f442897486db6c2fd21ed4cf9))
+
+
+### Bug Fixes
+
+* commit list「回到 HEAD」改為比照捲動 margin 移動，不再把 HEAD 硬拉到頂端 ([4d07837](https://github.com/YSzEthan/serie-ys/commit/4d0783765d1e44a906c0074261b3d971e7d0243b))
+
 ## [1.7.0](https://github.com/YSzEthan/serie-ys/compare/v1.6.1...v1.7.0) (2026-07-21)
 
 
