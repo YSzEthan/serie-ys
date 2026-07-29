@@ -690,11 +690,24 @@ impl<'a> CommitListState<'a> {
         }
     }
 
-    /// 把游標移到 HEAD 指向的 commit。HEAD 不存在或被 filter 濾掉時靜默不動。
+    /// 把游標移到 HEAD 指向的 commit,畫面比照上下移動的 scroll margin 規則捲動
+    /// (不把 HEAD 硬拉到最上面)。HEAD 不存在或被 filter 濾掉時靜默不動。
     pub fn select_head(&mut self) {
-        let head = self.current_image_manager().head_commit_hash().cloned();
-        if let Some(head) = head {
-            self.select_commit_hash(&head);
+        let Some(head) = self.current_image_manager().head_commit_hash().cloned() else {
+            return;
+        };
+        let Some(&raw) = self.commit_hash_to_raw.get(&head) else {
+            return;
+        };
+        let Some(target) = self.raw_to_visible(raw) else {
+            return;
+        };
+        // 逐格移動 → 自動沿用 select_next / select_prev 的 scroll margin 行為。
+        while self.current_visible().0 > target.0 {
+            self.select_prev();
+        }
+        while self.current_visible().0 < target.0 {
+            self.select_next();
         }
     }
 
