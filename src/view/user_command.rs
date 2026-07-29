@@ -62,12 +62,12 @@ impl<'a> UserCommandView<'a> {
         let count = event_with_count.count;
 
         match event {
-            UserEvent::NavigateDown => {
+            UserEvent::NavigateDown | UserEvent::SelectDown => {
                 for _ in 0..count {
                     self.commit_user_command_state.scroll_down();
                 }
             }
-            UserEvent::NavigateUp => {
+            UserEvent::NavigateUp | UserEvent::SelectUp => {
                 for _ in 0..count {
                     self.commit_user_command_state.scroll_up();
                 }
@@ -97,12 +97,6 @@ impl<'a> UserCommandView<'a> {
             }
             UserEvent::GoToBottom => {
                 self.commit_user_command_state.select_last();
-            }
-            UserEvent::SelectDown => {
-                self.tx.send(AppEvent::SelectOlderCommit);
-            }
-            UserEvent::SelectUp => {
-                self.tx.send(AppEvent::SelectNewerCommit);
             }
             UserEvent::GoToParent => {
                 self.tx.send(AppEvent::SelectParentCommit);

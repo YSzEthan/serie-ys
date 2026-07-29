@@ -101,12 +101,12 @@ impl<'a> ListView<'a> {
 
         // Normal mode
         match event {
-            UserEvent::NavigateDown | UserEvent::SelectDown => {
+            UserEvent::NavigateDown => {
                 for _ in 0..count {
                     self.as_mut_list_state().select_next();
                 }
             }
-            UserEvent::NavigateUp | UserEvent::SelectUp => {
+            UserEvent::NavigateUp => {
                 for _ in 0..count {
                     self.as_mut_list_state().select_prev();
                 }
@@ -120,15 +120,21 @@ impl<'a> ListView<'a> {
             UserEvent::GoToHead => {
                 self.as_mut_list_state().select_head();
             }
-            UserEvent::ScrollDown => {
-                for _ in 0..count {
-                    self.as_mut_list_state().scroll_down();
-                }
+            // shift-j / shift-k 在 list view 是「捲動圖表」而非「移動游標」。
+            // SelectDown / SelectUp 不可數，故不套 count 迴圈。
+            UserEvent::SelectDown => {
+                self.as_mut_list_state().scroll_down();
+            }
+            UserEvent::SelectUp => {
+                self.as_mut_list_state().scroll_up();
             }
             UserEvent::GoToParent => {
                 for _ in 0..count {
                     self.as_mut_list_state().select_parent();
                 }
+            }
+            UserEvent::UserCommand(n) => {
+                self.tx.send(AppEvent::OpenUserCommand(n));
             }
             UserEvent::ShortCopy => {
                 self.copy_commit_short_hash();

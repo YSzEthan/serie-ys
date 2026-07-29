@@ -25,6 +25,7 @@ struct HelpRow {
     en: Line<'static>,
 }
 
+#[derive(Clone)]
 struct BindingSpec {
     events: Vec<UserEvent>,
     cn: String,
@@ -282,13 +283,14 @@ fn help_blocks(
         b(vec![UserEvent::NavigateUp,   UserEvent::SelectUp],   "向上捲動", "Scroll up"),
     ];
 
-    let list = vec![
-        b(vec![UserEvent::NavigateDown, UserEvent::SelectDown],    "向下移動",            "Move down"),
-        b(vec![UserEvent::NavigateUp,   UserEvent::SelectUp],      "向上移動",            "Move up"),
+    let mut list = vec![
+        b(vec![UserEvent::NavigateDown],                          "向下移動",            "Move down"),
+        b(vec![UserEvent::NavigateUp],                            "向上移動",            "Move up"),
         b(vec![UserEvent::GoToTop],                               "跳到頂端",            "Go to top"),
         b(vec![UserEvent::GoToBottom],                             "跳到底端",            "Go to bottom"),
         b(vec![UserEvent::GoToHead],                              "回到 HEAD",           "Go to HEAD"),
-        b(vec![UserEvent::ScrollDown],                            "graph 向下捲動",      "Scroll down"),
+        b(vec![UserEvent::SelectDown],                            "graph 向下捲動",      "Scroll down"),
+        b(vec![UserEvent::SelectUp],                              "graph 向上捲動",      "Scroll up"),
         b(vec![UserEvent::GoToParent],                            "選擇 parent commit",  "Select parent commit"),
         b(vec![UserEvent::Confirm, UserEvent::NavigateRight],     "顯示 commit 詳情",    "Show commit details"),
         b(vec![UserEvent::RefList],                               "開啟 refs 清單",      "Open refs list"),
@@ -393,21 +395,20 @@ fn help_blocks(
 
     let mut user_command = vec![
         b(vec![UserEvent::Cancel, UserEvent::Close], "關閉 user command",  "Close user command"),
-        b(vec![UserEvent::NavigateDown],              "向下捲動",           "Scroll down"),
-        b(vec![UserEvent::NavigateUp],                "向上捲動",           "Scroll up"),
+        b(vec![UserEvent::NavigateDown, UserEvent::SelectDown],   "向下捲動",            "Scroll down"),
+        b(vec![UserEvent::NavigateUp,   UserEvent::SelectUp],     "向上捲動",            "Scroll up"),
         b(vec![UserEvent::PageDown],                  "向下一頁",           "Scroll page down"),
         b(vec![UserEvent::PageUp],                    "向上一頁",           "Scroll page up"),
         b(vec![UserEvent::HalfPageDown],              "向下半頁",           "Scroll half page down"),
         b(vec![UserEvent::HalfPageUp],                "向上半頁",           "Scroll half page up"),
         b(vec![UserEvent::GoToTop],                   "跳到頂端",           "Go to top"),
         b(vec![UserEvent::GoToBottom],                "跳到底端",           "Go to bottom"),
-        b(vec![UserEvent::SelectDown],                "選擇較舊 commit",    "Select older commit"),
-        b(vec![UserEvent::SelectUp],                  "選擇較新 commit",    "Select newer commit"),
         b(vec![UserEvent::GoToParent],                "選擇 parent commit", "Select parent commit"),
         b(vec![UserEvent::Refresh],                   "重新整理",           "Refresh"),
         b(vec![UserEvent::Confirm],                   "顯示 commit 詳情",   "Show commit details"),
         b(vec![UserEvent::HelpToggle],                "開啟說明",           "Open help"),
     ];
+    list.extend(user_command_items.iter().cloned());
     user_command.extend(user_command_items);
 
     vec![
@@ -696,11 +697,12 @@ transient prompts rather than a view's keymap.
         );
     }
 
-    /// 「User Command」分區的條目是依使用者設定的 `user_command_N` 動態產生的
-    /// （見 `help_blocks` 開頭的 `user_command_items`）。預設沒有任何 user command
-    /// 綁定，所以這個分區在預設 keybind 下必然列不出 `UserCommand`。
+    /// 「User Command」與「Commit List」分區的 `UserCommand` 條目是依使用者設定的
+    /// `user_command_N` 動態產生的（見 `help_blocks` 開頭的 `user_command_items`；
+    /// list.rs 也處理 `UserCommand(n)` 以開啟該畫面）。若某份 keybind 沒有任何
+    /// user command 綁定，這兩個分區就列不出 `UserCommand`，故在此豁免。
     fn dynamically_claimed(block: HelpBlock, name: &str) -> bool {
-        block == HelpBlock::UserCommand && name == "UserCommand"
+        matches!(block, HelpBlock::UserCommand | HelpBlock::List) && name == "UserCommand"
     }
 
     /// 出現在原始碼但不該出現在說明頁的 event。

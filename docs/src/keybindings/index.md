@@ -31,12 +31,13 @@ The keys below are the defaults; see
 
 | Key | Description | Config key |
 | --- | --- | --- |
-| <kbd>Down</kbd> <kbd>j</kbd> <kbd>J</kbd> | Move down | `navigate_down` `select_down` |
-| <kbd>Up</kbd> <kbd>k</kbd> <kbd>K</kbd> | Move up | `navigate_up` `select_up` |
+| <kbd>Down</kbd> <kbd>j</kbd> | Move down | `navigate_down` |
+| <kbd>Up</kbd> <kbd>k</kbd> | Move up | `navigate_up` |
 | <kbd>i</kbd> | Go to top | `go_to_top` |
 | <kbd>G</kbd> | Go to bottom | `go_to_bottom` |
 | <kbd>.</kbd> | Go to HEAD | `go_to_head` |
-| <kbd>,</kbd> | Scroll down | `scroll_down` |
+| <kbd>J</kbd> | Scroll down | `select_down` |
+| <kbd>K</kbd> | Scroll up | `select_up` |
 | <kbd>m</kbd> | Select parent commit | `go_to_parent` |
 | <kbd>Enter</kbd> <kbd>y</kbd> <kbd>Right</kbd> <kbd>l</kbd> | Show commit details | `confirm` `navigate_right` |
 | <kbd>Tab</kbd> | Open refs list | `ref_list` |
@@ -60,6 +61,7 @@ The keys below are the defaults; see
 | <kbd>f</kbd> | Fetch all remotes | `fetch` |
 | <kbd>Space</kbd> | Checkout selected commit/ref | `checkout` |
 | <kbd>r</kbd> | Refresh | `refresh` |
+| <kbd>e</kbd> | Execute user command 1 - git diff | `user_command_1` |
 
 ### Commit Detail
 
@@ -154,20 +156,19 @@ The keys below are the defaults; see
 | Key | Description | Config key |
 | --- | --- | --- |
 | <kbd>n</kbd> <kbd>Esc</kbd> <kbd>Backspace</kbd> | Close user command | `cancel` `close` |
-| <kbd>Down</kbd> <kbd>j</kbd> | Scroll down | `navigate_down` |
-| <kbd>Up</kbd> <kbd>k</kbd> | Scroll up | `navigate_up` |
+| <kbd>Down</kbd> <kbd>j</kbd> <kbd>J</kbd> | Scroll down | `navigate_down` `select_down` |
+| <kbd>Up</kbd> <kbd>k</kbd> <kbd>K</kbd> | Scroll up | `navigate_up` `select_up` |
 | <kbd>PageDown</kbd> <kbd>Ctrl-f</kbd> | Scroll page down | `page_down` |
 | <kbd>PageUp</kbd> <kbd>Ctrl-b</kbd> | Scroll page up | `page_up` |
 | <kbd>Ctrl-d</kbd> | Scroll half page down | `half_page_down` |
 | <kbd>Ctrl-u</kbd> | Scroll half page up | `half_page_up` |
 | <kbd>i</kbd> | Go to top | `go_to_top` |
 | <kbd>G</kbd> | Go to bottom | `go_to_bottom` |
-| <kbd>J</kbd> | Select older commit | `select_down` |
-| <kbd>K</kbd> | Select newer commit | `select_up` |
 | <kbd>m</kbd> | Select parent commit | `go_to_parent` |
 | <kbd>r</kbd> | Refresh | `refresh` |
 | <kbd>Enter</kbd> <kbd>y</kbd> | Show commit details | `confirm` |
 | <kbd>F1</kbd> <kbd>?</kbd> | Open help | `help_toggle` |
+| <kbd>e</kbd> | Execute user command 1 - git diff | `user_command_1` |
 
 ## Hardcoded keys
 
