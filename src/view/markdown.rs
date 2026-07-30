@@ -180,9 +180,16 @@ pub fn render(body: &str, width: usize) -> Vec<Line<'static>> {
 }
 
 /// Section divider, clamped so it never wraps in a narrow preview.
+/// Grey — dividers inside rendered markdown stay neutral.
 pub(super) fn rule_line(width: usize) -> Line<'static> {
+    rule_line_colored(width, Color::DarkGray)
+}
+
+/// [`rule_line`] in a caller-chosen colour, for dividers that separate
+/// preview sections rather than markdown content.
+pub(super) fn rule_line_colored(width: usize, color: Color) -> Line<'static> {
     let n = RULE_WIDTH.min(width);
-    Line::styled("─".repeat(n), Style::default().fg(Color::DarkGray))
+    Line::styled("─".repeat(n), Style::default().fg(color))
 }
 
 /// `[label]: url` — invisible in rendered markdown.

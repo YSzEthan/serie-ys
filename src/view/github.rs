@@ -26,6 +26,13 @@ use crate::{
 const PREFETCH_THRESHOLD: usize = 5;
 const COMMENTS_LOAD_MORE_THRESHOLD: usize = 5;
 
+/// Divider between the item body and the comment thread — blue-grey.
+/// Indexed rather than Rgb so it survives terminals without truecolor.
+const COMMENTS_DIVIDER_FG: Color = Color::Indexed(103);
+/// Divider between two comments — green-grey. Distinct hue from the one
+/// above so the eye can tell "body ends" from "next comment" while scrolling.
+const COMMENT_SEPARATOR_FG: Color = Color::Indexed(108);
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StateFilter {
     Open,
@@ -1875,7 +1882,10 @@ fn append_comment_lines(
     entry: Option<&CommentEntry>,
     width: usize,
 ) {
-    lines.push(super::markdown::rule_line(width));
+    lines.push(super::markdown::rule_line_colored(
+        width,
+        COMMENTS_DIVIDER_FG,
+    ));
 
     let entry = match entry {
         Some(e) => e,
@@ -1940,7 +1950,7 @@ fn append_comment_lines(
         if i + 1 < entry.items.len() {
             lines.push(Line::styled(
                 "·".repeat(20.min(width)),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(COMMENT_SEPARATOR_FG),
             ));
         }
     }
@@ -2463,6 +2473,50 @@ mod tests {
             "preview must leave the loading state, got:\n{screen}"
         );
         assert!(screen.contains("no comments"), "got:\n{screen}");
+    }
+
+    #[test]
+    fn dividers_are_colour_coded_by_section() {
+        let mut view = view_with_body("body".to_string());
+        let comment = |login: &str, body: &str| GhComment {
+            author: GhAuthor {
+                login: login.to_string(),
+            },
+            body: body.to_string(),
+            created_at: "2026-07-27".to_string(),
+            url: String::new(),
+        };
+        view.append_comments(
+            1,
+            GhItemKind::PullRequest,
+            vec![comment("a", "one"), comment("b", "two")],
+            None,
+        );
+
+        let (lines, _) = view.build_preview_content(40);
+        let dividers: Vec<(char, Option<Color>)> = lines
+            .iter()
+            .filter_map(|l| {
+                let text: String = l.spans.iter().map(|s| s.content.to_string()).collect();
+                let first = text.chars().next()?;
+                if first != '─' && first != '·' {
+                    return None;
+                }
+                Some((first, l.style.fg))
+            })
+            .collect();
+
+        assert_eq!(
+            dividers,
+            vec![
+                // meta → body: markdown's own grey, unchanged
+                ('─', Some(Color::DarkGray)),
+                // body → comments
+                ('─', Some(COMMENTS_DIVIDER_FG)),
+                // between two comments
+                ('·', Some(COMMENT_SEPARATOR_FG)),
+            ],
+        );
     }
 
     #[test]
