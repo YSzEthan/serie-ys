@@ -30,7 +30,7 @@ garde = { version = "0.22.1", features = ["derive", "regex"] }
 image = { version = "0.25.10", default-features = false, features = ["png"] }
 laurier = "0.3.0"
 lru = "0.16"
-ratatui = { version = "0.30.0", features = ["serde"] }
+ratatui = { version = "0.30.0", features = ["serde", "unstable-rendered-line-info"] }
 rustc-hash = "2.1.2"
 semver = "1.0.28"
 serde = { version = "1.0.228", features = ["derive"] }

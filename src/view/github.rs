@@ -157,6 +157,16 @@ pub struct GitHubView<'a> {
     comments: FxHashMap<(GhItemKind, u64), CommentEntry>,
     last_preview_len: usize,
 
+    /// Bumped on any in-place edit the preview can show — currently body
+    /// replacement and bulk reload. `set_pr_draft_flag` deliberately does not,
+    /// since `is_draft` never reaches `build_preview_content`; that changes the
+    /// day the preview starts showing draft status.
+    body_rev: u64,
+    preview_cache: Option<PreviewCache>,
+    /// Preview content height, recorded by `render_preview`. The scroll
+    /// handlers use it instead of re-deriving it from `height`.
+    preview_height: usize,
+
     ctx: Rc<AppContext>,
     tx: Sender,
 }
@@ -203,6 +213,9 @@ impl<'a> GitHubView<'a> {
             pending_jump: None,
             comments: FxHashMap::default(),
             last_preview_len: 0,
+            body_rev: 0,
+            preview_cache: None,
+            preview_height: 0,
             ctx,
             tx,
         }
@@ -252,6 +265,7 @@ impl<'a> GitHubView<'a> {
         self.issues_next_cursor = issues_next_cursor;
         self.prs_next_cursor = prs_next_cursor;
         self.comments.clear();
+        self.body_rev = self.body_rev.wrapping_add(1);
         self.bump_generation();
         // 修正選取索引避免越界
         let max = self.current_list_len().saturating_sub(1);
@@ -375,7 +389,7 @@ impl<'a> GitHubView<'a> {
     }
 
     fn maybe_load_more_comments(&mut self) {
-        let visible = self.height.saturating_sub(2);
+        let visible = self.preview_height;
         let near_bottom = self
             .preview_offset
             .saturating_add(visible)
@@ -464,6 +478,7 @@ impl<'a> GitHubView<'a> {
                 }
             }
         }
+        self.body_rev = self.body_rev.wrapping_add(1);
         self.preview_offset = 0;
     }
 
@@ -613,21 +628,21 @@ impl<'a> GitHubView<'a> {
                 }
             }
             UserEvent::PageDown => {
-                let page = self.height.saturating_sub(2).max(1);
+                let page = self.preview_height.max(1);
                 self.preview_offset = self.preview_offset.saturating_add(page);
                 self.maybe_load_more_comments();
             }
             UserEvent::PageUp => {
-                let page = self.height.saturating_sub(2).max(1);
+                let page = self.preview_height.max(1);
                 self.preview_offset = self.preview_offset.saturating_sub(page);
             }
             UserEvent::HalfPageDown => {
-                let half = self.height.saturating_sub(2).max(1) / 2;
+                let half = self.preview_height.max(1) / 2;
                 self.preview_offset = self.preview_offset.saturating_add(half);
                 self.maybe_load_more_comments();
             }
             UserEvent::HalfPageUp => {
-                let half = self.height.saturating_sub(2).max(1) / 2;
+                let half = self.preview_height.max(1) / 2;
                 self.preview_offset = self.preview_offset.saturating_sub(half);
             }
             UserEvent::GoToTop => {
@@ -1548,20 +1563,29 @@ impl<'a> GitHubView<'a> {
         let inner = block.inner(area);
         f.render_widget(block, area);
 
-        let (preview_lines, overlays) = self.build_preview_content();
-        self.last_preview_len = preview_lines.len();
+        // Render is the source of truth for the preview's usable height; the
+        // scroll handlers read it back rather than re-deriving it from `height`.
+        self.preview_height = inner.height as usize;
 
-        // Clamp preview_offset to avoid scrolling past content
-        let max_offset = preview_lines.len().saturating_sub(inner.height as usize);
+        let visual_len = self.refresh_preview_cache(inner.width);
+        self.last_preview_len = visual_len;
+        // Clamp preview_offset to avoid scrolling past content. Both sides are
+        // visual (post-wrap) lines — `Paragraph::scroll` skips wrapped lines,
+        // not source lines. The `u16` bound belongs here too, so state and
+        // screen cannot disagree about where the bottom is.
+        let max_offset = visual_len
+            .saturating_sub(inner.height as usize)
+            .min(u16::MAX as usize);
         self.preview_offset = self.preview_offset.min(max_offset);
+        let scroll = self.preview_offset as u16;
 
-        let visible: Vec<Line> = preview_lines
-            .into_iter()
-            .skip(self.preview_offset)
-            .take(inner.height as usize)
-            .collect();
-
-        let paragraph = Paragraph::new(visible).wrap(Wrap { trim: false });
+        let cache = self
+            .preview_cache
+            .as_ref()
+            .expect("refresh_preview_cache always populates");
+        let paragraph = Paragraph::new(borrow_lines(&cache.lines))
+            .wrap(Wrap { trim: false })
+            .scroll((scroll, 0));
         f.render_widget(paragraph, inner);
 
         // Overlay `#N` cells with OSC 8 hyperlinks. Must run after Paragraph
@@ -1571,27 +1595,84 @@ impl<'a> GitHubView<'a> {
         if crate::external::is_tmux() {
             return;
         }
-        let buf = f.buffer_mut();
-        for ov in &overlays {
-            let Some(rel) = ov.line_idx.checked_sub(self.preview_offset) else {
-                continue;
-            };
-            if rel as u16 >= inner.height {
-                continue;
-            }
-            let y = inner.top() + rel as u16;
-            let x = inner.left().saturating_add(ov.x_offset);
-            if x >= inner.right() {
-                continue;
-            }
-            let payload = crate::external::format_osc8_hyperlink(&ov.url, &ov.label);
-            let label_width = console::measure_text_width(&ov.label) as u16;
-            buf[(x, y)].set_symbol(&payload);
-            let remaining = inner.right() - x;
-            for i in 1..label_width.min(remaining) {
-                buf[(x + i, y)].set_skip(true);
-            }
+        // Only the first source line has a trustworthy position: `line_idx`
+        // counts source lines while the scroll offset counts wrapped ones, so
+        // every other overlay drifts as soon as anything above it wraps. Once
+        // scrolled, even that one is off screen. Restoring the rest needs links
+        // attached to spans rather than stored coordinates.
+        if scroll != 0 || inner.height == 0 {
+            return;
         }
+        let Some(ov) = cache.overlays.iter().find(|o| o.line_idx == 0) else {
+            return;
+        };
+        let (x, y) = (inner.left().saturating_add(ov.x_offset), inner.top());
+        if x >= inner.right() {
+            return;
+        }
+        let payload = crate::external::format_osc8_hyperlink(&ov.url, &ov.label);
+        let label_width = console::measure_text_width(&ov.label) as u16;
+        let buf = f.buffer_mut();
+        buf[(x, y)].set_symbol(&payload);
+        let remaining = inner.right() - x;
+        for i in 1..label_width.min(remaining) {
+            buf[(x + i, y)].set_skip(true);
+        }
+    }
+
+    /// Everything `build_preview_content` reads, plus the width the result is
+    /// wrapped against. See [`PreviewKey`].
+    fn preview_key(&self, width: u16) -> PreviewKey {
+        let (number, kind) = self
+            .selected_number_and_kind()
+            .unwrap_or((0, GhItemKind::Issue));
+        let entry = self.comments.get(&(kind, number));
+        // Count alone is not enough: "loaded but empty" and "still loading"
+        // both have zero items yet render differently. Exhaustive on purpose —
+        // a new `CommentLoad` variant must not silently fold into Pending and
+        // freeze the preview.
+        let stage = match entry.map(|e| &e.state) {
+            None | Some(CommentLoad::NotRequested | CommentLoad::Loading) => CommentStage::Pending,
+            Some(CommentLoad::Loaded) => CommentStage::Ready,
+            Some(CommentLoad::Error(_)) => CommentStage::Failed,
+        };
+        PreviewKey {
+            tab: self.active_tab,
+            number,
+            stage,
+            comment_count: entry.map_or(0, |e| e.items.len()),
+            has_more: entry.is_some_and(|e| e.next_cursor.is_some()),
+            loading_more: entry.is_some_and(|e| e.loading_more),
+            body_rev: self.body_rev,
+            width,
+        }
+    }
+
+    /// Rebuild the preview only when its inputs changed, returning the wrapped
+    /// line count. `render` runs at the marquee tick rate (10 Hz) whenever the
+    /// selected row overflows, and both `markdown::render` and `line_count`
+    /// walk the entire body plus every comment — so recomputing per frame
+    /// burns CPU while idle.
+    ///
+    /// Wrapping is left to `Paragraph` rather than reusing
+    /// `commit_detail::wrap_line_spans`: that one breaks mid-word, which would
+    /// mangle the English prose common in PR bodies.
+    fn refresh_preview_cache(&mut self, width: u16) -> usize {
+        let key = self.preview_key(width);
+        if let Some(cache) = self.preview_cache.as_ref().filter(|c| c.key == key) {
+            return cache.visual_len;
+        }
+        let (lines, overlays) = self.build_preview_content();
+        let visual_len = Paragraph::new(borrow_lines(&lines))
+            .wrap(Wrap { trim: false })
+            .line_count(width);
+        self.preview_cache = Some(PreviewCache {
+            key,
+            lines,
+            overlays,
+            visual_len,
+        });
+        visual_len
     }
 
     fn render_checkbox_preview(&self, f: &mut Frame, area: Rect) {
@@ -1887,6 +1968,62 @@ struct PreviewOverlay {
     label: String,
 }
 
+/// Everything the preview content depends on. Equal key ⇒ identical output, so
+/// the cache can be reused. A content key rather than a dirty flag: there are
+/// ~20 sites that reset `preview_offset`, and relying on each to also mark the
+/// cache stale would eventually miss one.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct PreviewKey {
+    tab: GitHubTab,
+    number: u64,
+    stage: CommentStage,
+    comment_count: usize,
+    /// Drives the footer between "(loading more…)" and "(more comments — …)".
+    has_more: bool,
+    loading_more: bool,
+    body_rev: u64,
+    width: u16,
+}
+
+/// Which of `append_comment_lines`' branches the preview will take. Derived
+/// from `CommentLoad` rather than reusing it, so the key stays `Copy`/`Eq`
+/// without dragging the error string along.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CommentStage {
+    Pending,
+    Ready,
+    Failed,
+}
+
+#[derive(Debug)]
+struct PreviewCache {
+    key: PreviewKey,
+    lines: Vec<Line<'static>>,
+    overlays: Vec<PreviewOverlay>,
+    /// Line count *after* wrapping — what `preview_offset` is measured in.
+    visual_len: usize,
+}
+
+/// Re-borrow cached lines instead of cloning them: `Paragraph` needs an owned
+/// `Text`, but the spans can point at the cache's strings, so only the `Vec`s
+/// are allocated per frame — no string copies.
+fn borrow_lines<'a>(lines: &'a [Line<'static>]) -> Vec<Line<'a>> {
+    lines
+        .iter()
+        // Struct literal, not `Line::from(..)` plus assignments: a field added
+        // upstream then fails to compile instead of being silently dropped.
+        .map(|l| Line {
+            spans: l
+                .spans
+                .iter()
+                .map(|s| Span::styled(s.content.as_ref(), s.style))
+                .collect(),
+            style: l.style,
+            alignment: l.alignment,
+        })
+        .collect()
+}
+
 #[derive(Debug, Clone)]
 struct RowData {
     line: Line<'static>,
@@ -2172,4 +2309,199 @@ fn labels_display_width(labels: &[crate::github::GhLabel]) -> usize {
     let seps = labels.len().saturating_sub(1) * 2; // ", "
                                                    // " [" + names + seps + "]"
     3 + names + seps
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{backend::TestBackend, Terminal};
+
+    use crate::{
+        color::ColorTheme,
+        config::{CoreConfig, UiConfig},
+        github::GhAuthor,
+        keybind::KeyBind,
+        protocol::ImageProtocol,
+    };
+
+    const TERM_W: u16 = 60;
+    const TERM_H: u16 = 20;
+    const LAST_MARKER: &str = "尾端標記";
+
+    fn test_ctx() -> Rc<AppContext> {
+        Rc::new(AppContext {
+            keybind: KeyBind::new(None),
+            core_config: CoreConfig::default(),
+            ui_config: UiConfig::default(),
+            color_theme: ColorTheme::default(),
+            image_protocol: ImageProtocol::Text,
+        })
+    }
+
+    /// A body long enough that every source line wraps several times at the
+    /// preview width — the condition the old slice-then-wrap code got wrong.
+    fn long_body() -> String {
+        let mut body = String::new();
+        for i in 0..10 {
+            body.push_str(&format!("第{i}行內容刻意寫得很長好觸發折行折行折行折行\n"));
+        }
+        body.push_str(LAST_MARKER);
+        body
+    }
+
+    fn view_with_long_body() -> GitHubView<'static> {
+        view_with_body(long_body())
+    }
+
+    fn view_with_body(body: String) -> GitHubView<'static> {
+        let pr = GhPullRequest {
+            number: 1,
+            title: "t".to_string(),
+            state: "OPEN".to_string(),
+            labels: Vec::new(),
+            author: GhAuthor {
+                login: "alice".to_string(),
+            },
+            head_ref_name: "topic".to_string(),
+            base_ref_name: "main".to_string(),
+            is_draft: false,
+            body,
+            url: String::new(),
+            closed_at: None,
+            updated_at: String::new(),
+            linked_issues: Vec::new(),
+        };
+
+        let (tx, _rx) = Sender::channel_for_test();
+        let mut view = GitHubView::new(
+            View::Default,
+            Vec::new(),
+            vec![pr],
+            None,
+            None,
+            "open",
+            test_ctx(),
+            tx,
+        );
+        view.active_tab = GitHubTab::PullRequests;
+        view
+    }
+
+    fn render_to_string(view: &mut GitHubView<'_>) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(TERM_W, TERM_H)).unwrap();
+        terminal
+            .draw(|f| {
+                let area = f.area();
+                view.render(f, area, 0);
+            })
+            .unwrap();
+        // `TestBackend`'s Display skips the blank filler cell that follows a
+        // double-width glyph, so CJK text comes back contiguous.
+        terminal.backend().to_string()
+    }
+
+    #[test]
+    fn preview_scrolls_all_the_way_to_the_last_line() {
+        let mut view = view_with_long_body();
+        // First render populates `last_preview_len` (visual lines).
+        render_to_string(&mut view);
+        // Ask for far more scroll than exists; render clamps it to the bottom.
+        view.preview_offset = usize::MAX / 2;
+        let screen = render_to_string(&mut view);
+
+        assert!(
+            screen.contains(LAST_MARKER),
+            "bottom of the body must be reachable, got:\n{screen}"
+        );
+    }
+
+    #[test]
+    fn preview_offset_is_clamped_to_visual_lines() {
+        let mut view = view_with_long_body();
+        render_to_string(&mut view);
+        let total = view.last_preview_len;
+
+        view.preview_offset = usize::MAX / 2;
+        render_to_string(&mut view);
+
+        let expected = total.saturating_sub(view.preview_height);
+        assert_eq!(view.preview_offset, expected);
+
+        // The clamp must be in wrapped lines, not source lines. Comparing
+        // against the cache's own source count is what gives this test teeth:
+        // the old logical-line arithmetic made the two equal.
+        let source_lines = view.preview_cache.as_ref().map_or(0, |c| c.lines.len());
+        assert!(
+            total > source_lines,
+            "last_preview_len must count wrapped lines ({total}) not source lines ({source_lines})"
+        );
+    }
+
+    #[test]
+    fn preview_cache_is_reused_until_an_input_changes() {
+        let mut view = view_with_long_body();
+        render_to_string(&mut view);
+        let key = view.preview_cache.as_ref().map(|c| c.key);
+        assert!(key.is_some());
+
+        render_to_string(&mut view);
+        assert_eq!(view.preview_cache.as_ref().map(|c| c.key), key);
+
+        // A body swap must invalidate it even though the PR number is unchanged.
+        view.update_body_for_item(1, GhItemKind::PullRequest, "short".to_string());
+        render_to_string(&mut view);
+        assert_ne!(view.preview_cache.as_ref().map(|c| c.key), key);
+    }
+
+    #[test]
+    fn preview_cache_invalidates_when_comments_load_empty() {
+        // Short body so the comment section is on screen without scrolling.
+        let mut view = view_with_body("short".to_string());
+        let screen = render_to_string(&mut view);
+        assert!(screen.contains("loading comments"), "got:\n{screen}");
+
+        // Zero comments, but *loaded* — item count stays 0, so only the stage
+        // distinguishes this from the pending state.
+        view.append_comments(1, GhItemKind::PullRequest, Vec::new(), None);
+        let screen = render_to_string(&mut view);
+
+        assert!(
+            !screen.contains("loading comments"),
+            "preview must leave the loading state, got:\n{screen}"
+        );
+        assert!(screen.contains("no comments"), "got:\n{screen}");
+    }
+
+    #[test]
+    fn preview_cache_invalidates_when_more_comments_start_loading() {
+        let mut view = view_with_body("short".to_string());
+        // One page in, with another page available.
+        view.append_comments(
+            1,
+            GhItemKind::PullRequest,
+            vec![GhComment {
+                author: GhAuthor {
+                    login: "bob".to_string(),
+                },
+                body: "hi".to_string(),
+                created_at: "2026-07-27".to_string(),
+                url: String::new(),
+            }],
+            Some("cursor".to_string()),
+        );
+        let screen = render_to_string(&mut view);
+        // Short fragment: the full footer wraps at this width.
+        assert!(screen.contains("more comments"), "got:\n{screen}");
+
+        // Fetching the next page changes only `loading_more` — no item count,
+        // no stage change — so the footer only updates if the key tracks it.
+        view.preview_offset = usize::MAX / 2;
+        view.maybe_load_more_comments();
+        let screen = render_to_string(&mut view);
+
+        assert!(
+            screen.contains("loading more"),
+            "footer must follow loading_more, got:\n{screen}"
+        );
+    }
 }
