@@ -17,7 +17,7 @@ use crate::{
     event::{AppEvent, RelatedGroup, RelatedItem, Sender, UserEvent, UserEventWithCount},
     fuzzy::SearchMatcher,
     github::{
-        self, CheckboxItem, GhComment, GhIssue, GhItemKind, GhPullRequest, PrDraftAction,
+        self, CheckboxItem, GhIssue, GhItemKind, GhPullRequest, GhTimelineItem, PrDraftAction,
         StateAction,
     },
     view::View,
@@ -26,14 +26,30 @@ use crate::{
 const PREFETCH_THRESHOLD: usize = 5;
 const TIMELINE_LOAD_MORE_THRESHOLD: usize = 5;
 
-/// Divider between the item body and the comment thread — pastel blue-grey
-/// (#afafd7). Indexed rather than Rgb so it survives terminals without
-/// truecolor.
-const COMMENTS_DIVIDER_FG: Color = Color::Indexed(146);
-/// Divider between two comments — pastel green-grey (#afd7af). Distinct hue
-/// from the one above so the eye can tell "body ends" from "next comment"
-/// while scrolling; same lightness so neither dominates.
-const COMMENT_SEPARATOR_FG: Color = Color::Indexed(151);
+/// Which region of the timeline a divider closes off. Colour is decided by
+/// what came *before* the divider, not what follows — reading top to bottom,
+/// that's the piece of context the eye needs while scrolling.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum Section {
+    Body,
+    Comment,
+    Commit,
+}
+
+impl Section {
+    /// Indexed rather than Rgb so these survive terminals without truecolor.
+    fn color(self) -> Color {
+        match self {
+            Section::Body => Color::Indexed(146), // pastel blue-grey (#afafd7)
+            Section::Comment => Color::Indexed(151), // pastel green-grey (#afd7af)
+            Section::Commit => Color::Indexed(186), // pastel yellow-grey (#d7d787)
+        }
+    }
+
+    fn divider(self, width: usize) -> Line<'static> {
+        super::markdown::rule_line_colored(width, self.color())
+    }
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StateFilter {
@@ -120,7 +136,7 @@ enum TimelineLoad {
 #[derive(Debug, Default)]
 struct TimelineEntry {
     state: TimelineLoad,
-    items: Vec<GhComment>,
+    items: Vec<GhTimelineItem>,
     next_cursor: Option<String>,
     loading_more: bool,
 }
@@ -430,7 +446,7 @@ impl<'a> GitHubView<'a> {
         &mut self,
         number: u64,
         kind: GhItemKind,
-        items: Vec<GhComment>,
+        items: Vec<GhTimelineItem>,
         next_cursor: Option<String>,
     ) {
         let entry = self.timeline.entry((kind, number)).or_default();
@@ -1860,73 +1876,173 @@ fn append_comment_lines(
     entry: Option<&TimelineEntry>,
     width: usize,
 ) {
-    lines.push(super::markdown::rule_line_colored(
-        width,
-        COMMENTS_DIVIDER_FG,
-    ));
+    let mut prev = Section::Body;
+    for item in build_timeline(entry) {
+        let section = item.section();
+        lines.push(prev.divider(width));
+        item.render(lines, width);
+        prev = section;
+    }
+}
 
-    // No entry yet is the same as `NotRequested` — the request just hasn't
-    // been dispatched. A default entry folds that into the match below
-    // instead of duplicating the "(loading comments…)" branch.
-    let pending = TimelineEntry::default();
-    let entry = entry.unwrap_or(&pending);
+/// Flattens every state a `TimelineEntry` can be in — pending, failed,
+/// loaded (empty or not), paginating — into one list of renderable rows.
+/// The render loop that walks the result has no branches of its own: every
+/// "what state am I in" question is answered once, here.
+///
+/// Returns borrowed items rather than an owned copy, so a `None`/`NotRequested`
+/// entry (nothing to borrow from) has to be handled before the `Loaded` match
+/// arm rather than folded into it via a local default — that would dangle.
+fn build_timeline(entry: Option<&TimelineEntry>) -> Vec<TimelineItem<'_>> {
+    let Some(entry) = entry else {
+        return vec![TimelineItem::notice("(loading comments…)", Color::DarkGray)];
+    };
 
     match &entry.state {
         TimelineLoad::NotRequested | TimelineLoad::Loading => {
-            lines.push(Line::styled(
-                "(loading comments…)",
-                Style::default().fg(Color::DarkGray),
-            ));
-            return;
+            vec![TimelineItem::notice("(loading comments…)", Color::DarkGray)]
         }
-        TimelineLoad::Error(e) => {
-            lines.push(Line::styled(
-                format!("(comments failed: {e})"),
-                Style::default().fg(Color::Red),
-            ));
-            return;
-        }
-        TimelineLoad::Loaded => {}
-    }
-
-    if entry.items.is_empty() {
-        lines.push(Line::styled(
-            "(no comments)",
-            Style::default().fg(Color::DarkGray),
-        ));
-        return;
-    }
-
-    for (i, c) in entry.items.iter().enumerate() {
-        lines.push(Line::from(vec![
-            Span::styled(
-                format!("@{}", c.author.login),
-                Style::default()
-                    .fg(Color::Cyan)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled(
-                format!("  {}", c.created_at),
-                Style::default().fg(Color::DarkGray),
-            ),
-        ]));
-        lines.extend(super::markdown::render(&c.body, width));
-        if i + 1 < entry.items.len() {
-            lines.push(Line::styled(
-                "·".repeat(20.min(width)),
-                Style::default().fg(COMMENT_SEPARATOR_FG),
-            ));
+        TimelineLoad::Error(e) => vec![TimelineItem::notice(
+            format!("(comments failed: {e})"),
+            Color::Red,
+        )],
+        TimelineLoad::Loaded => {
+            let mut items: Vec<TimelineItem<'_>> = entry
+                .items
+                .iter()
+                .filter_map(TimelineItem::from_gh)
+                .collect();
+            // Checked on the *filtered* list, not `entry.items`: a page of
+            // nothing but `Unknown` nodes must still fall back to a notice
+            // instead of rendering zero rows (and thus no divider at all).
+            if items.is_empty() {
+                items.push(TimelineItem::notice("(no comments)", Color::DarkGray));
+            } else if entry.next_cursor.is_some() {
+                let text = if entry.loading_more {
+                    "(loading more…)"
+                } else {
+                    "(more comments — scroll down to load)"
+                };
+                items.push(TimelineItem::notice(text, Color::DarkGray));
+            }
+            items
         }
     }
+}
 
-    if entry.next_cursor.is_some() {
-        let suffix = if entry.loading_more {
-            "(loading more…)"
-        } else {
-            "(more comments — scroll down to load)"
-        };
-        lines.push(Line::styled(suffix, Style::default().fg(Color::DarkGray)));
+/// One renderable row of the timeline: a comment, a commit, or a status
+/// notice standing in for either (loading/error/empty/pagination footer).
+/// Borrows from the `TimelineEntry` it was built from — this is rebuilt from
+/// scratch on every cache miss, so there's nothing to hold onto past render.
+enum TimelineItem<'a> {
+    Comment {
+        author: &'a str,
+        created_at: &'a str,
+        body: &'a str,
+    },
+    Commit {
+        oid: &'a str,
+        headline: &'a str,
+        ci_state: Option<&'a str>,
+    },
+    Notice(Line<'static>),
+}
+
+impl<'a> TimelineItem<'a> {
+    fn notice(text: impl Into<String>, color: Color) -> Self {
+        TimelineItem::Notice(Line::styled(text.into(), Style::default().fg(color)))
     }
+
+    /// `Unknown` nodes — an `__typename` `itemTypes` wasn't supposed to
+    /// produce — are dropped rather than rendered as an error. One
+    /// unrecognized node shouldn't put a scary message in the middle of an
+    /// otherwise normal timeline.
+    fn from_gh(item: &'a GhTimelineItem) -> Option<Self> {
+        match item {
+            GhTimelineItem::IssueComment {
+                body,
+                created_at,
+                author,
+            } => Some(TimelineItem::Comment {
+                author: author.as_ref().map_or("ghost", |a| a.login.as_str()),
+                created_at,
+                body,
+            }),
+            GhTimelineItem::PullRequestCommit { commit } => Some(TimelineItem::Commit {
+                oid: &commit.abbreviated_oid,
+                headline: &commit.message_headline,
+                ci_state: commit
+                    .status_check_rollup
+                    .as_ref()
+                    .map(|r| r.state.as_str()),
+            }),
+            GhTimelineItem::Unknown => None,
+        }
+    }
+
+    fn section(&self) -> Section {
+        match self {
+            TimelineItem::Comment { .. } | TimelineItem::Notice(_) => Section::Comment,
+            TimelineItem::Commit { .. } => Section::Commit,
+        }
+    }
+
+    fn render(self, lines: &mut Vec<Line<'static>>, width: usize) {
+        match self {
+            TimelineItem::Comment {
+                author,
+                created_at,
+                body,
+            } => {
+                lines.push(Line::from(vec![
+                    Span::styled(
+                        format!("@{author}"),
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("  {created_at}"),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]));
+                lines.extend(super::markdown::render(body, width));
+            }
+            TimelineItem::Commit {
+                oid,
+                headline,
+                ci_state,
+            } => {
+                lines.push(commit_line(oid, headline, ci_state, width));
+            }
+            TimelineItem::Notice(line) => lines.push(line),
+        }
+    }
+}
+
+/// Marker + colour for a commit's CI state. The two-space fallback when
+/// there's no rollup at all keeps the oid column aligned with commits that
+/// do have one.
+fn commit_ci_marker(state: Option<&str>) -> (&'static str, Color) {
+    match state {
+        Some("SUCCESS") => ("✓ ", Color::Green),
+        Some("FAILURE" | "ERROR") => ("✗ ", Color::Red),
+        Some("PENDING" | "EXPECTED") => ("● ", Color::Yellow),
+        _ => ("  ", Color::DarkGray),
+    }
+}
+
+fn commit_line(oid: &str, headline: &str, ci_state: Option<&str>, width: usize) -> Line<'static> {
+    let (marker, marker_color) = commit_ci_marker(ci_state);
+    let prefix_width = console::measure_text_width(marker) + console::measure_text_width(oid) + 2;
+    let headline =
+        console::truncate_str(headline, width.saturating_sub(prefix_width), "…").to_string();
+    Line::from(vec![
+        Span::styled(marker, Style::default().fg(marker_color)),
+        Span::styled(oid.to_string(), Style::default().fg(Color::DarkGray)),
+        Span::raw("  "),
+        Span::raw(headline),
+    ])
 }
 
 /// OSC 8 hyperlink drawn over the preview's header line (`#N`) — the only
@@ -1967,7 +2083,7 @@ impl PreviewInput<'_> {
             tab: self.tab,
             number: self.number,
             stage,
-            comment_count: self.entry.map_or(0, |e| e.items.len()),
+            item_count: self.entry.map_or(0, |e| e.items.len()),
             has_more: self.entry.is_some_and(|e| e.next_cursor.is_some()),
             loading_more: self.entry.is_some_and(|e| e.loading_more),
             body_rev: self.body_rev,
@@ -2010,7 +2126,7 @@ struct PreviewKey {
     tab: GitHubTab,
     number: u64,
     stage: TimelineStage,
-    comment_count: usize,
+    item_count: usize,
     /// Drives the footer between "(loading more…)" and "(more comments — …)".
     has_more: bool,
     loading_more: bool,
@@ -2334,7 +2450,7 @@ mod tests {
     use crate::{
         color::ColorTheme,
         config::{CoreConfig, UiConfig},
-        github::GhAuthor,
+        github::{GhAuthor, GhCommit, GhStatusCheckRollup},
         keybind::KeyBind,
         protocol::ImageProtocol,
     };
@@ -2487,21 +2603,39 @@ mod tests {
         assert!(screen.contains("no comments"), "got:\n{screen}");
     }
 
+    fn timeline_comment(login: &str, body: &str) -> GhTimelineItem {
+        GhTimelineItem::IssueComment {
+            body: body.to_string(),
+            created_at: "2026-07-27".to_string(),
+            author: Some(GhAuthor {
+                login: login.to_string(),
+            }),
+        }
+    }
+
+    fn timeline_commit(oid: &str, state: &str) -> GhTimelineItem {
+        GhTimelineItem::PullRequestCommit {
+            commit: GhCommit {
+                abbreviated_oid: oid.to_string(),
+                message_headline: format!("headline for {oid}"),
+                status_check_rollup: Some(GhStatusCheckRollup {
+                    state: state.to_string(),
+                }),
+            },
+        }
+    }
+
     #[test]
     fn dividers_are_colour_coded_by_section() {
         let mut view = view_with_body("body".to_string());
-        let comment = |login: &str, body: &str| GhComment {
-            author: GhAuthor {
-                login: login.to_string(),
-            },
-            body: body.to_string(),
-            created_at: "2026-07-27".to_string(),
-            url: String::new(),
-        };
         view.append_timeline_items(
             1,
             GhItemKind::PullRequest,
-            vec![comment("a", "one"), comment("b", "two")],
+            vec![
+                timeline_commit("aaaaaaa", "SUCCESS"),
+                timeline_comment("a", "one"),
+                timeline_commit("bbbbbbb", "SUCCESS"),
+            ],
             None,
         );
 
@@ -2511,7 +2645,7 @@ mod tests {
             .filter_map(|l| {
                 let text: String = l.spans.iter().map(|s| s.content.to_string()).collect();
                 let first = text.chars().next()?;
-                if first != '─' && first != '·' {
+                if first != '─' {
                     return None;
                 }
                 Some((first, l.style.fg))
@@ -2523,10 +2657,12 @@ mod tests {
             vec![
                 // meta → body: markdown's own grey, unchanged
                 ('─', Some(Color::DarkGray)),
-                // body → comments
-                ('─', Some(COMMENTS_DIVIDER_FG)),
-                // between two comments
-                ('·', Some(COMMENT_SEPARATOR_FG)),
+                // body → first commit
+                ('─', Some(Section::Body.color())),
+                // commit → comment
+                ('─', Some(Section::Commit.color())),
+                // comment → commit
+                ('─', Some(Section::Comment.color())),
             ],
         );
     }
@@ -2538,14 +2674,7 @@ mod tests {
         view.append_timeline_items(
             1,
             GhItemKind::PullRequest,
-            vec![GhComment {
-                author: GhAuthor {
-                    login: "bob".to_string(),
-                },
-                body: "hi".to_string(),
-                created_at: "2026-07-27".to_string(),
-                url: String::new(),
-            }],
+            vec![timeline_comment("bob", "hi")],
             Some("cursor".to_string()),
         );
         let screen = render_to_string(&mut view);
@@ -2561,6 +2690,126 @@ mod tests {
         assert!(
             screen.contains("loading more"),
             "footer must follow loading_more, got:\n{screen}"
+        );
+    }
+
+    fn view_with_issue(body: String) -> GitHubView<'static> {
+        let issue = GhIssue {
+            number: 1,
+            title: "t".to_string(),
+            state: "OPEN".to_string(),
+            labels: Vec::new(),
+            author: GhAuthor {
+                login: "alice".to_string(),
+            },
+            created_at: String::new(),
+            body,
+            url: String::new(),
+            closed_at: None,
+            updated_at: String::new(),
+            parent: None,
+            sub_issues: Vec::new(),
+        };
+
+        let (tx, _rx) = Sender::channel_for_test();
+        let mut view = GitHubView::new(
+            View::Default,
+            vec![issue],
+            Vec::new(),
+            None,
+            None,
+            "open",
+            test_ctx(),
+            tx,
+        );
+        view.active_tab = GitHubTab::Issues;
+        view
+    }
+
+    /// The Issues tab shares every code path with PRs from `TimelineEntry`
+    /// down — this pins down that the shared `timelineItems` plumbing still
+    /// renders an Issue's body and comments the same way it did before 3b.
+    #[test]
+    fn issue_timeline_renders_like_pr_timeline() {
+        let mut view = view_with_issue("issue body".to_string());
+        view.append_timeline_items(
+            1,
+            GhItemKind::Issue,
+            vec![timeline_comment("carol", "issue comment")],
+            None,
+        );
+
+        let screen = render_to_string(&mut view);
+        assert!(screen.contains("issue body"), "got:\n{screen}");
+        assert!(screen.contains("carol"), "got:\n{screen}");
+        assert!(screen.contains("issue comment"), "got:\n{screen}");
+    }
+
+    #[test]
+    fn empty_timeline_still_draws_the_body_divider() {
+        let mut view = view_with_body("body".to_string());
+        view.append_timeline_items(1, GhItemKind::PullRequest, Vec::new(), None);
+
+        let (lines, _) = build_preview_content(&view.preview_input(40));
+        let has_body_divider = lines.iter().any(|l| {
+            let text: String = l.spans.iter().map(|s| s.content.to_string()).collect();
+            text.starts_with('─') && l.style.fg == Some(Section::Body.color())
+        });
+        assert!(
+            has_body_divider,
+            "loaded-but-empty timeline must still draw the body divider, got: {lines:?}"
+        );
+    }
+
+    /// A page consisting entirely of nodes `TimelineItem::from_gh` drops
+    /// (unrecognized `__typename`) must fall back the same way a genuinely
+    /// empty page does — filtering happens *after* `entry.items.is_empty()`
+    /// would already have said "not empty".
+    #[test]
+    fn all_unknown_timeline_still_draws_the_body_divider() {
+        let mut view = view_with_body("body".to_string());
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            vec![GhTimelineItem::Unknown, GhTimelineItem::Unknown],
+            None,
+        );
+
+        let screen = render_to_string(&mut view);
+        assert!(screen.contains("no comments"), "got:\n{screen}");
+
+        let (lines, _) = build_preview_content(&view.preview_input(40));
+        let has_body_divider = lines.iter().any(|l| {
+            let text: String = l.spans.iter().map(|s| s.content.to_string()).collect();
+            text.starts_with('─') && l.style.fg == Some(Section::Body.color())
+        });
+        assert!(
+            has_body_divider,
+            "an all-Unknown page must still draw the body divider, got: {lines:?}"
+        );
+    }
+
+    #[test]
+    fn commit_ci_marker_covers_all_states() {
+        assert_eq!(commit_ci_marker(Some("SUCCESS")).0, "✓ ");
+        assert_eq!(commit_ci_marker(Some("FAILURE")).0, "✗ ");
+        assert_eq!(commit_ci_marker(Some("ERROR")).0, "✗ ");
+        assert_eq!(commit_ci_marker(Some("PENDING")).0, "● ");
+        assert_eq!(commit_ci_marker(Some("EXPECTED")).0, "● ");
+        // No rollup at all (null in the API): two spaces, not the marker
+        // column collapsing, so the oid stays aligned across commits.
+        assert_eq!(commit_ci_marker(None).0, "  ");
+    }
+
+    #[test]
+    fn commit_line_truncates_long_headline_to_width() {
+        let width = 20;
+        let line = commit_line("abc1234", &"x".repeat(100), Some("SUCCESS"), width);
+        let rendered: String = line.spans.iter().map(|s| s.content.to_string()).collect();
+        assert!(
+            console::measure_text_width(&rendered) <= width,
+            "line must not exceed width {width}, got {} cells: {rendered:?}",
+            console::measure_text_width(&rendered)
         );
     }
 }

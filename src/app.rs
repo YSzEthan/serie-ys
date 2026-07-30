@@ -2131,7 +2131,7 @@ impl App<'_> {
         let repo_path = self.repository.path().to_path_buf();
         let tx = self.ec.sender();
         std::thread::spawn(move || {
-            match crate::github::get_comments(&repo_path, number, kind, after.as_deref()) {
+            match crate::github::get_timeline(&repo_path, number, kind, after.as_deref()) {
                 Ok(page) => tx.send(AppEvent::GitHubTimelineLoaded {
                     number,
                     kind,

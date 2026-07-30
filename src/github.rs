@@ -415,36 +415,76 @@ impl GqlPrNode {
     }
 }
 
-// ── Comments ──
+// ── Timeline (comments + commits, interleaved in GitHub's own order) ──
 
-#[derive(Debug, Clone, PartialEq)]
-pub struct GhComment {
-    pub author: GhAuthor,
-    pub body: String,
-    pub created_at: String,
-    pub url: String,
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(tag = "__typename")]
+pub enum GhTimelineItem {
+    IssueComment {
+        #[serde(default)]
+        body: String,
+        #[serde(default, rename = "createdAt")]
+        created_at: String,
+        author: Option<GhAuthor>,
+    },
+    PullRequestCommit {
+        commit: GhCommit,
+    },
+    /// `itemTypes` should only ever produce the two variants above, but
+    /// betting the whole page's deserialization on GitHub never adding a
+    /// third is not worth it — an unrecognized `__typename` would otherwise
+    /// fail every node instead of just this one.
+    #[serde(other)]
+    Unknown,
 }
 
-pub fn get_comments(
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GhCommit {
+    pub abbreviated_oid: String,
+    pub message_headline: String,
+    #[serde(default)]
+    pub status_check_rollup: Option<GhStatusCheckRollup>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+pub struct GhStatusCheckRollup {
+    pub state: String,
+}
+
+pub fn get_timeline(
     path: &Path,
     number: u64,
     kind: GhItemKind,
     after: Option<&str>,
-) -> Result<GhPage<GhComment>, String> {
+) -> Result<GhPage<GhTimelineItem>, String> {
     let (owner, name) = fetch_repo_name_with_owner(path)?;
     let item_field = match kind {
         GhItemKind::Issue => "issue",
         GhItemKind::PullRequest => "pullRequest",
     };
+    // Issues have no commits — asking for PULL_REQUEST_COMMIT there is a
+    // GraphQL validation error, not an empty result.
+    let item_types = match kind {
+        GhItemKind::Issue => "ISSUE_COMMENT",
+        GhItemKind::PullRequest => "ISSUE_COMMENT, PULL_REQUEST_COMMIT",
+    };
+    // 100 (the connection max) rather than 50: commits only take one visual
+    // line while comments often take many, so mixing them into one page
+    // halves how far a page actually gets you.
     let query = format!(
         r#"query($owner:String!,$name:String!,$number:Int!,$after:String){{
             repository(owner:$owner,name:$name){{
                 {item_field}(number:$number){{
-                    comments(first:50,after:$after){{
+                    timelineItems(first:100,after:$after,itemTypes:[{item_types}]){{
                         pageInfo {{ hasNextPage endCursor }}
                         nodes {{
-                            body createdAt url
-                            author {{ login }}
+                            __typename
+                            ... on IssueComment {{ body createdAt author {{ login }} }}
+                            ... on PullRequestCommit {{ commit {{
+                                abbreviatedOid messageHeadline
+                                statusCheckRollup {{ state }}
+                            }} }}
                         }}
                     }}
                 }}
@@ -465,15 +505,15 @@ pub fn get_comments(
         args.push(&after_f);
     }
     let json = run_gh(path, &args, false)?;
-    parse_comments_graphql(&json, kind)
+    parse_timeline_graphql(&json, kind)
 }
 
-fn parse_comments_graphql(json: &str, kind: GhItemKind) -> Result<GhPage<GhComment>, String> {
-    let resp: GqlCommentsResp =
+fn parse_timeline_graphql(json: &str, kind: GhItemKind) -> Result<GhPage<GhTimelineItem>, String> {
+    let resp: GqlTimelineResp =
         serde_json::from_str(json).map_err(|e| format!("JSON parse error: {e}"))?;
     let conn = match kind {
-        GhItemKind::Issue => resp.data.repository.issue.map(|i| i.comments),
-        GhItemKind::PullRequest => resp.data.repository.pull_request.map(|p| p.comments),
+        GhItemKind::Issue => resp.data.repository.issue.map(|i| i.timeline_items),
+        GhItemKind::PullRequest => resp.data.repository.pull_request.map(|p| p.timeline_items),
     };
     let Some(conn) = conn else {
         return Ok(GhPage {
@@ -487,66 +527,38 @@ fn parse_comments_graphql(json: &str, kind: GhItemKind) -> Result<GhPage<GhComme
         None
     };
     Ok(GhPage {
-        items: conn
-            .nodes
-            .into_iter()
-            .map(GqlCommentNode::into_gh)
-            .collect(),
+        items: conn.nodes,
         next_cursor,
     })
 }
 
 #[derive(Deserialize)]
-struct GqlCommentsResp {
-    data: GqlCommentsData,
+struct GqlTimelineResp {
+    data: GqlTimelineData,
 }
 #[derive(Deserialize)]
-struct GqlCommentsData {
-    repository: GqlCommentsRepo,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct GqlCommentsRepo {
-    #[serde(default)]
-    issue: Option<GqlCommentsContainer>,
-    #[serde(default)]
-    pull_request: Option<GqlCommentsContainer>,
-}
-#[derive(Deserialize)]
-struct GqlCommentsContainer {
-    comments: GqlCommentsConn,
+struct GqlTimelineData {
+    repository: GqlTimelineRepo,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct GqlCommentsConn {
+struct GqlTimelineRepo {
+    #[serde(default)]
+    issue: Option<GqlTimelineContainer>,
+    #[serde(default)]
+    pull_request: Option<GqlTimelineContainer>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlTimelineContainer {
+    timeline_items: GqlTimelineConn,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlTimelineConn {
     #[serde(default)]
     page_info: GqlPageInfo,
-    nodes: Vec<GqlCommentNode>,
-}
-
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct GqlCommentNode {
-    #[serde(default)]
-    body: Option<String>,
-    #[serde(default)]
-    created_at: Option<String>,
-    #[serde(default)]
-    url: Option<String>,
-    author: Option<GhAuthor>,
-}
-
-impl GqlCommentNode {
-    fn into_gh(self) -> GhComment {
-        GhComment {
-            author: self.author.unwrap_or(GhAuthor {
-                login: "ghost".to_string(),
-            }),
-            body: self.body.unwrap_or_default(),
-            created_at: self.created_at.unwrap_or_default(),
-            url: self.url.unwrap_or_default(),
-        }
-    }
+    nodes: Vec<GhTimelineItem>,
 }
 
 // ── Checkbox / Task List ──
@@ -940,21 +952,23 @@ mod tests {
     }
 
     #[test]
-    fn parse_comments_issue_with_next_page() {
+    fn parse_timeline_issue_with_next_page() {
         let json = r#"{
             "data": {
                 "repository": {
                     "issue": {
-                        "comments": {
+                        "timelineItems": {
                             "pageInfo": {"hasNextPage": true, "endCursor": "C2"},
                             "nodes": [
                                 {
+                                    "__typename": "IssueComment",
                                     "body": "first",
                                     "createdAt": "2026-01-01T00:00:00Z",
                                     "url": "https://github.com/o/r/issues/1#issuecomment-1",
                                     "author": {"login": "alice"}
                                 },
                                 {
+                                    "__typename": "IssueComment",
                                     "body": "second",
                                     "createdAt": "2026-01-02T00:00:00Z",
                                     "url": "https://github.com/o/r/issues/1#issuecomment-2",
@@ -966,21 +980,29 @@ mod tests {
                 }
             }
         }"#;
-        let page = parse_comments_graphql(json, GhItemKind::Issue).unwrap();
+        let page = parse_timeline_graphql(json, GhItemKind::Issue).unwrap();
         assert_eq!(page.next_cursor.as_deref(), Some("C2"));
         assert_eq!(page.items.len(), 2);
-        assert_eq!(page.items[0].body, "first");
-        assert_eq!(page.items[0].author.login, "alice");
-        assert_eq!(page.items[1].author.login, "ghost");
+        match &page.items[0] {
+            GhTimelineItem::IssueComment { body, author, .. } => {
+                assert_eq!(body, "first");
+                assert_eq!(author.as_ref().unwrap().login, "alice");
+            }
+            other => panic!("expected IssueComment, got {other:?}"),
+        }
+        match &page.items[1] {
+            GhTimelineItem::IssueComment { author, .. } => assert!(author.is_none()),
+            other => panic!("expected IssueComment, got {other:?}"),
+        }
     }
 
     #[test]
-    fn parse_comments_pr_no_next_page() {
+    fn parse_timeline_pr_no_next_page() {
         let json = r#"{
             "data": {
                 "repository": {
                     "pullRequest": {
-                        "comments": {
+                        "timelineItems": {
                             "pageInfo": {"hasNextPage": false, "endCursor": null},
                             "nodes": []
                         }
@@ -988,8 +1010,93 @@ mod tests {
                 }
             }
         }"#;
-        let page = parse_comments_graphql(json, GhItemKind::PullRequest).unwrap();
+        let page = parse_timeline_graphql(json, GhItemKind::PullRequest).unwrap();
         assert!(page.next_cursor.is_none());
         assert!(page.items.is_empty());
+    }
+
+    #[test]
+    fn parse_timeline_pull_request_commit_with_ci_state() {
+        let json = r#"{
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "timelineItems": {
+                            "pageInfo": {"hasNextPage": false, "endCursor": null},
+                            "nodes": [
+                                {
+                                    "__typename": "PullRequestCommit",
+                                    "commit": {
+                                        "abbreviatedOid": "62f3c11",
+                                        "messageHeadline": "fix(pricing): add gate",
+                                        "committedDate": "2026-01-03T00:00:00Z",
+                                        "statusCheckRollup": {"state": "SUCCESS"}
+                                    }
+                                },
+                                {
+                                    "__typename": "PullRequestCommit",
+                                    "commit": {
+                                        "abbreviatedOid": "aaaaaaa",
+                                        "messageHeadline": "no ci here",
+                                        "committedDate": "2026-01-04T00:00:00Z",
+                                        "statusCheckRollup": null
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        }"#;
+        let page = parse_timeline_graphql(json, GhItemKind::PullRequest).unwrap();
+        assert_eq!(page.items.len(), 2);
+        match &page.items[0] {
+            GhTimelineItem::PullRequestCommit { commit } => {
+                assert_eq!(commit.abbreviated_oid, "62f3c11");
+                assert_eq!(
+                    commit.status_check_rollup.as_ref().unwrap().state,
+                    "SUCCESS"
+                );
+            }
+            other => panic!("expected PullRequestCommit, got {other:?}"),
+        }
+        match &page.items[1] {
+            GhTimelineItem::PullRequestCommit { commit } => {
+                assert!(commit.status_check_rollup.is_none());
+            }
+            other => panic!("expected PullRequestCommit, got {other:?}"),
+        }
+    }
+
+    /// `itemTypes` should only ever produce the two known variants, but this
+    /// pins down the fallback: an unrecognized `__typename` must not fail
+    /// deserialization of the whole page.
+    #[test]
+    fn parse_timeline_unknown_typename_does_not_fail_the_page() {
+        let json = r#"{
+            "data": {
+                "repository": {
+                    "issue": {
+                        "timelineItems": {
+                            "pageInfo": {"hasNextPage": false, "endCursor": null},
+                            "nodes": [
+                                {"__typename": "ClosedEvent"},
+                                {
+                                    "__typename": "IssueComment",
+                                    "body": "still here",
+                                    "createdAt": "2026-01-01T00:00:00Z",
+                                    "url": "",
+                                    "author": {"login": "bob"}
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        }"#;
+        let page = parse_timeline_graphql(json, GhItemKind::Issue).unwrap();
+        assert_eq!(page.items.len(), 2);
+        assert!(matches!(page.items[0], GhTimelineItem::Unknown));
+        assert!(matches!(page.items[1], GhTimelineItem::IssueComment { .. }));
     }
 }
