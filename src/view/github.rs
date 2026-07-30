@@ -17,8 +17,8 @@ use crate::{
     event::{AppEvent, RelatedGroup, RelatedItem, Sender, UserEvent, UserEventWithCount},
     fuzzy::SearchMatcher,
     github::{
-        self, CheckboxItem, GhIssue, GhItemKind, GhPullRequest, GhTimelineItem, PrDraftAction,
-        StateAction,
+        self, CheckboxItem, GhIssue, GhItemKind, GhPullRequest, GhTimelineItem, GhTimelinePage,
+        Mergeable, PrDraftAction, StateAction,
     },
     view::View,
 };
@@ -139,6 +139,10 @@ struct TimelineEntry {
     items: Vec<GhTimelineItem>,
     next_cursor: Option<String>,
     loading_more: bool,
+    /// `None` for Issues and for PRs GitHub hasn't finished computing this
+    /// for yet (`UNKNOWN`) — both mean "no marker". Every page carries its
+    /// own copy, so a later page just overwrites this idempotently.
+    mergeable: Option<Mergeable>,
 }
 
 #[derive(Debug)]
@@ -442,16 +446,11 @@ impl<'a> GitHubView<'a> {
         });
     }
 
-    pub fn append_timeline_items(
-        &mut self,
-        number: u64,
-        kind: GhItemKind,
-        items: Vec<GhTimelineItem>,
-        next_cursor: Option<String>,
-    ) {
+    pub fn append_timeline_items(&mut self, number: u64, kind: GhItemKind, page: GhTimelinePage) {
         let entry = self.timeline.entry((kind, number)).or_default();
-        entry.items.extend(items);
-        entry.next_cursor = next_cursor;
+        entry.items.extend(page.items);
+        entry.next_cursor = page.next_cursor;
+        entry.mergeable = page.mergeable;
         entry.state = TimelineLoad::Loaded;
         entry.loading_more = false;
     }
@@ -1844,11 +1843,15 @@ fn build_preview_content(input: &PreviewInput) -> (Vec<Line<'static>>, Option<Pr
         head_ref_name,
     } = item.extra
     {
-        lines.push(Line::from(vec![
+        let mut spans = vec![
             Span::styled(base_ref_name.to_string(), Style::default().fg(Color::Cyan)),
             Span::styled("  ←  ", Style::default().fg(Color::DarkGray)),
             Span::styled(head_ref_name.to_string(), Style::default().fg(Color::Cyan)),
-        ]));
+        ];
+        if let Some((text, color)) = mergeable_marker(input.entry.and_then(|e| e.mergeable)) {
+            spans.push(Span::styled(text, Style::default().fg(color)));
+        }
+        lines.push(Line::from(spans));
     }
 
     lines.push(super::markdown::rule_line(width));
@@ -2032,6 +2035,16 @@ fn commit_ci_marker(state: Option<&str>) -> (&'static str, Color) {
     }
 }
 
+/// Label + colour for the `base ← head` line's merge-state marker. `None`
+/// (not a PR, or GitHub's `UNKNOWN`) means no marker at all.
+fn mergeable_marker(state: Option<Mergeable>) -> Option<(&'static str, Color)> {
+    match state {
+        Some(Mergeable::Mergeable) => Some(("  (mergeable)", Color::Green)),
+        Some(Mergeable::Conflicting) => Some(("  (conflicts)", Color::Red)),
+        None => None,
+    }
+}
+
 fn commit_line(oid: &str, headline: &str, ci_state: Option<&str>, width: usize) -> Line<'static> {
     let (marker, marker_color) = commit_ci_marker(ci_state);
     let prefix_width = console::measure_text_width(marker) + console::measure_text_width(oid) + 2;
@@ -2086,6 +2099,7 @@ impl PreviewInput<'_> {
             item_count: self.entry.map_or(0, |e| e.items.len()),
             has_more: self.entry.is_some_and(|e| e.next_cursor.is_some()),
             loading_more: self.entry.is_some_and(|e| e.loading_more),
+            mergeable: self.entry.and_then(|e| e.mergeable),
             body_rev: self.body_rev,
             width: self.width,
         }
@@ -2130,6 +2144,7 @@ struct PreviewKey {
     /// Drives the footer between "(loading more…)" and "(more comments — …)".
     has_more: bool,
     loading_more: bool,
+    mergeable: Option<Mergeable>,
     body_rev: u64,
     width: u16,
 }
@@ -2584,6 +2599,14 @@ mod tests {
         assert_ne!(view.preview_cache.as_ref().map(|c| c.key), key);
     }
 
+    fn timeline_page(items: Vec<GhTimelineItem>, next_cursor: Option<String>) -> GhTimelinePage {
+        GhTimelinePage {
+            items,
+            next_cursor,
+            mergeable: None,
+        }
+    }
+
     #[test]
     fn preview_cache_invalidates_when_comments_load_empty() {
         // Short body so the comment section is on screen without scrolling.
@@ -2593,7 +2616,7 @@ mod tests {
 
         // Zero comments, but *loaded* — item count stays 0, so only the stage
         // distinguishes this from the pending state.
-        view.append_timeline_items(1, GhItemKind::PullRequest, Vec::new(), None);
+        view.append_timeline_items(1, GhItemKind::PullRequest, timeline_page(Vec::new(), None));
         let screen = render_to_string(&mut view);
 
         assert!(
@@ -2631,12 +2654,14 @@ mod tests {
         view.append_timeline_items(
             1,
             GhItemKind::PullRequest,
-            vec![
-                timeline_commit("aaaaaaa", "SUCCESS"),
-                timeline_comment("a", "one"),
-                timeline_commit("bbbbbbb", "SUCCESS"),
-            ],
-            None,
+            timeline_page(
+                vec![
+                    timeline_commit("aaaaaaa", "SUCCESS"),
+                    timeline_comment("a", "one"),
+                    timeline_commit("bbbbbbb", "SUCCESS"),
+                ],
+                None,
+            ),
         );
 
         let (lines, _) = build_preview_content(&view.preview_input(40));
@@ -2674,8 +2699,10 @@ mod tests {
         view.append_timeline_items(
             1,
             GhItemKind::PullRequest,
-            vec![timeline_comment("bob", "hi")],
-            Some("cursor".to_string()),
+            timeline_page(
+                vec![timeline_comment("bob", "hi")],
+                Some("cursor".to_string()),
+            ),
         );
         let screen = render_to_string(&mut view);
         // Short fragment: the full footer wraps at this width.
@@ -2735,8 +2762,7 @@ mod tests {
         view.append_timeline_items(
             1,
             GhItemKind::Issue,
-            vec![timeline_comment("carol", "issue comment")],
-            None,
+            timeline_page(vec![timeline_comment("carol", "issue comment")], None),
         );
 
         let screen = render_to_string(&mut view);
@@ -2748,7 +2774,7 @@ mod tests {
     #[test]
     fn empty_timeline_still_draws_the_body_divider() {
         let mut view = view_with_body("body".to_string());
-        view.append_timeline_items(1, GhItemKind::PullRequest, Vec::new(), None);
+        view.append_timeline_items(1, GhItemKind::PullRequest, timeline_page(Vec::new(), None));
 
         let (lines, _) = build_preview_content(&view.preview_input(40));
         let has_body_divider = lines.iter().any(|l| {
@@ -2771,8 +2797,7 @@ mod tests {
         view.append_timeline_items(
             1,
             GhItemKind::PullRequest,
-            vec![GhTimelineItem::Unknown, GhTimelineItem::Unknown],
-            None,
+            timeline_page(vec![GhTimelineItem::Unknown, GhTimelineItem::Unknown], None),
         );
 
         let screen = render_to_string(&mut view);
@@ -2787,6 +2812,75 @@ mod tests {
             has_body_divider,
             "an all-Unknown page must still draw the body divider, got: {lines:?}"
         );
+    }
+
+    #[test]
+    fn mergeable_marker_covers_all_states() {
+        assert_eq!(
+            mergeable_marker(Some(Mergeable::Mergeable)),
+            Some(("  (mergeable)", Color::Green))
+        );
+        assert_eq!(
+            mergeable_marker(Some(Mergeable::Conflicting)),
+            Some(("  (conflicts)", Color::Red))
+        );
+        // GitHub's `UNKNOWN` and "this is an Issue, not a PR" both arrive as
+        // `None` — neither should show a marker.
+        assert_eq!(mergeable_marker(None), None);
+    }
+
+    fn rendered_mergeable_marker(view: &GitHubView<'_>) -> Option<(String, Option<Color>)> {
+        let (lines, _) = build_preview_content(&view.preview_input(40));
+        lines.iter().find_map(|l| {
+            l.spans
+                .iter()
+                .find(|s| s.content.contains("(mergeable)") || s.content.contains("(conflicts)"))
+                .map(|s| (s.content.to_string(), s.style.fg))
+        })
+    }
+
+    #[test]
+    fn mergeable_state_renders_into_the_base_head_line() {
+        let mut view = view_with_body("body".to_string());
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            GhTimelinePage {
+                mergeable: Some(Mergeable::Conflicting),
+                ..timeline_page(Vec::new(), None)
+            },
+        );
+        assert_eq!(
+            rendered_mergeable_marker(&view),
+            Some(("  (conflicts)".to_string(), Some(Color::Red)))
+        );
+    }
+
+    /// mergeable rides along on `TimelineEntry`, not a separate field on
+    /// `pull_requests[idx]` — this pins down that the cache key tracks it in
+    /// isolation. The page is loaded *before* capturing `key_before`, so the
+    /// only thing that changes between the two snapshots is `mergeable`
+    /// itself — otherwise `stage` flipping Pending → Ready on first load
+    /// would change the key regardless of whether `mergeable` was tracked.
+    #[test]
+    fn cache_key_changes_once_mergeable_arrives() {
+        let mut view = view_with_body("body".to_string());
+        view.append_timeline_items(1, GhItemKind::PullRequest, timeline_page(Vec::new(), None));
+        render_to_string(&mut view);
+        let key_before = view.preview_cache.as_ref().map(|c| c.key);
+
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            GhTimelinePage {
+                mergeable: Some(Mergeable::Mergeable),
+                ..timeline_page(Vec::new(), None)
+            },
+        );
+        render_to_string(&mut view);
+        let key_after = view.preview_cache.as_ref().map(|c| c.key);
+
+        assert_ne!(key_before, key_after);
     }
 
     #[test]

@@ -79,8 +79,7 @@ pub enum AppEvent {
     GitHubTimelineLoaded {
         number: u64,
         kind: crate::github::GhItemKind,
-        items: Vec<crate::github::GhTimelineItem>,
-        next_cursor: Option<String>,
+        page: crate::github::GhTimelinePage,
     },
     GitHubTimelineFailed {
         number: u64,

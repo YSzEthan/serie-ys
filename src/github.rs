@@ -452,12 +452,38 @@ pub struct GhStatusCheckRollup {
     pub state: String,
 }
 
+/// Whether a PR can currently merge. `UNKNOWN` (GitHub's lazily-computed
+/// third state, e.g. still checking, or the PR is already merged/closed) and
+/// "not a PR at all" both fold into `None` — both mean "don't show a marker".
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Mergeable {
+    Mergeable,
+    Conflicting,
+}
+
+impl Mergeable {
+    fn from_api(state: &str) -> Option<Self> {
+        match state {
+            "MERGEABLE" => Some(Mergeable::Mergeable),
+            "CONFLICTING" => Some(Mergeable::Conflicting),
+            _ => None,
+        }
+    }
+}
+
+#[derive(Debug, Default)]
+pub struct GhTimelinePage {
+    pub items: Vec<GhTimelineItem>,
+    pub next_cursor: Option<String>,
+    pub mergeable: Option<Mergeable>,
+}
+
 pub fn get_timeline(
     path: &Path,
     number: u64,
     kind: GhItemKind,
     after: Option<&str>,
-) -> Result<GhPage<GhTimelineItem>, String> {
+) -> Result<GhTimelinePage, String> {
     let (owner, name) = fetch_repo_name_with_owner(path)?;
     let item_field = match kind {
         GhItemKind::Issue => "issue",
@@ -469,6 +495,11 @@ pub fn get_timeline(
         GhItemKind::Issue => "ISSUE_COMMENT",
         GhItemKind::PullRequest => "ISSUE_COMMENT, PULL_REQUEST_COMMIT",
     };
+    // Issues have no `mergeable` field either — same validation-error trap.
+    let mergeable_field = match kind {
+        GhItemKind::Issue => "",
+        GhItemKind::PullRequest => "mergeable",
+    };
     // 100 (the connection max) rather than 50: commits only take one visual
     // line while comments often take many, so mixing them into one page
     // halves how far a page actually gets you.
@@ -476,6 +507,7 @@ pub fn get_timeline(
         r#"query($owner:String!,$name:String!,$number:Int!,$after:String){{
             repository(owner:$owner,name:$name){{
                 {item_field}(number:$number){{
+                    {mergeable_field}
                     timelineItems(first:100,after:$after,itemTypes:[{item_types}]){{
                         pageInfo {{ hasNextPage endCursor }}
                         nodes {{
@@ -508,27 +540,26 @@ pub fn get_timeline(
     parse_timeline_graphql(&json, kind)
 }
 
-fn parse_timeline_graphql(json: &str, kind: GhItemKind) -> Result<GhPage<GhTimelineItem>, String> {
+fn parse_timeline_graphql(json: &str, kind: GhItemKind) -> Result<GhTimelinePage, String> {
     let resp: GqlTimelineResp =
         serde_json::from_str(json).map_err(|e| format!("JSON parse error: {e}"))?;
-    let conn = match kind {
-        GhItemKind::Issue => resp.data.repository.issue.map(|i| i.timeline_items),
-        GhItemKind::PullRequest => resp.data.repository.pull_request.map(|p| p.timeline_items),
+    let container = match kind {
+        GhItemKind::Issue => resp.data.repository.issue,
+        GhItemKind::PullRequest => resp.data.repository.pull_request,
     };
-    let Some(conn) = conn else {
-        return Ok(GhPage {
-            items: Vec::new(),
-            next_cursor: None,
-        });
+    let Some(container) = container else {
+        return Ok(GhTimelinePage::default());
     };
+    let conn = container.timeline_items;
     let next_cursor = if conn.page_info.has_next_page {
         conn.page_info.end_cursor
     } else {
         None
     };
-    Ok(GhPage {
+    Ok(GhTimelinePage {
         items: conn.nodes,
         next_cursor,
+        mergeable: container.mergeable.as_deref().and_then(Mergeable::from_api),
     })
 }
 
@@ -551,6 +582,8 @@ struct GqlTimelineRepo {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GqlTimelineContainer {
+    #[serde(default)]
+    mergeable: Option<String>,
     timeline_items: GqlTimelineConn,
 }
 #[derive(Deserialize)]
@@ -1066,6 +1099,48 @@ mod tests {
             }
             other => panic!("expected PullRequestCommit, got {other:?}"),
         }
+    }
+
+    fn timeline_json(mergeable: Option<&str>) -> String {
+        let mergeable_field =
+            mergeable.map_or(String::new(), |s| format!(r#""mergeable": "{s}","#));
+        format!(
+            r#"{{
+                "data": {{
+                    "repository": {{
+                        "pullRequest": {{
+                            {mergeable_field}
+                            "timelineItems": {{
+                                "pageInfo": {{"hasNextPage": false, "endCursor": null}},
+                                "nodes": []
+                            }}
+                        }}
+                    }}
+                }}
+            }}"#
+        )
+    }
+
+    /// `MERGEABLE` / `CONFLICTING` map to a marker; `UNKNOWN` (still
+    /// computing, or the PR is merged/closed) and a missing field (Issues
+    /// don't have this at all) both fold into `None` — no marker shown.
+    #[test]
+    fn parse_timeline_mergeable_states() {
+        let json = timeline_json(Some("MERGEABLE"));
+        let page = parse_timeline_graphql(&json, GhItemKind::PullRequest).unwrap();
+        assert_eq!(page.mergeable, Some(Mergeable::Mergeable));
+
+        let json = timeline_json(Some("CONFLICTING"));
+        let page = parse_timeline_graphql(&json, GhItemKind::PullRequest).unwrap();
+        assert_eq!(page.mergeable, Some(Mergeable::Conflicting));
+
+        let json = timeline_json(Some("UNKNOWN"));
+        let page = parse_timeline_graphql(&json, GhItemKind::PullRequest).unwrap();
+        assert_eq!(page.mergeable, None);
+
+        let json = timeline_json(None);
+        let page = parse_timeline_graphql(&json, GhItemKind::PullRequest).unwrap();
+        assert_eq!(page.mergeable, None);
     }
 
     /// `itemTypes` should only ever produce the two known variants, but this
