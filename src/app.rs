@@ -675,30 +675,30 @@ impl App<'_> {
                         }
                     }
                 }
-                AppEvent::LoadGitHubComments {
+                AppEvent::LoadGitHubTimeline {
                     number,
                     kind,
                     after,
                 } => {
-                    self.load_github_comments(number, kind, after);
+                    self.load_github_timeline(number, kind, after);
                 }
-                AppEvent::GitHubCommentsLoaded {
+                AppEvent::GitHubTimelineLoaded {
                     number,
                     kind,
                     items,
                     next_cursor,
                 } => {
                     if let View::GitHub(ref mut view) = self.view {
-                        view.append_comments(number, kind, items, next_cursor);
+                        view.append_timeline_items(number, kind, items, next_cursor);
                     }
                 }
-                AppEvent::GitHubCommentsFailed {
+                AppEvent::GitHubTimelineFailed {
                     number,
                     kind,
                     error,
                 } => {
                     if let View::GitHub(ref mut view) = self.view {
-                        view.set_comments_error(number, kind, error);
+                        view.set_timeline_error(number, kind, error);
                     }
                 }
                 AppEvent::GitHubFlash { message, is_error } => {
@@ -2127,18 +2127,18 @@ impl App<'_> {
         });
     }
 
-    fn load_github_comments(&self, number: u64, kind: GhItemKind, after: Option<String>) {
+    fn load_github_timeline(&self, number: u64, kind: GhItemKind, after: Option<String>) {
         let repo_path = self.repository.path().to_path_buf();
         let tx = self.ec.sender();
         std::thread::spawn(move || {
             match crate::github::get_comments(&repo_path, number, kind, after.as_deref()) {
-                Ok(page) => tx.send(AppEvent::GitHubCommentsLoaded {
+                Ok(page) => tx.send(AppEvent::GitHubTimelineLoaded {
                     number,
                     kind,
                     items: page.items,
                     next_cursor: page.next_cursor,
                 }),
-                Err(e) => tx.send(AppEvent::GitHubCommentsFailed {
+                Err(e) => tx.send(AppEvent::GitHubTimelineFailed {
                     number,
                     kind,
                     error: e,

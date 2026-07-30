@@ -24,7 +24,7 @@ use crate::{
 };
 
 const PREFETCH_THRESHOLD: usize = 5;
-const COMMENTS_LOAD_MORE_THRESHOLD: usize = 5;
+const TIMELINE_LOAD_MORE_THRESHOLD: usize = 5;
 
 /// Divider between the item body and the comment thread — pastel blue-grey
 /// (#afafd7). Indexed rather than Rgb so it survives terminals without
@@ -109,7 +109,7 @@ enum LoadState {
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
-enum CommentLoad {
+enum TimelineLoad {
     #[default]
     NotRequested,
     Loading,
@@ -118,8 +118,8 @@ enum CommentLoad {
 }
 
 #[derive(Debug, Default)]
-struct CommentEntry {
-    state: CommentLoad,
+struct TimelineEntry {
+    state: TimelineLoad,
     items: Vec<GhComment>,
     next_cursor: Option<String>,
     loading_more: bool,
@@ -163,7 +163,7 @@ pub struct GitHubView<'a> {
 
     pending_jump: Option<u64>,
 
-    comments: FxHashMap<(GhItemKind, u64), CommentEntry>,
+    timeline: FxHashMap<(GhItemKind, u64), TimelineEntry>,
     last_preview_len: usize,
 
     /// Bumped on any in-place edit the preview can show — currently body
@@ -220,7 +220,7 @@ impl<'a> GitHubView<'a> {
             loading_more: false,
             request_generation: 0,
             pending_jump: None,
-            comments: FxHashMap::default(),
+            timeline: FxHashMap::default(),
             last_preview_len: 0,
             body_rev: 0,
             preview_cache: None,
@@ -273,7 +273,7 @@ impl<'a> GitHubView<'a> {
         self.pull_requests = pull_requests;
         self.issues_next_cursor = issues_next_cursor;
         self.prs_next_cursor = prs_next_cursor;
-        self.comments.clear();
+        self.timeline.clear();
         self.body_rev = self.body_rev.wrapping_add(1);
         self.bump_generation();
         // 修正選取索引避免越界
@@ -282,7 +282,7 @@ impl<'a> GitHubView<'a> {
             self.selected_index = max;
         }
         self.preview_offset = 0;
-        self.request_comments_for_selected();
+        self.request_timeline_for_selected();
     }
 
     /// Refresh 完成但資料無變更時（`update_data` 不會被呼叫）用來清掉 Loading 指示器。
@@ -356,7 +356,7 @@ impl<'a> GitHubView<'a> {
             self.preview_offset = 0;
             self.adjust_scroll();
             self.pending_jump = None;
-            self.request_comments_for_selected();
+            self.request_timeline_for_selected();
             return;
         }
 
@@ -382,14 +382,14 @@ impl<'a> GitHubView<'a> {
         self.pending_jump = None;
     }
 
-    fn request_comments_for_selected(&mut self) {
+    fn request_timeline_for_selected(&mut self) {
         let Some((number, kind)) = self.selected_number_and_kind() else {
             return;
         };
-        let entry = self.comments.entry((kind, number)).or_default();
-        if matches!(entry.state, CommentLoad::NotRequested) {
-            entry.state = CommentLoad::Loading;
-            self.tx.send(AppEvent::LoadGitHubComments {
+        let entry = self.timeline.entry((kind, number)).or_default();
+        if matches!(entry.state, TimelineLoad::NotRequested) {
+            entry.state = TimelineLoad::Loading;
+            self.tx.send(AppEvent::LoadGitHubTimeline {
                 number,
                 kind,
                 after: None,
@@ -397,12 +397,12 @@ impl<'a> GitHubView<'a> {
         }
     }
 
-    fn maybe_load_more_comments(&mut self) {
+    fn maybe_load_more_timeline(&mut self) {
         let visible = self.preview_height;
         let near_bottom = self
             .preview_offset
             .saturating_add(visible)
-            .saturating_add(COMMENTS_LOAD_MORE_THRESHOLD)
+            .saturating_add(TIMELINE_LOAD_MORE_THRESHOLD)
             >= self.last_preview_len;
         if !near_bottom {
             return;
@@ -410,38 +410,39 @@ impl<'a> GitHubView<'a> {
         let Some((number, kind)) = self.selected_number_and_kind() else {
             return;
         };
-        let Some(entry) = self.comments.get_mut(&(kind, number)) else {
+        let Some(entry) = self.timeline.get_mut(&(kind, number)) else {
             return;
         };
-        if entry.state != CommentLoad::Loaded || entry.loading_more || entry.next_cursor.is_none() {
+        if entry.state != TimelineLoad::Loaded || entry.loading_more || entry.next_cursor.is_none()
+        {
             return;
         }
         let cursor = entry.next_cursor.clone();
         entry.loading_more = true;
-        self.tx.send(AppEvent::LoadGitHubComments {
+        self.tx.send(AppEvent::LoadGitHubTimeline {
             number,
             kind,
             after: cursor,
         });
     }
 
-    pub fn append_comments(
+    pub fn append_timeline_items(
         &mut self,
         number: u64,
         kind: GhItemKind,
         items: Vec<GhComment>,
         next_cursor: Option<String>,
     ) {
-        let entry = self.comments.entry((kind, number)).or_default();
+        let entry = self.timeline.entry((kind, number)).or_default();
         entry.items.extend(items);
         entry.next_cursor = next_cursor;
-        entry.state = CommentLoad::Loaded;
+        entry.state = TimelineLoad::Loaded;
         entry.loading_more = false;
     }
 
-    pub fn set_comments_error(&mut self, number: u64, kind: GhItemKind, error: String) {
-        let entry = self.comments.entry((kind, number)).or_default();
-        entry.state = CommentLoad::Error(error);
+    pub fn set_timeline_error(&mut self, number: u64, kind: GhItemKind, error: String) {
+        let entry = self.timeline.entry((kind, number)).or_default();
+        entry.state = TimelineLoad::Error(error);
     }
 
     fn current_has_next_cursor(&self) -> bool {
@@ -566,7 +567,7 @@ impl<'a> GitHubView<'a> {
             GitHubFocus::List => self.handle_list_event(event, count),
         }
         if (self.active_tab, self.selected_index) != before {
-            self.request_comments_for_selected();
+            self.request_timeline_for_selected();
         }
     }
 
@@ -629,7 +630,7 @@ impl<'a> GitHubView<'a> {
                 for _ in 0..count {
                     self.preview_offset = self.preview_offset.saturating_add(1);
                 }
-                self.maybe_load_more_comments();
+                self.maybe_load_more_timeline();
             }
             UserEvent::NavigateUp | UserEvent::SelectUp => {
                 for _ in 0..count {
@@ -639,7 +640,7 @@ impl<'a> GitHubView<'a> {
             UserEvent::PageDown => {
                 let page = self.preview_height.max(1);
                 self.preview_offset = self.preview_offset.saturating_add(page);
-                self.maybe_load_more_comments();
+                self.maybe_load_more_timeline();
             }
             UserEvent::PageUp => {
                 let page = self.preview_height.max(1);
@@ -648,7 +649,7 @@ impl<'a> GitHubView<'a> {
             UserEvent::HalfPageDown => {
                 let half = self.preview_height.max(1) / 2;
                 self.preview_offset = self.preview_offset.saturating_add(half);
-                self.maybe_load_more_comments();
+                self.maybe_load_more_timeline();
             }
             UserEvent::HalfPageUp => {
                 let half = self.preview_height.max(1) / 2;
@@ -1604,18 +1605,18 @@ impl<'a> GitHubView<'a> {
         if crate::external::is_tmux() {
             return;
         }
-        // Only the first source line has a trustworthy position: `line_idx`
-        // counts source lines while the scroll offset counts wrapped ones, so
-        // every other overlay drifts as soon as anything above it wraps. Once
-        // scrolled, even that one is off screen. Restoring the rest needs links
-        // attached to spans rather than stored coordinates.
+        // The header's position is only trustworthy before scrolling: the
+        // scroll offset counts wrapped lines, not source lines, so the header
+        // itself scrolls off screen the moment `scroll != 0`. Restoring a
+        // hyperlink after that needs links attached to spans rather than a
+        // stored coordinate.
         if scroll != 0 || inner.height == 0 {
             return;
         }
-        let Some(ov) = cache.overlays.iter().find(|o| o.line_idx == 0) else {
+        let Some(ov) = cache.overlay.as_ref() else {
             return;
         };
-        let (x, y) = (inner.left().saturating_add(ov.x_offset), inner.top());
+        let (x, y) = (inner.left(), inner.top());
         if x >= inner.right() {
             return;
         }
@@ -1629,31 +1630,48 @@ impl<'a> GitHubView<'a> {
         }
     }
 
-    /// Everything `build_preview_content` reads, plus the width the result is
-    /// wrapped against. See [`PreviewKey`].
-    fn preview_key(&self, width: u16) -> PreviewKey {
+    /// Borrows the selected issue/PR plus its timeline entry into one value —
+    /// everything `build_preview_content` and `PreviewInput::cache_key` read,
+    /// so neither can drift from the other by reading a field the other
+    /// doesn't know about.
+    fn preview_input(&self, width: u16) -> PreviewInput<'_> {
         let (number, kind) = self
             .selected_number_and_kind()
             .unwrap_or((0, GhItemKind::Issue));
-        let entry = self.comments.get(&(kind, number));
-        // Count alone is not enough: "loaded but empty" and "still loading"
-        // both have zero items yet render differently. Exhaustive on purpose —
-        // a new `CommentLoad` variant must not silently fold into Pending and
-        // freeze the preview.
-        let stage = match entry.map(|e| &e.state) {
-            None | Some(CommentLoad::NotRequested | CommentLoad::Loading) => CommentStage::Pending,
-            Some(CommentLoad::Loaded) => CommentStage::Ready,
-            Some(CommentLoad::Error(_)) => CommentStage::Failed,
+        let idx = self.actual_index(self.selected_index);
+        let item = match self.active_tab {
+            GitHubTab::Issues => self.issues.get(idx).map(|issue| SelectedItem {
+                title: issue.title.as_str(),
+                state: issue.state.as_str(),
+                author: issue.author.login.as_str(),
+                labels: issue.labels.as_slice(),
+                body: issue.body.as_str(),
+                url: issue.url.as_str(),
+                extra: SelectedItemExtra::Issue {
+                    parent: issue.parent.as_ref(),
+                    sub_issues: issue.sub_issues.as_slice(),
+                },
+            }),
+            GitHubTab::PullRequests => self.pull_requests.get(idx).map(|pr| SelectedItem {
+                title: pr.title.as_str(),
+                state: pr.state.as_str(),
+                author: pr.author.login.as_str(),
+                labels: pr.labels.as_slice(),
+                body: pr.body.as_str(),
+                url: pr.url.as_str(),
+                extra: SelectedItemExtra::PullRequest {
+                    base_ref_name: pr.base_ref_name.as_str(),
+                    head_ref_name: pr.head_ref_name.as_str(),
+                },
+            }),
         };
-        PreviewKey {
+        PreviewInput {
             tab: self.active_tab,
             number,
-            stage,
-            comment_count: entry.map_or(0, |e| e.items.len()),
-            has_more: entry.is_some_and(|e| e.next_cursor.is_some()),
-            loading_more: entry.is_some_and(|e| e.loading_more),
-            body_rev: self.body_rev,
             width,
+            body_rev: self.body_rev,
+            entry: self.timeline.get(&(kind, number)),
+            item,
         }
     }
 
@@ -1667,18 +1685,19 @@ impl<'a> GitHubView<'a> {
     /// `commit_detail::wrap_line_spans`: that one breaks mid-word, which would
     /// mangle the English prose common in PR bodies.
     fn refresh_preview_cache(&mut self, width: u16) -> usize {
-        let key = self.preview_key(width);
+        let input = self.preview_input(width);
+        let key = input.cache_key();
         if let Some(cache) = self.preview_cache.as_ref().filter(|c| c.key == key) {
             return cache.visual_len;
         }
-        let (lines, overlays) = self.build_preview_content(width as usize);
+        let (lines, overlay) = build_preview_content(&input);
         let visual_len = Paragraph::new(borrow_lines(&lines))
             .wrap(Wrap { trim: false })
             .line_count(width);
         self.preview_cache = Some(PreviewCache {
             key,
             lines,
-            overlays,
+            overlay,
             visual_len,
         });
         visual_len
@@ -1748,129 +1767,6 @@ impl<'a> GitHubView<'a> {
         f.render_widget(paragraph, inner);
     }
 
-    /// Extract common fields from the selected issue or PR for preview rendering.
-    #[allow(clippy::type_complexity)]
-    fn selected_item_fields(
-        &self,
-    ) -> Option<(&str, &str, &str, &[crate::github::GhLabel], &str, u64, &str)> {
-        let idx = self.actual_index(self.selected_index);
-        match self.active_tab {
-            GitHubTab::Issues => self.issues.get(idx).map(|i| {
-                (
-                    i.title.as_str(),
-                    i.state.as_str(),
-                    i.author.login.as_str(),
-                    i.labels.as_slice(),
-                    i.body.as_str(),
-                    i.number,
-                    i.url.as_str(),
-                )
-            }),
-            GitHubTab::PullRequests => self.pull_requests.get(idx).map(|p| {
-                (
-                    p.title.as_str(),
-                    p.state.as_str(),
-                    p.author.login.as_str(),
-                    p.labels.as_slice(),
-                    p.body.as_str(),
-                    p.number,
-                    p.url.as_str(),
-                )
-            }),
-        }
-    }
-
-    fn build_preview_content(&self, width: usize) -> (Vec<Line<'static>>, Vec<PreviewOverlay>) {
-        let mut overlays: Vec<PreviewOverlay> = Vec::new();
-        let Some((title, state, author, labels, body, number, url)) = self.selected_item_fields()
-        else {
-            return (
-                vec![Line::styled(
-                    "(no item selected)",
-                    Style::default().fg(Color::DarkGray),
-                )],
-                overlays,
-            );
-        };
-
-        let title = title.to_string();
-        let state = state.to_string();
-        let author = author.to_string();
-        let body = body.to_string();
-        let url = url.to_string();
-        let labels: Vec<crate::github::GhLabel> = labels.to_vec();
-
-        let mut lines = Vec::new();
-
-        // Header: #number title  (#N hyperlink overlay at x=0)
-        if !url.is_empty() {
-            overlays.push(PreviewOverlay {
-                line_idx: lines.len(),
-                x_offset: 0,
-                url: url.clone(),
-                label: format!("#{number}"),
-            });
-        }
-        lines.push(Line::from(vec![
-            Span::styled(format!("#{number} "), Style::default().fg(Color::DarkGray)),
-            Span::styled(
-                title,
-                Style::default()
-                    .fg(Color::White)
-                    .add_modifier(Modifier::BOLD),
-            ),
-        ]));
-
-        let mut meta_spans = vec![
-            Span::styled(
-                state.to_lowercase(),
-                Style::default().fg(state_color(&state)),
-            ),
-            Span::styled(format!("  @{author}"), Style::default().fg(Color::DarkGray)),
-        ];
-        if !labels.is_empty() {
-            meta_spans.push(Span::raw("  "));
-            meta_spans.extend(label_spans(&labels));
-        }
-        lines.push(Line::from(meta_spans));
-
-        if let GitHubTab::PullRequests = self.active_tab {
-            let idx = self.actual_index(self.selected_index);
-            if let Some(pr) = self.pull_requests.get(idx) {
-                lines.push(Line::from(vec![
-                    Span::styled(pr.base_ref_name.clone(), Style::default().fg(Color::Cyan)),
-                    Span::styled("  ←  ", Style::default().fg(Color::DarkGray)),
-                    Span::styled(pr.head_ref_name.clone(), Style::default().fg(Color::Cyan)),
-                ]));
-            }
-        }
-
-        lines.push(super::markdown::rule_line(width));
-
-        if let GitHubTab::Issues = self.active_tab {
-            let idx = self.actual_index(self.selected_index);
-            if let Some(issue) = self.issues.get(idx) {
-                append_relation_lines(&mut lines, &mut overlays, issue, width);
-            }
-        }
-
-        if body.is_empty() {
-            lines.push(Line::styled(
-                "(no body)",
-                Style::default().fg(Color::DarkGray),
-            ));
-        } else {
-            lines.extend(super::markdown::render(&body, width));
-        }
-
-        let entry = self
-            .selected_number_and_kind()
-            .and_then(|(n, k)| self.comments.get(&(k, n)));
-        append_comment_lines(&mut lines, &mut overlays, entry, width);
-
-        (lines, overlays)
-    }
-
     fn clear_image_area(&self, area: Rect) {
         for y in area.top()..area.bottom() {
             self.ctx.image_protocol.clear_line(y);
@@ -1878,10 +1774,90 @@ impl<'a> GitHubView<'a> {
     }
 }
 
+fn build_preview_content(input: &PreviewInput) -> (Vec<Line<'static>>, Option<PreviewOverlay>) {
+    let mut overlay = None;
+    let width = input.width as usize;
+    let number = input.number;
+    let Some(item) = input.item.as_ref() else {
+        return (
+            vec![Line::styled(
+                "(no item selected)",
+                Style::default().fg(Color::DarkGray),
+            )],
+            overlay,
+        );
+    };
+
+    let mut lines = Vec::new();
+
+    // Header: #number title  (#N hyperlink overlay)
+    if !item.url.is_empty() {
+        overlay = Some(PreviewOverlay {
+            url: item.url.to_string(),
+            label: format!("#{number}"),
+        });
+    }
+    lines.push(Line::from(vec![
+        Span::styled(format!("#{number} "), Style::default().fg(Color::DarkGray)),
+        Span::styled(
+            item.title.to_string(),
+            Style::default()
+                .fg(Color::White)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]));
+
+    let mut meta_spans = vec![
+        Span::styled(
+            item.state.to_lowercase(),
+            Style::default().fg(state_color(item.state)),
+        ),
+        Span::styled(
+            format!("  @{}", item.author),
+            Style::default().fg(Color::DarkGray),
+        ),
+    ];
+    if !item.labels.is_empty() {
+        meta_spans.push(Span::raw("  "));
+        meta_spans.extend(label_spans(item.labels));
+    }
+    lines.push(Line::from(meta_spans));
+
+    if let SelectedItemExtra::PullRequest {
+        base_ref_name,
+        head_ref_name,
+    } = item.extra
+    {
+        lines.push(Line::from(vec![
+            Span::styled(base_ref_name.to_string(), Style::default().fg(Color::Cyan)),
+            Span::styled("  ←  ", Style::default().fg(Color::DarkGray)),
+            Span::styled(head_ref_name.to_string(), Style::default().fg(Color::Cyan)),
+        ]));
+    }
+
+    lines.push(super::markdown::rule_line(width));
+
+    if let SelectedItemExtra::Issue { parent, sub_issues } = item.extra {
+        append_relation_lines(&mut lines, parent, sub_issues, width);
+    }
+
+    if item.body.is_empty() {
+        lines.push(Line::styled(
+            "(no body)",
+            Style::default().fg(Color::DarkGray),
+        ));
+    } else {
+        lines.extend(super::markdown::render(item.body, width));
+    }
+
+    append_comment_lines(&mut lines, input.entry, width);
+
+    (lines, overlay)
+}
+
 fn append_comment_lines(
     lines: &mut Vec<Line<'static>>,
-    overlays: &mut Vec<PreviewOverlay>,
-    entry: Option<&CommentEntry>,
+    entry: Option<&TimelineEntry>,
     width: usize,
 ) {
     lines.push(super::markdown::rule_line_colored(
@@ -1889,33 +1865,28 @@ fn append_comment_lines(
         COMMENTS_DIVIDER_FG,
     ));
 
-    let entry = match entry {
-        Some(e) => e,
-        None => {
-            lines.push(Line::styled(
-                "(loading comments…)",
-                Style::default().fg(Color::DarkGray),
-            ));
-            return;
-        }
-    };
+    // No entry yet is the same as `NotRequested` — the request just hasn't
+    // been dispatched. A default entry folds that into the match below
+    // instead of duplicating the "(loading comments…)" branch.
+    let pending = TimelineEntry::default();
+    let entry = entry.unwrap_or(&pending);
 
     match &entry.state {
-        CommentLoad::NotRequested | CommentLoad::Loading => {
+        TimelineLoad::NotRequested | TimelineLoad::Loading => {
             lines.push(Line::styled(
                 "(loading comments…)",
                 Style::default().fg(Color::DarkGray),
             ));
             return;
         }
-        CommentLoad::Error(e) => {
+        TimelineLoad::Error(e) => {
             lines.push(Line::styled(
                 format!("(comments failed: {e})"),
                 Style::default().fg(Color::Red),
             ));
             return;
         }
-        CommentLoad::Loaded => {}
+        TimelineLoad::Loaded => {}
     }
 
     if entry.items.is_empty() {
@@ -1927,15 +1898,6 @@ fn append_comment_lines(
     }
 
     for (i, c) in entry.items.iter().enumerate() {
-        let header_idx = lines.len();
-        if !c.url.is_empty() {
-            overlays.push(PreviewOverlay {
-                line_idx: header_idx,
-                x_offset: 0,
-                url: c.url.clone(),
-                label: format!("@{}", c.author.login),
-            });
-        }
         lines.push(Line::from(vec![
             Span::styled(
                 format!("@{}", c.author.login),
@@ -1967,12 +1929,76 @@ fn append_comment_lines(
     }
 }
 
+/// OSC 8 hyperlink drawn over the preview's header line (`#N`) — the only
+/// preview row an overlay is ever attached to; see `render_preview`.
 #[derive(Debug, Clone)]
 struct PreviewOverlay {
-    line_idx: usize,
-    x_offset: u16,
     url: String,
     label: String,
+}
+
+/// Everything `build_preview_content` reads, borrowed from the selected
+/// issue/PR and its timeline entry, plus the width the result is wrapped
+/// against. `cache_key` reads the same struct, so it cannot silently miss a
+/// field that content-building depends on.
+struct PreviewInput<'v> {
+    tab: GitHubTab,
+    number: u64,
+    width: u16,
+    body_rev: u64,
+    entry: Option<&'v TimelineEntry>,
+    item: Option<SelectedItem<'v>>,
+}
+
+impl PreviewInput<'_> {
+    fn cache_key(&self) -> PreviewKey {
+        // Count alone is not enough: "loaded but empty" and "still loading"
+        // both have zero items yet render differently. Exhaustive on purpose —
+        // a new `TimelineLoad` variant must not silently fold into Pending and
+        // freeze the preview.
+        let stage = match self.entry.map(|e| &e.state) {
+            None | Some(TimelineLoad::NotRequested | TimelineLoad::Loading) => {
+                TimelineStage::Pending
+            }
+            Some(TimelineLoad::Loaded) => TimelineStage::Ready,
+            Some(TimelineLoad::Error(_)) => TimelineStage::Failed,
+        };
+        PreviewKey {
+            tab: self.tab,
+            number: self.number,
+            stage,
+            comment_count: self.entry.map_or(0, |e| e.items.len()),
+            has_more: self.entry.is_some_and(|e| e.next_cursor.is_some()),
+            loading_more: self.entry.is_some_and(|e| e.loading_more),
+            body_rev: self.body_rev,
+            width: self.width,
+        }
+    }
+}
+
+/// Borrowed fields of the selected issue/PR, common to both plus whichever
+/// extra bits are specific to the tab it came from.
+#[derive(Clone, Copy)]
+struct SelectedItem<'v> {
+    title: &'v str,
+    state: &'v str,
+    author: &'v str,
+    labels: &'v [crate::github::GhLabel],
+    body: &'v str,
+    url: &'v str,
+    extra: SelectedItemExtra<'v>,
+}
+
+#[derive(Clone, Copy)]
+enum SelectedItemExtra<'v> {
+    Issue {
+        parent: Option<&'v crate::github::GhRelatedIssue>,
+        sub_issues: &'v [crate::github::GhRelatedIssue],
+    },
+    PullRequest {
+        base_ref_name: &'v str,
+        head_ref_name: &'v str,
+    },
 }
 
 /// Everything the preview content depends on. Equal key ⇒ identical output, so
@@ -1983,7 +2009,7 @@ struct PreviewOverlay {
 struct PreviewKey {
     tab: GitHubTab,
     number: u64,
-    stage: CommentStage,
+    stage: TimelineStage,
     comment_count: usize,
     /// Drives the footer between "(loading more…)" and "(more comments — …)".
     has_more: bool,
@@ -1993,10 +2019,10 @@ struct PreviewKey {
 }
 
 /// Which of `append_comment_lines`' branches the preview will take. Derived
-/// from `CommentLoad` rather than reusing it, so the key stays `Copy`/`Eq`
+/// from `TimelineLoad` rather than reusing it, so the key stays `Copy`/`Eq`
 /// without dragging the error string along.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum CommentStage {
+enum TimelineStage {
     Pending,
     Ready,
     Failed,
@@ -2006,7 +2032,7 @@ enum CommentStage {
 struct PreviewCache {
     key: PreviewKey,
     lines: Vec<Line<'static>>,
-    overlays: Vec<PreviewOverlay>,
+    overlay: Option<PreviewOverlay>,
     /// Line count *after* wrapping — what `preview_offset` is measured in.
     visual_len: usize,
 }
@@ -2070,20 +2096,12 @@ fn related_issue_line(indent: &'static str, r: &crate::github::GhRelatedIssue) -
 
 fn append_relation_lines(
     lines: &mut Vec<Line<'static>>,
-    overlays: &mut Vec<PreviewOverlay>,
-    issue: &GhIssue,
+    parent: Option<&crate::github::GhRelatedIssue>,
+    sub_issues: &[crate::github::GhRelatedIssue],
     width: usize,
 ) {
-    if let Some(ref parent) = issue.parent {
+    if let Some(parent) = parent {
         let prefix = "Parent: ";
-        if !parent.url.is_empty() {
-            overlays.push(PreviewOverlay {
-                line_idx: lines.len(),
-                x_offset: console::measure_text_width(prefix) as u16,
-                url: parent.url.clone(),
-                label: format!("#{}", parent.number),
-            });
-        }
         lines.push(Line::from(vec![
             Span::styled(prefix, Style::default().fg(Color::DarkGray)),
             Span::styled(
@@ -2098,25 +2116,17 @@ fn append_relation_lines(
             ),
         ]));
     }
-    if !issue.sub_issues.is_empty() {
+    if !sub_issues.is_empty() {
         let indent = "  ";
         lines.push(Line::styled(
-            format!("Sub-issues ({}):", issue.sub_issues.len()),
+            format!("Sub-issues ({}):", sub_issues.len()),
             Style::default().fg(Color::DarkGray),
         ));
-        for sub in &issue.sub_issues {
-            if !sub.url.is_empty() {
-                overlays.push(PreviewOverlay {
-                    line_idx: lines.len(),
-                    x_offset: console::measure_text_width(indent) as u16,
-                    url: sub.url.clone(),
-                    label: format!("#{}", sub.number),
-                });
-            }
+        for sub in sub_issues {
             lines.push(related_issue_line(indent, sub));
         }
     }
-    if issue.parent.is_some() || !issue.sub_issues.is_empty() {
+    if parent.is_some() || !sub_issues.is_empty() {
         lines.push(super::markdown::rule_line(width));
     }
 }
@@ -2467,7 +2477,7 @@ mod tests {
 
         // Zero comments, but *loaded* — item count stays 0, so only the stage
         // distinguishes this from the pending state.
-        view.append_comments(1, GhItemKind::PullRequest, Vec::new(), None);
+        view.append_timeline_items(1, GhItemKind::PullRequest, Vec::new(), None);
         let screen = render_to_string(&mut view);
 
         assert!(
@@ -2488,14 +2498,14 @@ mod tests {
             created_at: "2026-07-27".to_string(),
             url: String::new(),
         };
-        view.append_comments(
+        view.append_timeline_items(
             1,
             GhItemKind::PullRequest,
             vec![comment("a", "one"), comment("b", "two")],
             None,
         );
 
-        let (lines, _) = view.build_preview_content(40);
+        let (lines, _) = build_preview_content(&view.preview_input(40));
         let dividers: Vec<(char, Option<Color>)> = lines
             .iter()
             .filter_map(|l| {
@@ -2525,7 +2535,7 @@ mod tests {
     fn preview_cache_invalidates_when_more_comments_start_loading() {
         let mut view = view_with_body("short".to_string());
         // One page in, with another page available.
-        view.append_comments(
+        view.append_timeline_items(
             1,
             GhItemKind::PullRequest,
             vec![GhComment {
@@ -2545,7 +2555,7 @@ mod tests {
         // Fetching the next page changes only `loading_more` — no item count,
         // no stage change — so the footer only updates if the key tracks it.
         view.preview_offset = usize::MAX / 2;
-        view.maybe_load_more_comments();
+        view.maybe_load_more_timeline();
         let screen = render_to_string(&mut view);
 
         assert!(
