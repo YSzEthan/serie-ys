@@ -26,12 +26,14 @@ use crate::{
 const PREFETCH_THRESHOLD: usize = 5;
 const COMMENTS_LOAD_MORE_THRESHOLD: usize = 5;
 
-/// Divider between the item body and the comment thread — blue-grey.
-/// Indexed rather than Rgb so it survives terminals without truecolor.
-const COMMENTS_DIVIDER_FG: Color = Color::Indexed(103);
-/// Divider between two comments — green-grey. Distinct hue from the one
-/// above so the eye can tell "body ends" from "next comment" while scrolling.
-const COMMENT_SEPARATOR_FG: Color = Color::Indexed(108);
+/// Divider between the item body and the comment thread — pastel blue-grey
+/// (#afafd7). Indexed rather than Rgb so it survives terminals without
+/// truecolor.
+const COMMENTS_DIVIDER_FG: Color = Color::Indexed(146);
+/// Divider between two comments — pastel green-grey (#afd7af). Distinct hue
+/// from the one above so the eye can tell "body ends" from "next comment"
+/// while scrolling; same lightness so neither dominates.
+const COMMENT_SEPARATOR_FG: Color = Color::Indexed(151);
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum StateFilter {
