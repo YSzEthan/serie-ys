@@ -123,6 +123,7 @@ The keys below are the defaults; see
 | <kbd>p</kbd> | 3-stage merge PR: pick method, delete branch, confirm | `merge_pr` |
 | <kbd>X</kbd> | Close/reopen issue or PR | `toggle_issue_state` |
 | <kbd>P</kbd> | Mark PR ready / back to draft | `toggle_pr_draft` |
+| <kbd>z</kbd> | Expand/collapse commit log | `toggle_commit_log` |
 
 ### Create Tag
 

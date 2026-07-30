@@ -706,6 +706,9 @@
         },
         "toggle_pr_draft": {
           "$ref": "#/definitions/keybindArray"
+        },
+        "toggle_commit_log": {
+          "$ref": "#/definitions/keybindArray"
         }
       },
       "patternProperties": {

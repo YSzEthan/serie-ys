@@ -369,6 +369,7 @@ fn help_blocks(
         b(vec![UserEvent::MergePr],                   "三階段 merge PR：選 method、刪 branch、確認", "3-stage merge PR: pick method, delete branch, confirm"),
         b(vec![UserEvent::ToggleIssueState],          "關閉／重開 issue 或 PR",  "Close/reopen issue or PR"),
         b(vec![UserEvent::TogglePrDraft],             "PR 定案／打回草稿",       "Mark PR ready / back to draft"),
+        b(vec![UserEvent::ToggleCommitLog],           "展開／摺疊 commit 記錄",  "Expand/collapse commit log"),
     ];
 
     let create_tag = vec![

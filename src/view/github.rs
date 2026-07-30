@@ -195,6 +195,9 @@ pub struct GitHubView<'a> {
     /// Preview content height, recorded by `render_preview`. The scroll
     /// handlers use it instead of re-deriving it from `height`.
     preview_height: usize,
+    /// Whether the commit log shows individually or as one collapsed summary
+    /// line. All-or-nothing (`z` toggles the whole log), not per-commit.
+    expand_commits: bool,
 
     ctx: Rc<AppContext>,
     tx: Sender,
@@ -245,6 +248,7 @@ impl<'a> GitHubView<'a> {
             body_rev: 0,
             preview_cache: None,
             preview_height: 0,
+            expand_commits: true,
             ctx,
             tx,
         }
@@ -525,6 +529,7 @@ impl<'a> GitHubView<'a> {
             GitHubFocus::Preview => {
                 let mut hints = vec![(UserEvent::Cancel, "back")];
                 hints.extend(self.action_hints());
+                hints.extend(self.commit_log_hint());
                 if self.selected_has_related() {
                     hints.push((UserEvent::DetailPaneToggle, "related"));
                 }
@@ -554,6 +559,7 @@ impl<'a> GitHubView<'a> {
                     (UserEvent::Filter, "filter"),
                     (UserEvent::ShortCopy, "copy url / C open / v #num"),
                 ]);
+                hints.extend(self.commit_log_hint());
                 if self.selected_has_related() {
                     hints.push((UserEvent::DetailPaneToggle, "related"));
                 }
@@ -688,6 +694,9 @@ impl<'a> GitHubView<'a> {
             UserEvent::TogglePrDraft if matches!(self.active_tab, GitHubTab::PullRequests) => {
                 self.try_toggle_pr_draft();
             }
+            UserEvent::ToggleCommitLog if matches!(self.active_tab, GitHubTab::PullRequests) => {
+                self.toggle_commit_log();
+            }
             _ => {}
         }
     }
@@ -817,8 +826,19 @@ impl<'a> GitHubView<'a> {
             UserEvent::TogglePrDraft if matches!(self.active_tab, GitHubTab::PullRequests) => {
                 self.try_toggle_pr_draft();
             }
+            UserEvent::ToggleCommitLog if matches!(self.active_tab, GitHubTab::PullRequests) => {
+                self.toggle_commit_log();
+            }
             _ => {}
         }
+    }
+
+    /// Collapsing/expanding doesn't reset `preview_offset` — unlike the ~20
+    /// sites that reset it on navigation, this is a content-density toggle,
+    /// not a "you're looking at something else now" moment. The existing
+    /// clamp in `render_preview` keeps it from scrolling past the new end.
+    fn toggle_commit_log(&mut self) {
+        self.expand_commits = !self.expand_commits;
     }
 
     fn try_merge_selected_pr(&mut self) {
@@ -930,6 +950,20 @@ impl<'a> GitHubView<'a> {
             hints.push((UserEvent::ToggleIssueState, action.hint_label(kind)));
         }
         hints
+    }
+
+    /// Unlike `action_hints`, not gated on `state == "OPEN"` — a closed or
+    /// merged PR still has a commit log worth collapsing.
+    fn commit_log_hint(&self) -> Option<(UserEvent, &'static str)> {
+        if !matches!(self.active_tab, GitHubTab::PullRequests) {
+            return None;
+        }
+        let label = if self.expand_commits {
+            "collapse commits"
+        } else {
+            "expand commits"
+        };
+        Some((UserEvent::ToggleCommitLog, label))
     }
 
     fn open_related_picker(&self) {
@@ -1686,6 +1720,7 @@ impl<'a> GitHubView<'a> {
             width,
             body_rev: self.body_rev,
             entry: self.timeline.get(&(kind, number)),
+            expand_commits: self.expand_commits,
             item,
         }
     }
@@ -1869,7 +1904,7 @@ fn build_preview_content(input: &PreviewInput) -> (Vec<Line<'static>>, Option<Pr
         lines.extend(super::markdown::render(item.body, width));
     }
 
-    append_comment_lines(&mut lines, input.entry, width);
+    append_comment_lines(&mut lines, input.entry, input.expand_commits, width);
 
     (lines, overlay)
 }
@@ -1877,10 +1912,11 @@ fn build_preview_content(input: &PreviewInput) -> (Vec<Line<'static>>, Option<Pr
 fn append_comment_lines(
     lines: &mut Vec<Line<'static>>,
     entry: Option<&TimelineEntry>,
+    expand_commits: bool,
     width: usize,
 ) {
     let mut prev = Section::Body;
-    for item in build_timeline(entry) {
+    for item in build_timeline(entry, expand_commits) {
         let section = item.section();
         lines.push(prev.divider(width));
         item.render(lines, width);
@@ -1896,7 +1932,7 @@ fn append_comment_lines(
 /// Returns borrowed items rather than an owned copy, so a `None`/`NotRequested`
 /// entry (nothing to borrow from) has to be handled before the `Loaded` match
 /// arm rather than folded into it via a local default — that would dangle.
-fn build_timeline(entry: Option<&TimelineEntry>) -> Vec<TimelineItem<'_>> {
+fn build_timeline(entry: Option<&TimelineEntry>, expand_commits: bool) -> Vec<TimelineItem<'_>> {
     let Some(entry) = entry else {
         return vec![TimelineItem::notice("(loading comments…)", Color::DarkGray)];
     };
@@ -1915,9 +1951,13 @@ fn build_timeline(entry: Option<&TimelineEntry>) -> Vec<TimelineItem<'_>> {
                 .iter()
                 .filter_map(TimelineItem::from_gh)
                 .collect();
-            // Checked on the *filtered* list, not `entry.items`: a page of
-            // nothing but `Unknown` nodes must still fall back to a notice
-            // instead of rendering zero rows (and thus no divider at all).
+            if !expand_commits {
+                items = collapse_commits(items);
+            }
+            // Checked on the *filtered/collapsed* list, not `entry.items`: a
+            // page of nothing but `Unknown` nodes must still fall back to a
+            // notice instead of rendering zero rows (and thus no divider at
+            // all) — and collapsing never turns a non-empty list empty.
             if items.is_empty() {
                 items.push(TimelineItem::notice("(no comments)", Color::DarkGray));
             } else if entry.next_cursor.is_some() {
@@ -1933,10 +1973,27 @@ fn build_timeline(entry: Option<&TimelineEntry>) -> Vec<TimelineItem<'_>> {
     }
 }
 
-/// One renderable row of the timeline: a comment, a commit, or a status
-/// notice standing in for either (loading/error/empty/pagination footer).
-/// Borrows from the `TimelineEntry` it was built from — this is rebuilt from
-/// scratch on every cache miss, so there's nothing to hold onto past render.
+/// Replaces every individual `Commit` row with one summary line at the front
+/// of the timeline, ahead of the comments — matching the web UI's "N commits"
+/// collapsed view rather than leaving a gap where each commit used to sit.
+fn collapse_commits(mut items: Vec<TimelineItem<'_>>) -> Vec<TimelineItem<'_>> {
+    let mut commit_count = 0;
+    items.retain(|item| {
+        let is_commit = matches!(item, TimelineItem::Commit { .. });
+        commit_count += usize::from(is_commit);
+        !is_commit
+    });
+    if commit_count > 0 {
+        items.insert(0, TimelineItem::CollapsedCommits(commit_count));
+    }
+    items
+}
+
+/// One renderable row of the timeline: a comment, a commit, a collapsed
+/// commit-count summary, or a status notice standing in for any of them
+/// (loading/error/empty/pagination footer). Borrows from the `TimelineEntry`
+/// it was built from — this is rebuilt from scratch on every cache miss, so
+/// there's nothing to hold onto past render.
 enum TimelineItem<'a> {
     Comment {
         author: &'a str,
@@ -1948,6 +2005,7 @@ enum TimelineItem<'a> {
         headline: &'a str,
         ci_state: Option<&'a str>,
     },
+    CollapsedCommits(usize),
     Notice(Line<'static>),
 }
 
@@ -1986,7 +2044,7 @@ impl<'a> TimelineItem<'a> {
     fn section(&self) -> Section {
         match self {
             TimelineItem::Comment { .. } | TimelineItem::Notice(_) => Section::Comment,
-            TimelineItem::Commit { .. } => Section::Commit,
+            TimelineItem::Commit { .. } | TimelineItem::CollapsedCommits(_) => Section::Commit,
         }
     }
 
@@ -2017,6 +2075,12 @@ impl<'a> TimelineItem<'a> {
                 ci_state,
             } => {
                 lines.push(commit_line(oid, headline, ci_state, width));
+            }
+            TimelineItem::CollapsedCommits(n) => {
+                lines.push(Line::styled(
+                    format!("▸ {n} commits"),
+                    Style::default().fg(Color::DarkGray),
+                ));
             }
             TimelineItem::Notice(line) => lines.push(line),
         }
@@ -2076,6 +2140,7 @@ struct PreviewInput<'v> {
     width: u16,
     body_rev: u64,
     entry: Option<&'v TimelineEntry>,
+    expand_commits: bool,
     item: Option<SelectedItem<'v>>,
 }
 
@@ -2100,6 +2165,7 @@ impl PreviewInput<'_> {
             has_more: self.entry.is_some_and(|e| e.next_cursor.is_some()),
             loading_more: self.entry.is_some_and(|e| e.loading_more),
             mergeable: self.entry.and_then(|e| e.mergeable),
+            expand_commits: self.expand_commits,
             body_rev: self.body_rev,
             width: self.width,
         }
@@ -2145,6 +2211,7 @@ struct PreviewKey {
     has_more: bool,
     loading_more: bool,
     mergeable: Option<Mergeable>,
+    expand_commits: bool,
     body_rev: u64,
     width: u16,
 }
@@ -2905,5 +2972,67 @@ mod tests {
             "line must not exceed width {width}, got {} cells: {rendered:?}",
             console::measure_text_width(&rendered)
         );
+    }
+
+    #[test]
+    fn collapsing_commits_replaces_them_with_a_summary_and_changes_the_key() {
+        let mut view = view_with_body("body".to_string());
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            timeline_page(
+                vec![
+                    timeline_commit("aaaaaaa", "SUCCESS"),
+                    timeline_comment("carol", "one"),
+                    timeline_commit("bbbbbbb", "SUCCESS"),
+                ],
+                None,
+            ),
+        );
+        render_to_string(&mut view);
+        let key_expanded = view.preview_cache.as_ref().map(|c| c.key);
+
+        view.toggle_commit_log();
+        let screen = render_to_string(&mut view);
+        let key_collapsed = view.preview_cache.as_ref().map(|c| c.key);
+
+        assert!(!screen.contains("aaaaaaa"), "got:\n{screen}");
+        assert!(!screen.contains("bbbbbbb"), "got:\n{screen}");
+        assert!(screen.contains("2 commits"), "got:\n{screen}");
+        // The comment in between must survive collapsing — only commits fold.
+        assert!(screen.contains("one"), "got:\n{screen}");
+        assert_ne!(key_expanded, key_collapsed);
+    }
+
+    #[test]
+    fn toggle_commit_log_has_no_effect_on_issues_tab() {
+        let mut view = view_with_issue("issue body".to_string());
+        assert!(view.expand_commits);
+
+        view.handle_preview_event(UserEvent::ToggleCommitLog, 1);
+        assert!(view.expand_commits, "Issues tab must ignore the toggle");
+
+        view.handle_list_event(UserEvent::ToggleCommitLog, 1);
+        assert!(view.expand_commits, "Issues tab must ignore the toggle");
+
+        assert!(
+            !view
+                .status_hints()
+                .iter()
+                .any(|(e, _)| *e == UserEvent::ToggleCommitLog),
+            "no hint should be offered for a key that does nothing here"
+        );
+    }
+
+    #[test]
+    fn toggle_commit_log_flips_expand_commits_on_pr_tab() {
+        let mut view = view_with_body("body".to_string());
+        assert!(view.expand_commits);
+
+        view.handle_preview_event(UserEvent::ToggleCommitLog, 1);
+        assert!(!view.expand_commits);
+
+        view.handle_list_event(UserEvent::ToggleCommitLog, 1);
+        assert!(view.expand_commits);
     }
 }

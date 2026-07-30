@@ -625,6 +625,7 @@ pub enum UserEvent {
     MergePr,
     ToggleIssueState,
     TogglePrDraft,
+    ToggleCommitLog,
     Unknown,
 }
 
@@ -682,6 +683,7 @@ impl UserEvent {
             UserEvent::MergePr => "merge_pr",
             UserEvent::ToggleIssueState => "toggle_issue_state",
             UserEvent::TogglePrDraft => "toggle_pr_draft",
+            UserEvent::ToggleCommitLog => "toggle_commit_log",
             UserEvent::Unknown => return None,
         };
         Some(name.to_string())
@@ -762,6 +764,7 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "merge_pr" => Ok(UserEvent::MergePr),
                         "toggle_issue_state" => Ok(UserEvent::ToggleIssueState),
                         "toggle_pr_draft" => Ok(UserEvent::TogglePrDraft),
+                        "toggle_commit_log" => Ok(UserEvent::ToggleCommitLog),
                         _ => {
                             let msg = format!("Unknown user event: {value}");
                             Err(de::Error::custom(msg))

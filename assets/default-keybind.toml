@@ -51,5 +51,6 @@ detail_pane_toggle = ["u"]
 merge_pr = ["p"]
 toggle_issue_state = ["shift-x"]
 toggle_pr_draft = ["shift-p"]
+toggle_commit_log = ["z"]
 
 user_command_1 = ["e"]
