@@ -1662,7 +1662,7 @@ impl<'a> GitHubView<'a> {
         if let Some(cache) = self.preview_cache.as_ref().filter(|c| c.key == key) {
             return cache.visual_len;
         }
-        let (lines, overlays) = self.build_preview_content();
+        let (lines, overlays) = self.build_preview_content(width as usize);
         let visual_len = Paragraph::new(borrow_lines(&lines))
             .wrap(Wrap { trim: false })
             .line_count(width);
@@ -1771,7 +1771,7 @@ impl<'a> GitHubView<'a> {
         }
     }
 
-    fn build_preview_content(&self) -> (Vec<Line<'static>>, Vec<PreviewOverlay>) {
+    fn build_preview_content(&self, width: usize) -> (Vec<Line<'static>>, Vec<PreviewOverlay>) {
         let mut overlays: Vec<PreviewOverlay> = Vec::new();
         let Some((title, state, author, labels, body, number, url)) = self.selected_item_fields()
         else {
@@ -1836,15 +1836,12 @@ impl<'a> GitHubView<'a> {
             }
         }
 
-        lines.push(Line::styled(
-            "─".repeat(40),
-            Style::default().fg(Color::DarkGray),
-        ));
+        lines.push(super::markdown::rule_line(width));
 
         if let GitHubTab::Issues = self.active_tab {
             let idx = self.actual_index(self.selected_index);
             if let Some(issue) = self.issues.get(idx) {
-                append_relation_lines(&mut lines, &mut overlays, issue);
+                append_relation_lines(&mut lines, &mut overlays, issue, width);
             }
         }
 
@@ -1854,13 +1851,13 @@ impl<'a> GitHubView<'a> {
                 Style::default().fg(Color::DarkGray),
             ));
         } else {
-            lines.extend(super::markdown::render(&body));
+            lines.extend(super::markdown::render(&body, width));
         }
 
         let entry = self
             .selected_number_and_kind()
             .and_then(|(n, k)| self.comments.get(&(k, n)));
-        append_comment_lines(&mut lines, &mut overlays, entry);
+        append_comment_lines(&mut lines, &mut overlays, entry, width);
 
         (lines, overlays)
     }
@@ -1876,11 +1873,9 @@ fn append_comment_lines(
     lines: &mut Vec<Line<'static>>,
     overlays: &mut Vec<PreviewOverlay>,
     entry: Option<&CommentEntry>,
+    width: usize,
 ) {
-    lines.push(Line::styled(
-        "─".repeat(40),
-        Style::default().fg(Color::DarkGray),
-    ));
+    lines.push(super::markdown::rule_line(width));
 
     let entry = match entry {
         Some(e) => e,
@@ -1941,10 +1936,10 @@ fn append_comment_lines(
                 Style::default().fg(Color::DarkGray),
             ),
         ]));
-        lines.extend(super::markdown::render(&c.body));
+        lines.extend(super::markdown::render(&c.body, width));
         if i + 1 < entry.items.len() {
             lines.push(Line::styled(
-                "·".repeat(20),
+                "·".repeat(20.min(width)),
                 Style::default().fg(Color::DarkGray),
             ));
         }
@@ -2065,6 +2060,7 @@ fn append_relation_lines(
     lines: &mut Vec<Line<'static>>,
     overlays: &mut Vec<PreviewOverlay>,
     issue: &GhIssue,
+    width: usize,
 ) {
     if let Some(ref parent) = issue.parent {
         let prefix = "Parent: ";
@@ -2109,10 +2105,7 @@ fn append_relation_lines(
         }
     }
     if issue.parent.is_some() || !issue.sub_issues.is_empty() {
-        lines.push(Line::styled(
-            "─".repeat(40),
-            Style::default().fg(Color::DarkGray),
-        ));
+        lines.push(super::markdown::rule_line(width));
     }
 }
 
