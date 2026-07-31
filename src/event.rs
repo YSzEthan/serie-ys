@@ -3,7 +3,7 @@ use std::{
     fmt::{self, Debug, Formatter},
     path::{Component, Path},
     sync::{
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc, Arc, Mutex,
     },
     thread,
@@ -21,6 +21,16 @@ use crate::view::RefreshViewContext;
 
 /// Tick event interval driving UI animations (marquee, etc.).
 pub const TICK_INTERVAL: Duration = Duration::from_millis(100);
+
+/// watchdog 的輪詢間隔。要夠短，SIGTERM 才不會等太久才生效。
+const WATCHDOG_INTERVAL: Duration = Duration::from_millis(200);
+
+/// 心跳停多久就判定 event thread 卡死。event thread 正常每 `TICK_INTERVAL`
+/// （100ms）至少跳一次，這裡留了 20 倍餘裕。
+const WATCHDOG_STALL_TIMEOUT: Duration = Duration::from_secs(2);
+
+/// 送出 Quit 之後留給正常退出路徑的寬限時間，逾時就自己收尾。
+const WATCHDOG_GRACE: Duration = Duration::from_millis(300);
 
 #[derive(Debug)]
 pub enum AppEvent {
@@ -296,6 +306,24 @@ pub struct EventController {
     handle: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
     pending_refresh: Option<Arc<AtomicBool>>,
     term_signal: Arc<AtomicBool>,
+    heartbeat: Arc<AtomicU64>,
+}
+
+/// 請主 thread 正常收工，`WATCHDOG_GRACE` 內沒收工就自己還原終端並結束程序。
+///
+/// event thread 還活著時它自己也會送 Quit，重複送無妨；重點是卡死時也有人送。
+/// 終端已經消失的話這些還原全都會失敗——無所謂，反正沒有東西要還原了；真正重要
+/// 的是 SIGTERM 那條路徑，那時終端還活著，不還原會留下一個 raw mode 的爛攤子。
+fn force_quit(tx: &Sender) -> ! {
+    tx.send(AppEvent::Quit);
+    thread::sleep(WATCHDOG_GRACE);
+    let _ = ratatui::crossterm::execute!(
+        std::io::stdout(),
+        ratatui::crossterm::event::DisableMouseCapture,
+        ratatui::crossterm::terminal::LeaveAlternateScreen,
+    );
+    let _ = ratatui::crossterm::terminal::disable_raw_mode();
+    std::process::exit(0);
 }
 
 impl EventController {
@@ -320,10 +348,56 @@ impl EventController {
             handle: Arc::new(Mutex::new(None)),
             pending_refresh: None,
             term_signal,
+            heartbeat: Arc::new(AtomicU64::new(0)),
         };
         controller.start();
+        controller.start_watchdog();
 
         controller
+    }
+
+    /// event thread 卡死時的唯一出路。
+    ///
+    /// crossterm 的 mio event source 在 stdin EOF 時會卡在內層 read 迴圈裡
+    /// （`read` 回 `Ok(0)` 既不 break 也不檢查 timeout，見 crossterm 0.29 的
+    /// `event/source/unix/mio.rs`），`poll()` 永遠不返回。這表示 event thread
+    /// 沒有任何自救機會：`stop` / `term_signal` 都在 loop 頂端檢查，而控制流
+    /// 根本回不到那裡。terminal 被關掉後程式就這樣吃滿一顆核心，SIGTERM 也
+    /// 只是設了個沒人讀的 flag。
+    ///
+    /// 所以改由一個獨立 thread 從外面看心跳。它同時涵蓋 event thread panic
+    /// （panic 後心跳一樣停住，主 thread 原本會永久 park 在 `recv` 上）。
+    fn start_watchdog(&self) {
+        let heartbeat = self.heartbeat.clone();
+        let stop = self.stop.clone();
+        let term_signal = self.term_signal.clone();
+        let tx = self.tx.clone();
+        thread::spawn(move || {
+            let mut last = heartbeat.load(Ordering::Relaxed);
+            let mut last_change = Instant::now();
+            loop {
+                thread::sleep(WATCHDOG_INTERVAL);
+
+                if term_signal.load(Ordering::Acquire) {
+                    force_quit(&tx);
+                }
+
+                // suspend 期間 event thread 本來就該停著，不是卡死。代價是
+                // `stop()` 的 `join()` 與 `resume()` 的 `drain_crossterm_event()`
+                // 也落在這個盲區：它們踩到同一個 EOF 自旋時主 thread 會永久阻塞
+                // 而無人監看。心跳來自 event thread，分不出「join 卡死」與
+                // 「使用者 suspend 去編輯了半小時」，要補只能另拉一條主 thread 心跳。
+                let now = heartbeat.load(Ordering::Relaxed);
+                if now != last || stop.load(Ordering::Acquire) {
+                    (last, last_change) = (now, Instant::now());
+                    continue;
+                }
+
+                if last_change.elapsed() >= WATCHDOG_STALL_TIMEOUT {
+                    force_quit(&tx);
+                }
+            }
+        });
     }
 
     pub fn start(&self) {
@@ -331,10 +405,13 @@ impl EventController {
         let stop = self.stop.clone();
         let tx = self.tx.clone();
         let term_signal = self.term_signal.clone();
+        let heartbeat = self.heartbeat.clone();
         let handle = thread::spawn(move || {
             let tick_interval = TICK_INTERVAL;
             let mut last_tick = Instant::now();
             loop {
+                // 心跳：外部的 watchdog 靠它判斷這個 thread 是否還活著。
+                heartbeat.fetch_add(1, Ordering::Relaxed);
                 if stop.load(Ordering::Acquire) {
                     break;
                 }
