@@ -128,36 +128,63 @@ struct SearchMatch {
     match_index: usize, // 1-based
 }
 
+enum SearchField<'a> {
+    Subject(&'a str),
+    AuthorName(&'a str),
+    CommitHash(&'a str),
+    Ref(&'a str),
+}
+
+impl SearchField<'_> {
+    fn text(&self) -> &str {
+        match self {
+            Self::Subject(s) | Self::AuthorName(s) | Self::CommitHash(s) | Self::Ref(s) => s,
+        }
+    }
+}
+
+/// 搜尋與過濾看的所有欄位，全專案唯一一份清單 —— 加欄位只改這裡，`SearchMatch::new`
+/// 與 `commit_quick_matches` 會自動跟上。兩邊各抄一份的話（包括 Stash 這條排除規則），
+/// 分歧會讓某列被算進 `match_index` 卻標不出 highlight。
+///
+/// subject 排第一：`commit_quick_matches` 的 `any()` 靠這個順序短路。
+fn search_fields<'a>(ci: &'a CommitInfo<'_>) -> impl Iterator<Item = SearchField<'a>> {
+    [
+        SearchField::Subject(&ci.commit.subject),
+        SearchField::AuthorName(&ci.commit.author_name),
+        SearchField::CommitHash(ci.commit.commit_hash.as_short_hash()),
+    ]
+    .into_iter()
+    .chain(
+        ci.refs
+            .iter()
+            .filter(|r| !matches!(r, Ref::Stash { .. }))
+            .map(|r| SearchField::Ref(r.name())),
+    )
+}
+
 impl SearchMatch {
     /// 收 `&SearchMatcher` 而不是 `(query, ignore_case, fuzzy)`：呼叫端在迴圈外就建好
-    /// 了一個給 `commit_quick_matches` 用，自己再建一次等於每個命中的 commit 都重折
-    /// 一次 query、多配置一個 `String`。
-    fn new<'a>(c: &Commit, refs: impl Iterator<Item = &'a Ref>, matcher: &SearchMatcher) -> Self {
-        let refs = refs
-            .filter(|r| !matches!(r, Ref::Stash { .. }))
-            .filter_map(|r| {
-                matcher
-                    .matched_position(r.name())
-                    .map(SearchMatchPosition::new)
-                    .map(|pos| (r.name().into(), pos))
-            })
-            .collect();
-        let subject = matcher
-            .matched_position(&c.subject)
-            .map(SearchMatchPosition::new);
-        let author_name = matcher
-            .matched_position(&c.author_name)
-            .map(SearchMatchPosition::new);
-        let commit_hash = matcher
-            .matched_position(c.commit_hash.as_short_hash())
-            .map(SearchMatchPosition::new);
-        Self {
-            refs,
-            subject,
-            author_name,
-            commit_hash,
-            match_index: 0,
+    /// 一個，自己再建一次等於每個 commit 都重折一次 query、多配置一個 `String`。
+    fn new(ci: &CommitInfo<'_>, matcher: &SearchMatcher) -> Self {
+        let mut m = Self::default();
+        for f in search_fields(ci) {
+            let Some(pos) = matcher
+                .matched_position(f.text())
+                .map(SearchMatchPosition::new)
+            else {
+                continue;
+            };
+            match f {
+                SearchField::Subject(_) => m.subject = Some(pos),
+                SearchField::AuthorName(_) => m.author_name = Some(pos),
+                SearchField::CommitHash(_) => m.commit_hash = Some(pos),
+                SearchField::Ref(name) => {
+                    m.refs.insert(name.into(), pos);
+                }
+            }
         }
+        m
     }
 
     fn matched(&self) -> bool {
@@ -895,50 +922,29 @@ impl<'a> CommitListState<'a> {
             && query.starts_with(&self.last_search_query)
             && !self.last_matched_indices.is_empty();
 
+        // 增量搜尋只是換候選來源，比對本身一模一樣 —— 兩條路徑各寫一份迴圈的話，
+        // 最不能分歧的 `match_index` 發號就有兩個地方會錯。
+        // `mem::take` 避免對 Vec 做額外 clone；函式結尾會覆寫回去。
+        let candidates: Vec<RawCommitIdx> = if can_use_incremental {
+            std::mem::take(&mut self.last_matched_indices)
+        } else {
+            (0..self.commits.len()).map(RawCommitIdx).collect()
+        };
+        self.clear_search_matches();
+
         let mut new_matched_indices = Vec::new();
         let mut match_index = 1;
-
-        if can_use_incremental {
-            // Incremental search: only check previously matched commits.
-            // `mem::take` 避免對 Vec 做額外 clone；迴圈結尾會覆寫回去。
-            let prev = std::mem::take(&mut self.last_matched_indices);
-            for raw in &prev {
-                self.search_match_mut(*raw).clear();
-            }
-
-            for raw in prev {
-                let commit_info = self.commit(raw);
-                if Self::commit_quick_matches(&matcher, commit_info) {
-                    let mut m = SearchMatch::new(
-                        commit_info.commit,
-                        commit_info.refs.iter().copied(),
-                        &matcher,
-                    );
-                    m.match_index = match_index;
-                    match_index += 1;
-                    *self.search_match_mut(raw) = m;
-                    new_matched_indices.push(raw);
-                }
-            }
-        } else {
-            // Full search: check all commits
-            self.clear_search_matches();
-
-            for i in 0..self.commits.len() {
-                let raw = RawCommitIdx(i);
-                let commit_info = self.commit(raw);
-                // Quick check first to avoid creating SearchMatch for non-matching commits
-                if Self::commit_quick_matches(&matcher, commit_info) {
-                    let mut m = SearchMatch::new(
-                        commit_info.commit,
-                        commit_info.refs.iter().copied(),
-                        &matcher,
-                    );
-                    m.match_index = match_index;
-                    match_index += 1;
-                    *self.search_match_mut(raw) = m;
-                    new_matched_indices.push(raw);
-                }
+        for raw in candidates {
+            // 不先用 `commit_quick_matches` 篩：那道閘門在這裡省不到東西。
+            // `SearchMatch::new` 不會短路，命中與否都要把每個欄位跑完，所以閘門對
+            // 沒命中的 commit 成本相同、對命中的則是純粹多跑一趟。少了它，
+            // `matched()` 也就成了「這列算不算命中」的唯一來源。
+            let mut m = SearchMatch::new(self.commit(raw), &matcher);
+            if m.matched() {
+                m.match_index = match_index;
+                match_index += 1;
+                *self.search_match_mut(raw) = m;
+                new_matched_indices.push(raw);
             }
         }
 
@@ -948,33 +954,14 @@ impl<'a> CommitListState<'a> {
         self.last_search_fuzzy = fuzzy;
     }
 
-    /// Quick check if commit matches any searchable field
+    /// filter 只要 bool，`any()` 命中即停。
+    ///
+    /// **別把它換成 `SearchMatch::new(..).matched()`** —— 後者不會短路，會對每個欄位
+    /// 算完整的 highlight 位置再全部丟掉。查詢 `a` 打在大 repo 上時幾乎每列都命中
+    /// subject，那是每次按鍵好幾倍的差距。反過來，搜尋路徑不該用這道閘門：它在那裡
+    /// 只是把同一份比對多跑一次（見 `update_search_matches`）。
     fn commit_quick_matches(matcher: &SearchMatcher, commit_info: &CommitInfo<'_>) -> bool {
-        let commit = &commit_info.commit;
-
-        // Check subject first (most likely match)
-        if matcher.matches(&commit.subject) {
-            return true;
-        }
-
-        // Check author name
-        if matcher.matches(&commit.author_name) {
-            return true;
-        }
-
-        // Check commit hash
-        if matcher.matches(commit.commit_hash.as_short_hash()) {
-            return true;
-        }
-
-        // Check refs
-        for r in &commit_info.refs {
-            if !matches!(r, Ref::Stash { .. }) && matcher.matches(r.name()) {
-                return true;
-            }
-        }
-
-        false
+        search_fields(commit_info).any(|f| matcher.matches(f.text()))
     }
 
     fn clear_search_matches(&mut self) {
@@ -2323,6 +2310,43 @@ fn compute_selection(target: VisibleIdx, total: usize, height: usize) -> Option<
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn commit_fixture() -> Commit {
+        Commit {
+            subject: "修正顯示問題".into(),
+            author_name: "Alice".into(),
+            commit_hash: "abc1234def".into(),
+            ..Default::default()
+        }
+    }
+
+    /// `search_fields` 是搜尋與 filter 的唯一欄位來源，排除 Stash 是它唯一的非平凡
+    /// 規則 —— 之前這條規則在 `SearchMatch::new` 與 `commit_quick_matches` 各抄一份。
+    #[test]
+    fn search_match_covers_every_field_and_skips_stash() {
+        let c = commit_fixture();
+        let branch = Ref::Branch {
+            name: "feature/x".into(),
+            target: "abc1234def".into(),
+        };
+        let stash = Ref::Stash {
+            name: "stash@{0}".into(),
+            message: "wip".into(),
+            target: "abc1234def".into(),
+        };
+        let info = CommitInfo::new(&c, vec![&branch, &stash], Color::Reset);
+
+        let hit = |q: &str| SearchMatch::new(&info, &SearchMatcher::new(q, false, false));
+
+        assert!(hit("修正").subject.is_some(), "subject");
+        assert!(hit("Alice").author_name.is_some(), "author_name");
+        assert!(hit("abc1234").commit_hash.is_some(), "commit_hash");
+        assert!(hit("feature").refs.contains_key("feature/x"), "branch ref");
+
+        // stash 的名稱與訊息都不該被搜到
+        let m = hit("stash@");
+        assert!(m.refs.is_empty() && !m.matched(), "stash 不該進搜尋範圍");
+    }
 
     #[test]
     fn test_calc_cell_widths_all_columns() {
