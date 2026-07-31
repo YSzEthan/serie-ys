@@ -367,6 +367,11 @@ impl EventController {
     ///
     /// 所以改由一個獨立 thread 從外面看心跳。它同時涵蓋 event thread panic
     /// （panic 後心跳一樣停住，主 thread 原本會永久 park 在 `recv` 上）。
+    ///
+    /// 監看範圍只涵蓋 event thread 的讀取迴圈。主 thread 的 tty **寫入**一律不在內
+    /// —— 寫入可以在終端還活著時阻塞（Ctrl-S/XOFF、pty buffer 滿），正常運行期間也
+    /// 沒有人在看，所以 `suspend()` 的終端還原同樣不受監看。那是刻意的一致性，
+    /// 不是漏網。
     fn start_watchdog(&self) {
         let heartbeat = self.heartbeat.clone();
         let stop = self.stop.clone();
@@ -382,11 +387,11 @@ impl EventController {
                     force_quit(&tx);
                 }
 
-                // suspend 期間 event thread 本來就該停著，不是卡死。代價是
-                // `stop()` 的 `join()` 與 `resume()` 的 `drain_crossterm_event()`
-                // 也落在這個盲區：它們踩到同一個 EOF 自旋時主 thread 會永久阻塞
-                // 而無人監看。心跳來自 event thread，分不出「join 卡死」與
-                // 「使用者 suspend 去編輯了半小時」，要補只能另拉一條主 thread 心跳。
+                // suspend 期間 event thread 本來就該停著，不是卡死 —— 心跳來自
+                // event thread，分不出「卡死」與「使用者 suspend 去編輯了半小時」。
+                // 盲區有限：`term_signal` 檢查刻意放在這道閘門之前，而終端被關掉時
+                // 前景 process group 收到的正是 SIGHUP，所以 suspend 期間終端死掉
+                // 照樣一個 `WATCHDOG_INTERVAL` 內收工。
                 let now = heartbeat.load(Ordering::Relaxed);
                 if now != last || stop.load(Ordering::Acquire) {
                     (last, last_change) = (now, Instant::now());
@@ -456,6 +461,13 @@ impl EventController {
         .unwrap();
         ratatui::crossterm::terminal::enable_raw_mode().unwrap();
 
+        // 提前清掉 stop，讓 watchdog 在 drain 期間就恢復監看：drain 走的是主 thread
+        // 上的 crossterm poll/read，會踩到同一個 EOF 自旋。此刻沒有 event thread 在
+        // 跳心跳，但 watchdog 在 stop 為 true 時每輪都刷新計時，離
+        // `WATCHDOG_STALL_TIMEOUT` 還有近一整個週期，而 drain + start 是微秒等級。
+        // 位置必須在上面兩個終端還原之後：主 thread 的 tty 寫入不納入監看
+        // （見 `start_watchdog`）。
+        self.stop.store(false, Ordering::Release);
         self.drain_crossterm_event();
         self.start();
     }
@@ -474,7 +486,12 @@ impl EventController {
     fn stop(&self) {
         self.stop.store(true, Ordering::Release);
         if let Some(handle) = self.handle.lock().unwrap().take() {
-            handle.join().unwrap();
+            // 不 unwrap：event thread 在 poll/read 出錯時會 panic，unwrap 會把它轉成
+            // 主 thread panic，整個程式就因為 event thread 打了個嗝而死。更糟的是
+            // 這裡還握著 `self.handle` 的 mutex guard —— 在 guard 存活期間 panic 會
+            // 毒化那把鎖，之後每次 `lock().unwrap()` 都跟著炸。忽略之後 suspend 照樣
+            // 走完，`resume()` 的 `start()` 會生一條乾淨的新 thread。
+            let _ = handle.join();
         }
     }
 

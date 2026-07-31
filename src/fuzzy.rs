@@ -6,16 +6,20 @@ use fuzzy_matcher::{skim::SkimMatcherV2, FuzzyMatcher};
 static FUZZY_MATCHER: LazyLock<SkimMatcherV2> =
     LazyLock::new(|| SkimMatcherV2::default().respect_case());
 
-/// 逐字元小寫化。`char` 數與原字串 1:1，所以 `fuzzy_indices` 回傳的 char 位置
-/// 仍然對得回原字串 —— `str::to_lowercase()` 就不行，它是 full-Unicode 折疊，
-/// `İ` 會變成兩個 char，位置整段錯開。
+/// 大小寫不敏感時，query 與 haystack 共用的折疊。逐字元小寫化，`char` 數與原字串
+/// 1:1 —— 這是本檔案所有位置換算的前提，由 `fold_case_preserves_char_count` 守著。
 ///
-/// 也不能改用 `SkimMatcherV2::ignore_case()`：它只折 ASCII（`char_equal` 走
-/// `eq_ignore_ascii_case`），而 query 在 `new` 裡是 full-Unicode 小寫化的，
-/// 搜 `über` 會對不上 `ÜBER`。
+/// 不能改用 `str::to_lowercase()`：它是 full-Unicode 折疊，`İ`（U+0130，整個
+/// Unicode 唯一一個小寫化會展開成兩個 char 的字元）會讓 char 數與 byte 長度都變，
+/// 位置就整段錯開。也不能交給 `SkimMatcherV2::ignore_case()`：它只折 ASCII
+/// （`char_equal` 走 `eq_ignore_ascii_case`），搜 `über` 會對不上 `ÜBER`。
 ///
-/// 殘留差異：`İ` 這種小寫化後 char 數會變的字元，query 側（full）與這裡（逐字元）
-/// 折出來的結果不同，fuzzy 模式下可能失配。極罕見，換來的是索引永遠對得回原字串。
+/// 與 full 折疊的兩處行為差異，都不值得為它們寫程式碼：
+/// - `İstanbul` 搜 `istanbul` 由「不命中」變成命中 —— full 折疊得到的是
+///   `i̇stanbul`（多一個 U+0307），本來就是假陰性。
+/// - 希臘文 final sigma：`str::to_lowercase()` 實作了 Final_Sigma context rule，
+///   `char::to_lowercase()` 沒有，所以 `ΟΔΟΣ` 折出 `οδοσ` 而非 `οδος`。搜尋時
+///   query 帶 ς 的不再命中、帶 σ 的開始命中，兩個同樣罕見的情況對調。
 fn fold_case(s: &str) -> String {
     s.chars()
         .map(|c| c.to_lowercase().next().unwrap_or(c))
@@ -30,8 +34,9 @@ pub(crate) struct SearchMatcher {
 
 impl SearchMatcher {
     pub fn new(query: &str, ignore_case: bool, fuzzy: bool) -> Self {
+        // 與 haystack 走同一個折疊，位置換算才對得起來。
         let query = if ignore_case {
-            query.to_lowercase()
+            fold_case(query)
         } else {
             query.into()
         };
@@ -42,7 +47,7 @@ impl SearchMatcher {
         }
     }
 
-    /// fuzzy 比對用的 haystack。大小寫敏感時原樣借用，不配置。
+    /// 比對用的 haystack。大小寫敏感時原樣借用，不配置。
     fn haystack<'a>(&self, s: &'a str) -> Cow<'a, str> {
         if self.ignore_case {
             Cow::Owned(fold_case(s))
@@ -56,14 +61,11 @@ impl SearchMatcher {
         if self.query.is_empty() {
             return false;
         }
+        let haystack = self.haystack(s);
         if self.fuzzy {
-            FUZZY_MATCHER
-                .fuzzy_match(&self.haystack(s), &self.query)
-                .is_some()
-        } else if self.ignore_case {
-            s.to_lowercase().contains(&self.query)
+            FUZZY_MATCHER.fuzzy_match(&haystack, &self.query).is_some()
         } else {
-            s.contains(&self.query)
+            haystack.contains(&self.query)
         }
     }
 
@@ -71,27 +73,29 @@ impl SearchMatcher {
         if self.query.is_empty() {
             return None;
         }
+        // 兩個分支的位置都是對折疊後的 haystack 取的，而 haystack 與 `s` 的 char 數
+        // 1:1，所以一律先換算成 char 位置、再攤回 `s` 的 byte 位置。
+        let haystack = self.haystack(s);
         if self.fuzzy {
-            // 位置是對折疊後的 haystack 取的，但那與 `s` 的 char 數 1:1，所以直接
-            // 拿原字串換算 byte 位置。
             FUZZY_MATCHER
-                .fuzzy_indices(&self.haystack(s), &self.query)
+                .fuzzy_indices(&haystack, &self.query)
                 .map(|(_, indices)| char_indices_to_byte_indices(s, indices))
         } else {
-            let start = if self.ignore_case {
-                s.to_lowercase().find(&self.query)
-            } else {
-                s.find(&self.query)
-            }?;
-            let end = start + self.query.len();
-            // ignore_case 的位置是對 `to_lowercase()` 的結果取的，套回 `s` 未必落在
-            // 字元邊界，下游 laurier 直接拿去切 byte 就會 panic。注意這個檢查只保證
-            // 不 panic：小寫化改變 byte 長度時（`İ` 2 → 3），位置可能整段位移卻仍在
-            // 合法邊界上，於是標到隔壁的字。
-            if !s.is_char_boundary(start) || !s.is_char_boundary(end) {
-                return None;
-            }
-            Some((start..end).collect())
+            // substring 命中本來就是一段連續的 byte range，不必繞道
+            // `char_indices_to_byte_indices` 去建整個字串的對照表 —— 這條路徑在
+            // 每次按鍵、每個 commit 上都會跑（見 `commit_list::SearchMatch::new`）。
+            let byte_pos = haystack.find(&self.query)?;
+            let start_char = haystack[..byte_pos].chars().count();
+            let query_chars = self.query.chars().count();
+            // 兩行同形：都是「前 n 個 char 佔幾個 byte」。命中貼齊字串結尾時 `take`
+            // 自然取不滿，不必為它多寫一條 fallback。
+            let start: usize = s.chars().take(start_char).map(char::len_utf8).sum();
+            let len: usize = s[start..]
+                .chars()
+                .take(query_chars)
+                .map(char::len_utf8)
+                .sum();
+            Some((start..start + len).collect())
         }
     }
 }
@@ -167,13 +171,57 @@ mod tests {
             .is_some());
     }
 
+    /// full-Unicode 折疊會把 "İ" 變成 "i̇"（1 char → 2 char、2 bytes → 3 bytes），
+    /// 命中位置就整段位移。兩組輸入釘的是同一個 bug 的兩種症狀：修好之前 `İ中文`
+    /// 回 `None`（被邊界檢查丟掉），`İabcd` 靜默標出 `bcd`。後者更危險。
     #[test]
-    fn substring_positions_that_would_split_a_char_are_dropped() {
-        // "İ" 小寫化成 "i̇"（2 bytes → 3 bytes），"中" 在小寫字串裡的位置套回原字串
-        // 會落在字元中間。標不出來可以接受，panic 不行。
-        let s = "İ中文";
-        let positions = SearchMatcher::new("中", true, false).matched_position(s);
-        assert_eq!(positions, None);
+    fn substring_positions_survive_a_char_count_changing_prefix() {
+        for (s, q) in [("İ中文", "中"), ("İabcd", "abc")] {
+            let positions = SearchMatcher::new(q, true, false)
+                .matched_position(s)
+                .unwrap();
+            assert_eq!(positions, vec![2, 3, 4], "{s:?}");
+            assert_eq!(&s[2..5], q, "{s:?}");
+        }
+    }
+
+    /// 兩者分歧就是「row 出現但 highlight 消失」—— 本輪修掉的正是這個裂縫，而它目前
+    /// 只靠 skim 內部 `fuzzy_match` / `fuzzy_indices` 共用同一條實作撐著。
+    #[test]
+    fn matches_agrees_with_matched_position() {
+        let queries = [
+            ("abc", true, false),
+            ("mixed", true, true),
+            ("über", true, true),
+            ("ADD", false, false),
+            ("", true, true),
+            ("zzz", true, true),
+        ];
+        for (q, ignore_case, fuzzy) in queries {
+            let m = SearchMatcher::new(q, ignore_case, fuzzy);
+            for s in [
+                "İabcd",
+                "İ中文",
+                "修正 MIXED Case",
+                "ÜBER fix",
+                "🎉 add",
+                "",
+            ] {
+                assert_eq!(
+                    m.matches(s),
+                    m.matched_position(s).is_some(),
+                    "query={q:?} haystack={s:?}"
+                );
+            }
+        }
+    }
+
+    /// 本檔案所有位置換算都靠這條不變式，`is_char_boundary` 那類事後防禦擋不住它被破壞。
+    #[test]
+    fn fold_case_preserves_char_count() {
+        for s in ["İ", "İstanbul", "ΟΔΟΣ", "ǅ", "ﬁ", "🎉中文", "ÄPFEL"] {
+            assert_eq!(fold_case(s).chars().count(), s.chars().count(), "{s:?}");
+        }
     }
 
     #[test]
