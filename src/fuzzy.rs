@@ -216,6 +216,14 @@ mod tests {
         }
     }
 
+    /// `SkimMatcherV2::default()` 是 Smart case（query 全小寫就自動忽略大小寫），
+    /// `.respect_case()` 不是裝飾 —— 拿掉它，大小寫敏感的模糊搜尋會靜默失效。
+    #[test]
+    fn case_sensitive_search_rejects_other_case() {
+        assert!(!SearchMatcher::new("add", false, true).matches("ADD fix"));
+        assert!(!SearchMatcher::new("add", false, false).matches("ADD fix"));
+    }
+
     /// 本檔案所有位置換算都靠這條不變式，`is_char_boundary` 那類事後防禦擋不住它被破壞。
     #[test]
     fn fold_case_preserves_char_count() {

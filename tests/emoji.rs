@@ -11,7 +11,7 @@ use serie::git::{Ref, Repository, SortCommit};
 use tempfile::TempDir;
 
 fn git(path: &Path, args: &[&str]) -> Output {
-    Command::new("git")
+    let out = Command::new("git")
         .args(args)
         .current_dir(path)
         .env("GIT_AUTHOR_NAME", "Author Name")
@@ -19,8 +19,19 @@ fn git(path: &Path, args: &[&str]) -> Output {
         .env("GIT_COMMITTER_NAME", "Committer Name")
         .env("GIT_COMMITTER_EMAIL", "committer@example.com")
         .env("GIT_CONFIG_NOSYSTEM", "true")
+        // 比照 tests/graph.rs：開發者 global config 裡的 commit.gpgsign 或改寫訊息的
+        // commit-msg hook 會讓這個測試在他機器上紅、在 CI 綠。
+        .env("HOME", "/dev/null")
         .output()
-        .unwrap_or_else(|e| panic!("failed to run git {}: {e}", args.join(" ")))
+        .unwrap_or_else(|e| panic!("failed to run git {}: {e}", args.join(" ")));
+    // 不檢查的話 setup 失敗會以「找不到剛建立的 commit」的形式出現，離真因很遠。
+    assert!(
+        out.status.success(),
+        "git {} 失敗: {}",
+        args.join(" "),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    out
 }
 
 #[test]

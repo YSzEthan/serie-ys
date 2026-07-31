@@ -926,6 +926,18 @@ impl UserEventWithCount {
 mod tests {
     use super::*;
 
+    /// watchdog 的容忍值不能掉到心跳週期附近，否則正常運行會被誤判成卡死 ——
+    /// 而且是在沒有 panic 訊息的情況下被自己 `process::exit(0)`。`TICK_INTERVAL`
+    /// 是 `pub const`，調它的人不會經過 `start_watchdog`。
+    #[test]
+    fn watchdog_stall_timeout_leaves_headroom_over_tick_interval() {
+        assert!(
+            WATCHDOG_STALL_TIMEOUT >= TICK_INTERVAL * 4,
+            "心跳週期 {TICK_INTERVAL:?} 對 stall 門檻 {WATCHDOG_STALL_TIMEOUT:?} 來說太長"
+        );
+        assert!(WATCHDOG_INTERVAL < WATCHDOG_STALL_TIMEOUT);
+    }
+
     #[test]
     fn test_user_event_with_count_new() {
         let event = UserEventWithCount::new(UserEvent::NavigateUp, 5);

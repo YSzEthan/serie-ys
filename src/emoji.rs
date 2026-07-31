@@ -139,6 +139,18 @@ mod tests {
         assert_eq!(expand("🎉:tada:🎉"), "🎉🎉🎉");
     }
 
+    /// 字元集跟長度上限一樣是猜的，同樣對著資料表驗：`emojis` 升版若引入含 `.`
+    /// 或大寫的 shortcode，`find_close` 會在該字元處放棄而靜默不展開。
+    #[test]
+    fn shortcode_bytes_cover_gemoji() {
+        for sc in emojis::iter().flat_map(|e| e.shortcodes()) {
+            assert!(
+                sc.bytes().all(is_shortcode_byte),
+                "{sc} 含 is_shortcode_byte 不收的字元"
+            );
+        }
+    }
+
     /// 上限是猜出來的數字就會默默漏掉長 shortcode，直接對著資料表驗。
     #[test]
     fn max_shortcode_len_covers_gemoji() {
