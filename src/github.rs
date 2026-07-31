@@ -1,7 +1,15 @@
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer};
+
+/// 反序列化時就把 emoji shortcode 展開。掛在欄位定義上而不是在 `into_gh_*` 裡逐處
+/// 賦值：`GhRelatedIssue` / `GhCommit` 是共用型別，一個宣告覆蓋所有引用點，
+/// `parse_timeline_graphql` 這種直接把 serde 產物遞出去的路徑也不必改。
+fn de_expand_emoji<'de, D: Deserializer<'de>>(d: D) -> Result<String, D::Error> {
+    let s = String::deserialize(d)?;
+    Ok(crate::emoji::expand(&s).into_owned())
+}
 
 // ── 分頁回傳 ──
 
@@ -62,7 +70,7 @@ pub struct GhAuthor {
 #[serde(rename_all = "camelCase")]
 pub struct GhRelatedIssue {
     pub number: u64,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "de_expand_emoji")]
     pub title: String,
     #[serde(default)]
     pub state: String,
@@ -247,6 +255,7 @@ struct GqlIssueList {
 #[serde(rename_all = "camelCase")]
 struct GqlIssueNode {
     number: u64,
+    #[serde(deserialize_with = "de_expand_emoji")]
     title: String,
     state: String,
     #[serde(default)]
@@ -375,6 +384,7 @@ struct GqlPrList {
 #[serde(rename_all = "camelCase")]
 struct GqlPrNode {
     number: u64,
+    #[serde(deserialize_with = "de_expand_emoji")]
     title: String,
     state: String,
     #[serde(default)]
@@ -442,6 +452,7 @@ pub enum GhTimelineItem {
 #[serde(rename_all = "camelCase")]
 pub struct GhCommit {
     pub abbreviated_oid: String,
+    #[serde(deserialize_with = "de_expand_emoji")]
     pub message_headline: String,
     #[serde(default)]
     pub status_check_rollup: Option<GhStatusCheckRollup>,
@@ -635,7 +646,9 @@ pub fn parse_checkboxes(body: &str) -> Vec<CheckboxItem> {
             // '[' 位於 "- " (2 bytes) 之後
             let byte_offset = byte_pos + leading + 2;
 
-            let label = trimmed[6..].to_string();
+            // label 純顯示用（回寫走的是 byte_offset 與重抓的原文），在這裡展開就不必
+            // 讓每個顯示端各自補做。
+            let label = crate::emoji::expand(&trimmed[6..]).into_owned();
 
             items.push(CheckboxItem {
                 index: idx,
@@ -1046,6 +1059,86 @@ mod tests {
         let page = parse_timeline_graphql(json, GhItemKind::PullRequest).unwrap();
         assert!(page.next_cursor.is_none());
         assert!(page.items.is_empty());
+    }
+
+    #[test]
+    fn graphql_issue_titles_expand_emoji_shortcodes() {
+        let json = r#"{
+            "data": {
+                "repository": {
+                    "issues": {
+                        "nodes": [{
+                            "number": 7,
+                            "title": ":tada: 上線",
+                            "state": "OPEN",
+                            "body": ":tada: 內文保持原文",
+                            "url": "",
+                            "createdAt": "2026-01-01T00:00:00Z",
+                            "closedAt": null,
+                            "updatedAt": null,
+                            "author": null,
+                            "labels": {"nodes": []},
+                            "parent": {"number": 1, "title": ":rocket: 母議題", "state": "OPEN"},
+                            "subIssues": {"nodes": [
+                                {"number": 10, "title": ":bug: 子議題", "state": "OPEN"}
+                            ]}
+                        }]
+                    }
+                }
+            }
+        }"#;
+        let issues = parse_issues_graphql(json).unwrap().items;
+
+        assert_eq!(issues[0].title, "🎉 上線");
+        assert_eq!(issues[0].parent.as_ref().unwrap().title, "🚀 母議題");
+        assert_eq!(issues[0].sub_issues[0].title, "🐛 子議題");
+        // body 走 markdown renderer 展開，才能保住 code fence 內的原文。
+        assert_eq!(issues[0].body, ":tada: 內文保持原文");
+    }
+
+    #[test]
+    fn parse_timeline_expands_commit_headline_but_not_comment_body() {
+        let json = r#"{
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "timelineItems": {
+                            "pageInfo": {"hasNextPage": false, "endCursor": null},
+                            "nodes": [
+                                {
+                                    "__typename": "IssueComment",
+                                    "body": ":tada: 留言",
+                                    "createdAt": "2026-01-01T00:00:00Z",
+                                    "author": {"login": "alice"}
+                                },
+                                {
+                                    "__typename": "PullRequestCommit",
+                                    "commit": {
+                                        "abbreviatedOid": "62f3c11",
+                                        "messageHeadline": ":sparkles: 新功能",
+                                        "statusCheckRollup": null
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        }"#;
+        let items = parse_timeline_graphql(json, GhItemKind::PullRequest)
+            .unwrap()
+            .items;
+
+        match &items[0] {
+            GhTimelineItem::IssueComment { body, .. } => assert_eq!(body, ":tada: 留言"),
+            other => panic!("expected IssueComment, got {other:?}"),
+        }
+        match &items[1] {
+            GhTimelineItem::PullRequestCommit { commit } => {
+                assert_eq!(commit.message_headline, "✨ 新功能");
+            }
+            other => panic!("expected PullRequestCommit, got {other:?}"),
+        }
     }
 
     #[test]

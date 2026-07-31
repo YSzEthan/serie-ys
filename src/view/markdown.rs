@@ -39,6 +39,11 @@ pub fn render(body: &str, width: usize) -> Vec<Line<'static>> {
             continue;
         }
 
+        // 以下的分支看到的都是展開後的內容。放在 code fence 分支之後，程式碼區塊
+        // 才能像 GitHub 一樣保住 `:tada:` 原文。
+        let expanded = crate::emoji::expand(line);
+        let line = &*expanded;
+
         // HTML comments, tracked like code fences so they can span lines.
         // Vercel hides a base64 blob in one at the top of every comment.
         // Only recognised at the start of a line: mid-line comments are rare
@@ -60,7 +65,8 @@ pub fn render(body: &str, width: usize) -> Vec<Line<'static>> {
             rows.push(split_cells(line));
             i += 2;
             while i < raw.len() && is_table_row(raw[i]) {
-                rows.push(split_cells(raw[i]));
+                // 內文列是直接從 raw 取的，繞過了上面的行首展開，得自己來。
+                rows.push(split_cells(&crate::emoji::expand(raw[i])));
                 i += 1;
             }
             render_table(&mut out, &rows, width);
@@ -613,6 +619,10 @@ mod tests {
         super::render(body, 80)
     }
 
+    fn text_of(line: &Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
     #[test]
     fn render_empty_body() {
         assert!(render("").is_empty());
@@ -656,6 +666,22 @@ mod tests {
             .spans
             .iter()
             .any(|s| s.content.as_ref().contains("─")));
+    }
+
+    #[test]
+    fn emoji_shortcodes_expand_outside_code_fences() {
+        let lines = render("# :tada: 標題\n- :bug: 項目\n```\n:tada: 原文\n```");
+        assert_eq!(text_of(&lines[0]), "🎉 標題");
+        assert_eq!(text_of(&lines[1]), "• 🐛 項目");
+        // lines[2] 是 fence 的分隔線，lines[3] 才是程式碼內容
+        assert_eq!(text_of(&lines[3]), ":tada: 原文");
+    }
+
+    #[test]
+    fn emoji_shortcodes_expand_in_table_body_rows() {
+        let lines = render("| :x: 表頭 | B |\n|---|---|\n| :ok: 內文 | 2 |");
+        assert!(text_of(&lines[0]).contains('❌'));
+        assert!(text_of(&lines[2]).contains('🆗'), "內文列也要展開");
     }
 
     #[test]

@@ -387,8 +387,8 @@ fn parse_commit_line(s: &str, commit_type: CommitType) -> Option<Commit> {
         committer_name: committer_name.into(),
         committer_email: committer_email.into(),
         committer_date: parse_iso_date(committer_date),
-        subject: subject.into(),
-        body: body.into(),
+        subject: crate::emoji::expand(subject).into_owned(),
+        body: crate::emoji::expand(body).into_owned(),
         parent_commit_hashes: parse_parent_commit_hashes(parents),
         commit_type,
     })
@@ -574,7 +574,7 @@ fn load_stashes_as_refs(path: &Path) -> RefMap {
 
         let r = Ref::Stash {
             name: name.into(),
-            message: subject.into(),
+            message: crate::emoji::expand(subject).into_owned(),
             target: hash.into(),
         };
 
@@ -1037,4 +1037,32 @@ pub fn delete_remote_branch(path: &Path, branch_name: &str) -> std::result::Resu
         &["push", remote, "--delete", branch],
         "Failed to delete remote branch",
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_commit_line_expands_emoji_shortcodes() {
+        let date = "2026-07-31T10:00:00+08:00";
+        let line = [
+            "abc1234",
+            "Alice",
+            "alice@example.com",
+            date,
+            "Alice",
+            "alice@example.com",
+            date,
+            ":tada: 上線",
+            "細節 :+1:",
+            "",
+        ]
+        .join("\x1f");
+
+        let commit = parse_commit_line(&line, CommitType::Commit).unwrap();
+
+        assert_eq!(commit.subject, "🎉 上線");
+        assert_eq!(commit.body, "細節 👍");
+    }
 }

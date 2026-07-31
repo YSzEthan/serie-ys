@@ -7,6 +7,7 @@ pub mod protocol;
 
 mod app;
 mod check;
+mod emoji;
 mod event;
 mod external;
 mod fuzzy;
