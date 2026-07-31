@@ -24,6 +24,25 @@ pub struct MarqueeSlice {
     pub end_byte: usize,
 }
 
+/// 逐字元累加的顯示寬度，與 `scroll_window` 的切窗基準一致。
+///
+/// **決定要不要捲動的呼叫端必須用這個，不能用 `console::measure_text_width`。**
+/// 後者是 str-level（認得 VS16 / ZWJ 序列），對 `⚠️`（U+26A0 U+FE0F）算 2 格而
+/// 這裡算 1 格 —— 整張 gemoji 表有 452 個這種字元，而且正好是 `:warning:`
+/// `:heart:` `:recycle:` 這批最常出現在 commit 訊息裡的。兩邊不一致時
+/// `scroll_window` 會判定「放得下」而原文返回，呼叫端卻已經認定 overflow 進了
+/// marquee 分支：marquee 永遠不動、尾巴看不到，`marquee_needed()` 又恆為真，
+/// 於是每個 tick 都重繪一次整個畫面。
+///
+/// 逐字元會低估 VS16 序列一格，渲染時被裁掉；要根治得改用 grapheme 分段
+/// （`unicode-segmentation` + 對每個 grapheme 取 `UnicodeWidthStr::width`），
+/// 那是另一個尺寸的改動。
+pub fn display_width(text: &str) -> usize {
+    text.chars()
+        .map(|c| UnicodeWidthChar::width(c).unwrap_or(0))
+        .sum()
+}
+
 /// Compute the visible slice of `text` at the current marquee `frame`.
 /// `available` is the target width in terminal cells.
 ///
@@ -33,7 +52,9 @@ pub fn scroll_window(text: &str, available: usize, frame: u64) -> MarqueeSlice {
         .char_indices()
         .map(|(bi, c)| (bi, UnicodeWidthChar::width(c).unwrap_or(0)))
         .collect();
-    let total_visual: usize = char_info.iter().map(|(_, w)| *w).sum();
+    // 走 `display_width` 而不是從 `char_info` 自己加總：兩份定義一旦漂移，
+    // 呼叫端的 overflow 判定就會再次跟這裡對不上。
+    let total_visual = display_width(text);
     if total_visual <= available {
         return MarqueeSlice {
             text: text.to_string(),
@@ -125,6 +146,36 @@ mod tests {
         // phase = PAUSE_TICKS + 1 → offset 1
         let s = scroll_window(text, 10, PAUSE_TICKS + 1);
         assert_eq!(s.text, "bcdefghijk");
+    }
+
+    /// 呼叫端一旦改用 `console::measure_text_width` 判 overflow，這條就會紅。
+    ///
+    /// 它跟 `scroll_window` 對「放不放得下」的答案必須一致：不一致時呼叫端進了
+    /// marquee 分支、`scroll_window` 卻原文返回，marquee 永遠不動而畫面每個 tick
+    /// 重繪一次。`⚠️`（U+26A0 U+FE0F）是 gemoji 裡 452 個這種字元之一，而
+    /// `:warning:` 正是最常出現在 commit 訊息裡的 shortcode 之一。
+    #[test]
+    fn display_width_agrees_with_scroll_window_on_variation_selectors() {
+        for text in [
+            "⚠️ fix the thing",
+            "❤️ x",
+            "♻️ refactor",
+            "🎉 release",
+            "中文 abc",
+        ] {
+            let w = display_width(text);
+            assert!(
+                scroll_window(text, w, 0).text == text,
+                "{text:?}：display_width 說剛好放得下，scroll_window 卻要捲動"
+            );
+            if w > 0 {
+                let slice = scroll_window(text, w - 1, PAUSE_TICKS + 1);
+                assert!(
+                    slice.text != text || slice.prepended_space,
+                    "{text:?}：display_width 說放不下，scroll_window 卻原文返回"
+                );
+            }
+        }
     }
 
     #[test]

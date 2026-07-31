@@ -2439,7 +2439,8 @@ fn tail_spans(
     marquee_frame: Option<u64>,
     style_title: Style,
 ) -> (Vec<Span<'static>>, bool) {
-    let tail_width = console::measure_text_width(tail);
+    // 寬度基準必須跟下面的 `scroll_window` 一致，理由見 `marquee::display_width`。
+    let tail_width = crate::widget::marquee::display_width(tail);
     if available == 0 {
         return (vec![], false);
     }

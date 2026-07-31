@@ -1788,9 +1788,10 @@ impl CommitList<'_> {
                 let commit = &commit_info.commit;
                 if avail > ELLIPSIS.len() {
                     // byte-len 是視覺寬度的下界（ASCII 相等、非 ASCII byte 更多），
-                    // 用它先短路大多數「明顯放得下」的 row，省一次 measure_text_width。
+                    // 用它先短路大多數「明顯放得下」的 row，省一次寬度計算。
+                    // 寬度基準必須跟 `scroll_window` 一致，理由見 `marquee::display_width`。
                     let overflow = commit.subject.len() > avail
-                        && console::measure_text_width(&commit.subject) > avail;
+                        && crate::widget::marquee::display_width(&commit.subject) > avail;
                     let is_selected = display_i == selected;
                     let search_pos = state.search_match(raw).subject.as_ref();
                     let sub_spans = if is_selected && overflow {

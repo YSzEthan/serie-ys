@@ -129,9 +129,10 @@ impl StatefulWidget for CommitDetail<'_> {
 
         let available = left_area.width.saturating_sub(2) as usize;
         let right_available = right_area.width.saturating_sub(2) as usize;
+        // 寬度基準必須跟下面的 `scroll_window` 一致，理由見 `marquee::display_width`。
         state
             .subject_overflows
-            .set(console::measure_text_width(&self.commit.subject) > available);
+            .set(crate::widget::marquee::display_width(&self.commit.subject) > available);
         let left_lines = self.info_lines(LineMode::Render(available));
         let right_lines: Vec<Line> = self
             .changes_lines()
