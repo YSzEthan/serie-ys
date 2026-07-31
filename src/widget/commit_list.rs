@@ -129,14 +129,10 @@ struct SearchMatch {
 }
 
 impl SearchMatch {
-    fn new<'a>(
-        c: &Commit,
-        refs: impl Iterator<Item = &'a Ref>,
-        q: &str,
-        ignore_case: bool,
-        fuzzy: bool,
-    ) -> Self {
-        let matcher = SearchMatcher::new(q, ignore_case, fuzzy);
+    /// 收 `&SearchMatcher` 而不是 `(query, ignore_case, fuzzy)`：呼叫端在迴圈外就建好
+    /// 了一個給 `commit_quick_matches` 用，自己再建一次等於每個命中的 commit 都重折
+    /// 一次 query、多配置一個 `String`。
+    fn new<'a>(c: &Commit, refs: impl Iterator<Item = &'a Ref>, matcher: &SearchMatcher) -> Self {
         let refs = refs
             .filter(|r| !matches!(r, Ref::Stash { .. }))
             .filter_map(|r| {
@@ -916,9 +912,7 @@ impl<'a> CommitListState<'a> {
                     let mut m = SearchMatch::new(
                         commit_info.commit,
                         commit_info.refs.iter().copied(),
-                        &query,
-                        ignore_case,
-                        fuzzy,
+                        &matcher,
                     );
                     m.match_index = match_index;
                     match_index += 1;
@@ -938,9 +932,7 @@ impl<'a> CommitListState<'a> {
                     let mut m = SearchMatch::new(
                         commit_info.commit,
                         commit_info.refs.iter().copied(),
-                        &query,
-                        ignore_case,
-                        fuzzy,
+                        &matcher,
                     );
                     m.match_index = match_index;
                     match_index += 1;
