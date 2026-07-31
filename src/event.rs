@@ -309,20 +309,26 @@ pub struct EventController {
     heartbeat: Arc<AtomicU64>,
 }
 
-/// 請主 thread 正常收工，`WATCHDOG_GRACE` 內沒收工就自己還原終端並結束程序。
+/// 請主 thread 正常收工，`WATCHDOG_GRACE` 內沒收工就結束程序。
 ///
 /// event thread 還活著時它自己也會送 Quit，重複送無妨；重點是卡死時也有人送。
-/// 終端已經消失的話這些還原全都會失敗——無所謂，反正沒有東西要還原了；真正重要
-/// 的是 SIGTERM 那條路徑，那時終端還活著，不還原會留下一個 raw mode 的爛攤子。
-fn force_quit(tx: &Sender) -> ! {
+///
+/// `restore_terminal` 必須是「終端現在歸 serie 所有」。終端已經消失時還原會失敗，
+/// 無所謂；SIGTERM 那條路徑則非還原不可，否則留下一個 raw mode 的爛攤子。**但
+/// suspend 期間不行** —— 那時 `suspend()` 已經把終端還原並交給外部程式（編輯器
+/// 等），再送一次 `LeaveAlternateScreen` / `disable_raw_mode` 是拆掉還在跑的子行程
+/// 的終端狀態，然後 `exit(0)` 把它變成孤兒。
+fn force_quit(tx: &Sender, restore_terminal: bool) -> ! {
     tx.send(AppEvent::Quit);
     thread::sleep(WATCHDOG_GRACE);
-    let _ = ratatui::crossterm::execute!(
-        std::io::stdout(),
-        ratatui::crossterm::event::DisableMouseCapture,
-        ratatui::crossterm::terminal::LeaveAlternateScreen,
-    );
-    let _ = ratatui::crossterm::terminal::disable_raw_mode();
+    if restore_terminal {
+        let _ = ratatui::crossterm::execute!(
+            std::io::stdout(),
+            ratatui::crossterm::event::DisableMouseCapture,
+            ratatui::crossterm::terminal::LeaveAlternateScreen,
+        );
+        let _ = ratatui::crossterm::terminal::disable_raw_mode();
+    }
     std::process::exit(0);
 }
 
@@ -384,7 +390,9 @@ impl EventController {
                 thread::sleep(WATCHDOG_INTERVAL);
 
                 if term_signal.load(Ordering::Acquire) {
-                    force_quit(&tx);
+                    // 這道檢查刻意在 stop 閘門之前，所以 suspend 期間也會走到 ——
+                    // 而那時終端歸外部程式所有，不能還原。
+                    force_quit(&tx, !stop.load(Ordering::Acquire));
                 }
 
                 // suspend 期間 event thread 本來就該停著，不是卡死 —— 心跳來自
@@ -399,7 +407,8 @@ impl EventController {
                 }
 
                 if last_change.elapsed() >= WATCHDOG_STALL_TIMEOUT {
-                    force_quit(&tx);
+                    // 上面的閘門已經濾掉 stop 為 true 的情況，終端確定歸 serie。
+                    force_quit(&tx, true);
                 }
             }
         });
