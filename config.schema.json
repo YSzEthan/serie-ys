@@ -322,18 +322,6 @@
                 "#C678DD",
                 "#56B6C2"
               ]
-            },
-            "edge": {
-              "type": "string",
-              "description": "Color of the edge surrounding the commit circles. Should be in #RRGGBB or #RRGGBBAA format.",
-              "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$",
-              "default": "#00000000"
-            },
-            "background": {
-              "type": "string",
-              "description": "Background color of the commit graph. Should be in #RRGGBB or #RRGGBBAA format.",
-              "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$",
-              "default": "#00000000"
             }
           },
           "additionalProperties": false

@@ -2187,7 +2187,6 @@ mod tests {
         fn test_graph_color_set() -> GraphColorSet {
             GraphColorSet::new(&GraphColorConfig {
                 branches: vec!["#FF0000".into(), "#00FF00".into(), "#0000FF".into()],
-                ..Default::default()
             })
         }
 

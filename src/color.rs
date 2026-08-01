@@ -103,37 +103,21 @@ pub struct GraphColor {
     r: u8,
     g: u8,
     b: u8,
-    // Unused now that the PNG renderer (the only alpha-aware consumer) is
-    // gone; `to_ratatui_color` is RGB-only. Kept so `#RRGGBBAA` config
-    // values keep parsing the same way instead of silently becoming
-    // 6-vs-8-digit-dependent. issue #19 decides whether alpha stays.
-    #[allow(dead_code)]
-    a: u8,
 }
 
 impl GraphColor {
-    pub fn from_rgba(r: u8, g: u8, b: u8, a: u8) -> Self {
-        Self { r, g, b, a }
-    }
-
     pub fn from_rgb(r: u8, g: u8, b: u8) -> Self {
-        Self::from_rgba(r, g, b, 255)
+        Self { r, g, b }
     }
 
     pub fn to_ratatui_color(self) -> RatatuiColor {
         RatatuiColor::Rgb(self.r, self.g, self.b)
-    }
-
-    fn transparent() -> Self {
-        Self::from_rgba(0, 0, 0, 0)
     }
 }
 
 #[derive(Debug, Clone)]
 pub struct GraphColorSet {
     pub colors: Vec<GraphColor>,
-    pub edge_color: GraphColor,
-    pub background_color: GraphColor,
 }
 
 impl GraphColorSet {
@@ -143,15 +127,8 @@ impl GraphColorSet {
             .iter()
             .filter_map(|s| parse_rgba_color(s))
             .collect();
-        let edge_color = parse_rgba_color(&config.edge).unwrap_or(GraphColor::transparent());
-        let background_color =
-            parse_rgba_color(&config.background).unwrap_or(GraphColor::transparent());
 
-        Self {
-            colors,
-            edge_color,
-            background_color,
-        }
+        Self { colors }
     }
 
     pub fn get(&self, index: usize) -> GraphColor {
@@ -173,12 +150,14 @@ fn parse_rgba_color(s: &str) -> Option<GraphColor> {
     let r = u8::from_str_radix(&s[0..2], 16).ok()?;
     let g = u8::from_str_radix(&s[2..4], 16).ok()?;
     let b = u8::from_str_radix(&s[4..6], 16).ok()?;
-    if l == 6 {
-        Some(GraphColor::from_rgb(r, g, b))
-    } else {
-        let a = u8::from_str_radix(&s[6..8], 16).ok()?;
-        Some(GraphColor::from_rgba(r, g, b, a))
+    if l == 8 {
+        // Alpha is still hex-validated so malformed `#RRGGBBZZ` keeps being
+        // rejected, but the value itself is discarded -- GraphColor is
+        // RGB-only since the PNG renderer (its only alpha-aware consumer)
+        // was removed.
+        u8::from_str_radix(&s[6..8], 16).ok()?;
     }
+    Some(GraphColor::from_rgb(r, g, b))
 }
 
 /// Convert ANSI color names to `Color::Rgb(r,g,b)` so callers can compare or
@@ -208,8 +187,9 @@ mod tests {
     use super::*;
 
     #[rstest]
-    #[case("#ff0000", Some(GraphColor { r: 255, g: 0, b: 0, a: 255}))]
-    #[case("#AABBCCDD", Some(GraphColor { r: 170, g: 187, b: 204, a: 221}))]
+    #[case("#ff0000", Some(GraphColor { r: 255, g: 0, b: 0 }))]
+    #[case("#AABBCCDD", Some(GraphColor { r: 170, g: 187, b: 204 }))]
+    #[case("#AABBCCZZ", None)] // alpha byte is still hex-validated, just discarded
     #[case("#ff000", None)]
     #[case("#fff", None)]
     #[case("000000", None)]

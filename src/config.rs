@@ -401,12 +401,6 @@ pub struct GraphColorConfig {
         "#56B6C2".into(),
     ])]
     pub branches: Vec<String>,
-    #[garde(pattern(r"^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$"))]
-    #[default = "#00000000"]
-    pub edge: String,
-    #[garde(pattern(r"^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$"))]
-    #[default = "#00000000"]
-    pub background: String,
 }
 
 #[cfg(test)]
@@ -488,8 +482,6 @@ mod tests {
                         "#C678DD".into(),
                         "#56B6C2".into(),
                     ],
-                    edge: "#00000000".into(),
-                    background: "#00000000".into(),
                 },
             },
             color: ColorTheme::default(),
@@ -534,8 +526,6 @@ mod tests {
             width = 40
             [graph.color]
             branches = ["#ff0000", "#00ff00", "#0000ff"]
-            edge = "#000000"
-            background = "#ffffff"
         "##;
         let actual: Config = toml::from_str::<OptionalConfig>(toml).unwrap().into();
         let expected = Config {
@@ -628,8 +618,6 @@ mod tests {
             graph: GraphConfig {
                 color: GraphColorConfig {
                     branches: vec!["#ff0000".into(), "#00ff00".into(), "#0000ff".into()],
-                    edge: "#000000".into(),
-                    background: "#ffffff".into(),
                 },
             },
             color: ColorTheme::default(),
@@ -717,8 +705,6 @@ mod tests {
                         "#C678DD".into(),
                         "#56B6C2".into(),
                     ],
-                    edge: "#00000000".into(),
-                    background: "#00000000".into(),
                 },
             },
             color: ColorTheme::default(),
