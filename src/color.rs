@@ -103,6 +103,11 @@ pub struct GraphColor {
     r: u8,
     g: u8,
     b: u8,
+    // Unused now that the PNG renderer (the only alpha-aware consumer) is
+    // gone; `to_ratatui_color` is RGB-only. Kept so `#RRGGBBAA` config
+    // values keep parsing the same way instead of silently becoming
+    // 6-vs-8-digit-dependent. issue #19 decides whether alpha stays.
+    #[allow(dead_code)]
     a: u8,
 }
 
@@ -113,10 +118,6 @@ impl GraphColor {
 
     pub fn from_rgb(r: u8, g: u8, b: u8) -> Self {
         Self::from_rgba(r, g, b, 255)
-    }
-
-    pub fn to_image_color(self) -> image::Rgba<u8> {
-        image::Rgba([self.r, self.g, self.b, self.a])
     }
 
     pub fn to_ratatui_color(self) -> RatatuiColor {
@@ -180,9 +181,9 @@ fn parse_rgba_color(s: &str) -> Option<GraphColor> {
     }
 }
 
-/// Convert ANSI color names to `Color::Rgb(r,g,b)` using the same mapping as
-/// `ratatui_color_to_rgba` in `lib.rs`, so that terminal text background matches
-/// the PNG graph background pixel-for-pixel.
+/// Convert ANSI color names to `Color::Rgb(r,g,b)` so callers can compare or
+/// combine them with colors that are already in RGB form (e.g. the selected
+/// row background applied over graph cells in `commit_list.rs`).
 pub fn ratatui_color_to_rgb(color: RatatuiColor) -> RatatuiColor {
     match color {
         RatatuiColor::Rgb(r, g, b) => RatatuiColor::Rgb(r, g, b),

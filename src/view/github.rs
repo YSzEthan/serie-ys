@@ -1,5 +1,4 @@
 use std::cell::Cell;
-use std::rc::Rc;
 
 use ratatui::{
     crossterm::event::{Event, KeyEvent},
@@ -13,7 +12,6 @@ use rustc_hash::FxHashMap;
 use tui_input::{backend::crossterm::EventHandler, Input};
 
 use crate::{
-    app::AppContext,
     event::{AppEvent, RelatedGroup, RelatedItem, Sender, UserEvent, UserEventWithCount},
     fuzzy::SearchMatcher,
     github::{
@@ -199,7 +197,6 @@ pub struct GitHubView<'a> {
     /// line. All-or-nothing (`z` toggles the whole log), not per-commit.
     expand_commits: bool,
 
-    ctx: Rc<AppContext>,
     tx: Sender,
 }
 
@@ -211,7 +208,6 @@ impl<'a> GitHubView<'a> {
         issues_next_cursor: Option<String>,
         prs_next_cursor: Option<String>,
         state_filter: &str,
-        ctx: Rc<AppContext>,
         tx: Sender,
     ) -> GitHubView<'a> {
         let load_state = if issues.is_empty() && pull_requests.is_empty() {
@@ -249,7 +245,6 @@ impl<'a> GitHubView<'a> {
             preview_cache: None,
             preview_height: 0,
             expand_commits: true,
-            ctx,
             tx,
         }
     }
@@ -1308,7 +1303,6 @@ impl<'a> GitHubView<'a> {
                 LoadState::Idle => ("No items".to_string(), Color::DarkGray),
             };
             render_centered_message(f, content_area, text, color);
-            self.clear_image_area(area);
             return;
         }
 
@@ -1339,8 +1333,6 @@ impl<'a> GitHubView<'a> {
             .alignment(ratatui::layout::Alignment::Center);
             f.render_widget(flash, flash_area);
         }
-
-        self.clear_image_area(area);
     }
 
     fn render_header(&self, f: &mut Frame, area: Rect) {
@@ -1815,12 +1807,6 @@ impl<'a> GitHubView<'a> {
 
         let paragraph = Paragraph::new(lines);
         f.render_widget(paragraph, inner);
-    }
-
-    fn clear_image_area(&self, area: Rect) {
-        for y in area.top()..area.bottom() {
-            self.ctx.image_protocol.clear_line(y);
-        }
     }
 }
 
@@ -2530,27 +2516,11 @@ mod tests {
     use super::*;
     use ratatui::{backend::TestBackend, Terminal};
 
-    use crate::{
-        color::ColorTheme,
-        config::{CoreConfig, UiConfig},
-        github::{GhAuthor, GhCommit, GhStatusCheckRollup},
-        keybind::KeyBind,
-        protocol::ImageProtocol,
-    };
+    use crate::github::{GhAuthor, GhCommit, GhStatusCheckRollup};
 
     const TERM_W: u16 = 60;
     const TERM_H: u16 = 20;
     const LAST_MARKER: &str = "尾端標記";
-
-    fn test_ctx() -> Rc<AppContext> {
-        Rc::new(AppContext {
-            keybind: KeyBind::new(None),
-            core_config: CoreConfig::default(),
-            ui_config: UiConfig::default(),
-            color_theme: ColorTheme::default(),
-            image_protocol: ImageProtocol::Text,
-        })
-    }
 
     /// A body long enough that every source line wraps several times at the
     /// preview width — the condition the old slice-then-wrap code got wrong.
@@ -2587,16 +2557,7 @@ mod tests {
         };
 
         let (tx, _rx) = Sender::channel_for_test();
-        let mut view = GitHubView::new(
-            View::Default,
-            Vec::new(),
-            vec![pr],
-            None,
-            None,
-            "open",
-            test_ctx(),
-            tx,
-        );
+        let mut view = GitHubView::new(View::Default, Vec::new(), vec![pr], None, None, "open", tx);
         view.active_tab = GitHubTab::PullRequests;
         view
     }
@@ -2814,7 +2775,6 @@ mod tests {
             None,
             None,
             "open",
-            test_ctx(),
             tx,
         );
         view.active_tab = GitHubTab::Issues;

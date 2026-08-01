@@ -3,7 +3,6 @@ pub mod config;
 pub mod git;
 mod github;
 pub mod graph;
-pub mod protocol;
 
 mod app;
 mod check;
@@ -174,13 +173,16 @@ pub fn find_remote_only_commits(
 }
 
 /// Rendering parameters shared by every graph/image builder.
+///
+/// `graph_style` has no reader yet -- the text-mode graph doesn't consume it
+/// (issue #20 wires it in) -- but the CLI flag and config key are kept, so
+/// this field must stay to give `args.graph_style`'s parsed value somewhere
+/// to go.
 #[derive(Clone, Copy)]
 pub struct GraphRenderCtx<'a> {
     pub color_set: &'a color::GraphColorSet,
     pub cell_width_type: graph::CellWidthType,
-    pub image_protocol: protocol::ImageProtocol,
     pub graph_style: graph::GraphStyle,
-    pub selected_bg_color: image::Rgba<u8>,
 }
 
 pub fn compute_filtered_graph_from(
@@ -214,15 +216,8 @@ pub fn compute_filtered_graph_from(
         graph::CellWidthType::Single => (filtered.max_pos_x + 1) as u16,
     };
 
-    let image_manager = GraphImageManager::new(
-        Rc::clone(&filtered),
-        ctx.color_set,
-        ctx.cell_width_type,
-        ctx.graph_style,
-        ctx.image_protocol,
-        head_commit_hash,
-        ctx.selected_bg_color,
-    );
+    let image_manager =
+        GraphImageManager::new(Rc::clone(&filtered), ctx.color_set, head_commit_hash);
 
     (
         Some(FilteredGraphData {
@@ -232,13 +227,6 @@ pub fn compute_filtered_graph_from(
         }),
         remote_only,
     )
-}
-
-fn ratatui_color_to_rgba(color: ratatui::style::Color) -> image::Rgba<u8> {
-    match color::ratatui_color_to_rgb(color) {
-        ratatui::style::Color::Rgb(r, g, b) => image::Rgba([r, g, b, 255]),
-        _ => image::Rgba([0, 0, 0, 255]),
-    }
 }
 
 fn build_graph_artifacts(
@@ -251,15 +239,8 @@ fn build_graph_artifacts(
     FxHashSet<git::CommitHash>,
 ) {
     let head_commit_hash = resolve_head_commit_hash(repository);
-    let image_manager = GraphImageManager::new(
-        Rc::clone(graph),
-        ctx.color_set,
-        ctx.cell_width_type,
-        ctx.graph_style,
-        ctx.image_protocol,
-        head_commit_hash.clone(),
-        ctx.selected_bg_color,
-    );
+    let image_manager =
+        GraphImageManager::new(Rc::clone(graph), ctx.color_set, head_commit_hash.clone());
     let remote_only = find_remote_only_commits(repository, graph);
     let (filtered, remote_only) =
         compute_filtered_graph_from(repository, graph, remote_only, ctx, head_commit_hash);
@@ -341,7 +322,6 @@ pub fn run() -> Result<()> {
     let keybind = keybind::KeyBind::new(keybind_patch);
 
     let max_count = args.max_count;
-    let image_protocol = protocol::ImageProtocol::Text;
     let order = args.order.or(core_config.option.order).into();
     let graph_width = args.graph_width.or(core_config.option.graph_width);
     let graph_style = args.graph_style.or(core_config.option.graph_style).into();
@@ -357,7 +337,6 @@ pub fn run() -> Result<()> {
         core_config,
         ui_config,
         color_theme,
-        image_protocol,
     });
 
     let mut ec = event::EventController::init();
@@ -372,8 +351,6 @@ pub fn run() -> Result<()> {
         ec.start_git_watcher(&repo_root);
     }
 
-    let selected_bg_color = ratatui_color_to_rgba(ctx.color_theme.list_selected_bg);
-
     let mut repository = git::Repository::load(Path::new(&args.path), order, max_count)?;
     let mut graph = Rc::new(graph::calc_graph(
         &repository,
@@ -384,9 +361,7 @@ pub fn run() -> Result<()> {
     let mut render_ctx = GraphRenderCtx {
         color_set: &graph_color_set,
         cell_width_type,
-        image_protocol,
         graph_style,
-        selected_bg_color,
     };
     let (mut graph_image_manager, mut filtered_graph, mut remote_only_commits) =
         build_graph_artifacts(&repository, &graph, render_ctx);
@@ -450,8 +425,7 @@ pub fn run() -> Result<()> {
                     );
                     if filtered_changed {
                         if let Some(t) = terminal.as_mut() {
-                            let size = t.size()?;
-                            app::clear_image_area(image_protocol, t, 0..size.height)?;
+                            t.clear()?;
                         }
                     }
                 } else {
@@ -470,8 +444,7 @@ pub fn run() -> Result<()> {
                         build_graph_artifacts(&repository, &graph, render_ctx);
 
                     if let Some(t) = terminal.as_mut() {
-                        let size = t.size()?;
-                        app::clear_image_area(image_protocol, t, 0..size.height)?;
+                        t.clear()?;
                     }
                 }
 

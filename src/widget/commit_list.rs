@@ -406,10 +406,11 @@ impl<'a> CommitListState<'a> {
     /// `CommitListState` (used by the refresh path to carry the user's
     /// toggle across App instances).
     ///
-    /// Contract: the caller is responsible for clearing image overlays.
-    /// The refresh path already does this via `clear_image_area` in `lib.rs`,
-    /// so this setter deliberately does **not** set `needs_graph_clear` —
-    /// doing so would cause a double clear and an extra blank frame.
+    /// Contract: the caller is responsible for a full terminal redraw.
+    /// The refresh path already does this via `terminal.clear()` in
+    /// `lib.rs`, so this setter deliberately does **not** set
+    /// `needs_graph_clear` — doing so would cause a double clear and an
+    /// extra blank frame.
     ///
     /// Do not call from interactive key handlers. Use `toggle_remote_refs`
     /// for those; it owns the full widget-local invalidation contract.
@@ -1027,18 +1028,13 @@ impl<'a> CommitListState<'a> {
         &self.graph_image_manager
     }
 
-    fn encoded_image(&self, commit_info: &CommitInfo<'_>) -> &str {
-        self.current_image_manager()
-            .encoded_image(&commit_info.commit.commit_hash)
-    }
-
-    fn spacer_image(&self, commit_info: &CommitInfo<'_>) -> &str {
-        self.current_image_manager()
-            .spacer_image(&commit_info.commit.commit_hash)
-    }
-
-    fn selected_image(&self) -> Option<&str> {
-        self.current_image_manager().selected_image()
+    fn current_image_manager_mut(&mut self) -> &mut GraphImageManager {
+        if !self.show_remote_refs {
+            if let Some(ref mut mgr) = self.filtered_graph_image_manager {
+                return mgr;
+            }
+        }
+        &mut self.graph_image_manager
     }
 
     fn marker_color(&self, commit_info: &CommitInfo<'_>) -> Color {
@@ -1308,7 +1304,6 @@ impl CommitList<'_> {
         }
 
         // Load graph images for visible commits
-        let use_filtered = !state.show_remote_refs && state.filtered_graph_image_manager.is_some();
         let vr_offset = state.virtual_row_offset();
         for display_idx in 0..state.height.min(state.total.saturating_sub(state.offset)) {
             let visible_idx = state.offset + display_idx;
@@ -1320,75 +1315,17 @@ impl CommitList<'_> {
                 debug_assert!(false, "render: filtered idx out of range in update_state");
                 continue;
             };
-            let hash = &state.commit(raw).commit.commit_hash;
-            if use_filtered {
-                state
-                    .filtered_graph_image_manager
-                    .as_mut()
-                    .unwrap()
-                    .load_encoded_image(hash);
-            } else {
-                state.graph_image_manager.load_encoded_image(hash);
-            }
-        }
-
-        // Cache first visible commit hash to avoid repeated Arc refcount bumps
-        let first_hash_opt = state.first_visible_commit_hash().cloned();
-
-        // Load virtual row images
-        if state.has_virtual_row() {
-            if let Some(ref first_hash) = first_hash_opt {
-                let mgr = if use_filtered {
-                    state.filtered_graph_image_manager.as_mut().unwrap()
-                } else {
-                    &mut state.graph_image_manager
-                };
-                mgr.load_virtual_row_image(first_hash);
-                mgr.load_selected_virtual_row_image(first_hash);
-                mgr.load_first_commit_with_up_image(first_hash);
-                mgr.load_selected_first_commit_with_up_image(first_hash);
-            }
-        }
-
-        // Load the selected row's graph image (with the selection background baked
-        // into the PNG) so the highlight covers the graph column. Needed both with
-        // inline detail (gap > 0) and in the common no-detail (gap == 0) case.
-        // Spacer images only fill the inline-detail gap rows, so they stay gated on
-        // gap > 0. selected_virtual_row_image / selected_first_commit_with_up_image
-        // are already loaded unconditionally in the has_virtual_row() block above.
-        let gap = state.inline_detail_height;
-        let is_vr = state.is_virtual_row_selected();
-        let hash = if is_vr {
-            first_hash_opt
-        } else {
-            Some(
-                state
-                    .commit(state.current_selected_raw())
-                    .commit
-                    .commit_hash
-                    .clone(),
-            )
-        };
-        if let Some(hash) = hash {
-            let mgr = if use_filtered {
-                state.filtered_graph_image_manager.as_mut().unwrap()
-            } else {
-                &mut state.graph_image_manager
-            };
-            if is_vr {
-                if gap > 0 {
-                    mgr.load_gray_spacer_image(&hash);
-                }
-            } else {
-                mgr.load_selected_image(&hash);
-                if gap > 0 {
-                    mgr.load_spacer_image(&hash);
-                }
-            }
+            // CommitHash is Arc<str>, so cloning it to sidestep the
+            // borrow-checker conflict with `current_image_manager_mut()` is cheap.
+            let hash = state.commit(raw).commit.commit_hash.clone();
+            state.current_image_manager_mut().load_text_cells(&hash);
         }
     }
 
-    fn render_graph_text(&self, buf: &mut Buffer, area: Rect, state: &CommitListState<'_>) {
+    fn render_graph(&self, buf: &mut Buffer, area: Rect, state: &CommitListState<'_>) {
+        if area.is_empty() {
+            return;
+        }
         let gap = state.inline_detail_height;
         let mgr = state.current_image_manager();
         let head_hash = mgr.head_commit_hash().cloned();
@@ -1569,112 +1506,6 @@ impl CommitList<'_> {
         buf[(x, y)]
             .set_symbol(s)
             .set_style(Style::default().fg(color));
-    }
-
-    fn render_graph(&self, buf: &mut Buffer, area: Rect, state: &CommitListState<'_>) {
-        if area.is_empty() {
-            return;
-        }
-        if state.current_image_manager().is_text_mode() {
-            self.render_graph_text(buf, area, state);
-            return;
-        }
-        let gap = state.inline_detail_height;
-        let selected_bg = ratatui_color_to_rgb(self.ctx.color_theme.list_selected_bg);
-        // Virtual row: render PNG image (gray hollow circle)
-        if state.has_virtual_row() && state.offset == 0 {
-            let y = area.top();
-            let image = if state.selected == 0 {
-                state
-                    .current_image_manager()
-                    .selected_virtual_row_image()
-                    .or_else(|| state.current_image_manager().virtual_row_image())
-            } else {
-                state.current_image_manager().virtual_row_image()
-            };
-            if let Some(img) = image {
-                buf[(area.left(), y)].set_symbol(img);
-                for w in 1..area.width - 1 {
-                    buf[(area.left() + w, y)].set_skip(true);
-                }
-                if state.selected == 0 && area.width >= 2 {
-                    buf[(area.left() + area.width - 1, y)]
-                        .set_style(Style::default().bg(selected_bg));
-                }
-            }
-        }
-        let use_up_image = state.has_virtual_row() && state.offset == 0;
-        self.rendering_commit_info_iter(state)
-            .for_each(|(display_i, raw, commit_info)| {
-                let y_offset = if gap > 0 && display_i > state.selected {
-                    gap
-                } else {
-                    0
-                };
-                let y = area.top() + display_i as u16 + y_offset;
-                let is_selected = display_i == state.selected;
-                if y < area.bottom() {
-                    let image = if use_up_image && raw.0 == 0 {
-                        // First commit with Up edge for virtual row connection
-                        if is_selected {
-                            state
-                                .current_image_manager()
-                                .selected_first_commit_with_up_image()
-                                .unwrap_or_else(|| state.encoded_image(commit_info))
-                        } else {
-                            state
-                                .current_image_manager()
-                                .first_commit_with_up_image()
-                                .unwrap_or_else(|| state.encoded_image(commit_info))
-                        }
-                    } else if is_selected {
-                        state
-                            .selected_image()
-                            .unwrap_or_else(|| state.encoded_image(commit_info))
-                    } else {
-                        state.encoded_image(commit_info)
-                    };
-                    buf[(area.left(), y)].set_symbol(image);
-                    for w in 1..area.width - 1 {
-                        buf[(area.left() + w, y)].set_skip(true);
-                    }
-                    if is_selected && area.width >= 2 {
-                        buf[(area.left() + area.width - 1, y)]
-                            .set_style(Style::default().bg(selected_bg));
-                    }
-                }
-            });
-
-        // Render spacer images in the gap rows
-        if gap > 0 {
-            if state.is_virtual_row_selected() {
-                // Virtual row: use gray spacer for gap continuation
-                if let Some(spacer) = state.current_image_manager().gray_spacer_image() {
-                    for gap_row in 0..gap {
-                        let y = area.top() + state.selected as u16 + 1 + gap_row;
-                        if y < area.bottom() {
-                            buf[(area.left(), y)].set_symbol(spacer);
-                            for w in 1..area.width - 1 {
-                                buf[(area.left() + w, y)].set_skip(true);
-                            }
-                        }
-                    }
-                }
-            } else {
-                // Normal commit: use plain spacer without background
-                let spacer_commit = state.commit(state.current_selected_raw());
-                let spacer = state.spacer_image(spacer_commit);
-                for gap_row in 0..gap {
-                    let y = area.top() + state.selected as u16 + 1 + gap_row;
-                    if y < area.bottom() {
-                        buf[(area.left(), y)].set_symbol(spacer);
-                        for w in 1..area.width - 1 {
-                            buf[(area.left() + w, y)].set_skip(true);
-                        }
-                    }
-                }
-            }
-        }
     }
 
     fn render_marker(&self, buf: &mut Buffer, area: Rect, state: &CommitListState<'_>) {
@@ -2326,15 +2157,14 @@ mod tests {
     // TestBackend is needed — Buffer::empty() + render() is enough.
     // Fixtures/constants live in their own submodule so they don't collide
     // with the rest of `mod tests`.
-    mod render_graph_text_tests {
+    mod render_graph_tests {
         use super::*;
         use crate::{
             color::GraphColorSet,
             config::{CoreConfig, GraphColorConfig, UiConfig},
             git::FileChange,
-            graph::{CellWidthType, Edge, EdgeType, GraphStyle},
+            graph::{Edge, EdgeType},
             keybind::KeyBind,
-            protocol::ImageProtocol,
         };
 
         const TERM_W: u16 = 80;
@@ -2351,7 +2181,6 @@ mod tests {
                 core_config: CoreConfig::default(),
                 ui_config: UiConfig::default(),
                 color_theme: ColorTheme::default(),
-                image_protocol: ImageProtocol::Text,
             })
         }
 
@@ -2417,6 +2246,12 @@ mod tests {
             head_hash: Option<usize>,
             working_changes: bool,
             inline_detail_height: u16,
+            /// When true, builds a second `GraphImageManager` (over the same
+            /// `text_graph` fixture) and routes rendering through it via
+            /// `filtered_graph_image_manager` + `set_show_remote_refs(false)`.
+            /// This is the only path `update_state`'s `use_filtered` branch
+            /// exercises -- without it, that branch has zero test coverage.
+            filtered: bool,
         }
 
         impl Default for Opts {
@@ -2425,6 +2260,7 @@ mod tests {
                     head_hash: Some(0),
                     working_changes: false,
                     inline_detail_height: 0,
+                    filtered: false,
                 }
             }
         }
@@ -2432,15 +2268,8 @@ mod tests {
         fn build_state(commits: &[Commit], graph: Graph, opts: Opts) -> CommitListState<'_> {
             let graph_cell_width = (graph.max_pos_x + 1) as u16 * 2;
             let head_hash = opts.head_hash.map(|i| commits[i].commit_hash.clone());
-            let mgr = GraphImageManager::new(
-                Rc::new(graph),
-                &test_graph_color_set(),
-                CellWidthType::Double,
-                GraphStyle::Rounded,
-                ImageProtocol::Text,
-                head_hash,
-                image::Rgba([0, 0, 0, 255]),
-            );
+            let mgr =
+                GraphImageManager::new(Rc::new(graph), &test_graph_color_set(), head_hash.clone());
             let infos = commits
                 .iter()
                 .map(|c| CommitInfo::new(c, Vec::new(), Color::Reset))
@@ -2452,6 +2281,19 @@ mod tests {
                 }],
                 unstaged: Vec::new(),
             });
+            let filtered = opts.filtered.then(|| {
+                let filtered_graph = Rc::new(text_graph(commits));
+                let filtered_mgr = GraphImageManager::new(
+                    Rc::clone(&filtered_graph),
+                    &test_graph_color_set(),
+                    head_hash,
+                );
+                FilteredGraphData {
+                    graph: filtered_graph,
+                    image_manager: filtered_mgr,
+                    cell_width: graph_cell_width,
+                }
+            });
             let mut state = CommitListState::new(
                 infos,
                 mgr,
@@ -2460,11 +2302,14 @@ mod tests {
                 FxHashMap::default(),
                 false,
                 false,
-                None,
+                filtered,
                 None,
                 FxHashSet::default(),
                 working,
             );
+            if opts.filtered {
+                state.set_show_remote_refs(false);
+            }
             state.set_inline_detail_height(opts.inline_detail_height);
             state
         }
@@ -2491,7 +2336,7 @@ mod tests {
         }
 
         #[test]
-        fn render_graph_text_draws_cells_below_header() {
+        fn render_graph_draws_cells_below_header() {
             let commits = text_graph_commits();
             let mut state = build_state(&commits, text_graph(&commits), Opts::default());
             let buf = render_commit_list(&mut state, 10);
@@ -2669,6 +2514,36 @@ mod tests {
             // c1 (HEAD) itself, unaffected by the connector logic.
             assert_eq!(buf[(0, 3)].symbol(), "◯");
             assert!(buf[(0, 3)].modifier.contains(Modifier::BOLD));
+        }
+
+        #[test]
+        fn filtered_graph_manager_fills_text_cells() {
+            // `update_state` picks `filtered_graph_image_manager` instead of
+            // `graph_image_manager` whenever `show_remote_refs` is off and a
+            // filtered manager exists (the "hide remote-only commits" path).
+            // Nothing else in this suite ever sets `filtered: true`, so
+            // without this test the filtered branch could stop populating
+            // `text_cells_map` (e.g. two branches collapsed into one that
+            // only touches the primary manager) and no test would notice --
+            // the graph column would silently render blank for any user with
+            // remote refs hidden.
+            let commits = text_graph_commits();
+            let mut state = build_state(
+                &commits,
+                text_graph(&commits),
+                Opts {
+                    filtered: true,
+                    ..Default::default()
+                },
+            );
+            assert!(!state.show_remote_refs());
+            let buf = render_commit_list(&mut state, 10);
+
+            assert_eq!(
+                graph_rows(&buf, 1..=3),
+                ["│ ◯ ──", "● ──╭─", "│   ● "],
+                "filtered manager must fill text_cells_map same as the primary one"
+            );
         }
     }
 

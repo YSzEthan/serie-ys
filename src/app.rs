@@ -28,7 +28,6 @@ use crate::{
     },
     graph::{CellWidthType, Graph, GraphImageManager},
     keybind::KeyBind,
-    protocol::ImageProtocol,
     view::{dispatch_delete_branch, RefreshViewContext, RefsOrigin, View},
     widget::{
         commit_list::{CommitInfo, CommitListState, RawCommitIdx},
@@ -37,12 +36,6 @@ use crate::{
     FilteredGraphData,
 };
 
-/// Clear terminal image overlays and force a full ratatui redraw.
-///
-/// - `protocol.clear_line` removes leftover Kitty graphics overlays
-///   (no-op on iTerm2, whose images live inside cells).
-/// - `terminal.clear()` drops ratatui's backing buffer so the next
-///   draw repaints every cell instead of diffing against stale state.
 fn picker_digit_index(key: KeyEvent) -> Option<usize> {
     let KeyCode::Char(c) = key.code else {
         return None;
@@ -79,17 +72,6 @@ fn confirm_line(prompt: String, hint_fg: Color) -> Line<'static> {
         "[n/Esc]".fg(hint_fg),
         " cancel".into(),
     ])
-}
-
-pub(crate) fn clear_image_area(
-    protocol: ImageProtocol,
-    terminal: &mut DefaultTerminal,
-    y_range: std::ops::Range<u16>,
-) -> std::io::Result<()> {
-    for y in y_range {
-        protocol.clear_line(y);
-    }
-    terminal.clear()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -213,7 +195,6 @@ pub struct AppContext {
     pub core_config: CoreConfig,
     pub ui_config: UiConfig,
     pub color_theme: ColorTheme,
-    pub image_protocol: ImageProtocol,
 }
 
 #[derive(Debug, Default)]
@@ -376,11 +357,11 @@ impl App<'_> {
                 }
 
                 if self.view.take_graph_clear() {
-                    clear_image_area(
-                        self.ctx.image_protocol,
-                        terminal,
-                        self.app_status.view_area.top()..self.app_status.view_area.bottom(),
-                    )?;
+                    // Full backing-buffer clear + repaint, requested via
+                    // `request_graph_clear()` (e.g. `toggle_remote_refs`).
+                    // Unrelated to `set_show_remote_refs`'s doc comment,
+                    // which covers a separate `terminal.clear()` in `lib.rs`.
+                    terminal.clear()?;
                 }
                 terminal.draw(|f| self.render(f))?;
 
@@ -567,7 +548,6 @@ impl App<'_> {
                     return Ok(Ret::Quit);
                 }
                 AppEvent::OpenDetail => {
-                    self.clear_image(Some(terminal))?;
                     self.open_detail();
                 }
                 AppEvent::CloseDetail => {
@@ -575,7 +555,6 @@ impl App<'_> {
                     self.close_detail();
                 }
                 AppEvent::OpenUserCommand(n) => {
-                    self.clear_image(Some(terminal))?;
                     self.open_user_command(n, Some(terminal));
                 }
                 AppEvent::CloseUserCommand => {
@@ -607,7 +586,6 @@ impl App<'_> {
                     self.close_delete_ref();
                 }
                 AppEvent::OpenHelp => {
-                    self.clear_image(None)?;
                     self.open_help();
                 }
                 AppEvent::CloseHelp => {
@@ -1552,19 +1530,6 @@ impl App<'_> {
         }
     }
 
-    fn clear_image(&self, terminal: Option<&mut DefaultTerminal>) -> Result<(), std::io::Error> {
-        // Sometimes the first image fails to render after a full screen clear
-        // As a workaround, the first area is preserved when a full clear is not required
-        if let Some(t) = terminal {
-            for y in 1..t.size()?.height {
-                self.ctx.image_protocol.clear_line(y);
-            }
-        } else {
-            self.ctx.image_protocol.clear();
-        }
-        Ok(())
-    }
-
     fn open_detail(&mut self) {
         let commit_list_state = match self.view {
             View::List(ref mut view) => view.take_list_state(),
@@ -1960,7 +1925,6 @@ impl App<'_> {
             issues_cursor,
             prs_cursor,
             &state_filter,
-            self.ctx.clone(),
             self.ec.sender(),
         );
     }
