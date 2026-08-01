@@ -18,10 +18,7 @@ use crate::{
     config::UserListColumnType,
     fuzzy::SearchMatcher,
     git::{Commit, CommitHash, Head, Ref, WorkingChanges},
-    graph::{
-        Graph, TextCell, TEXT_COMMIT_DOT, TEXT_CORNER_BL, TEXT_CORNER_BR, TEXT_CORNER_TL,
-        TEXT_CORNER_TR, TEXT_HEAD_DOT, TEXT_VERT,
-    },
+    graph::{Glyph, GlyphSet, Graph, TextCell},
     FilteredGraphData,
 };
 
@@ -1306,6 +1303,13 @@ impl CommitList<'_> {
         // for "what rows are visible" -- no separate preload pass needed.
     }
 
+    /// Single seam for GraphStyle -> GlyphSet selection. Hardcoded to
+    /// rounded until #20 threads GraphStyle through; only this body changes
+    /// then, no call site changes.
+    fn glyphs(&self) -> GlyphSet {
+        GlyphSet::ROUNDED
+    }
+
     fn render_graph(&self, buf: &mut Buffer, area: Rect, state: &CommitListState<'_>) {
         if area.is_empty() {
             return;
@@ -1328,7 +1332,7 @@ impl CommitList<'_> {
                     .and_then(|h| self.graph_text_head_col(state, h))
                     .unwrap_or(0)
             });
-            self.put_text_cell(buf, area, y, col, TEXT_HEAD_DOT, VIRTUAL_ROW_COLOR);
+            self.put_text_cell(buf, area, y, col, Glyph::HeadDot, VIRTUAL_ROW_COLOR);
             if state.selected == 0 {
                 apply_row_bg(buf, area, y, selected_bg);
             }
@@ -1362,8 +1366,8 @@ impl CommitList<'_> {
                 if is_head {
                     seen_head = true;
                 } else if let Some(hc) = head_line_col {
-                    if cells.get(hc).is_some_and(|c| c.ch == ' ') {
-                        self.put_text_cell(buf, area, y, hc, TEXT_VERT, VIRTUAL_ROW_COLOR);
+                    if cells.get(hc).is_some_and(|c| c.glyph == Glyph::Blank) {
+                        self.put_text_cell(buf, area, y, hc, Glyph::Vert, VIRTUAL_ROW_COLOR);
                     }
                 }
             }
@@ -1407,7 +1411,7 @@ impl CommitList<'_> {
         let cells = state.text_cells_for_hash(hash)?;
         cells
             .iter()
-            .position(|c| c.ch == TEXT_COMMIT_DOT || c.ch == TEXT_HEAD_DOT)
+            .position(|c| matches!(c.glyph, Glyph::CommitDot | Glyph::HeadDot))
     }
 
     fn put_text_cells(
@@ -1418,18 +1422,19 @@ impl CommitList<'_> {
         cells: &[TextCell],
         is_head: bool,
     ) {
+        let glyphs = self.glyphs();
         let mut buffer = [0u8; 4];
         for (i, cell) in cells.iter().enumerate() {
             let x = area.left() + i as u16;
             if x >= area.right() {
                 break;
             }
-            let (ch, bold) = if is_head && cell.ch == TEXT_COMMIT_DOT {
-                (TEXT_HEAD_DOT, true)
+            let (glyph, bold) = if is_head && cell.glyph == Glyph::CommitDot {
+                (Glyph::HeadDot, true)
             } else {
-                (cell.ch, false)
+                (cell.glyph, false)
             };
-            let s = ch.encode_utf8(&mut buffer);
+            let s = glyphs.resolve(glyph).encode_utf8(&mut buffer);
             let mut style = Style::default().fg(cell.color);
             if bold {
                 style = style.add_modifier(Modifier::BOLD);
@@ -1446,6 +1451,7 @@ impl CommitList<'_> {
         cells: &[TextCell],
         gray: bool,
     ) {
+        let glyphs = self.glyphs();
         let mut buffer = [0u8; 4];
         for (i, cell) in cells.iter().enumerate() {
             let x = area.left() + i as u16;
@@ -1455,20 +1461,20 @@ impl CommitList<'_> {
             // Horizontal-only edges don't extend into the spacer row, so only
             // redraw `│` at columns that had a dot or vertical-reaching glyph.
             let draw_vertical = matches!(
-                cell.ch,
-                TEXT_COMMIT_DOT
-                    | TEXT_VERT
-                    | TEXT_HEAD_DOT
-                    | TEXT_CORNER_TL
-                    | TEXT_CORNER_TR
-                    | TEXT_CORNER_BL
-                    | TEXT_CORNER_BR
+                cell.glyph,
+                Glyph::CommitDot
+                    | Glyph::Vert
+                    | Glyph::HeadDot
+                    | Glyph::CornerTL
+                    | Glyph::CornerTR
+                    | Glyph::CornerBL
+                    | Glyph::CornerBR
             );
             if !draw_vertical {
                 continue;
             }
             let color = if gray { VIRTUAL_ROW_COLOR } else { cell.color };
-            let s = TEXT_VERT.encode_utf8(&mut buffer);
+            let s = glyphs.resolve(Glyph::Vert).encode_utf8(&mut buffer);
             buf[(x, y)]
                 .set_symbol(s)
                 .set_style(Style::default().fg(color));
@@ -1481,13 +1487,14 @@ impl CommitList<'_> {
         area: Rect,
         y: u16,
         col: usize,
-        ch: char,
+        glyph: Glyph,
         color: Color,
     ) {
         let x = area.left() + col as u16;
         if x >= area.right() {
             return;
         }
+        let ch = self.glyphs().resolve(glyph);
         let mut buffer = [0u8; 4];
         let s = ch.encode_utf8(&mut buffer);
         buf[(x, y)]

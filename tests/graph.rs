@@ -1225,7 +1225,10 @@ fn render_text_graph(repo_path: &Path, option: &GenerateGraphOption) -> String {
     let mut out = String::new();
     for (commit_hash, cells) in graph.commit_hashes.iter().zip(&rows) {
         let commit = repository.commit(commit_hash).unwrap();
-        let graph_str: String = cells.iter().map(|c| c.ch).collect();
+        let graph_str: String = cells
+            .iter()
+            .map(|c| graph::GlyphSet::ROUNDED.resolve(c.glyph))
+            .collect();
         out.push_str(graph_str.trim_end());
         out.push_str("  ");
         out.push_str(&commit.subject);
