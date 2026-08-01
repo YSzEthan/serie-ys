@@ -2320,6 +2320,358 @@ mod tests {
         }
     }
 
+    // ---- render_graph_text --------------------------------------------
+    //
+    // CommitList implements StatefulWidget directly, so no Terminal /
+    // TestBackend is needed — Buffer::empty() + render() is enough.
+    // Fixtures/constants live in their own submodule so they don't collide
+    // with the rest of `mod tests`.
+    mod render_graph_text_tests {
+        use super::*;
+        use crate::{
+            color::GraphColorSet,
+            config::{CoreConfig, GraphColorConfig, UiConfig},
+            git::FileChange,
+            graph::{CellWidthType, Edge, EdgeType, GraphStyle},
+            keybind::KeyBind,
+            protocol::ImageProtocol,
+        };
+
+        const TERM_W: u16 = 80;
+
+        const RED: Color = Color::Rgb(0xFF, 0x00, 0x00);
+        const GREEN: Color = Color::Rgb(0x00, 0xFF, 0x00);
+        const BLUE: Color = Color::Rgb(0x00, 0x00, 0xFF);
+        // ratatui_color_to_rgb(ColorTheme::default().list_selected_bg) == DarkGray
+        const SELECTED_BG: Color = Color::Rgb(80, 80, 80);
+
+        fn test_ctx() -> Rc<AppContext> {
+            Rc::new(AppContext {
+                keybind: KeyBind::new(None),
+                core_config: CoreConfig::default(),
+                ui_config: UiConfig::default(),
+                color_theme: ColorTheme::default(),
+                image_protocol: ImageProtocol::Text,
+            })
+        }
+
+        fn test_graph_color_set() -> GraphColorSet {
+            GraphColorSet::new(&GraphColorConfig {
+                branches: vec!["#FF0000".into(), "#00FF00".into(), "#0000FF".into()],
+                ..Default::default()
+            })
+        }
+
+        /// Commit hash must be >= 7 chars: `render_hash` uses `as_short_hash()`
+        /// ([0..7]); a shorter hash panics.
+        fn text_graph_commits() -> Vec<Commit> {
+            [
+                ("aaaaaaa", "first"),
+                ("bbbbbbb", "second"),
+                ("ccccccc", "third"),
+            ]
+            .into_iter()
+            .map(|(hash, subject)| Commit {
+                commit_hash: hash.into(),
+                subject: subject.into(),
+                author_name: "alice".into(),
+                ..Default::default()
+            })
+            .collect()
+        }
+
+        /// 3-commit graph shared by tests 1-4.
+        ///
+        /// c0's dot is deliberately at pos_x=1, NOT pos_x=0: `render_graph_text`'s
+        /// virtual-row column fallback is `head_col -> first-visible-commit's dot
+        /// col -> literal 0`. If HEAD's dot sat at column 0, all three paths would
+        /// coincide and a regression that hardcodes column 0 would slip past the
+        /// virtual-row test undetected.
+        fn text_graph(commits: &[Commit]) -> Graph {
+            let h = |i: usize| commits[i].commit_hash.clone();
+            Graph {
+                commit_hashes: commits.iter().map(|c| c.commit_hash.clone()).collect(),
+                commit_pos_map: [(h(0), (1, 0)), (h(1), (0, 1)), (h(2), (2, 2))]
+                    .into_iter()
+                    .collect(),
+                edges: vec![
+                    vec![
+                        Edge::new(EdgeType::Vertical, 0, 0),
+                        Edge::new(EdgeType::Horizontal, 2, 2),
+                    ],
+                    vec![
+                        Edge::new(EdgeType::Horizontal, 1, 2),
+                        Edge::new(EdgeType::LeftTop, 2, 2),
+                    ],
+                    vec![Edge::new(EdgeType::Vertical, 0, 0)],
+                ],
+                max_pos_x: 2,
+            }
+        }
+
+        struct Opts {
+            /// Index into `commits`, fed to `GraphImageManager`'s
+            /// `head_commit_hash` (drives `is_head` in `put_text_cells`).
+            /// Distinct from `CommitListState`'s own `head: Head` field, which
+            /// only affects ref rendering and doesn't matter for these tests.
+            head_hash: Option<usize>,
+            working_changes: bool,
+            inline_detail_height: u16,
+        }
+
+        impl Default for Opts {
+            fn default() -> Self {
+                Self {
+                    head_hash: Some(0),
+                    working_changes: false,
+                    inline_detail_height: 0,
+                }
+            }
+        }
+
+        fn build_state(commits: &[Commit], graph: Graph, opts: Opts) -> CommitListState<'_> {
+            let graph_cell_width = (graph.max_pos_x + 1) as u16 * 2;
+            let head_hash = opts.head_hash.map(|i| commits[i].commit_hash.clone());
+            let mgr = GraphImageManager::new(
+                Rc::new(graph),
+                &test_graph_color_set(),
+                CellWidthType::Double,
+                GraphStyle::Rounded,
+                ImageProtocol::Text,
+                head_hash,
+                image::Rgba([0, 0, 0, 255]),
+            );
+            let infos = commits
+                .iter()
+                .map(|c| CommitInfo::new(c, Vec::new(), Color::Reset))
+                .collect();
+            let working = opts.working_changes.then(|| WorkingChanges {
+                staged: vec![FileChange::Modify {
+                    path: "src/a.rs".into(),
+                    stats: None,
+                }],
+                unstaged: Vec::new(),
+            });
+            let mut state = CommitListState::new(
+                infos,
+                mgr,
+                graph_cell_width,
+                Head::None,
+                FxHashMap::default(),
+                false,
+                false,
+                None,
+                None,
+                FxHashSet::default(),
+                working,
+            );
+            state.set_inline_detail_height(opts.inline_detail_height);
+            state
+        }
+
+        fn render_commit_list(state: &mut CommitListState<'_>, height: u16) -> Buffer {
+            let ctx = test_ctx();
+            assert!(
+                matches!(
+                    ctx.ui_config.list.columns.first(),
+                    Some(UserListColumnType::Graph)
+                ),
+                "fixture assumes Graph is the first column"
+            );
+            let area = Rect::new(0, 0, TERM_W, height);
+            let mut buf = Buffer::empty(area);
+            CommitList::new(ctx, 0).render(area, &mut buf, state);
+            buf
+        }
+
+        /// Graph column only (x in 0..6), one string per row in `rows`.
+        fn graph_rows(buf: &Buffer, rows: std::ops::RangeInclusive<u16>) -> Vec<String> {
+            rows.map(|y| (0..6).map(|x| buf[(x, y)].symbol()).collect())
+                .collect()
+        }
+
+        #[test]
+        fn render_graph_text_draws_cells_below_header() {
+            let commits = text_graph_commits();
+            let mut state = build_state(&commits, text_graph(&commits), Opts::default());
+            let buf = render_commit_list(&mut state, 10);
+
+            assert_eq!(
+                graph_rows(&buf, 1..=3),
+                ["│ ◯ ──", "● ──╭─", "│   ● "],
+                "row 1..3 are c0(HEAD)/c1/c2; row 0 is the header"
+            );
+
+            // c0 (HEAD, selected): dot col is green (pos_x=1), the Vertical
+            // edge at col 0 is red (line 0), the Horizontal edges are blue
+            // (line 2) -- colors follow associated_line_pos_x, not pos_x.
+            assert_eq!(buf[(0, 1)].fg, RED);
+            assert_eq!(buf[(2, 1)].fg, GREEN);
+            assert_eq!(buf[(4, 1)].fg, BLUE);
+            assert!(buf[(2, 1)].modifier.contains(Modifier::BOLD));
+            for x in 0..7 {
+                assert_eq!(buf[(x, 1)].bg, SELECTED_BG, "selected row bg at x={x}");
+            }
+
+            // c1 (not selected): no bg override.
+            assert_ne!(buf[(0, 2)].bg, SELECTED_BG);
+        }
+
+        #[test]
+        fn head_commit_dot_is_hollow_and_bold() {
+            let commits = text_graph_commits();
+
+            let mut with_head = build_state(&commits, text_graph(&commits), Opts::default());
+            let buf_a = render_commit_list(&mut with_head, 10);
+            assert_eq!(buf_a[(2, 1)].symbol(), "◯");
+            assert!(buf_a[(2, 1)].modifier.contains(Modifier::BOLD));
+
+            let mut without_head = build_state(
+                &commits,
+                text_graph(&commits),
+                Opts {
+                    head_hash: None,
+                    ..Default::default()
+                },
+            );
+            let buf_b = render_commit_list(&mut without_head, 10);
+            assert_eq!(buf_b[(2, 1)].symbol(), "●");
+            assert!(!buf_b[(2, 1)].modifier.contains(Modifier::BOLD));
+            // Color is unaffected by head/non-head.
+            assert_eq!(buf_b[(2, 1)].fg, GREEN);
+
+            // c1/c2 are never HEAD in either state: plain dot, never bold.
+            for buf in [&buf_a, &buf_b] {
+                assert_eq!(buf[(0, 2)].symbol(), "●");
+                assert!(!buf[(0, 2)].modifier.contains(Modifier::BOLD));
+                assert_eq!(buf[(4, 3)].symbol(), "●");
+                assert!(!buf[(4, 3)].modifier.contains(Modifier::BOLD));
+            }
+        }
+
+        #[test]
+        fn spacer_row_extends_only_vertical_columns() {
+            let commits = text_graph_commits();
+            let mut state = build_state(
+                &commits,
+                text_graph(&commits),
+                Opts {
+                    inline_detail_height: 2,
+                    ..Default::default()
+                },
+            );
+            let buf = render_commit_list(&mut state, 10);
+
+            // Selected row is c0 (pos_y=0): cells are [Vert, ' ', Dot, ' ', Horiz, Horiz].
+            // Only the Vertical (idx0) and the Dot (idx2) are in put_text_spacer's
+            // whitelist -- the Horizontal pair (idx4/5) must NOT extend down.
+            for y in [2u16, 3u16] {
+                assert_eq!(buf[(0, y)].symbol(), "│", "vertical edge extends at y={y}");
+                assert_eq!(buf[(0, y)].fg, RED);
+                assert_eq!(buf[(2, y)].symbol(), "│", "dot column extends at y={y}");
+                assert_eq!(buf[(2, y)].fg, GREEN);
+                assert_ne!(
+                    buf[(4, y)].symbol(),
+                    "─",
+                    "TEXT_HORIZ must not extend into the spacer row at y={y}"
+                );
+                assert_eq!(buf[(4, y)].symbol(), " ");
+            }
+
+            // c1/c2 pushed down by the 2-row gap.
+            assert_eq!(graph_rows(&buf, 4..=5), ["● ──╭─", "│   ● "]);
+        }
+
+        #[test]
+        fn virtual_row_draws_gray_head_dot_at_top() {
+            let commits = text_graph_commits();
+            let mut state = build_state(
+                &commits,
+                text_graph(&commits),
+                Opts {
+                    working_changes: true,
+                    inline_detail_height: 1,
+                    ..Default::default()
+                },
+            );
+            let buf = render_commit_list(&mut state, 10);
+
+            // Virtual row at buffer row 1, dot at HEAD's column (idx2, not 0).
+            assert_eq!(buf[(2, 1)].symbol(), "◯");
+            assert_eq!(
+                buf[(2, 1)].fg,
+                Color::Gray,
+                "VIRTUAL_ROW_COLOR, not theme-converted"
+            );
+            assert!(!buf[(2, 1)].modifier.contains(Modifier::BOLD));
+            for x in 0..7 {
+                assert_eq!(
+                    buf[(x, 1)].bg,
+                    SELECTED_BG,
+                    "virtual row is selected by default"
+                );
+            }
+
+            // Gray spacer row (virtual row selected + gap=1) comes first, at
+            // row 2 -- `y_offset` pushes every commit past `state.selected`
+            // (0, the virtual row) down by `gap` before the spacer itself.
+            // Cells that redraw at all must use VIRTUAL_ROW_COLOR, not their
+            // own color.
+            let spacer_y = 2u16;
+            assert_eq!(buf[(0, spacer_y)].symbol(), "│");
+            assert_eq!(buf[(0, spacer_y)].fg, Color::Gray);
+            assert_eq!(buf[(2, spacer_y)].symbol(), "│");
+            assert_eq!(buf[(2, spacer_y)].fg, Color::Gray);
+
+            // c0's own (bold, colored) HEAD dot, pushed down past the spacer
+            // to row 3.
+            assert_eq!(buf[(2, 3)].symbol(), "◯");
+            assert!(buf[(2, 3)].modifier.contains(Modifier::BOLD));
+            assert_eq!(buf[(2, 3)].fg, GREEN);
+
+            // c1/c2 shift down by the same gap.
+            assert_eq!(graph_rows(&buf, 4..=5), ["● ──╭─", "│   ● "]);
+        }
+
+        #[test]
+        fn head_upward_connector_line_fills_gap() {
+            // Dedicated 2-commit graph reusing the first two of
+            // `text_graph_commits()`: c0 has NO edges at all (its column-0
+            // cell is blank), c1 (HEAD) sits at column 0. The virtual row's
+            // dot lands on HEAD's column; render_graph_text must punch a gray
+            // connector through c0's blank cell so the line reads continuous.
+            let all_commits = text_graph_commits();
+            let commits = &all_commits[..2];
+            let h = |i: usize| commits[i].commit_hash.clone();
+            let graph = Graph {
+                commit_hashes: commits.iter().map(|c| c.commit_hash.clone()).collect(),
+                commit_pos_map: [(h(0), (1, 0)), (h(1), (0, 1))].into_iter().collect(),
+                edges: vec![vec![], vec![]],
+                max_pos_x: 1,
+            };
+            let mut state = build_state(
+                commits,
+                graph,
+                Opts {
+                    head_hash: Some(1),
+                    working_changes: true,
+                    ..Default::default()
+                },
+            );
+            let buf = render_commit_list(&mut state, 10);
+
+            // Virtual row dot at HEAD's column (c1 is at pos_x=0 -> idx 0).
+            assert_eq!(buf[(0, 1)].symbol(), "◯");
+            // c0's row has no edge at column 0, so without the connector this
+            // cell would be blank. It must be filled with a gray `│`.
+            assert_eq!(buf[(0, 2)].symbol(), "│");
+            assert_eq!(buf[(0, 2)].fg, Color::Gray);
+            // c1 (HEAD) itself, unaffected by the connector logic.
+            assert_eq!(buf[(0, 3)].symbol(), "◯");
+            assert!(buf[(0, 3)].modifier.contains(Modifier::BOLD));
+        }
+    }
+
     /// `search_fields` 是搜尋與 filter 的唯一欄位來源，排除 Stash 是它唯一的非平凡
     /// 規則 —— 之前這條規則在 `SearchMatch::new` 與 `commit_quick_matches` 各抄一份。
     #[test]
