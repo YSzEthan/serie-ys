@@ -30,33 +30,37 @@ pub enum Glyph {
 }
 
 /// Maps each `Glyph` to the character a given graph style draws it as.
+///
+/// Fields are `&'static str`, not `char`: every consumer (`Cell::set_symbol`,
+/// ratatui `Span`, `border::Set`) wants `&str`, so storing `char` would just
+/// push an `encode_utf8`/`to_string()` onto each call site.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GlyphSet {
-    pub commit_dot: char,
-    pub head_dot: char,
-    pub vert: char,
-    pub horiz: char,
-    pub corner_tl: char,
-    pub corner_tr: char,
-    pub corner_bl: char,
-    pub corner_br: char,
+    pub commit_dot: &'static str,
+    pub head_dot: &'static str,
+    pub vert: &'static str,
+    pub horiz: &'static str,
+    pub corner_tl: &'static str,
+    pub corner_tr: &'static str,
+    pub corner_bl: &'static str,
+    pub corner_br: &'static str,
 }
 
 impl GlyphSet {
     pub const ROUNDED: GlyphSet = GlyphSet {
-        commit_dot: '●',
-        head_dot: '◯',
-        vert: '│',
-        horiz: '─',
-        corner_tl: '╭',
-        corner_tr: '╮',
-        corner_bl: '╰',
-        corner_br: '╯',
+        commit_dot: "●",
+        head_dot: "◯",
+        vert: "│",
+        horiz: "─",
+        corner_tl: "╭",
+        corner_tr: "╮",
+        corner_bl: "╰",
+        corner_br: "╯",
     };
 
-    pub fn resolve(&self, glyph: Glyph) -> char {
+    pub fn resolve(&self, glyph: Glyph) -> &'static str {
         match glyph {
-            Glyph::Blank => ' ',
+            Glyph::Blank => " ",
             Glyph::CommitDot => self.commit_dot,
             Glyph::HeadDot => self.head_dot,
             Glyph::Vert => self.vert,

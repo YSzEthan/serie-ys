@@ -1409,7 +1409,6 @@ impl CommitList<'_> {
         is_head: bool,
     ) {
         let glyphs = self.glyphs();
-        let mut buffer = [0u8; 4];
         for (i, cell) in cells.iter().enumerate() {
             let x = area.left() + i as u16;
             if x >= area.right() {
@@ -1420,7 +1419,7 @@ impl CommitList<'_> {
             } else {
                 (cell.glyph, false)
             };
-            let s = glyphs.resolve(glyph).encode_utf8(&mut buffer);
+            let s = glyphs.resolve(glyph);
             let mut style = Style::default().fg(cell.color);
             if bold {
                 style = style.add_modifier(Modifier::BOLD);
@@ -1438,7 +1437,6 @@ impl CommitList<'_> {
         gray: bool,
     ) {
         let glyphs = self.glyphs();
-        let mut buffer = [0u8; 4];
         for (i, cell) in cells.iter().enumerate() {
             let x = area.left() + i as u16;
             if x >= area.right() {
@@ -1460,7 +1458,7 @@ impl CommitList<'_> {
                 continue;
             }
             let color = if gray { VIRTUAL_ROW_COLOR } else { cell.color };
-            let s = glyphs.resolve(Glyph::Vert).encode_utf8(&mut buffer);
+            let s = glyphs.resolve(Glyph::Vert);
             buf[(x, y)]
                 .set_symbol(s)
                 .set_style(Style::default().fg(color));
@@ -1480,9 +1478,7 @@ impl CommitList<'_> {
         if x >= area.right() {
             return;
         }
-        let ch = self.glyphs().resolve(glyph);
-        let mut buffer = [0u8; 4];
-        let s = ch.encode_utf8(&mut buffer);
+        let s = self.glyphs().resolve(glyph);
         buf[(x, y)]
             .set_symbol(s)
             .set_style(Style::default().fg(color));
