@@ -19,8 +19,8 @@ use crate::{
     fuzzy::SearchMatcher,
     git::{Commit, CommitHash, Head, Ref, WorkingChanges},
     graph::{
-        Graph, GraphImageManager, TextCell, TEXT_COMMIT_DOT, TEXT_CORNER_BL, TEXT_CORNER_BR,
-        TEXT_CORNER_TL, TEXT_CORNER_TR, TEXT_HEAD_DOT, TEXT_VERT,
+        Graph, TextCell, TEXT_COMMIT_DOT, TEXT_CORNER_BL, TEXT_CORNER_BR, TEXT_CORNER_TL,
+        TEXT_CORNER_TR, TEXT_HEAD_DOT, TEXT_VERT,
     },
     FilteredGraphData,
 };
@@ -217,14 +217,21 @@ impl SearchMatchPosition {
 pub struct CommitListState<'a> {
     commits: Vec<CommitInfo<'a>>,
     commit_hash_to_raw: FxHashMap<CommitHash, RawCommitIdx>,
-    graph_image_manager: GraphImageManager,
+    graph: Rc<Graph>,
+    // Shared by the primary and filtered graph: both are built from the same
+    // `GraphColorSet` / `Repository`, so there's exactly one of each, not
+    // one pair per graph.
+    graph_colors: Vec<Color>,
+    head_commit_hash: Option<CommitHash>,
     graph_cell_width: u16,
     head: Head,
 
     // Filtered graph data (for when remote-only commits are hidden)
     filtered_graph: Option<Rc<Graph>>,
-    filtered_graph_image_manager: Option<GraphImageManager>,
     filtered_graph_cell_width: u16,
+    // Marker-overlay color map (commit_hash -> color), keyed differently
+    // from `graph_colors` above (which is a pos_x-indexed palette). Not the
+    // same concept despite the similar name -- do not merge.
     filtered_graph_colors: Option<FxHashMap<CommitHash, Color>>,
 
     ref_name_to_commit_index_map: FxHashMap<String, RawCommitIdx>,
@@ -267,9 +274,12 @@ pub struct CommitListState<'a> {
 }
 
 impl<'a> CommitListState<'a> {
+    #[allow(clippy::too_many_arguments)]
     pub fn new(
         commits: Vec<CommitInfo<'a>>,
-        graph_image_manager: GraphImageManager,
+        graph: Rc<Graph>,
+        graph_colors: Vec<Color>,
+        head_commit_hash: Option<CommitHash>,
         graph_cell_width: u16,
         head: Head,
         ref_name_to_commit_index_map: FxHashMap<String, RawCommitIdx>,
@@ -280,11 +290,10 @@ impl<'a> CommitListState<'a> {
         remote_only_commits: FxHashSet<CommitHash>,
         working_changes: Option<WorkingChanges>,
     ) -> CommitListState<'a> {
-        let (filtered_graph, filtered_graph_image_manager, filtered_graph_cell_width) =
-            match filtered {
-                Some(fg) => (Some(fg.graph), Some(fg.image_manager), fg.cell_width),
-                None => (None, None, 0),
-            };
+        let (filtered_graph, filtered_graph_cell_width) = match filtered {
+            Some(fg) => (Some(fg.graph), fg.cell_width),
+            None => (None, 0),
+        };
         let commit_count = commits.len();
         let has_virtual_row = working_changes.as_ref().is_some_and(|wc| !wc.is_empty());
         let vr_offset = if has_virtual_row { 1 } else { 0 };
@@ -302,11 +311,12 @@ impl<'a> CommitListState<'a> {
         CommitListState {
             commits,
             commit_hash_to_raw,
-            graph_image_manager,
+            graph,
+            graph_colors,
+            head_commit_hash,
             graph_cell_width,
             head,
             filtered_graph,
-            filtered_graph_image_manager,
             filtered_graph_cell_width,
             filtered_graph_colors,
             ref_name_to_commit_index_map,
@@ -337,26 +347,16 @@ impl<'a> CommitListState<'a> {
         }
     }
 
-    pub fn into_graph_parts(
-        self,
-    ) -> (
-        GraphImageManager,
-        Option<FilteredGraphData>,
-        FxHashSet<CommitHash>,
-    ) {
-        let filtered = match (self.filtered_graph, self.filtered_graph_image_manager) {
-            (Some(graph), Some(image_manager)) => Some(FilteredGraphData {
-                graph,
-                image_manager,
-                cell_width: self.filtered_graph_cell_width,
-            }),
-            _ => None,
-        };
-        (self.graph_image_manager, filtered, self.remote_only_commits)
+    pub fn into_graph_parts(self) -> (Option<FilteredGraphData>, FxHashSet<CommitHash>) {
+        let filtered = self.filtered_graph.map(|graph| FilteredGraphData {
+            graph,
+            cell_width: self.filtered_graph_cell_width,
+        });
+        (filtered, self.remote_only_commits)
     }
 
     pub fn graph_area_cell_width(&self) -> u16 {
-        let w = if !self.show_remote_refs && self.filtered_graph_image_manager.is_some() {
+        let w = if !self.show_remote_refs && self.filtered_graph.is_some() {
             self.filtered_graph_cell_width
         } else {
             self.graph_cell_width
@@ -717,7 +717,7 @@ impl<'a> CommitListState<'a> {
     /// 把游標移到 HEAD 指向的 commit,畫面比照上下移動的 scroll margin 規則捲動
     /// (不把 HEAD 硬拉到最上面)。HEAD 不存在或被 filter 濾掉時靜默不動。
     pub fn select_head(&mut self) {
-        let Some(head) = self.current_image_manager().head_commit_hash().cloned() else {
+        let Some(head) = self.head_commit_hash.clone() else {
             return;
         };
         let Some(&raw) = self.commit_hash_to_raw.get(&head) else {
@@ -1019,22 +1019,21 @@ impl<'a> CommitListState<'a> {
         }
     }
 
-    fn current_image_manager(&self) -> &GraphImageManager {
+    fn current_graph(&self) -> &Graph {
         if !self.show_remote_refs {
-            if let Some(ref mgr) = self.filtered_graph_image_manager {
-                return mgr;
+            if let Some(ref g) = self.filtered_graph {
+                return g;
             }
         }
-        &self.graph_image_manager
+        &self.graph
     }
 
-    fn current_image_manager_mut(&mut self) -> &mut GraphImageManager {
-        if !self.show_remote_refs {
-            if let Some(ref mut mgr) = self.filtered_graph_image_manager {
-                return mgr;
-            }
-        }
-        &mut self.graph_image_manager
+    pub(crate) fn head_commit_hash(&self) -> Option<&CommitHash> {
+        self.head_commit_hash.as_ref()
+    }
+
+    fn text_cells_for_hash(&self, hash: &CommitHash) -> Option<Vec<TextCell>> {
+        crate::graph::text_cells(self.current_graph(), hash, &self.graph_colors)
     }
 
     fn marker_color(&self, commit_info: &CommitInfo<'_>) -> Color {
@@ -1302,24 +1301,9 @@ impl CommitList<'_> {
             state.selected -= diff;
             state.offset += diff;
         }
-
-        // Load graph images for visible commits
-        let vr_offset = state.virtual_row_offset();
-        for display_idx in 0..state.height.min(state.total.saturating_sub(state.offset)) {
-            let visible_idx = state.offset + display_idx;
-            if visible_idx < vr_offset {
-                continue; // skip virtual row
-            }
-            let filtered = FilteredIdx(visible_idx - vr_offset);
-            let Some(raw) = state.filtered_to_raw(filtered) else {
-                debug_assert!(false, "render: filtered idx out of range in update_state");
-                continue;
-            };
-            // CommitHash is Arc<str>, so cloning it to sidestep the
-            // borrow-checker conflict with `current_image_manager_mut()` is cheap.
-            let hash = state.commit(raw).commit.commit_hash.clone();
-            state.current_image_manager_mut().load_text_cells(&hash);
-        }
+        // Visible-row text cells are computed on demand by render_graph via
+        // rendering_commit_info_iter(), which is the single source of truth
+        // for "what rows are visible" -- no separate preload pass needed.
     }
 
     fn render_graph(&self, buf: &mut Buffer, area: Rect, state: &CommitListState<'_>) {
@@ -1327,8 +1311,7 @@ impl CommitList<'_> {
             return;
         }
         let gap = state.inline_detail_height;
-        let mgr = state.current_image_manager();
-        let head_hash = mgr.head_commit_hash().cloned();
+        let head_hash = state.head_commit_hash().cloned();
         let selected_bg = ratatui_color_to_rgb(self.ctx.color_theme.list_selected_bg);
 
         let head_col = head_hash
@@ -1364,12 +1347,16 @@ impl CommitList<'_> {
                 continue;
             }
             let hash = &commit_info.commit.commit_hash;
-            let Some(cells) = mgr.text_cells(hash) else {
+            // `None` here now means only one thing: `hash` isn't in
+            // `current_graph().commit_pos_map` -- i.e. the graph and the
+            // commit list have desynced. There's no "not preloaded yet"
+            // case anymore since text cells are computed on demand.
+            let Some(cells) = state.text_cells_for_hash(hash) else {
                 continue;
             };
             let is_head = head_hash.as_ref() == Some(hash);
             let is_selected = display_i == state.selected;
-            self.put_text_cells(buf, area, y, cells, is_head);
+            self.put_text_cells(buf, area, y, &cells, is_head);
 
             if !seen_head {
                 if is_head {
@@ -1400,14 +1387,14 @@ impl CommitList<'_> {
                 )
             };
             if let Some(hash) = spacer_hash {
-                if let Some(cells) = mgr.text_cells(&hash) {
+                if let Some(cells) = state.text_cells_for_hash(&hash) {
                     let gray = state.is_virtual_row_selected();
                     for gap_row in 0..gap {
                         let y = area.top() + state.selected as u16 + 1 + gap_row;
                         if y >= area.bottom() {
                             break;
                         }
-                        self.put_text_spacer(buf, area, y, cells, gray);
+                        self.put_text_spacer(buf, area, y, &cells, gray);
                     }
                 }
             }
@@ -1417,7 +1404,7 @@ impl CommitList<'_> {
     /// Returns the text-graph column (in cells, not chars) of `hash` on the
     /// current graph, or None if missing.
     fn graph_text_head_col(&self, state: &CommitListState<'_>, hash: &CommitHash) -> Option<usize> {
-        let cells = state.current_image_manager().text_cells(hash)?;
+        let cells = state.text_cells_for_hash(hash)?;
         cells
             .iter()
             .position(|c| c.ch == TEXT_COMMIT_DOT || c.ch == TEXT_HEAD_DOT)
@@ -2237,19 +2224,41 @@ mod tests {
             }
         }
 
+        /// Deliberately different shape from `text_graph` (linear, all three
+        /// commits at pos_x=0, no merge) so `filtered_graph_manager_fills_text_cells`
+        /// can tell whether `current_graph()` actually picked this graph
+        /// instead of the primary one -- if both fixtures rendered
+        /// identically, a `current_graph()` that always returns the primary
+        /// graph would pass the test undetected.
+        fn text_graph_filtered(commits: &[Commit]) -> Graph {
+            let h = |i: usize| commits[i].commit_hash.clone();
+            Graph {
+                commit_hashes: commits.iter().map(|c| c.commit_hash.clone()).collect(),
+                commit_pos_map: [(h(0), (0, 0)), (h(1), (0, 1)), (h(2), (0, 2))]
+                    .into_iter()
+                    .collect(),
+                edges: vec![
+                    vec![Edge::new(EdgeType::Vertical, 0, 0)],
+                    vec![Edge::new(EdgeType::Vertical, 0, 0)],
+                    vec![],
+                ],
+                max_pos_x: 2,
+            }
+        }
+
         struct Opts {
-            /// Index into `commits`, fed to `GraphImageManager`'s
+            /// Index into `commits`, fed to `CommitListState`'s shared
             /// `head_commit_hash` (drives `is_head` in `put_text_cells`).
             /// Distinct from `CommitListState`'s own `head: Head` field, which
             /// only affects ref rendering and doesn't matter for these tests.
             head_hash: Option<usize>,
             working_changes: bool,
             inline_detail_height: u16,
-            /// When true, builds a second `GraphImageManager` (over the same
-            /// `text_graph` fixture) and routes rendering through it via
-            /// `filtered_graph_image_manager` + `set_show_remote_refs(false)`.
-            /// This is the only path `update_state`'s `use_filtered` branch
-            /// exercises -- without it, that branch has zero test coverage.
+            /// When true, builds a second `Graph` fixture (same shape as the
+            /// primary) and routes rendering through it via `filtered_graph`
+            /// and `set_show_remote_refs(false)`. This is the only path
+            /// `render_graph`'s filtered branch exercises -- without it,
+            /// that branch has zero test coverage.
             filtered: bool,
         }
 
@@ -2267,8 +2276,11 @@ mod tests {
         fn build_state(commits: &[Commit], graph: Graph, opts: Opts) -> CommitListState<'_> {
             let graph_cell_width = (graph.max_pos_x + 1) as u16 * 2;
             let head_hash = opts.head_hash.map(|i| commits[i].commit_hash.clone());
-            let mgr =
-                GraphImageManager::new(Rc::new(graph), &test_graph_color_set(), head_hash.clone());
+            let graph_colors: Vec<Color> = test_graph_color_set()
+                .colors
+                .iter()
+                .map(|c| c.to_ratatui_color())
+                .collect();
             let infos = commits
                 .iter()
                 .map(|c| CommitInfo::new(c, Vec::new(), Color::Reset))
@@ -2280,22 +2292,15 @@ mod tests {
                 }],
                 unstaged: Vec::new(),
             });
-            let filtered = opts.filtered.then(|| {
-                let filtered_graph = Rc::new(text_graph(commits));
-                let filtered_mgr = GraphImageManager::new(
-                    Rc::clone(&filtered_graph),
-                    &test_graph_color_set(),
-                    head_hash,
-                );
-                FilteredGraphData {
-                    graph: filtered_graph,
-                    image_manager: filtered_mgr,
-                    cell_width: graph_cell_width,
-                }
+            let filtered = opts.filtered.then(|| FilteredGraphData {
+                graph: Rc::new(text_graph_filtered(commits)),
+                cell_width: graph_cell_width,
             });
             let mut state = CommitListState::new(
                 infos,
-                mgr,
+                Rc::new(graph),
+                graph_colors,
+                head_hash,
                 graph_cell_width,
                 Head::None,
                 FxHashMap::default(),
@@ -2517,15 +2522,18 @@ mod tests {
 
         #[test]
         fn filtered_graph_manager_fills_text_cells() {
-            // `update_state` picks `filtered_graph_image_manager` instead of
-            // `graph_image_manager` whenever `show_remote_refs` is off and a
-            // filtered manager exists (the "hide remote-only commits" path).
+            // `render_graph`'s `current_graph()` picks `filtered_graph`
+            // instead of `graph` whenever `show_remote_refs` is off and a
+            // filtered graph exists (the "hide remote-only commits" path).
             // Nothing else in this suite ever sets `filtered: true`, so
-            // without this test the filtered branch could stop populating
-            // `text_cells_map` (e.g. two branches collapsed into one that
-            // only touches the primary manager) and no test would notice --
-            // the graph column would silently render blank for any user with
-            // remote refs hidden.
+            // without this test the filtered branch could silently stop
+            // rendering (e.g. `current_graph()` regressing to always return
+            // the primary graph) and no test would notice.
+            //
+            // `text_graph_filtered` is deliberately a different shape from
+            // `text_graph` (the primary fixture) -- if both rendered
+            // identically, a `current_graph()` that ignores `filtered_graph`
+            // entirely would still pass this assertion undetected.
             let commits = text_graph_commits();
             let mut state = build_state(
                 &commits,
@@ -2540,8 +2548,8 @@ mod tests {
 
             assert_eq!(
                 graph_rows(&buf, 1..=3),
-                ["│ ◯ ──", "● ──╭─", "│   ● "],
-                "filtered manager must fill text_cells_map same as the primary one"
+                ["◯     ", "●     ", "●     "],
+                "must render text_graph_filtered's shape, not the primary graph's"
             );
         }
     }

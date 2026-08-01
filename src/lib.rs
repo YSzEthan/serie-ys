@@ -18,7 +18,7 @@ use std::{collections::VecDeque, path::Path, rc::Rc};
 
 use app::{App, Ret};
 use clap::{Parser, ValueEnum};
-use graph::{Graph, GraphImageManager};
+use graph::Graph;
 use rustc_hash::FxHashSet;
 use serde::Deserialize;
 
@@ -114,7 +114,6 @@ pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
 pub struct FilteredGraphData {
     pub graph: Rc<Graph>,
-    pub image_manager: GraphImageManager,
     pub cell_width: u16,
 }
 
@@ -190,7 +189,6 @@ pub fn compute_filtered_graph_from(
     full_graph: &Graph,
     remote_only: FxHashSet<git::CommitHash>,
     ctx: GraphRenderCtx<'_>,
-    head_commit_hash: Option<git::CommitHash>,
 ) -> (Option<FilteredGraphData>, FxHashSet<git::CommitHash>) {
     if remote_only.is_empty() {
         return (None, remote_only);
@@ -216,13 +214,9 @@ pub fn compute_filtered_graph_from(
         graph::CellWidthType::Single => (filtered.max_pos_x + 1) as u16,
     };
 
-    let image_manager =
-        GraphImageManager::new(Rc::clone(&filtered), ctx.color_set, head_commit_hash);
-
     (
         Some(FilteredGraphData {
             graph: filtered,
-            image_manager,
             cell_width,
         }),
         remote_only,
@@ -233,37 +227,27 @@ fn build_graph_artifacts(
     repository: &git::Repository,
     graph: &Rc<Graph>,
     ctx: GraphRenderCtx<'_>,
-) -> (
-    GraphImageManager,
-    Option<FilteredGraphData>,
-    FxHashSet<git::CommitHash>,
-) {
-    let head_commit_hash = resolve_head_commit_hash(repository);
-    let image_manager =
-        GraphImageManager::new(Rc::clone(graph), ctx.color_set, head_commit_hash.clone());
+) -> (Option<FilteredGraphData>, FxHashSet<git::CommitHash>) {
     let remote_only = find_remote_only_commits(repository, graph);
-    let (filtered, remote_only) =
-        compute_filtered_graph_from(repository, graph, remote_only, ctx, head_commit_hash);
-    (image_manager, filtered, remote_only)
+    compute_filtered_graph_from(repository, graph, remote_only, ctx)
 }
 
 /// Fast-path helper: if the refs changed in a way that shifts commits between
-/// local-reachable and remote-only, rebuild the filtered graph + image manager.
-/// Returns whether a rebuild actually happened (caller clears image if so).
+/// local-reachable and remote-only, rebuild the filtered graph.
+/// Returns whether a rebuild actually happened (caller clears the screen if so).
 fn try_refresh_filtered_for_ref_change(
     repository: &git::Repository,
     graph: &Graph,
     remote_only_commits: &mut FxHashSet<git::CommitHash>,
     filtered_graph: &mut Option<FilteredGraphData>,
     ctx: GraphRenderCtx<'_>,
-    head_commit_hash: Option<git::CommitHash>,
 ) -> bool {
     let new_remote_only = find_remote_only_commits(repository, graph);
     if &new_remote_only == remote_only_commits {
         return false;
     }
     let (rebuilt_filtered, rebuilt_remote_only) =
-        compute_filtered_graph_from(repository, graph, new_remote_only, ctx, head_commit_hash);
+        compute_filtered_graph_from(repository, graph, new_remote_only, ctx);
     *filtered_graph = rebuilt_filtered;
     *remote_only_commits = rebuilt_remote_only;
     true
@@ -363,7 +347,7 @@ pub fn run() -> Result<()> {
         cell_width_type,
         graph_style,
     };
-    let (mut graph_image_manager, mut filtered_graph, mut remote_only_commits) =
+    let (mut filtered_graph, mut remote_only_commits) =
         build_graph_artifacts(&repository, &graph, render_ctx);
 
     let ret = loop {
@@ -378,7 +362,6 @@ pub fn run() -> Result<()> {
 
         let mut app = App::new(
             &repository,
-            graph_image_manager,
             &graph,
             filtered_graph,
             remote_only_commits,
@@ -403,17 +386,14 @@ pub fn run() -> Result<()> {
                 let new_head = resolve_head_commit_hash(&new_repo);
                 let layout_inputs_same = old_head == new_head;
                 if repository.same_commits(&new_repo) && layout_inputs_same {
-                    // Fast path: commits unchanged — reuse the existing image
-                    // manager so the screen doesn't flicker on watcher refresh.
+                    // Fast path: commits unchanged — reuse the existing graph
+                    // so the screen doesn't flicker on watcher refresh.
                     // App must release its &repository borrow before mutation.
-                    (graph_image_manager, filtered_graph, remote_only_commits) = app.into_parts();
+                    (filtered_graph, remote_only_commits) = app.into_parts();
                     repository.update_metadata_from(new_repo);
-                    graph_image_manager.update_head_commit_hash(new_head.clone());
-                    if let Some(filtered) = filtered_graph.as_mut() {
-                        filtered
-                            .image_manager
-                            .update_head_commit_hash(new_head.clone());
-                    }
+                    // No head_commit_hash to update here: App::new recomputes
+                    // it fresh from `repository`, which update_metadata_from
+                    // just brought current (it copies ref_map/head/working_changes).
 
                     let filtered_changed = try_refresh_filtered_for_ref_change(
                         &repository,
@@ -421,7 +401,6 @@ pub fn run() -> Result<()> {
                         &mut remote_only_commits,
                         &mut filtered_graph,
                         render_ctx,
-                        new_head,
                     );
                     if filtered_changed {
                         if let Some(t) = terminal.as_mut() {
@@ -429,8 +408,8 @@ pub fn run() -> Result<()> {
                         }
                     }
                 } else {
-                    // Slow path: commits changed — drop app, rebuild graph + image,
-                    // and clear the on-screen image area for the new frame.
+                    // Slow path: commits changed — drop app, rebuild graph,
+                    // and clear the on-screen area for the new frame.
                     drop(app);
                     repository = new_repo;
                     graph = Rc::new(graph::calc_graph(
@@ -440,7 +419,7 @@ pub fn run() -> Result<()> {
                     ));
                     cell_width_type = check::decide_cell_width_type(&graph, graph_width)?;
                     render_ctx.cell_width_type = cell_width_type;
-                    (graph_image_manager, filtered_graph, remote_only_commits) =
+                    (filtered_graph, remote_only_commits) =
                         build_graph_artifacts(&repository, &graph, render_ctx);
 
                     if let Some(t) = terminal.as_mut() {

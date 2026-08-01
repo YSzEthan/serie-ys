@@ -1,10 +1,6 @@
-use std::rc::Rc;
-
 use ratatui::style::Color as RatatuiColor;
-use rustc_hash::FxHashMap;
 
 use crate::{
-    color::GraphColorSet,
     git::CommitHash,
     graph::{Edge, EdgeType, Graph},
 };
@@ -39,63 +35,12 @@ pub enum GraphStyle {
     Angular,
 }
 
-#[derive(Debug)]
-pub struct GraphImageManager {
-    graph: Rc<Graph>,
-    head_commit_hash: Option<CommitHash>,
-
-    text_cells_map: FxHashMap<CommitHash, Vec<TextCell>>,
-    graph_colors: Vec<RatatuiColor>,
-}
-
-impl GraphImageManager {
-    pub fn new(
-        graph: Rc<Graph>,
-        graph_color_set: &GraphColorSet,
-        head_commit_hash: Option<CommitHash>,
-    ) -> Self {
-        let graph_colors: Vec<RatatuiColor> = graph_color_set
-            .colors
-            .iter()
-            .map(|c| c.to_ratatui_color())
-            .collect();
-
-        GraphImageManager {
-            graph,
-            head_commit_hash,
-            text_cells_map: FxHashMap::default(),
-            graph_colors,
-        }
-    }
-
-    pub fn head_commit_hash(&self) -> Option<&CommitHash> {
-        self.head_commit_hash.as_ref()
-    }
-
-    pub fn text_cells(&self, commit_hash: &CommitHash) -> Option<&[TextCell]> {
-        self.text_cells_map.get(commit_hash).map(|v| v.as_slice())
-    }
-
-    pub fn load_text_cells(&mut self, commit_hash: &CommitHash) {
-        if self.text_cells_map.contains_key(commit_hash) {
-            return;
-        }
-        let Some(cells) = text_cells_for(&self.graph, commit_hash, &self.graph_colors) else {
-            return;
-        };
-        self.text_cells_map.insert(commit_hash.clone(), cells);
-    }
-
-    pub fn update_head_commit_hash(&mut self, head: Option<CommitHash>) {
-        self.head_commit_hash = head;
-    }
-}
-
-/// Shared "one commit → its text cells" lookup used by both the lazy
-/// per-commit cache (`load_text_cells`) and the batch snapshot builder
-/// (`build_text_graph`). Keeping a single definition means the two callers
-/// can't silently drift apart on how `pos_x`/`pos_y`/`cell_count` are derived.
-fn text_cells_for(
+/// Shared "one commit → its text cells" lookup used by both the per-frame
+/// render path (`CommitListState::text_cells_for_hash`) and the batch
+/// snapshot builder (`build_text_graph`). Keeping a single definition means
+/// the two callers can't silently drift apart on how
+/// `pos_x`/`pos_y`/`cell_count` are derived.
+pub(crate) fn text_cells(
     graph: &Graph,
     commit_hash: &CommitHash,
     colors: &[RatatuiColor],
@@ -109,16 +54,15 @@ fn text_cells_for(
 /// Batch text-mode render of every commit in `graph`, in `commit_hashes` order.
 ///
 /// Used by the `tests/graph.rs` snapshot suite, which needs the whole graph
-/// at once rather than the per-commit lazy loading `GraphImageManager` does
-/// for the UI. Panics if `graph.commit_hashes` and `graph.commit_pos_map` are
-/// out of sync (they're built together in `calc.rs`, so this should never
-/// trigger in practice).
+/// at once rather than the per-commit lookups the UI does. Panics if
+/// `graph.commit_hashes` and `graph.commit_pos_map` are out of sync (they're
+/// built together in `calc.rs`, so this should never trigger in practice).
 pub fn build_text_graph(graph: &Graph, colors: &[RatatuiColor]) -> Vec<Vec<TextCell>> {
     graph
         .commit_hashes
         .iter()
         .map(|hash| {
-            text_cells_for(graph, hash, colors).expect("commit_hashes / commit_pos_map out of sync")
+            text_cells(graph, hash, colors).expect("commit_hashes / commit_pos_map out of sync")
         })
         .collect()
 }

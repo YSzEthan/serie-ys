@@ -26,7 +26,7 @@ use crate::{
         is_merge_conflict_error, merge_pr, set_item_state, set_pr_draft, GhItemKind, PrDraftAction,
         StateAction,
     },
-    graph::{CellWidthType, Graph, GraphImageManager},
+    graph::{CellWidthType, Graph},
     keybind::KeyBind,
     view::{dispatch_delete_branch, RefreshViewContext, RefsOrigin, View},
     widget::{
@@ -234,7 +234,6 @@ impl<'a> App<'a> {
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         repository: &'a Repository,
-        graph_image_manager: GraphImageManager,
         graph: &Rc<Graph>,
         filtered_graph: Option<FilteredGraphData>,
         remote_only_commits: FxHashSet<CommitHash>,
@@ -245,6 +244,13 @@ impl<'a> App<'a> {
         ec: &'a EventController,
         refresh_view_context: Option<RefreshViewContext>,
     ) -> Self {
+        let graph_colors: Vec<Color> = graph_color_set
+            .colors
+            .iter()
+            .map(|c| c.to_ratatui_color())
+            .collect();
+        let head_commit_hash = crate::resolve_head_commit_hash(repository);
+
         let mut ref_name_to_commit_index_map = FxHashMap::default();
         let commits = graph
             .commit_hashes
@@ -292,7 +298,9 @@ impl<'a> App<'a> {
         };
         let mut commit_list_state = CommitListState::new(
             commits,
-            graph_image_manager,
+            Rc::clone(graph),
+            graph_colors,
+            head_commit_hash,
             graph_cell_width,
             head,
             ref_name_to_commit_index_map,
@@ -334,13 +342,7 @@ impl<'a> App<'a> {
         app
     }
 
-    pub fn into_parts(
-        self,
-    ) -> (
-        GraphImageManager,
-        Option<FilteredGraphData>,
-        FxHashSet<CommitHash>,
-    ) {
+    pub fn into_parts(self) -> (Option<FilteredGraphData>, FxHashSet<CommitHash>) {
         self.view.into_commit_list_state().into_graph_parts()
     }
 }
