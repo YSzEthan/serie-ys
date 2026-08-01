@@ -88,10 +88,9 @@ Serie - 在終端機中呈現豐富的 git commit 圖，如同魔法般 📚
 
 選項：
   -n, --max-count <NUMBER>        渲染的最大 commit 數量
-  -p, --protocol <TYPE>           渲染圖形的圖片協議 [預設: auto] [可選值: auto, iterm, kitty]
   -o, --order <TYPE>              Commit 排序演算法 [預設: chrono] [可選值: chrono, topo]
   -g, --graph-width <TYPE>        Commit 圖形的儲存格寬度 [預設: auto] [可選值: auto, double, single]
-  -s, --graph-style <TYPE>        Commit 圖形的邊線風格 [預設: rounded] [可選值: rounded, angular]
+  -s, --graph-style <TYPE>        Commit 圖形的邊線風格 [預設: rounded] [可選值: rounded, angular, ascii]
   -i, --initial-selection <TYPE>  初始選取的 commit [預設: latest] [可選值: latest, head]
   -h, --help                      顯示說明
   -V, --version                   顯示版本

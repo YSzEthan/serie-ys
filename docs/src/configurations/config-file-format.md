@@ -144,13 +144,14 @@ The value specified in the command line argument takes precedence.
 
 ### `core.option.graph_style`
 
-The commit graph image edge style.
+The commit graph edge style.
 
 - type: `string` (enum)
 - default: `rounded`
 - possible values:
   - `rounded`
   - `angular`
+  - `ascii`
 
 The value specified in the command line argument takes precedence.
 

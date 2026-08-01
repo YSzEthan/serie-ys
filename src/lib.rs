@@ -42,7 +42,7 @@ struct Args {
     #[arg(short, long, value_name = "TYPE")]
     graph_width: Option<GraphWidthType>,
 
-    /// Commit graph image edge style [default: rounded]
+    /// Commit graph edge style [default: rounded]
     #[arg(short = 's', long, value_name = "TYPE")]
     graph_style: Option<GraphStyle>,
 
@@ -157,23 +157,11 @@ pub fn find_remote_only_commits(
         .collect()
 }
 
-/// Rendering parameters shared by every graph builder.
-///
-/// `graph_style` has no reader yet -- the text-mode graph doesn't consume it
-/// (issue #20 wires it in) -- but the CLI flag and config key are kept, so
-/// this field must stay to give `args.graph_style`'s parsed value somewhere
-/// to go.
-#[derive(Clone, Copy)]
-pub struct GraphRenderCtx {
-    pub cell_width_type: graph::CellWidthType,
-    pub graph_style: graph::GraphStyle,
-}
-
 pub fn compute_filtered_graph_from(
     repository: &git::Repository,
     full_graph: &Graph,
     remote_only: FxHashSet<git::CommitHash>,
-    ctx: GraphRenderCtx,
+    cell_width_type: graph::CellWidthType,
 ) -> (Option<FilteredGraphData>, FxHashSet<git::CommitHash>) {
     if remote_only.is_empty() {
         return (None, remote_only);
@@ -194,7 +182,7 @@ pub fn compute_filtered_graph_from(
         head_has_named_ref(repository),
     ));
 
-    let cell_width = match ctx.cell_width_type {
+    let cell_width = match cell_width_type {
         graph::CellWidthType::Double => (filtered.max_pos_x + 1) as u16 * 2,
         graph::CellWidthType::Single => (filtered.max_pos_x + 1) as u16,
     };
@@ -211,10 +199,10 @@ pub fn compute_filtered_graph_from(
 fn build_graph_artifacts(
     repository: &git::Repository,
     graph: &Rc<Graph>,
-    ctx: GraphRenderCtx,
+    cell_width_type: graph::CellWidthType,
 ) -> (Option<FilteredGraphData>, FxHashSet<git::CommitHash>) {
     let remote_only = find_remote_only_commits(repository, graph);
-    compute_filtered_graph_from(repository, graph, remote_only, ctx)
+    compute_filtered_graph_from(repository, graph, remote_only, cell_width_type)
 }
 
 /// Fast-path helper: if the refs changed in a way that shifts commits between
@@ -225,14 +213,14 @@ fn try_refresh_filtered_for_ref_change(
     graph: &Graph,
     remote_only_commits: &mut FxHashSet<git::CommitHash>,
     filtered_graph: &mut Option<FilteredGraphData>,
-    ctx: GraphRenderCtx,
+    cell_width_type: graph::CellWidthType,
 ) -> bool {
     let new_remote_only = find_remote_only_commits(repository, graph);
     if &new_remote_only == remote_only_commits {
         return false;
     }
     let (rebuilt_filtered, rebuilt_remote_only) =
-        compute_filtered_graph_from(repository, graph, new_remote_only, ctx);
+        compute_filtered_graph_from(repository, graph, new_remote_only, cell_width_type);
     *filtered_graph = rebuilt_filtered;
     *remote_only_commits = rebuilt_remote_only;
     true
@@ -309,6 +297,7 @@ pub fn run() -> Result<()> {
         core_config,
         ui_config,
         color_theme,
+        graph_style,
     });
 
     let mut ec = event::EventController::init();
@@ -330,12 +319,8 @@ pub fn run() -> Result<()> {
         head_has_named_ref(&repository),
     ));
     let mut cell_width_type = check::decide_cell_width_type(&graph, graph_width)?;
-    let mut render_ctx = GraphRenderCtx {
-        cell_width_type,
-        graph_style,
-    };
     let (mut filtered_graph, mut remote_only_commits) =
-        build_graph_artifacts(&repository, &graph, render_ctx);
+        build_graph_artifacts(&repository, &graph, cell_width_type);
 
     let ret = loop {
         if terminal.is_none() {
@@ -387,7 +372,7 @@ pub fn run() -> Result<()> {
                         &graph,
                         &mut remote_only_commits,
                         &mut filtered_graph,
-                        render_ctx,
+                        cell_width_type,
                     );
                     if filtered_changed {
                         if let Some(t) = terminal.as_mut() {
@@ -405,9 +390,8 @@ pub fn run() -> Result<()> {
                         head_has_named_ref(&repository),
                     ));
                     cell_width_type = check::decide_cell_width_type(&graph, graph_width)?;
-                    render_ctx.cell_width_type = cell_width_type;
                     (filtered_graph, remote_only_commits) =
-                        build_graph_artifacts(&repository, &graph, render_ctx);
+                        build_graph_artifacts(&repository, &graph, cell_width_type);
 
                     if let Some(t) = terminal.as_mut() {
                         t.clear()?;

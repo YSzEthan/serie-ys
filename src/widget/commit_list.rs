@@ -1291,11 +1291,9 @@ impl CommitList<'_> {
         // for "what rows are visible" -- no separate preload pass needed.
     }
 
-    /// Single seam for GraphStyle -> GlyphSet selection. Hardcoded to
-    /// rounded until #20 threads GraphStyle through; only this body changes
-    /// then, no call site changes.
+    /// Single seam for GraphStyle -> GlyphSet selection.
     fn glyphs(&self) -> GlyphSet {
-        GlyphSet::ROUNDED
+        GlyphSet::from_style(self.ctx.graph_style)
     }
 
     fn render_graph(&self, buf: &mut Buffer, area: Rect, state: &CommitListState<'_>) {
@@ -1489,9 +1487,10 @@ impl CommitList<'_> {
             return;
         }
         let gap = state.inline_detail_height;
+        let vert = self.glyphs().vert;
         let mut items: Vec<ListItem> = Vec::new();
         if state.has_virtual_row() && state.offset == 0 {
-            let mut line = Line::from("│".fg(Color::Gray));
+            let mut line = Line::from(vert.fg(Color::Gray));
             if state.selected == 0 {
                 line = line
                     .bg(ratatui_color_to_rgb(self.ctx.color_theme.list_selected_bg))
@@ -1501,14 +1500,14 @@ impl CommitList<'_> {
             // Insert marker gap when virtual row is selected
             if gap > 0 && state.selected == 0 {
                 for _ in 0..gap {
-                    items.push(ListItem::new("│".fg(Color::Gray)));
+                    items.push(ListItem::new(vert.fg(Color::Gray)));
                 }
             }
         }
         self.rendering_commit_info_iter(state)
             .for_each(|(display_i, _, commit_info)| {
                 let color = state.marker_color(commit_info);
-                let mut line = Line::from("│".fg(color));
+                let mut line = Line::from(vert.fg(color));
                 if display_i == state.selected {
                     line = line.bg(ratatui_color_to_rgb(self.ctx.color_theme.list_selected_bg));
                 }
@@ -1516,7 +1515,7 @@ impl CommitList<'_> {
                 if gap > 0 && display_i == state.selected && !state.is_virtual_row_selected() {
                     let sel_color = state.marker_color(state.commit(state.current_selected_raw()));
                     for _ in 0..gap {
-                        items.push(ListItem::new("│".fg(sel_color)));
+                        items.push(ListItem::new(vert.fg(sel_color)));
                     }
                 }
             });
@@ -2139,7 +2138,7 @@ mod tests {
             color::GraphColorSet,
             config::{CoreConfig, GraphColorConfig, UiConfig},
             git::FileChange,
-            graph::{Edge, EdgeType},
+            graph::{Edge, EdgeType, GraphStyle},
             keybind::KeyBind,
         };
 
@@ -2151,12 +2150,13 @@ mod tests {
         // ratatui_color_to_rgb(ColorTheme::default().list_selected_bg) == DarkGray
         const SELECTED_BG: Color = Color::Rgb(80, 80, 80);
 
-        fn test_ctx() -> Rc<AppContext> {
+        fn test_ctx_styled(graph_style: GraphStyle) -> Rc<AppContext> {
             Rc::new(AppContext {
                 keybind: KeyBind::new(None),
                 core_config: CoreConfig::default(),
                 ui_config: UiConfig::default(),
                 color_theme: ColorTheme::default(),
+                graph_style,
             })
         }
 
@@ -2308,7 +2308,15 @@ mod tests {
         }
 
         fn render_commit_list(state: &mut CommitListState<'_>, height: u16) -> Buffer {
-            let ctx = test_ctx();
+            render_commit_list_styled(state, height, GraphStyle::Rounded)
+        }
+
+        fn render_commit_list_styled(
+            state: &mut CommitListState<'_>,
+            height: u16,
+            graph_style: GraphStyle,
+        ) -> Buffer {
+            let ctx = test_ctx_styled(graph_style);
             assert!(
                 matches!(
                     ctx.ui_config.list.columns.first(),
@@ -2353,6 +2361,28 @@ mod tests {
 
             // c1 (not selected): no bg override.
             assert_ne!(buf[(0, 2)].bg, SELECTED_BG);
+        }
+
+        #[test]
+        fn render_graph_uses_ascii_style() {
+            // Only this test goes through AppContext -> glyphs() -> put_text_cell;
+            // tests/graph.rs calls GlyphSet::resolve() directly and never
+            // exercises that wiring, so this is the sole end-to-end coverage
+            // for "-s ascii actually changes what's on screen".
+            let commits = text_graph_commits();
+            let mut state = build_state(&commits, text_graph(&commits), Opts::default());
+            let buf = render_commit_list_styled(&mut state, 10, GraphStyle::Ascii);
+
+            assert_eq!(
+                graph_rows(&buf, 1..=3),
+                ["| o --", "* --+-", "|   * "],
+                "ascii style substitutes every box-drawing glyph 1:1"
+            );
+
+            // Marker column sits right after the graph column (width 7 =
+            // graph_area_cell_width's `w + 1`) and shares the same
+            // `self.glyphs()` call, so it must switch style too.
+            assert_eq!(buf[(7, 1)].symbol(), "|");
         }
 
         #[test]

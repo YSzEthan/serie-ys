@@ -45,17 +45,19 @@ If not specified or `auto` is specified, `double` will be used automatically if 
 
 ## -s, --graph-style \<TYPE\>
 
-The commit graph image edge style.
+The commit graph edge style.
 
-_Possible values:_ `rounded`, `angular`
+_Possible values:_ `rounded`, `angular`, `ascii`
 
-`rounded` will use rounded edges for the graph lines.
+`rounded` uses rounded corners, `angular` uses square corners, and `ascii` uses only plain ASCII characters (for terminals or fonts that can't render box-drawing characters):
 
-<img src="https://raw.githubusercontent.com/lusingander/serie/master/img/graph-width-double.png" width=300>
-
-`angular` will use angular edges for the graph lines.
-
-<img src="https://raw.githubusercontent.com/lusingander/serie/master/img/style-angular.png" width=300>
+```
+rounded      angular     ascii
+●            ●           *
+│ ╭─         │ ┌─        | +-
+│ │ ●        │ │ ●       | | *
+● ╰─┤        ● └─┤       * +-+
+```
 
 ## -i, --initial-selection \<TYPE\>
 

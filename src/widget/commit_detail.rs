@@ -5,6 +5,7 @@ use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
+    symbols::border,
     text::{Line, Span},
     widgets::{Block, Borders, Padding, Paragraph, StatefulWidget, Widget},
 };
@@ -14,6 +15,7 @@ use crate::{
     app::AppContext,
     color::ColorTheme,
     git::{Commit, FileChange, Ref, WorkingChanges},
+    graph::GlyphSet,
 };
 
 const ICON_FILE: &str = "\u{f0214} ";
@@ -140,7 +142,8 @@ impl StatefulWidget for CommitDetail<'_> {
             .flat_map(|l| wrap_line_spans(l, right_available))
             .collect();
 
-        let block = detail_block(self.ctx.color_theme.divider_fg);
+        let glyphs = GlyphSet::from_style(self.ctx.graph_style);
+        let block = detail_block(self.ctx.color_theme.divider_fg, glyphs);
         let inner_h = block.inner(area).height as usize;
         state.clamp_offsets(left_lines.len(), right_lines.len(), inner_h);
 
@@ -163,7 +166,7 @@ impl StatefulWidget for CommitDetail<'_> {
         left_paragraph.render(left_area, buf);
 
         // Render vertical divider
-        render_vertical_divider(divider_area, buf, self.ctx.color_theme.divider_fg);
+        render_vertical_divider(divider_area, buf, self.ctx.color_theme.divider_fg, glyphs);
 
         let right_paragraph = Paragraph::new(right_lines)
             .style(Style::default().fg(self.ctx.color_theme.fg))
@@ -410,16 +413,23 @@ fn dim_lines(lines: Vec<Line<'_>>) -> Vec<Line<'_>> {
         .collect()
 }
 
-fn render_vertical_divider(area: Rect, buf: &mut Buffer, fg: Color) {
+fn render_vertical_divider(area: Rect, buf: &mut Buffer, fg: Color, glyphs: GlyphSet) {
     let style = Style::default().fg(fg);
     for y in area.top()..area.bottom() {
-        buf[(area.left(), y)].set_symbol("│").set_style(style);
+        buf[(area.left(), y)]
+            .set_symbol(glyphs.vert)
+            .set_style(style);
     }
 }
 
-fn detail_block(divider_fg: Color) -> Block<'static> {
+fn detail_block(divider_fg: Color, glyphs: GlyphSet) -> Block<'static> {
     Block::default()
         .borders(Borders::TOP | Borders::BOTTOM)
+        .border_set(border::Set {
+            horizontal_top: glyphs.horiz,
+            horizontal_bottom: glyphs.horiz,
+            ..border::PLAIN
+        })
         .style(Style::default().fg(divider_fg))
         .padding(Padding::new(1, 1, 0, 0))
 }
@@ -480,7 +490,8 @@ impl StatefulWidget for WorkingChangesDetail<'_> {
             .flat_map(|l| wrap_line_spans(l, right_available))
             .collect();
 
-        let block = detail_block(self.ctx.color_theme.divider_fg);
+        let glyphs = GlyphSet::from_style(self.ctx.graph_style);
+        let block = detail_block(self.ctx.color_theme.divider_fg, glyphs);
         let inner_h = block.inner(area).height as usize;
         state.clamp_offsets(left_lines.len(), right_lines.len(), inner_h);
 
@@ -503,7 +514,7 @@ impl StatefulWidget for WorkingChangesDetail<'_> {
         left_paragraph.render(left_area, buf);
 
         // Render vertical divider
-        render_vertical_divider(divider_area, buf, self.ctx.color_theme.divider_fg);
+        render_vertical_divider(divider_area, buf, self.ctx.color_theme.divider_fg, glyphs);
 
         let right_paragraph = Paragraph::new(right_lines)
             .style(Style::default().fg(self.ctx.color_theme.fg))

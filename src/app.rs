@@ -26,7 +26,7 @@ use crate::{
         is_merge_conflict_error, merge_pr, set_item_state, set_pr_draft, GhItemKind, PrDraftAction,
         StateAction,
     },
-    graph::{CellWidthType, Graph},
+    graph::{CellWidthType, Graph, GraphStyle},
     keybind::KeyBind,
     view::{dispatch_delete_branch, RefreshViewContext, RefsOrigin, View},
     widget::{
@@ -195,6 +195,10 @@ pub struct AppContext {
     pub core_config: CoreConfig,
     pub ui_config: UiConfig,
     pub color_theme: ColorTheme,
+    /// Resolved graph style (CLI flag takes precedence over config file,
+    /// already merged -- unlike `core_config.option.graph_style`, which is
+    /// the raw config-file value and does NOT reflect a `-s` override).
+    pub graph_style: GraphStyle,
 }
 
 #[derive(Debug, Default)]

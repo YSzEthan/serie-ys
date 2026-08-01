@@ -33,10 +33,11 @@
             },
             "graph_style": {
               "type": "string",
-              "description": "The commit graph image edge style. The value specified in the command line argument takes precedence.",
+              "description": "The commit graph edge style. The value specified in the command line argument takes precedence.",
               "enum": [
                 "rounded",
-                "angular"
+                "angular",
+                "ascii"
               ],
               "default": "rounded"
             },
