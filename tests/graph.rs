@@ -1185,19 +1185,20 @@ impl GenerateGraphOption {
     }
 }
 
-fn generate_and_output_text_graphs(repo_path: &Path, options: &[GenerateGraphOption]) {
-    create_output_dirs(OUTPUT_DIR);
-    for option in options {
-        let content = render_text_graph(repo_path, option);
-        let file_name = format!("{}/{}.txt", OUTPUT_DIR, option.output_name);
-        std::fs::write(file_name, content).unwrap();
-    }
+/// One case's graph, built once (a `git::Repository::load` + `calc_graph`)
+/// and rendered against all three styles. Building three times just to
+/// change which characters get printed would triple the number of git
+/// subprocess spawns across the whole suite for zero benefit — the graph
+/// topology doesn't depend on style at all, only `GlyphSet::resolve` does.
+struct GraphSnapshotSource {
+    subjects: Vec<String>,
+    rows: Vec<Vec<graph::TextCell>>,
 }
 
-/// Build graph in the same way as the application, then render it exactly as
-/// the text-mode graph column does (`graph::build_text_graph`), one line per
-/// commit: `<graph glyphs>  <subject>`. No hash/date — see #16 plan for why.
-fn render_text_graph(repo_path: &Path, option: &GenerateGraphOption) -> String {
+fn build_graph_snapshot_source(
+    repo_path: &Path,
+    option: &GenerateGraphOption,
+) -> GraphSnapshotSource {
     let repository = git::Repository::load(repo_path, option.sort, option.max_count).unwrap();
 
     // Only compute a real HEAD hint for `reserve_head_col` cases. Everyone
@@ -1221,20 +1222,44 @@ fn render_text_graph(repo_path: &Path, option: &GenerateGraphOption) -> String {
         .collect::<Vec<_>>();
 
     let rows = graph::build_text_graph(&graph, &colors);
+    let subjects = graph
+        .commit_hashes
+        .iter()
+        .map(|h| repository.commit(h).unwrap().subject.clone())
+        .collect();
 
+    GraphSnapshotSource { subjects, rows }
+}
+
+/// Render exactly as the text-mode graph column does, via
+/// `graph::build_text_graph` and `GlyphSet::resolve`, one line per commit:
+/// `<graph glyphs>  <subject>`. No hash/date — see #16 plan for why.
+fn render_text_graph_styled(source: &GraphSnapshotSource, glyphs: graph::GlyphSet) -> String {
     let mut out = String::new();
-    for (commit_hash, cells) in graph.commit_hashes.iter().zip(&rows) {
-        let commit = repository.commit(commit_hash).unwrap();
-        let graph_str: String = cells
-            .iter()
-            .map(|c| graph::GlyphSet::ROUNDED.resolve(c.glyph))
-            .collect();
+    for (subject, cells) in source.subjects.iter().zip(&source.rows) {
+        let graph_str: String = cells.iter().map(|c| glyphs.resolve(c.glyph)).collect();
         out.push_str(graph_str.trim_end());
         out.push_str("  ");
-        out.push_str(&commit.subject);
+        out.push_str(subject);
         out.push('\n');
     }
     out
+}
+
+fn generate_and_output_text_graphs(repo_path: &Path, options: &[GenerateGraphOption]) {
+    create_output_dirs(OUTPUT_DIR);
+    for option in options {
+        let source = build_graph_snapshot_source(repo_path, option);
+        for (suffix, glyphs) in [
+            ("", graph::GlyphSet::ROUNDED),
+            ("_angular", graph::GlyphSet::ANGULAR),
+            ("_ascii", graph::GlyphSet::ASCII),
+        ] {
+            let content = render_text_graph_styled(&source, glyphs);
+            let file_name = format!("{OUTPUT_DIR}/{}{suffix}.txt", option.output_name);
+            std::fs::write(file_name, content).unwrap();
+        }
+    }
 }
 
 fn create_output_dirs(path: &str) {
@@ -1249,6 +1274,42 @@ fn copy_git_dir(path: &Path, name: &str) {
         std::fs::remove_dir_all(&dst_path).unwrap();
     }
     dircpy::CopyBuilder::new(path, dst_path).run().unwrap();
+}
+
+/// Angular's four corners map 1:1 to rounded's. Ascii additionally folds all
+/// four corners onto `+` and switches the line-drawing characters. These are
+/// literal tables, not derived from `GlyphSet::resolve`/`from_style` —
+/// deriving them would make the invariant below a tautology (a wrong table
+/// entry and a wrong dispatch could cancel out and still pass).
+///
+/// Safe to apply as a whole-string replace: every subject across all 41
+/// golden snapshots (125 distinct subjects) is verified pure ASCII, and
+/// every source character here is non-ASCII, so this can never mangle a
+/// subject. If a future fixture adds a subject containing one of these
+/// characters, this substitution would silently corrupt it — re-verify the
+/// all-ASCII-subjects premise if that ever happens.
+const ANGULAR_SUBST: &[(char, char)] = &[('╭', '┌'), ('╮', '┐'), ('╰', '└'), ('╯', '┘')];
+const ASCII_SUBST: &[(char, char)] = &[
+    ('●', '*'),
+    ('◯', 'o'),
+    ('│', '|'),
+    ('─', '-'),
+    ('╭', '+'),
+    ('╮', '+'),
+    ('╰', '+'),
+    ('╯', '+'),
+];
+
+fn substitute(input: &str, table: &[(char, char)]) -> String {
+    input
+        .chars()
+        .map(|c| {
+            table
+                .iter()
+                .find(|(from, _)| *from == c)
+                .map_or(c, |(_, to)| *to)
+        })
+        .collect()
 }
 
 fn assert_text_graphs(options: &[GenerateGraphOption]) {
@@ -1266,11 +1327,23 @@ fn assert_text_graphs(options: &[GenerateGraphOption]) {
         );
     }
 
-    let errors: Vec<_> = options
-        .iter()
-        .map(compare_text_snapshot)
-        .filter_map(Result::err)
-        .collect();
+    let mut errors = Vec::new();
+    for option in options {
+        match compare_text_snapshot(option) {
+            Ok(()) => {
+                // Only check style invariants once the rounded golden itself
+                // matches -- otherwise a single real regression shows up as
+                // three redundant failures for the same case, burying the
+                // actual cause.
+                for (suffix, table) in [("_angular", ANGULAR_SUBST), ("_ascii", ASCII_SUBST)] {
+                    if let Err(e) = compare_style_invariant(option, suffix, table) {
+                        errors.push(e);
+                    }
+                }
+            }
+            Err(e) => errors.push(e),
+        }
+    }
     if !errors.is_empty() {
         panic!("{}", errors.join("\n"));
     }
@@ -1302,11 +1375,45 @@ fn compare_text_snapshot(option: &GenerateGraphOption) -> Result<(), String> {
     if actual == expected {
         return Ok(());
     }
+    Err(snapshot_diff_message(
+        &format!("text graph differs for {}", option.output_name),
+        &actual_file,
+        &expected,
+        &actual,
+    ))
+}
 
-    let mut msg = format!(
-        "text graph differs for {}: see {actual_file}",
-        option.output_name
-    );
+/// Checks that `{name}{suffix}.txt` (generated by `generate_and_output_text_graphs`,
+/// not a golden file) equals the rounded golden with `table` applied. Only
+/// called after `compare_text_snapshot` already passed for this case.
+fn compare_style_invariant(
+    option: &GenerateGraphOption,
+    suffix: &str,
+    table: &[(char, char)],
+) -> Result<(), String> {
+    let snapshot_file = format!("{}/{}.txt", SNAPSHOT_DIR, option.output_name);
+    let golden = std::fs::read_to_string(&snapshot_file).unwrap();
+    let expected = substitute(&golden, table);
+
+    let actual_file = format!("{OUTPUT_DIR}/{}{suffix}.txt", option.output_name);
+    let actual = std::fs::read_to_string(&actual_file).unwrap();
+
+    if actual == expected {
+        return Ok(());
+    }
+    Err(snapshot_diff_message(
+        &format!(
+            "{suffix} substitution invariant differs for {}",
+            option.output_name
+        ),
+        &actual_file,
+        &expected,
+        &actual,
+    ))
+}
+
+fn snapshot_diff_message(label: &str, actual_file: &str, expected: &str, actual: &str) -> String {
+    let mut msg = format!("{label}: see {actual_file}");
 
     let expected_lines: Vec<&str> = expected.lines().collect();
     let actual_lines: Vec<&str> = actual.lines().collect();
@@ -1328,5 +1435,5 @@ fn compare_text_snapshot(option: &GenerateGraphOption) -> Result<(), String> {
         .collect();
     msg.push_str(&diff_preview);
 
-    Err(msg)
+    msg
 }
