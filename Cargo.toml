@@ -50,7 +50,6 @@ unicode-width = "0.2"
 dircpy = "0.3.20"
 rstest = "0.26.1"
 tempfile = "3.27.0"
-text-to-png = "0.3.0"
 
 [profile.release]
 codegen-units = 1

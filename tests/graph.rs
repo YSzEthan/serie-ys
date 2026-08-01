@@ -1,8 +1,6 @@
 use std::{path::Path, process::Command};
 
 use chrono::{DateTime, Days, NaiveDate, TimeZone, Utc};
-use image::{GenericImage, GenericImageView};
-use rustc_hash::FxHashSet;
 use serie::{color, config, git, graph};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
@@ -32,13 +30,12 @@ fn straight_001() -> TestResult {
     let options = &[GenerateGraphOption::new(
         "straight_001",
         git::SortCommit::Chronological,
-        graph::GraphStyle::Rounded,
     )];
 
     copy_git_dir(repo_path, "straight_001");
 
-    generate_and_output_graph_images(repo_path, options);
-    assert_graph_images(options);
+    generate_and_output_text_graphs(repo_path, options);
+    assert_text_graphs(options);
 
     Ok(())
 }
@@ -100,33 +97,16 @@ fn branch_001() -> TestResult {
     git.log();
 
     let options = &[
-        GenerateGraphOption::new(
-            "branch_001_chrono",
-            git::SortCommit::Chronological,
-            graph::GraphStyle::Rounded,
-        ),
-        GenerateGraphOption::new(
-            "branch_001_topo",
-            git::SortCommit::Topological,
-            graph::GraphStyle::Rounded,
-        ),
-        GenerateGraphOption::new(
-            "branch_001_angular",
-            git::SortCommit::Chronological,
-            graph::GraphStyle::Angular,
-        ),
-        GenerateGraphOption::new(
-            "branch_001_max_count",
-            git::SortCommit::Chronological,
-            graph::GraphStyle::Rounded,
-        )
-        .with_max_count(10),
+        GenerateGraphOption::new("branch_001_chrono", git::SortCommit::Chronological),
+        GenerateGraphOption::new("branch_001_topo", git::SortCommit::Topological),
+        GenerateGraphOption::new("branch_001_max_count", git::SortCommit::Chronological)
+            .with_max_count(10),
     ];
 
     copy_git_dir(repo_path, "branch_001");
 
-    generate_and_output_graph_images(repo_path, options);
-    assert_graph_images(options);
+    generate_and_output_text_graphs(repo_path, options);
+    assert_text_graphs(options);
 
     Ok(())
 }
@@ -187,33 +167,16 @@ fn branch_002() -> TestResult {
     git.log();
 
     let options = &[
-        GenerateGraphOption::new(
-            "branch_002_chrono",
-            git::SortCommit::Chronological,
-            graph::GraphStyle::Rounded,
-        ),
-        GenerateGraphOption::new(
-            "branch_002_topo",
-            git::SortCommit::Topological,
-            graph::GraphStyle::Rounded,
-        ),
-        GenerateGraphOption::new(
-            "branch_002_angular",
-            git::SortCommit::Chronological,
-            graph::GraphStyle::Angular,
-        ),
-        GenerateGraphOption::new(
-            "branch_002_max_count",
-            git::SortCommit::Chronological,
-            graph::GraphStyle::Rounded,
-        )
-        .with_max_count(5),
+        GenerateGraphOption::new("branch_002_chrono", git::SortCommit::Chronological),
+        GenerateGraphOption::new("branch_002_topo", git::SortCommit::Topological),
+        GenerateGraphOption::new("branch_002_max_count", git::SortCommit::Chronological)
+            .with_max_count(5),
     ];
 
     copy_git_dir(repo_path, "branch_002");
 
-    generate_and_output_graph_images(repo_path, options);
-    assert_graph_images(options);
+    generate_and_output_text_graphs(repo_path, options);
+    assert_text_graphs(options);
 
     Ok(())
 }
@@ -252,27 +215,14 @@ fn branch_003() -> TestResult {
     git.log();
 
     let options = &[
-        GenerateGraphOption::new(
-            "branch_003_chrono",
-            git::SortCommit::Chronological,
-            graph::GraphStyle::Rounded,
-        ),
-        GenerateGraphOption::new(
-            "branch_003_topo",
-            git::SortCommit::Topological,
-            graph::GraphStyle::Rounded,
-        ),
-        GenerateGraphOption::new(
-            "branch_003_angular",
-            git::SortCommit::Chronological,
-            graph::GraphStyle::Angular,
-        ),
+        GenerateGraphOption::new("branch_003_chrono", git::SortCommit::Chronological),
+        GenerateGraphOption::new("branch_003_topo", git::SortCommit::Topological),
     ];
 
     copy_git_dir(repo_path, "branch_003");
 
-    generate_and_output_graph_images(repo_path, options);
-    assert_graph_images(options);
+    generate_and_output_text_graphs(repo_path, options);
+    assert_text_graphs(options);
 
     Ok(())
 }
@@ -346,27 +296,14 @@ fn branch_004() -> TestResult {
     git.log();
 
     let options = &[
-        GenerateGraphOption::new(
-            "branch_004_chrono",
-            git::SortCommit::Chronological,
-            graph::GraphStyle::Rounded,
-        ),
-        GenerateGraphOption::new(
-            "branch_004_topo",
-            git::SortCommit::Topological,
-            graph::GraphStyle::Rounded,
-        ),
-        GenerateGraphOption::new(
-            "branch_004_angular",
-            git::SortCommit::Chronological,
-            graph::GraphStyle::Angular,
-        ),
+        GenerateGraphOption::new("branch_004_chrono", git::SortCommit::Chronological),
+        GenerateGraphOption::new("branch_004_topo", git::SortCommit::Topological),
     ];
 
     copy_git_dir(repo_path, "branch_004");
 
-    generate_and_output_graph_images(repo_path, options);
-    assert_graph_images(options);
+    generate_and_output_text_graphs(repo_path, options);
+    assert_text_graphs(options);
 
     Ok(())
 }
@@ -407,27 +344,14 @@ fn branch_005() -> TestResult {
     git.log();
 
     let options = &[
-        GenerateGraphOption::new(
-            "branch_005_chrono",
-            git::SortCommit::Chronological,
-            graph::GraphStyle::Rounded,
-        ),
-        GenerateGraphOption::new(
-            "branch_005_topo",
-            git::SortCommit::Topological,
-            graph::GraphStyle::Rounded,
-        ),
-        GenerateGraphOption::new(
-            "branch_005_angular",
-            git::SortCommit::Chronological,
-            graph::GraphStyle::Angular,
-        ),
+        GenerateGraphOption::new("branch_005_chrono", git::SortCommit::Chronological),
+        GenerateGraphOption::new("branch_005_topo", git::SortCommit::Topological),
     ];
 
     copy_git_dir(repo_path, "branch_005");
 
-    generate_and_output_graph_images(repo_path, options);
-    assert_graph_images(options);
+    generate_and_output_text_graphs(repo_path, options);
+    assert_text_graphs(options);
 
     Ok(())
 }
@@ -487,27 +411,14 @@ fn merge_001() -> TestResult {
     git.log();
 
     let options = &[
-        GenerateGraphOption::new(
-            "merge_001_chrono",
-            git::SortCommit::Chronological,
-            graph::GraphStyle::Rounded,
-        ),
-        GenerateGraphOption::new(
-            "merge_001_topo",
-            git::SortCommit::Topological,
-            graph::GraphStyle::Rounded,
-        ),
-        GenerateGraphOption::new(
-            "merge_001_angular",
-            git::SortCommit::Chronological,
-            graph::GraphStyle::Angular,
-        ),
+        GenerateGraphOption::new("merge_001_chrono", git::SortCommit::Chronological),
+        GenerateGraphOption::new("merge_001_topo", git::SortCommit::Topological),
     ];
 
     copy_git_dir(repo_path, "merge_001");
 
-    generate_and_output_graph_images(repo_path, options);
-    assert_graph_images(options);
+    generate_and_output_text_graphs(repo_path, options);
+    assert_text_graphs(options);
 
     Ok(())
 }
@@ -549,27 +460,14 @@ fn merge_002() -> TestResult {
     git.log();
 
     let options = &[
-        GenerateGraphOption::new(
-            "merge_002_chrono",
-            git::SortCommit::Chronological,
-            graph::GraphStyle::Rounded,
-        ),
-        GenerateGraphOption::new(
-            "merge_002_topo",
-            git::SortCommit::Topological,
-            graph::GraphStyle::Rounded,
-        ),
-        GenerateGraphOption::new(
-            "merge_002_angular",
-            git::SortCommit::Chronological,
-            graph::GraphStyle::Angular,
-        ),
+        GenerateGraphOption::new("merge_002_chrono", git::SortCommit::Chronological),
+        GenerateGraphOption::new("merge_002_topo", git::SortCommit::Topological),
     ];
 
     copy_git_dir(repo_path, "merge_002");
 
-    generate_and_output_graph_images(repo_path, options);
-    assert_graph_images(options);
+    generate_and_output_text_graphs(repo_path, options);
+    assert_text_graphs(options);
 
     Ok(())
 }
@@ -613,27 +511,14 @@ fn merge_003() -> TestResult {
     git.log();
 
     let options = &[
-        GenerateGraphOption::new(
-            "merge_003_chrono",
-            git::SortCommit::Chronological,
-            graph::GraphStyle::Rounded,
-        ),
-        GenerateGraphOption::new(
-            "merge_003_topo",
-            git::SortCommit::Topological,
-            graph::GraphStyle::Rounded,
-        ),
-        GenerateGraphOption::new(
-            "merge_003_angular",
-            git::SortCommit::Chronological,
-            graph::GraphStyle::Angular,
-        ),
+        GenerateGraphOption::new("merge_003_chrono", git::SortCommit::Chronological),
+        GenerateGraphOption::new("merge_003_topo", git::SortCommit::Topological),
     ];
 
     copy_git_dir(repo_path, "merge_003");
 
-    generate_and_output_graph_images(repo_path, options);
-    assert_graph_images(options);
+    generate_and_output_text_graphs(repo_path, options);
+    assert_text_graphs(options);
 
     Ok(())
 }
@@ -689,27 +574,14 @@ fn merge_004() -> TestResult {
     git.log();
 
     let options = &[
-        GenerateGraphOption::new(
-            "merge_004_chrono",
-            git::SortCommit::Chronological,
-            graph::GraphStyle::Rounded,
-        ),
-        GenerateGraphOption::new(
-            "merge_004_topo",
-            git::SortCommit::Topological,
-            graph::GraphStyle::Rounded,
-        ),
-        GenerateGraphOption::new(
-            "merge_004_angular",
-            git::SortCommit::Chronological,
-            graph::GraphStyle::Angular,
-        ),
+        GenerateGraphOption::new("merge_004_chrono", git::SortCommit::Chronological),
+        GenerateGraphOption::new("merge_004_topo", git::SortCommit::Topological),
     ];
 
     copy_git_dir(repo_path, "merge_004");
 
-    generate_and_output_graph_images(repo_path, options);
-    assert_graph_images(options);
+    generate_and_output_text_graphs(repo_path, options);
+    assert_text_graphs(options);
 
     Ok(())
 }
@@ -771,27 +643,14 @@ fn merge_005() -> TestResult {
     git.log();
 
     let options = &[
-        GenerateGraphOption::new(
-            "merge_005_chrono",
-            git::SortCommit::Chronological,
-            graph::GraphStyle::Rounded,
-        ),
-        GenerateGraphOption::new(
-            "merge_005_topo",
-            git::SortCommit::Topological,
-            graph::GraphStyle::Rounded,
-        ),
-        GenerateGraphOption::new(
-            "merge_005_angular",
-            git::SortCommit::Chronological,
-            graph::GraphStyle::Angular,
-        ),
+        GenerateGraphOption::new("merge_005_chrono", git::SortCommit::Chronological),
+        GenerateGraphOption::new("merge_005_topo", git::SortCommit::Topological),
     ];
 
     copy_git_dir(repo_path, "merge_005");
 
-    generate_and_output_graph_images(repo_path, options);
-    assert_graph_images(options);
+    generate_and_output_text_graphs(repo_path, options);
+    assert_text_graphs(options);
 
     Ok(())
 }
@@ -830,27 +689,14 @@ fn stash_001() -> TestResult {
     git.commit("007", "2024-01-10");
 
     let options = &[
-        GenerateGraphOption::new(
-            "stash_001_chrono",
-            git::SortCommit::Chronological,
-            graph::GraphStyle::Rounded,
-        ),
-        GenerateGraphOption::new(
-            "stash_001_topo",
-            git::SortCommit::Topological,
-            graph::GraphStyle::Rounded,
-        ),
-        GenerateGraphOption::new(
-            "stash_001_angular",
-            git::SortCommit::Chronological,
-            graph::GraphStyle::Angular,
-        ),
+        GenerateGraphOption::new("stash_001_chrono", git::SortCommit::Chronological),
+        GenerateGraphOption::new("stash_001_topo", git::SortCommit::Topological),
     ];
 
     copy_git_dir(repo_path, "stash_001");
 
-    generate_and_output_graph_images(repo_path, options);
-    assert_graph_images(options);
+    generate_and_output_text_graphs(repo_path, options);
+    assert_text_graphs(options);
 
     Ok(())
 }
@@ -886,27 +732,14 @@ fn stash_002() -> TestResult {
     git.stash("2024-01-09");
 
     let options = &[
-        GenerateGraphOption::new(
-            "stash_002_chrono",
-            git::SortCommit::Chronological,
-            graph::GraphStyle::Rounded,
-        ),
-        GenerateGraphOption::new(
-            "stash_002_topo",
-            git::SortCommit::Topological,
-            graph::GraphStyle::Rounded,
-        ),
-        GenerateGraphOption::new(
-            "stash_002_angular",
-            git::SortCommit::Chronological,
-            graph::GraphStyle::Angular,
-        ),
+        GenerateGraphOption::new("stash_002_chrono", git::SortCommit::Chronological),
+        GenerateGraphOption::new("stash_002_topo", git::SortCommit::Topological),
     ];
 
     copy_git_dir(repo_path, "stash_002");
 
-    generate_and_output_graph_images(repo_path, options);
-    assert_graph_images(options);
+    generate_and_output_text_graphs(repo_path, options);
+    assert_text_graphs(options);
 
     Ok(())
 }
@@ -935,27 +768,14 @@ fn stash_003() -> TestResult {
     git.branch_d("10");
 
     let options = &[
-        GenerateGraphOption::new(
-            "stash_003_chrono",
-            git::SortCommit::Chronological,
-            graph::GraphStyle::Rounded,
-        ),
-        GenerateGraphOption::new(
-            "stash_003_topo",
-            git::SortCommit::Topological,
-            graph::GraphStyle::Rounded,
-        ),
-        GenerateGraphOption::new(
-            "stash_003_angular",
-            git::SortCommit::Chronological,
-            graph::GraphStyle::Angular,
-        ),
+        GenerateGraphOption::new("stash_003_chrono", git::SortCommit::Chronological),
+        GenerateGraphOption::new("stash_003_topo", git::SortCommit::Topological),
     ];
 
     copy_git_dir(repo_path, "stash_003");
 
-    generate_and_output_graph_images(repo_path, options);
-    assert_graph_images(options);
+    generate_and_output_text_graphs(repo_path, options);
+    assert_text_graphs(options);
 
     Ok(())
 }
@@ -980,27 +800,14 @@ fn stash_004() -> TestResult {
     git.commit("003", "2024-03-01");
 
     let options = &[
-        GenerateGraphOption::new(
-            "stash_004_chrono",
-            git::SortCommit::Chronological,
-            graph::GraphStyle::Rounded,
-        ),
-        GenerateGraphOption::new(
-            "stash_004_topo",
-            git::SortCommit::Topological,
-            graph::GraphStyle::Rounded,
-        ),
-        GenerateGraphOption::new(
-            "stash_004_angular",
-            git::SortCommit::Chronological,
-            graph::GraphStyle::Angular,
-        ),
+        GenerateGraphOption::new("stash_004_chrono", git::SortCommit::Chronological),
+        GenerateGraphOption::new("stash_004_topo", git::SortCommit::Topological),
     ];
 
     copy_git_dir(repo_path, "stash_004");
 
-    generate_and_output_graph_images(repo_path, options);
-    assert_graph_images(options);
+    generate_and_output_text_graphs(repo_path, options);
+    assert_text_graphs(options);
 
     Ok(())
 }
@@ -1036,27 +843,14 @@ fn orphan_001() -> TestResult {
     git.log();
 
     let options = &[
-        GenerateGraphOption::new(
-            "orphan_001_chrono",
-            git::SortCommit::Chronological,
-            graph::GraphStyle::Rounded,
-        ),
-        GenerateGraphOption::new(
-            "orphan_001_topo",
-            git::SortCommit::Topological,
-            graph::GraphStyle::Rounded,
-        ),
-        GenerateGraphOption::new(
-            "orphan_001_angular",
-            git::SortCommit::Chronological,
-            graph::GraphStyle::Angular,
-        ),
+        GenerateGraphOption::new("orphan_001_chrono", git::SortCommit::Chronological),
+        GenerateGraphOption::new("orphan_001_topo", git::SortCommit::Topological),
     ];
 
     copy_git_dir(repo_path, "orphan_001");
 
-    generate_and_output_graph_images(repo_path, options);
-    assert_graph_images(options);
+    generate_and_output_text_graphs(repo_path, options);
+    assert_text_graphs(options);
 
     Ok(())
 }
@@ -1092,27 +886,14 @@ fn orphan_002() -> TestResult {
     git.log();
 
     let options = &[
-        GenerateGraphOption::new(
-            "orphan_002_chrono",
-            git::SortCommit::Chronological,
-            graph::GraphStyle::Rounded,
-        ),
-        GenerateGraphOption::new(
-            "orphan_002_topo",
-            git::SortCommit::Topological,
-            graph::GraphStyle::Rounded,
-        ),
-        GenerateGraphOption::new(
-            "orphan_002_angular",
-            git::SortCommit::Chronological,
-            graph::GraphStyle::Angular,
-        ),
+        GenerateGraphOption::new("orphan_002_chrono", git::SortCommit::Chronological),
+        GenerateGraphOption::new("orphan_002_topo", git::SortCommit::Topological),
     ];
 
     copy_git_dir(repo_path, "orphan_002");
 
-    generate_and_output_graph_images(repo_path, options);
-    assert_graph_images(options);
+    generate_and_output_text_graphs(repo_path, options);
+    assert_text_graphs(options);
 
     Ok(())
 }
@@ -1146,27 +927,14 @@ fn head_001() -> TestResult {
     git.log();
 
     let options = &[
-        GenerateGraphOption::new(
-            "head_001_chrono",
-            git::SortCommit::Chronological,
-            graph::GraphStyle::Rounded,
-        ),
-        GenerateGraphOption::new(
-            "head_001_topo",
-            git::SortCommit::Topological,
-            graph::GraphStyle::Rounded,
-        ),
-        GenerateGraphOption::new(
-            "head_001_angular",
-            git::SortCommit::Chronological,
-            graph::GraphStyle::Angular,
-        ),
+        GenerateGraphOption::new("head_001_chrono", git::SortCommit::Chronological),
+        GenerateGraphOption::new("head_001_topo", git::SortCommit::Topological),
     ];
 
     copy_git_dir(repo_path, "head_001");
 
-    generate_and_output_graph_images(repo_path, options);
-    assert_graph_images(options);
+    generate_and_output_text_graphs(repo_path, options);
+    assert_text_graphs(options);
 
     Ok(())
 }
@@ -1242,27 +1010,58 @@ fn complex_001() -> TestResult {
     git.log();
 
     let options = &[
-        GenerateGraphOption::new(
-            "complex_001_chrono",
-            git::SortCommit::Chronological,
-            graph::GraphStyle::Rounded,
-        ),
-        GenerateGraphOption::new(
-            "complex_001_topo",
-            git::SortCommit::Topological,
-            graph::GraphStyle::Rounded,
-        ),
-        GenerateGraphOption::new(
-            "complex_001_angular",
-            git::SortCommit::Chronological,
-            graph::GraphStyle::Angular,
-        ),
+        GenerateGraphOption::new("complex_001_chrono", git::SortCommit::Chronological),
+        GenerateGraphOption::new("complex_001_topo", git::SortCommit::Topological),
     ];
 
     copy_git_dir(repo_path, "complex_001");
 
-    generate_and_output_graph_images(repo_path, options);
-    assert_graph_images(options);
+    generate_and_output_text_graphs(repo_path, options);
+    assert_text_graphs(options);
+
+    Ok(())
+}
+
+/// Test case for the HEAD column-reservation branch of `calc_commit_positions`
+/// (`reserve_head_col`). This needs a purpose-built repo: the existing 19 repos
+/// above all end with HEAD *being* the newest commit, which makes the reserved
+/// column collapse onto column 0 either way (see calc.rs — `head_col_pending`
+/// is cleared the moment HEAD's row is processed, so if HEAD is `pos_y == 0`
+/// there's nothing left to reserve for). This repo instead leaves HEAD on a
+/// childless branch tip that is *not* the newest commit, and with a named ref
+/// (`head_has_named_ref` must be true) so the reservation actually engages.
+#[test]
+fn reserve_col_001() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let repo_path = dir.path();
+
+    let git = &GitRepository::new(repo_path);
+
+    git.init();
+
+    git.commit("001", "2024-01-01");
+    git.commit("002", "2024-01-02");
+
+    git.checkout_b("10");
+    git.commit("011", "2024-01-03");
+
+    git.checkout("master");
+    git.commit("003", "2024-01-04");
+
+    git.checkout("10");
+
+    git.log();
+
+    let options = &[
+        GenerateGraphOption::new("reserve_col_001_chrono", git::SortCommit::Chronological),
+        GenerateGraphOption::new("reserve_col_001_head_col", git::SortCommit::Chronological)
+            .with_head_col(),
+    ];
+
+    copy_git_dir(repo_path, "reserve_col_001");
+
+    generate_and_output_text_graphs(repo_path, options);
+    assert_text_graphs(options);
 
     Ok(())
 }
@@ -1356,21 +1155,22 @@ fn parse_date(date: &str) -> DateTime<Utc> {
 struct GenerateGraphOption {
     output_name: &'static str,
     sort: git::SortCommit,
-    style: graph::GraphStyle,
     max_count: Option<usize>,
+    // Whether to pass the repo's actual HEAD to `calc_graph` and reserve a
+    // column for it (`reserve_head_col`). When false (the default, used by
+    // every case above except `reserve_col_001`), HEAD is treated as unknown
+    // (`None`) — exactly matching the PNG-era snapshot generation, which
+    // always called `calc_graph(&repository, None, false)` unconditionally.
+    reserve_head_col: bool,
 }
 
 impl GenerateGraphOption {
-    fn new(
-        output_name: &'static str,
-        sort: git::SortCommit,
-        style: graph::GraphStyle,
-    ) -> GenerateGraphOption {
+    fn new(output_name: &'static str, sort: git::SortCommit) -> GenerateGraphOption {
         GenerateGraphOption {
             output_name,
             sort,
-            style,
             max_count: None,
+            reserve_head_col: false,
         }
     }
 
@@ -1378,119 +1178,60 @@ impl GenerateGraphOption {
         self.max_count = Some(max_count);
         self
     }
-}
 
-fn generate_and_output_graph_images(repo_path: &Path, options: &[GenerateGraphOption]) {
-    for option in options {
-        generate_and_output_graph_image(repo_path, option);
+    fn with_head_col(mut self) -> GenerateGraphOption {
+        self.reserve_head_col = true;
+        self
     }
 }
 
-fn generate_and_output_graph_image<P: AsRef<Path>>(path: P, option: &GenerateGraphOption) {
-    // Build graphs in the same way as application
-    let max_count = option.max_count;
+fn generate_and_output_text_graphs(repo_path: &Path, options: &[GenerateGraphOption]) {
+    create_output_dirs(OUTPUT_DIR);
+    for option in options {
+        let content = render_text_graph(repo_path, option);
+        let file_name = format!("{}/{}.txt", OUTPUT_DIR, option.output_name);
+        std::fs::write(file_name, content).unwrap();
+    }
+}
+
+/// Build graph in the same way as the application, then render it exactly as
+/// the text-mode graph column does (`graph::build_text_graph`), one line per
+/// commit: `<graph glyphs>  <subject>`. No hash/date — see #16 plan for why.
+fn render_text_graph(repo_path: &Path, option: &GenerateGraphOption) -> String {
+    let repository = git::Repository::load(repo_path, option.sort, option.max_count).unwrap();
+
+    // Only compute a real HEAD hint for `reserve_head_col` cases. Everyone
+    // else passes `None`, matching what the PNG-era generator always did —
+    // see the field doc-comment on `GenerateGraphOption::reserve_head_col`.
+    let head_hint: Option<git::CommitHash> = if option.reserve_head_col {
+        let hash = GitRepository::new(repo_path).rev_parse_head();
+        Some(git::CommitHash::from(hash.as_str()))
+    } else {
+        None
+    };
+
+    let graph = graph::calc_graph(&repository, head_hint.as_ref(), option.reserve_head_col);
+
     let graph_color_config = config::GraphColorConfig::default();
     let graph_color_set = color::GraphColorSet::new(&graph_color_config);
-    let cell_width_type = graph::CellWidthType::Double;
-    let repository = git::Repository::load(path.as_ref(), option.sort, max_count).unwrap();
-    let graph = graph::calc_graph(&repository, None, false);
-    let image_params = graph::ImageParams::new(&graph_color_set, cell_width_type);
-    let drawing_pixels = graph::DrawingPixels::new(&image_params);
-    let graph_image = build_graph_image(&graph, &image_params, &drawing_pixels, option.style);
-
-    // Create concatenated image
-    let (width, height) = (50, 50);
-    let image_width = ((width * (graph.max_pos_x as usize + 1)) + (width * 7)) as u32;
-    let image_height = (height * graph.commit_hashes.len()) as u32;
-    let mut img_buf: image::ImageBuffer<image::Rgba<u8>, Vec<u8>> =
-        image::ImageBuffer::new(image_width, image_height);
-
-    let text_renderer = text_to_png::TextRenderer::default();
-    let text_x = (width * (graph.max_pos_x as usize + 1)) as u32;
-
-    for (i, edges) in graph.edges.iter().enumerate() {
-        let y = (height * i) as u32;
-
-        // write graph
-        let graph_row_image = &graph_image.images[edges];
-        let image = image::load_from_memory(&graph_row_image.bytes).unwrap();
-        img_buf.copy_from(&image, 0, y).unwrap();
-
-        // write hash and date
-        let commit_hash = &graph.commit_hashes[i];
-        let commit = repository.commit(commit_hash).unwrap();
-        let text = format!(
-            "{} / {}",
-            commit.commit_hash.as_short_hash(),
-            commit.committer_date.naive_utc().format("%Y-%m-%d")
-        );
-        let text_png = text_renderer
-            .render_text_to_png_data(text, height / 4, 0x888888)
-            .unwrap();
-        let text_image = image::load_from_memory(&text_png.data).unwrap();
-        img_buf
-            .copy_from(&text_image, text_x, y + (height as u32 / 4))
-            .unwrap();
-
-        // write subject
-        let text = &commit.subject;
-        let text_png = text_renderer
-            .render_text_to_png_data(text, height / 4, 0x888888)
-            .unwrap();
-        let text_image = image::load_from_memory(&text_png.data).unwrap();
-        img_buf
-            .copy_from(&text_image, text_x, y + ((height as u32 / 4) * 2))
-            .unwrap();
-    }
-
-    // Save
-    create_output_dirs(OUTPUT_DIR);
-    let file_name = format!("{}/{}.png", OUTPUT_DIR, option.output_name);
-    image::save_buffer(
-        file_name,
-        &img_buf,
-        image_width,
-        image_height,
-        image::ColorType::Rgba8,
-    )
-    .unwrap();
-}
-
-fn build_graph_image(
-    graph: &graph::Graph,
-    image_params: &graph::ImageParams,
-    drawing_pixels: &graph::DrawingPixels,
-    graph_style: graph::GraphStyle,
-) -> graph::GraphImage {
-    let graph_row_sources: FxHashSet<(usize, &Vec<graph::Edge>)> = graph
-        .commit_hashes
+    let colors = graph_color_set
+        .colors
         .iter()
-        .map(|commit_hash| {
-            let (pos_x, pos_y) = graph.commit_pos_map[commit_hash];
-            let edges = &graph.edges[pos_y];
-            (pos_x, edges)
-        })
-        .collect();
+        .map(|c| c.to_ratatui_color())
+        .collect::<Vec<_>>();
 
-    let cell_count = graph.max_pos_x + 1;
+    let rows = graph::build_text_graph(&graph, &colors);
 
-    let images = graph_row_sources
-        .into_iter()
-        .map(|(pos_x, edges)| {
-            let graph_row_image = graph::calc_graph_row_image(
-                pos_x,
-                cell_count,
-                edges,
-                image_params,
-                drawing_pixels,
-                graph_style,
-                false,
-            );
-            (edges.clone(), graph_row_image)
-        })
-        .collect();
-
-    graph::GraphImage { images }
+    let mut out = String::new();
+    for (commit_hash, cells) in graph.commit_hashes.iter().zip(&rows) {
+        let commit = repository.commit(commit_hash).unwrap();
+        let graph_str: String = cells.iter().map(|c| c.ch).collect();
+        out.push_str(graph_str.trim_end());
+        out.push_str("  ");
+        out.push_str(&commit.subject);
+        out.push('\n');
+    }
+    out
 }
 
 fn create_output_dirs(path: &str) {
@@ -1507,10 +1248,24 @@ fn copy_git_dir(path: &Path, name: &str) {
     dircpy::CopyBuilder::new(path, dst_path).run().unwrap();
 }
 
-fn assert_graph_images(options: &[GenerateGraphOption]) {
+fn assert_text_graphs(options: &[GenerateGraphOption]) {
+    if std::env::var_os("UPDATE_SNAPSHOTS").is_some() {
+        update_text_snapshots(options);
+        // Fail on purpose: an update run isn't a verification run, and a
+        // green run here would let UPDATE_SNAPSHOTS=1 slip into a normal
+        // `cargo test` invocation (e.g. left set in a shell) and be mistaken
+        // for a real pass. Re-run without the env var to actually verify.
+        panic!(
+            "UPDATE_SNAPSHOTS was set: wrote/updated {} snapshot(s) under {SNAPSHOT_DIR}. \
+             This run intentionally fails so it can't be mistaken for a real pass — \
+             re-run `cargo test --test graph` without UPDATE_SNAPSHOTS to verify.",
+            options.len()
+        );
+    }
+
     let errors: Vec<_> = options
         .iter()
-        .map(compare_graph_image)
+        .map(compare_text_snapshot)
         .filter_map(Result::err)
         .collect();
     if !errors.is_empty() {
@@ -1518,52 +1273,57 @@ fn assert_graph_images(options: &[GenerateGraphOption]) {
     }
 }
 
-fn compare_graph_image(option: &GenerateGraphOption) -> Result<(), String> {
-    let expected_file = format!("{}/{}.png", SNAPSHOT_DIR, option.output_name);
-    let expected_img = image::open(expected_file).unwrap();
+fn update_text_snapshots(options: &[GenerateGraphOption]) {
+    create_output_dirs(SNAPSHOT_DIR);
+    for option in options {
+        let actual_file = format!("{OUTPUT_DIR}/{}.txt", option.output_name);
+        let snapshot_file = format!("{SNAPSHOT_DIR}/{}.txt", option.output_name);
+        let content = std::fs::read_to_string(&actual_file)
+            .unwrap_or_else(|e| panic!("failed to read generated output {actual_file}: {e}"));
+        std::fs::write(&snapshot_file, content).unwrap();
+    }
+}
 
-    let actual_file = format!("{}/{}.png", OUTPUT_DIR, option.output_name);
-    let actual_img = image::open(actual_file).unwrap();
+fn compare_text_snapshot(option: &GenerateGraphOption) -> Result<(), String> {
+    let snapshot_file = format!("{}/{}.txt", SNAPSHOT_DIR, option.output_name);
+    let expected = std::fs::read_to_string(&snapshot_file).map_err(|_| {
+        format!(
+            "missing snapshot {snapshot_file} — run \
+             `UPDATE_SNAPSHOTS=1 cargo test --test graph` to generate it"
+        )
+    })?;
 
-    if actual_img.dimensions() != expected_img.dimensions() {
-        return Err(format!(
-            "Image dimensions are different. expected: {:?}, actual: {:?}",
-            expected_img.dimensions(),
-            actual_img.dimensions()
+    let actual_file = format!("{}/{}.txt", OUTPUT_DIR, option.output_name);
+    let actual = std::fs::read_to_string(&actual_file).unwrap();
+
+    if actual == expected {
+        return Ok(());
+    }
+
+    let mut msg = format!(
+        "text graph differs for {}: see {actual_file}",
+        option.output_name
+    );
+
+    let expected_lines: Vec<&str> = expected.lines().collect();
+    let actual_lines: Vec<&str> = actual.lines().collect();
+    if expected_lines.len() != actual_lines.len() {
+        msg.push_str(&format!(
+            "\n  line count: expected {}, actual {}",
+            expected_lines.len(),
+            actual_lines.len()
         ));
     }
 
-    let (image_width, image_height) = actual_img.dimensions();
-    let mut img_buf = image::ImageBuffer::new(image_width, image_height);
-    let mut diff = false;
+    let diff_preview: String = expected_lines
+        .iter()
+        .zip(actual_lines.iter())
+        .enumerate()
+        .filter(|(_, (e, a))| e != a)
+        .take(5)
+        .map(|(i, (e, a))| format!("\n  line {}: expected {e:?}, actual {a:?}", i + 1))
+        .collect();
+    msg.push_str(&diff_preview);
 
-    for y in 0..image_height {
-        for x in 0..image_width {
-            let actual_pixel = actual_img.get_pixel(x, y);
-            let expected_pixel = expected_img.get_pixel(x, y);
-
-            if actual_pixel != expected_pixel {
-                img_buf.put_pixel(x, y, image::Rgba([255, 0, 0, 255]));
-                diff = true;
-            } else {
-                img_buf.put_pixel(x, y, actual_pixel);
-            }
-        }
-    }
-
-    if diff {
-        let diff_file = format!("{}/{}_diff.png", OUTPUT_DIR, option.output_name);
-        image::save_buffer(
-            diff_file.clone(),
-            &img_buf,
-            image_width,
-            image_height,
-            image::ColorType::Rgba8,
-        )
-        .unwrap();
-
-        return Err(format!("Images are different. diff: {diff_file}"));
-    }
-
-    Ok(())
+    Err(msg)
 }

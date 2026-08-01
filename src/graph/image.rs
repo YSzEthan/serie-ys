@@ -156,12 +156,9 @@ impl GraphImageManager {
         if self.text_cells_map.contains_key(commit_hash) {
             return;
         }
-        let Some(&(pos_x, pos_y)) = self.graph.commit_pos_map.get(commit_hash) else {
+        let Some(cells) = text_cells_for(&self.graph, commit_hash, &self.graph_colors) else {
             return;
         };
-        let edges = &self.graph.edges[pos_y];
-        let cell_count = self.graph.max_pos_x + 1;
-        let cells = build_text_cells(pos_x, cell_count, edges, &self.graph_colors);
         self.text_cells_map.insert(commit_hash.clone(), cells);
     }
 
@@ -477,6 +474,38 @@ impl GraphRowImage {
         };
         image_protocol.encode(&self.bytes, image_cell_width)
     }
+}
+
+/// Shared "one commit → its text cells" lookup used by both the lazy
+/// per-commit cache (`load_text_cells`) and the batch snapshot builder
+/// (`build_text_graph`). Keeping a single definition means the two callers
+/// can't silently drift apart on how `pos_x`/`pos_y`/`cell_count` are derived.
+fn text_cells_for(
+    graph: &Graph,
+    commit_hash: &CommitHash,
+    colors: &[RatatuiColor],
+) -> Option<Vec<TextCell>> {
+    let &(pos_x, pos_y) = graph.commit_pos_map.get(commit_hash)?;
+    let edges = &graph.edges[pos_y];
+    let cell_count = graph.max_pos_x + 1;
+    Some(build_text_cells(pos_x, cell_count, edges, colors))
+}
+
+/// Batch text-mode render of every commit in `graph`, in `commit_hashes` order.
+///
+/// Used by the `tests/graph.rs` snapshot suite, which needs the whole graph
+/// at once rather than the per-commit lazy loading `GraphImageManager` does
+/// for the UI. Panics if `graph.commit_hashes` and `graph.commit_pos_map` are
+/// out of sync (they're built together in `calc.rs`, so this should never
+/// trigger in practice).
+pub fn build_text_graph(graph: &Graph, colors: &[RatatuiColor]) -> Vec<Vec<TextCell>> {
+    graph
+        .commit_hashes
+        .iter()
+        .map(|hash| {
+            text_cells_for(graph, hash, colors).expect("commit_hashes / commit_pos_map out of sync")
+        })
+        .collect()
 }
 
 /// Convert edges to lazygit-style text cells (symbol + connector per column).
