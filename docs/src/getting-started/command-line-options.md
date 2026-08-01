@@ -7,14 +7,6 @@ Maximum number of commits to render.
 If not specified, all commits will be rendered.
 It behaves similarly to the `--max-count` option of `git log`.
 
-## -p, --protocol \<TYPE\>
-
-A protocol type for rendering images of commit graphs.
-
-_Possible values:_ `auto`, `iterm`, `kitty`
-
-By default `auto` will guess the best supported protocol for the current terminal (if listed in [Supported terminal emulators](./compatibility.md#supported-terminal-emulators)).
-
 ## -o, --order \<TYPE\>
 
 Commit ordering algorithm.
@@ -52,11 +44,14 @@ _Possible values:_ `rounded`, `angular`, `ascii`
 `rounded` uses rounded corners, `angular` uses square corners, and `ascii` uses only plain ASCII characters (for terminals or fonts that can't render box-drawing characters):
 
 ```
-rounded      angular     ascii
-●            ●           *
-│ ╭─         │ ┌─        | +-
-│ │ ●        │ │ ●       | | *
-● ╰─┤        ● └─┤       * +-+
+rounded      angular      ascii
+●─╮          ●─┐          *-+
+│ ●          │ ●          | *
+●─│          ●─│          *-|
+●─│          ●─│          *-|
+│ ●          │ ●          | *
+● │          ● │          * |
+●─╯          ●─┘          *-+
 ```
 
 ## -i, --initial-selection \<TYPE\>

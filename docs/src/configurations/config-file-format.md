@@ -4,7 +4,6 @@
 
 ```toml
 [core.option]
-protocol = "auto"
 order = "chrono"
 graph_width = "auto"
 graph_style = "rounded"
@@ -103,19 +102,6 @@ divider_fg = "dark-gray"
 ```
 
 ## Configuration Options
-
-### `core.option.protocol`
-
-The protocol type for rendering images of commit graphs.
-
-- type: `string` (enum)
-- default: `auto`
-- possible values:
-  - `auto`
-  - `iterm`
-  - `kitty`
-
-The value specified in the command line argument takes precedence.
 
 ### `core.option.order`
 
