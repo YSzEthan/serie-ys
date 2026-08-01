@@ -725,6 +725,16 @@ mod tests {
     }
 
     #[test]
+    fn test_config_graph_style_ascii() {
+        let toml = r#"
+            [core.option]
+            graph_style = "ascii"
+        "#;
+        let config: Config = toml::from_str::<OptionalConfig>(toml).unwrap().into();
+        assert_eq!(config.core.option.graph_style, Some(GraphStyle::Ascii));
+    }
+
+    #[test]
     fn test_config_clipboard_auto() {
         let toml = r#"
             [core.external]

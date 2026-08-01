@@ -76,22 +76,7 @@ pub enum GraphWidthType {
     Single,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum GraphStyle {
-    Rounded,
-    Angular,
-}
-
-impl From<Option<GraphStyle>> for graph::GraphStyle {
-    fn from(style: Option<GraphStyle>) -> Self {
-        match style {
-            Some(GraphStyle::Rounded) => graph::GraphStyle::Rounded,
-            Some(GraphStyle::Angular) => graph::GraphStyle::Angular,
-            None => graph::GraphStyle::Rounded,
-        }
-    }
-}
+pub use graph::GraphStyle;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -308,7 +293,10 @@ pub fn run() -> Result<()> {
     let max_count = args.max_count;
     let order = args.order.or(core_config.option.order).into();
     let graph_width = args.graph_width.or(core_config.option.graph_width);
-    let graph_style = args.graph_style.or(core_config.option.graph_style).into();
+    let graph_style = args
+        .graph_style
+        .or(core_config.option.graph_style)
+        .unwrap_or_default();
     let initial_selection = args
         .initial_selection
         .or(core_config.option.initial_selection)

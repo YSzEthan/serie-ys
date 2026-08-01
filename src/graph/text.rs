@@ -1,4 +1,6 @@
+use clap::ValueEnum;
 use ratatui::style::Color as RatatuiColor;
+use serde::Deserialize;
 
 use crate::{
     git::CommitHash,
@@ -58,6 +60,36 @@ impl GlyphSet {
         corner_br: "╯",
     };
 
+    pub const ANGULAR: GlyphSet = GlyphSet {
+        commit_dot: "●",
+        head_dot: "◯",
+        vert: "│",
+        horiz: "─",
+        corner_tl: "┌",
+        corner_tr: "┐",
+        corner_bl: "└",
+        corner_br: "┘",
+    };
+
+    pub const ASCII: GlyphSet = GlyphSet {
+        commit_dot: "*",
+        head_dot: "o",
+        vert: "|",
+        horiz: "-",
+        corner_tl: "+",
+        corner_tr: "+",
+        corner_bl: "+",
+        corner_br: "+",
+    };
+
+    pub fn from_style(style: GraphStyle) -> GlyphSet {
+        match style {
+            GraphStyle::Rounded => GlyphSet::ROUNDED,
+            GraphStyle::Angular => GlyphSet::ANGULAR,
+            GraphStyle::Ascii => GlyphSet::ASCII,
+        }
+    }
+
     pub fn resolve(&self, glyph: Glyph) -> &'static str {
         match glyph {
             Glyph::Blank => " ",
@@ -86,10 +118,20 @@ impl TextCell {
     };
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// CLI/config enum lives here (not in `lib.rs`) because `GlyphSet::from_style`
+/// is its only real consumer. This is the one exception to the crate's usual
+/// split (CLI enum in `lib.rs`, domain type in `graph`, e.g.
+/// `GraphWidthType` -> `CellWidthType`) -- that split exists for types where
+/// the CLI value needs runtime resolution (`Auto` depends on terminal
+/// width, resolved in `check.rs`). `GraphStyle` has no such resolution step,
+/// so keeping two enums plus a translating `From` impl was pure duplication.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum, Deserialize)]
+#[serde(rename_all = "lowercase")]
 pub enum GraphStyle {
+    #[default]
     Rounded,
     Angular,
+    Ascii,
 }
 
 /// Shared "one commit → its text cells" lookup used by both the per-frame
@@ -297,5 +339,72 @@ mod tests {
         let cells = build_text_cells(0, 1, &edges, &[]);
         assert_eq!(cells[0].glyph, Glyph::CommitDot);
         assert_eq!(cells[0].color, RatatuiColor::Reset);
+    }
+
+    /// Pins every `GlyphSet` mapping as a literal table -- not derived from
+    /// `resolve()` or `from_style()`, otherwise a wrong table entry and a
+    /// wrong dispatch could cancel out and still pass. This is also the only
+    /// place `corner_tl` / `corner_bl` / `head_dot` get covered: none of
+    /// those three glyphs appear in any golden snapshot under the rounded
+    /// style (see tests/graph.rs), so without this table they'd have zero
+    /// test coverage.
+    #[test]
+    fn glyph_set_tables_match_style_charts() {
+        let cases: &[(GlyphSet, [(Glyph, &str); 9])] = &[
+            (
+                GlyphSet::ROUNDED,
+                [
+                    (Glyph::Blank, " "),
+                    (Glyph::CommitDot, "●"),
+                    (Glyph::HeadDot, "◯"),
+                    (Glyph::Vert, "│"),
+                    (Glyph::Horiz, "─"),
+                    (Glyph::CornerTL, "╭"),
+                    (Glyph::CornerTR, "╮"),
+                    (Glyph::CornerBL, "╰"),
+                    (Glyph::CornerBR, "╯"),
+                ],
+            ),
+            (
+                GlyphSet::ANGULAR,
+                [
+                    (Glyph::Blank, " "),
+                    (Glyph::CommitDot, "●"),
+                    (Glyph::HeadDot, "◯"),
+                    (Glyph::Vert, "│"),
+                    (Glyph::Horiz, "─"),
+                    (Glyph::CornerTL, "┌"),
+                    (Glyph::CornerTR, "┐"),
+                    (Glyph::CornerBL, "└"),
+                    (Glyph::CornerBR, "┘"),
+                ],
+            ),
+            (
+                GlyphSet::ASCII,
+                [
+                    (Glyph::Blank, " "),
+                    (Glyph::CommitDot, "*"),
+                    (Glyph::HeadDot, "o"),
+                    (Glyph::Vert, "|"),
+                    (Glyph::Horiz, "-"),
+                    (Glyph::CornerTL, "+"),
+                    (Glyph::CornerTR, "+"),
+                    (Glyph::CornerBL, "+"),
+                    (Glyph::CornerBR, "+"),
+                ],
+            ),
+        ];
+        for (set, mappings) in cases {
+            for (glyph, expected) in mappings {
+                assert_eq!(set.resolve(*glyph), *expected, "{set:?} {glyph:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn from_style_selects_matching_glyph_set() {
+        assert_eq!(GlyphSet::from_style(GraphStyle::Rounded), GlyphSet::ROUNDED);
+        assert_eq!(GlyphSet::from_style(GraphStyle::Angular), GlyphSet::ANGULAR);
+        assert_eq!(GlyphSet::from_style(GraphStyle::Ascii), GlyphSet::ASCII);
     }
 }
