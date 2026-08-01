@@ -35,14 +35,6 @@ struct Args {
     #[arg(short = 'n', long, value_name = "NUMBER")]
     max_count: Option<usize>,
 
-    /// Image protocol to render graph [default: auto]
-    #[arg(short, long, value_name = "TYPE")]
-    protocol: Option<ImageProtocolType>,
-
-    /// Force text mode (shortcut for --protocol text)
-    #[arg(short = 't', long = "text", conflicts_with = "protocol")]
-    text: bool,
-
     /// Commit ordering algorithm [default: chrono]
     #[arg(short, long, value_name = "TYPE")]
     order: Option<CommitOrderType>,
@@ -58,27 +50,6 @@ struct Args {
     /// Initial selection of commit [default: latest]
     #[arg(short, long, value_name = "TYPE")]
     initial_selection: Option<InitialSelection>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum ImageProtocolType {
-    Auto,
-    Iterm,
-    Kitty,
-    Text,
-}
-
-impl From<Option<ImageProtocolType>> for protocol::ImageProtocol {
-    fn from(protocol: Option<ImageProtocolType>) -> Self {
-        match protocol {
-            Some(ImageProtocolType::Auto) => protocol::auto_detect(),
-            Some(ImageProtocolType::Iterm) => protocol::ImageProtocol::Iterm2,
-            Some(ImageProtocolType::Kitty) => protocol::ImageProtocol::Kitty,
-            Some(ImageProtocolType::Text) => protocol::ImageProtocol::Text,
-            None => protocol::auto_detect(),
-        }
-    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
@@ -209,7 +180,6 @@ pub struct GraphRenderCtx<'a> {
     pub cell_width_type: graph::CellWidthType,
     pub image_protocol: protocol::ImageProtocol,
     pub graph_style: graph::GraphStyle,
-    pub image_width_mode: graph::GraphImageWidthMode,
     pub selected_bg_color: image::Rgba<u8>,
 }
 
@@ -249,7 +219,6 @@ pub fn compute_filtered_graph_from(
         ctx.color_set,
         ctx.cell_width_type,
         ctx.graph_style,
-        ctx.image_width_mode,
         ctx.image_protocol,
         head_commit_hash,
         ctx.selected_bg_color,
@@ -287,7 +256,6 @@ fn build_graph_artifacts(
         ctx.color_set,
         ctx.cell_width_type,
         ctx.graph_style,
-        ctx.image_width_mode,
         ctx.image_protocol,
         head_commit_hash.clone(),
         ctx.selected_bg_color,
@@ -368,15 +336,12 @@ pub fn run() -> Result<()> {
         prev_hook(info);
     }));
 
-    let mut args = Args::parse();
+    let args = Args::parse();
     let (core_config, ui_config, graph_config, color_theme, keybind_patch) = config::load()?;
     let keybind = keybind::KeyBind::new(keybind_patch);
 
     let max_count = args.max_count;
-    if args.text {
-        args.protocol = Some(ImageProtocolType::Text);
-    }
-    let image_protocol = args.protocol.or(core_config.option.protocol).into();
+    let image_protocol = protocol::ImageProtocol::Text;
     let order = args.order.or(core_config.option.order).into();
     let graph_width = args.graph_width.or(core_config.option.graph_width);
     let graph_style = args.graph_style.or(core_config.option.graph_style).into();
@@ -421,7 +386,6 @@ pub fn run() -> Result<()> {
         cell_width_type,
         image_protocol,
         graph_style,
-        image_width_mode: graph_config.row_image_width,
         selected_bg_color,
     };
     let (mut graph_image_manager, mut filtered_graph, mut remote_only_commits) =
@@ -526,4 +490,19 @@ pub fn run() -> Result<()> {
     .ok();
     ratatui::restore();
     ret.map_err(Into::into)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn removed_protocol_flag_is_rejected() {
+        assert!(Args::try_parse_from(["ysgit", "-p", "kitty"]).is_err());
+    }
+
+    #[test]
+    fn removed_text_flag_is_rejected() {
+        assert!(Args::try_parse_from(["ysgit", "-t"]).is_err());
+    }
 }

@@ -11,9 +11,8 @@ use umbra::optional;
 
 use crate::{
     color::{ColorTheme, OptionalColorTheme},
-    graph::GraphImageWidthMode,
     keybind::KeyBind,
-    CommitOrderType, GraphStyle, GraphWidthType, ImageProtocolType, InitialSelection, Result,
+    CommitOrderType, GraphStyle, GraphWidthType, InitialSelection, Result,
 };
 
 const XDG_CONFIG_HOME_ENV_NAME: &str = "XDG_CONFIG_HOME";
@@ -122,7 +121,6 @@ pub struct CoreConfig {
 #[optional(derives = [Deserialize])]
 #[derive(Debug, Clone, PartialEq, Eq, SmartDefault)]
 pub struct CoreOptionConfig {
-    pub protocol: Option<ImageProtocolType>,
     pub order: Option<CommitOrderType>,
     pub graph_width: Option<GraphWidthType>,
     pub graph_style: Option<GraphStyle>,
@@ -385,9 +383,6 @@ pub struct UiRefsConfig {
 #[optional(derives = [Deserialize])]
 #[derive(Debug, Default, Clone, PartialEq, Eq, Validate)]
 pub struct GraphConfig {
-    #[garde(skip)]
-    pub row_image_width: GraphImageWidthMode,
-
     #[garde(dive)]
     #[nested]
     pub color: GraphColorConfig,
@@ -424,7 +419,6 @@ mod tests {
         let expected = Config {
             core: CoreConfig {
                 option: CoreOptionConfig {
-                    protocol: None,
                     order: None,
                     graph_width: None,
                     graph_style: None,
@@ -485,7 +479,6 @@ mod tests {
                 refs: UiRefsConfig { width: 26 },
             },
             graph: GraphConfig {
-                row_image_width: GraphImageWidthMode::Fixed,
                 color: GraphColorConfig {
                     branches: vec![
                         "#E06C76".into(),
@@ -509,7 +502,6 @@ mod tests {
     fn test_config_complete_toml() {
         let toml = r##"
             [core.option]
-            protocol = "kitty"
             order = "topo"
             graph_width = "single"
             graph_style = "angular"
@@ -549,7 +541,6 @@ mod tests {
         let expected = Config {
             core: CoreConfig {
                 option: CoreOptionConfig {
-                    protocol: Some(ImageProtocolType::Kitty),
                     order: Some(CommitOrderType::Topo),
                     graph_width: Some(GraphWidthType::Single),
                     graph_style: Some(GraphStyle::Angular),
@@ -635,7 +626,6 @@ mod tests {
                 refs: UiRefsConfig { width: 40 },
             },
             graph: GraphConfig {
-                row_image_width: GraphImageWidthMode::Fixed,
                 color: GraphColorConfig {
                     branches: vec!["#ff0000".into(), "#00ff00".into(), "#0000ff".into()],
                     edge: "#000000".into(),
@@ -658,7 +648,6 @@ mod tests {
         let expected = Config {
             core: CoreConfig {
                 option: CoreOptionConfig {
-                    protocol: None,
                     order: None,
                     graph_width: None,
                     graph_style: None,
@@ -719,7 +708,6 @@ mod tests {
                 refs: UiRefsConfig { width: 26 },
             },
             graph: GraphConfig {
-                row_image_width: GraphImageWidthMode::Fixed,
                 color: GraphColorConfig {
                     branches: vec![
                         "#E06C76".into(),
@@ -737,6 +725,17 @@ mod tests {
             keybind: None,
         };
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn removed_config_field_does_not_break_sibling_fields() {
+        let toml = r#"
+            [core.option]
+            protocol = "kitty"
+            order = "topo"
+        "#;
+        let config: Config = toml::from_str::<OptionalConfig>(toml).unwrap().into();
+        assert_eq!(config.core.option.order, Some(CommitOrderType::Topo));
     }
 
     #[test]

@@ -27,6 +27,12 @@ pub struct Graph {
     pub max_pos_x: usize,
 }
 
+impl Graph {
+    pub fn cell_count(&self) -> usize {
+        self.max_pos_x + 1
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct Edge {
     pub edge_type: EdgeType,

@@ -12,16 +12,6 @@
           "type": "object",
           "description": "General core settings",
           "properties": {
-            "protocol": {
-              "type": "string",
-              "description": "The protocol type for rendering images of commit graphs. The value specified in the command line argument takes precedence.",
-              "enum": [
-                "auto",
-                "iterm",
-                "kitty"
-              ],
-              "default": "auto"
-            },
             "order": {
               "type": "string",
               "description": "The commit ordering algorithm. The value specified in the command line argument takes precedence.",
@@ -313,12 +303,6 @@
       "type": "object",
       "description": "Commit graph rendering settings",
       "properties": {
-        "row_image_width": {
-          "type": "string",
-          "description": "Width mode for graph row images: compact trims to actual graph width, fixed uses full graph width.",
-          "enum": ["compact", "fixed"],
-          "default": "fixed"
-        },
         "color": {
           "type": "object",
           "description": "Colors for the commit graph.",
