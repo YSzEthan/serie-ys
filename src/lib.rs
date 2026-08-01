@@ -112,6 +112,7 @@ impl From<Option<InitialSelection>> for app::InitialSelection {
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
+#[derive(Debug)]
 pub struct FilteredGraphData {
     pub graph: Rc<Graph>,
     pub cell_width: u16,
@@ -171,15 +172,14 @@ pub fn find_remote_only_commits(
         .collect()
 }
 
-/// Rendering parameters shared by every graph/image builder.
+/// Rendering parameters shared by every graph builder.
 ///
 /// `graph_style` has no reader yet -- the text-mode graph doesn't consume it
 /// (issue #20 wires it in) -- but the CLI flag and config key are kept, so
 /// this field must stay to give `args.graph_style`'s parsed value somewhere
 /// to go.
 #[derive(Clone, Copy)]
-pub struct GraphRenderCtx<'a> {
-    pub color_set: &'a color::GraphColorSet,
+pub struct GraphRenderCtx {
     pub cell_width_type: graph::CellWidthType,
     pub graph_style: graph::GraphStyle,
 }
@@ -188,7 +188,7 @@ pub fn compute_filtered_graph_from(
     repository: &git::Repository,
     full_graph: &Graph,
     remote_only: FxHashSet<git::CommitHash>,
-    ctx: GraphRenderCtx<'_>,
+    ctx: GraphRenderCtx,
 ) -> (Option<FilteredGraphData>, FxHashSet<git::CommitHash>) {
     if remote_only.is_empty() {
         return (None, remote_only);
@@ -226,7 +226,7 @@ pub fn compute_filtered_graph_from(
 fn build_graph_artifacts(
     repository: &git::Repository,
     graph: &Rc<Graph>,
-    ctx: GraphRenderCtx<'_>,
+    ctx: GraphRenderCtx,
 ) -> (Option<FilteredGraphData>, FxHashSet<git::CommitHash>) {
     let remote_only = find_remote_only_commits(repository, graph);
     compute_filtered_graph_from(repository, graph, remote_only, ctx)
@@ -240,7 +240,7 @@ fn try_refresh_filtered_for_ref_change(
     graph: &Graph,
     remote_only_commits: &mut FxHashSet<git::CommitHash>,
     filtered_graph: &mut Option<FilteredGraphData>,
-    ctx: GraphRenderCtx<'_>,
+    ctx: GraphRenderCtx,
 ) -> bool {
     let new_remote_only = find_remote_only_commits(repository, graph);
     if &new_remote_only == remote_only_commits {
@@ -343,7 +343,6 @@ pub fn run() -> Result<()> {
     ));
     let mut cell_width_type = check::decide_cell_width_type(&graph, graph_width)?;
     let mut render_ctx = GraphRenderCtx {
-        color_set: &graph_color_set,
         cell_width_type,
         graph_style,
     };

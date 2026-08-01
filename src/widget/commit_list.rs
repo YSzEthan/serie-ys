@@ -224,8 +224,7 @@ pub struct CommitListState<'a> {
     head: Head,
 
     // Filtered graph data (for when remote-only commits are hidden)
-    filtered_graph: Option<Rc<Graph>>,
-    filtered_graph_cell_width: u16,
+    filtered: Option<FilteredGraphData>,
     // Marker-overlay color map (commit_hash -> color), keyed differently
     // from `graph_colors` above (which is a pos_x-indexed palette). Not the
     // same concept despite the similar name -- do not merge.
@@ -287,10 +286,6 @@ impl<'a> CommitListState<'a> {
         remote_only_commits: FxHashSet<CommitHash>,
         working_changes: Option<WorkingChanges>,
     ) -> CommitListState<'a> {
-        let (filtered_graph, filtered_graph_cell_width) = match filtered {
-            Some(fg) => (Some(fg.graph), fg.cell_width),
-            None => (None, 0),
-        };
         let commit_count = commits.len();
         let has_virtual_row = working_changes.as_ref().is_some_and(|wc| !wc.is_empty());
         let vr_offset = if has_virtual_row { 1 } else { 0 };
@@ -313,8 +308,7 @@ impl<'a> CommitListState<'a> {
             head_commit_hash,
             graph_cell_width,
             head,
-            filtered_graph,
-            filtered_graph_cell_width,
+            filtered,
             filtered_graph_colors,
             ref_name_to_commit_index_map,
             search_state: SearchState::Inactive,
@@ -345,16 +339,14 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn into_graph_parts(self) -> (Option<FilteredGraphData>, FxHashSet<CommitHash>) {
-        let filtered = self.filtered_graph.map(|graph| FilteredGraphData {
-            graph,
-            cell_width: self.filtered_graph_cell_width,
-        });
-        (filtered, self.remote_only_commits)
+        (self.filtered, self.remote_only_commits)
     }
 
     pub fn graph_area_cell_width(&self) -> u16 {
-        let w = if !self.show_remote_refs && self.filtered_graph.is_some() {
-            self.filtered_graph_cell_width
+        let w = if !self.show_remote_refs {
+            self.filtered
+                .as_ref()
+                .map_or(self.graph_cell_width, |f| f.cell_width)
         } else {
             self.graph_cell_width
         };
@@ -1018,15 +1010,11 @@ impl<'a> CommitListState<'a> {
 
     fn current_graph(&self) -> &Graph {
         if !self.show_remote_refs {
-            if let Some(ref g) = self.filtered_graph {
-                return g;
+            if let Some(ref f) = self.filtered {
+                return &f.graph;
             }
         }
         &self.graph
-    }
-
-    pub(crate) fn head_commit_hash(&self) -> Option<&CommitHash> {
-        self.head_commit_hash.as_ref()
     }
 
     fn text_cells_for_hash(&self, hash: &CommitHash) -> Option<Vec<TextCell>> {
@@ -1315,12 +1303,10 @@ impl CommitList<'_> {
             return;
         }
         let gap = state.inline_detail_height;
-        let head_hash = state.head_commit_hash().cloned();
+        let head_hash = state.head_commit_hash.as_ref();
         let selected_bg = ratatui_color_to_rgb(self.ctx.color_theme.list_selected_bg);
 
-        let head_col = head_hash
-            .as_ref()
-            .and_then(|h| self.graph_text_head_col(state, h));
+        let head_col = head_hash.and_then(|h| self.graph_text_head_col(state, h));
         let virtual_row_visible = state.has_virtual_row() && state.offset == 0;
 
         if virtual_row_visible {
@@ -1358,7 +1344,7 @@ impl CommitList<'_> {
             let Some(cells) = state.text_cells_for_hash(hash) else {
                 continue;
             };
-            let is_head = head_hash.as_ref() == Some(hash);
+            let is_head = head_hash == Some(hash);
             let is_selected = display_i == state.selected;
             self.put_text_cells(buf, area, y, &cells, is_head);
 
@@ -2262,7 +2248,7 @@ mod tests {
             working_changes: bool,
             inline_detail_height: u16,
             /// When true, builds a second `Graph` fixture (same shape as the
-            /// primary) and routes rendering through it via `filtered_graph`
+            /// primary) and routes rendering through it via `filtered`
             /// and `set_show_remote_refs(false)`. This is the only path
             /// `render_graph`'s filtered branch exercises -- without it,
             /// that branch has zero test coverage.
@@ -2529,7 +2515,7 @@ mod tests {
 
         #[test]
         fn filtered_graph_manager_fills_text_cells() {
-            // `render_graph`'s `current_graph()` picks `filtered_graph`
+            // `render_graph`'s `current_graph()` picks `filtered`
             // instead of `graph` whenever `show_remote_refs` is off and a
             // filtered graph exists (the "hide remote-only commits" path).
             // Nothing else in this suite ever sets `filtered: true`, so
@@ -2539,7 +2525,7 @@ mod tests {
             //
             // `text_graph_filtered` is deliberately a different shape from
             // `text_graph` (the primary fixture) -- if both rendered
-            // identically, a `current_graph()` that ignores `filtered_graph`
+            // identically, a `current_graph()` that ignores `filtered`
             // entirely would still pass this assertion undetected.
             let commits = text_graph_commits();
             let mut state = build_state(
