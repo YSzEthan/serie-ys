@@ -143,11 +143,12 @@ pub(crate) fn text_cells(
     graph: &Graph,
     commit_hash: &CommitHash,
     colors: &[RatatuiColor],
+    width: CellWidthType,
 ) -> Option<Vec<TextCell>> {
     let &(pos_x, pos_y) = graph.commit_pos_map.get(commit_hash)?;
     let edges = &graph.edges[pos_y];
     let cell_count = graph.cell_count();
-    Some(build_text_cells(pos_x, cell_count, edges, colors))
+    Some(build_text_cells(pos_x, cell_count, edges, colors, width))
 }
 
 /// Batch text-mode render of every commit in `graph`, in `commit_hashes` order.
@@ -156,28 +157,42 @@ pub(crate) fn text_cells(
 /// at once rather than the per-commit lookups the UI does. Panics if
 /// `graph.commit_hashes` and `graph.commit_pos_map` are out of sync (they're
 /// built together in `calc.rs`, so this should never trigger in practice).
-pub fn build_text_graph(graph: &Graph, colors: &[RatatuiColor]) -> Vec<Vec<TextCell>> {
+pub fn build_text_graph(
+    graph: &Graph,
+    colors: &[RatatuiColor],
+    width: CellWidthType,
+) -> Vec<Vec<TextCell>> {
     graph
         .commit_hashes
         .iter()
         .map(|hash| {
-            text_cells(graph, hash, colors).expect("commit_hashes / commit_pos_map out of sync")
+            text_cells(graph, hash, colors, width)
+                .expect("commit_hashes / commit_pos_map out of sync")
         })
         .collect()
 }
 
 /// Convert edges to lazygit-style text cells (symbol + connector per column).
 ///
-/// Returns `cell_count * 2` cells. Each graph column takes 2 chars:
-/// [symbol, connector]. The connector is `─` when a horizontal continuation
-/// exists to the right, otherwise space.
+/// Returns `cell_count * width.cells_per_column()` cells. `Double` draws each
+/// column as [symbol, connector]; `Single` draws the symbol only, keeping
+/// whichever of the two has higher `glyph_priority` (the same rule that
+/// already resolves overlapping glyphs within a column). This means a
+/// horizontal run gets swallowed wherever it crosses an already-occupied
+/// column -- e.g. a 5-way merge's connecting lines vanish entirely under
+/// `Single`, leaving just the dots and corners. That's an accepted trade-off
+/// (a compact, occasionally illegible graph beats a graph that doesn't fit
+/// at all), not a bug -- see issue #21's follow-up for the proper fix
+/// (box-drawing junction glyphs).
 pub(crate) fn build_text_cells(
     commit_pos_x: usize,
     cell_count: usize,
     edges: &[Edge],
     colors: &[RatatuiColor],
+    width: CellWidthType,
 ) -> Vec<TextCell> {
-    let mut cells: Vec<TextCell> = vec![TextCell::BLANK; cell_count * 2];
+    let per_col = width.cells_per_column();
+    let mut cells: Vec<TextCell> = vec![TextCell::BLANK; cell_count * per_col];
 
     let color_of = |idx: usize| -> RatatuiColor {
         if colors.is_empty() {
@@ -198,13 +213,16 @@ pub(crate) fn build_text_cells(
 
     place(
         &mut cells,
-        commit_pos_x * 2,
+        commit_pos_x * per_col,
         Glyph::CommitDot,
         color_of(commit_pos_x),
     );
 
     for edge in edges {
-        // `left` fills the left half of the 2-char column, `right` the right half.
+        // `left` fills the left half of the column, `right` the right half.
+        // Under `Double` they're two distinct cells; under `Single` they
+        // collapse onto the same cell and `place`'s priority rule keeps
+        // whichever one wins (see the fn doc comment).
         // Half-stubs (Left/Right/Up/Down) only touch their own side so they don't
         // poke into the neighbouring column.
         let (left, right) = match edge.edge_type {
@@ -219,10 +237,10 @@ pub(crate) fn build_text_cells(
         };
 
         let color = color_of(edge.associated_line_pos_x);
-        let idx = edge.pos_x * 2;
+        let idx = edge.pos_x * per_col;
 
         place(&mut cells, idx, left, color);
-        place(&mut cells, idx + 1, right, color);
+        place(&mut cells, idx + per_col - 1, right, color);
     }
 
     cells
@@ -246,6 +264,26 @@ pub enum CellWidthType {
     Double, // 2 cells
     Single,
 }
+
+impl CellWidthType {
+    /// Terminal columns one graph column occupies. `Double` draws
+    /// [symbol, connector]; `Single` draws the symbol only.
+    pub fn cells_per_column(self) -> usize {
+        match self {
+            CellWidthType::Double => 2,
+            CellWidthType::Single => 1,
+        }
+    }
+}
+
+/// The graph column's width in cells -- identical by construction to
+/// `build_text_cells`'s output length. That equality IS issue #21's fix:
+/// the bug was this width and `build_text_cells`'s cell count being computed
+/// in separate places that could (and did) disagree.
+pub fn graph_cell_width(graph: &Graph, width: CellWidthType) -> u16 {
+    (graph.cell_count() * width.cells_per_column()) as u16
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,7 +293,7 @@ mod tests {
         // Single commit dot with a vertical edge on the same column.
         let edges = vec![Edge::new(EdgeType::Vertical, 0, 0)];
         let colors = vec![RatatuiColor::Red, RatatuiColor::Green];
-        let cells = build_text_cells(0, 1, &edges, &colors);
+        let cells = build_text_cells(0, 1, &edges, &colors, CellWidthType::Double);
         assert_eq!(cells.len(), 2);
         // Commit dot wins at pos_x=0 (edge doesn't clobber).
         assert_eq!(cells[0].glyph, Glyph::CommitDot);
@@ -272,7 +310,7 @@ mod tests {
             Edge::new(EdgeType::LeftTop, 1, 1),
         ];
         let colors = vec![RatatuiColor::Red, RatatuiColor::Green];
-        let cells = build_text_cells(0, 2, &edges, &colors);
+        let cells = build_text_cells(0, 2, &edges, &colors, CellWidthType::Double);
         assert_eq!(cells.len(), 4);
         assert_eq!(cells[0].glyph, Glyph::CommitDot);
         // Col 1: ╭ with ─ connector.
@@ -289,7 +327,7 @@ mod tests {
             Edge::new(EdgeType::Horizontal, 1, 0),
         ];
         let colors = vec![RatatuiColor::Red];
-        let cells = build_text_cells(2, 3, &edges, &colors);
+        let cells = build_text_cells(2, 3, &edges, &colors, CellWidthType::Double);
         assert_eq!(cells.len(), 6);
         assert_eq!(cells[0].glyph, Glyph::Horiz);
         assert_eq!(cells[1].glyph, Glyph::Horiz);
@@ -303,13 +341,13 @@ mod tests {
     fn text_cells_left_right_stubs_stay_on_own_half() {
         // Left stub at col 1: left half `─`, right half blank
         let edges = vec![Edge::new(EdgeType::Left, 1, 0)];
-        let cells = build_text_cells(0, 2, &edges, &[RatatuiColor::Red]);
+        let cells = build_text_cells(0, 2, &edges, &[RatatuiColor::Red], CellWidthType::Double);
         assert_eq!(cells[2].glyph, Glyph::Horiz);
         assert_eq!(cells[3].glyph, Glyph::Blank);
 
         // Right stub at col 0: left half blank, right half `─`
         let edges = vec![Edge::new(EdgeType::Right, 0, 0)];
-        let cells = build_text_cells(1, 2, &edges, &[RatatuiColor::Red]);
+        let cells = build_text_cells(1, 2, &edges, &[RatatuiColor::Red], CellWidthType::Double);
         // commit is at col 1 so cells[2] is the dot; col 0 left half stays blank
         assert_eq!(cells[0].glyph, Glyph::Blank);
         assert_eq!(cells[1].glyph, Glyph::Horiz);
@@ -327,7 +365,7 @@ mod tests {
         ];
         let colors = vec![RatatuiColor::Red, RatatuiColor::Green, RatatuiColor::Blue];
         for edges in [edges_h_first, edges_v_first] {
-            let cells = build_text_cells(0, 3, &edges, &colors);
+            let cells = build_text_cells(0, 3, &edges, &colors, CellWidthType::Double);
             assert_eq!(cells[2].glyph, Glyph::Vert);
             assert_eq!(cells[2].color, RatatuiColor::Blue);
         }
@@ -336,9 +374,43 @@ mod tests {
     #[test]
     fn text_cells_empty_colors_fallback() {
         let edges = vec![Edge::new(EdgeType::Vertical, 0, 0)];
-        let cells = build_text_cells(0, 1, &edges, &[]);
+        let cells = build_text_cells(0, 1, &edges, &[], CellWidthType::Double);
         assert_eq!(cells[0].glyph, Glyph::CommitDot);
         assert_eq!(cells[0].color, RatatuiColor::Reset);
+    }
+
+    /// Single-mode folding: for every `EdgeType`, `single[c]` must equal
+    /// whichever of `double[2c]`/`double[2c+1]` has the higher
+    /// `glyph_priority` -- issue #21's table, derived from first
+    /// principles rather than hardcoded per-variant.
+    #[test]
+    fn text_cells_single_width_folds_per_edge_type() {
+        let colors = vec![RatatuiColor::Red];
+        let cases: &[(EdgeType, Glyph)] = &[
+            (EdgeType::Vertical, Glyph::Vert),
+            (EdgeType::Up, Glyph::Vert),
+            (EdgeType::Down, Glyph::Vert),
+            (EdgeType::Horizontal, Glyph::Horiz),
+            (EdgeType::Left, Glyph::Horiz),
+            (EdgeType::Right, Glyph::Horiz),
+            (EdgeType::RightTop, Glyph::CornerTR),
+            (EdgeType::RightBottom, Glyph::CornerBR),
+            (EdgeType::LeftTop, Glyph::CornerTL),
+            (EdgeType::LeftBottom, Glyph::CornerBL),
+        ];
+        for (edge_type, expected) in cases {
+            let edges = vec![Edge::new(*edge_type, 1, 0)];
+            let cells = build_text_cells(0, 2, &edges, &colors, CellWidthType::Single);
+            assert_eq!(cells.len(), 2, "{edge_type:?}");
+            assert_eq!(cells[1].glyph, *expected, "{edge_type:?}");
+        }
+    }
+
+    #[test]
+    fn text_cells_single_width_commit_dot_uses_one_cell_per_column() {
+        let cells = build_text_cells(1, 3, &[], &[RatatuiColor::Red], CellWidthType::Single);
+        assert_eq!(cells.len(), 3);
+        assert_eq!(cells[1].glyph, Glyph::CommitDot);
     }
 
     /// Pins every `GlyphSet` mapping as a literal table -- not derived from

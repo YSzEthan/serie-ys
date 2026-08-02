@@ -18,8 +18,7 @@ use crate::{
     config::UserListColumnType,
     fuzzy::SearchMatcher,
     git::{Commit, CommitHash, Head, Ref, WorkingChanges},
-    graph::{Glyph, GlyphSet, Graph, TextCell},
-    FilteredGraphData,
+    graph::{CellWidthType, Glyph, GlyphSet, Graph, TextCell},
 };
 
 const ELLIPSIS: &str = "...";
@@ -220,11 +219,11 @@ pub struct CommitListState<'a> {
     // one pair per graph.
     graph_colors: Vec<Color>,
     head_commit_hash: Option<CommitHash>,
-    graph_cell_width: u16,
+    cell_width_type: CellWidthType,
     head: Head,
 
-    // Filtered graph data (for when remote-only commits are hidden)
-    filtered: Option<FilteredGraphData>,
+    // Filtered graph (for when remote-only commits are hidden)
+    filtered: Option<Rc<Graph>>,
     // Marker-overlay color map (commit_hash -> color), keyed differently
     // from `graph_colors` above (which is a pos_x-indexed palette). Not the
     // same concept despite the similar name -- do not merge.
@@ -276,12 +275,12 @@ impl<'a> CommitListState<'a> {
         graph: Rc<Graph>,
         graph_colors: Vec<Color>,
         head_commit_hash: Option<CommitHash>,
-        graph_cell_width: u16,
+        cell_width_type: CellWidthType,
         head: Head,
         ref_name_to_commit_index_map: FxHashMap<String, RawCommitIdx>,
         default_ignore_case: bool,
         default_fuzzy: bool,
-        filtered: Option<FilteredGraphData>,
+        filtered: Option<Rc<Graph>>,
         filtered_graph_colors: Option<FxHashMap<CommitHash, Color>>,
         remote_only_commits: FxHashSet<CommitHash>,
         working_changes: Option<WorkingChanges>,
@@ -306,7 +305,7 @@ impl<'a> CommitListState<'a> {
             graph,
             graph_colors,
             head_commit_hash,
-            graph_cell_width,
+            cell_width_type,
             head,
             filtered,
             filtered_graph_colors,
@@ -338,19 +337,16 @@ impl<'a> CommitListState<'a> {
         }
     }
 
-    pub fn into_graph_parts(self) -> (Option<FilteredGraphData>, FxHashSet<CommitHash>) {
+    pub fn into_graph_parts(self) -> (Option<Rc<Graph>>, FxHashSet<CommitHash>) {
         (self.filtered, self.remote_only_commits)
     }
 
+    /// Width of `current_graph()`, not necessarily `self.graph` -- same
+    /// filtered/`show_remote_refs` fallback as `current_graph()` itself, so
+    /// this always matches the graph that actually gets rendered.
     pub fn graph_area_cell_width(&self) -> u16 {
-        let w = if !self.show_remote_refs {
-            self.filtered
-                .as_ref()
-                .map_or(self.graph_cell_width, |f| f.cell_width)
-        } else {
-            self.graph_cell_width
-        };
-        w + 1 // right pad
+        crate::graph::graph_cell_width(self.current_graph(), self.cell_width_type) + 1
+        // right pad
     }
 
     pub fn name_cell_width(&self) -> u16 {
@@ -1011,14 +1007,19 @@ impl<'a> CommitListState<'a> {
     fn current_graph(&self) -> &Graph {
         if !self.show_remote_refs {
             if let Some(ref f) = self.filtered {
-                return &f.graph;
+                return f;
             }
         }
         &self.graph
     }
 
     fn text_cells_for_hash(&self, hash: &CommitHash) -> Option<Vec<TextCell>> {
-        crate::graph::text_cells(self.current_graph(), hash, &self.graph_colors)
+        crate::graph::text_cells(
+            self.current_graph(),
+            hash,
+            &self.graph_colors,
+            self.cell_width_type,
+        )
     }
 
     fn marker_color(&self, commit_info: &CommitInfo<'_>) -> Color {
@@ -2249,6 +2250,7 @@ mod tests {
             /// `render_graph`'s filtered branch exercises -- without it,
             /// that branch has zero test coverage.
             filtered: bool,
+            cell_width_type: CellWidthType,
         }
 
         impl Default for Opts {
@@ -2258,12 +2260,12 @@ mod tests {
                     working_changes: false,
                     inline_detail_height: 0,
                     filtered: false,
+                    cell_width_type: CellWidthType::Double,
                 }
             }
         }
 
         fn build_state(commits: &[Commit], graph: Graph, opts: Opts) -> CommitListState<'_> {
-            let graph_cell_width = (graph.max_pos_x + 1) as u16 * 2;
             let head_hash = opts.head_hash.map(|i| commits[i].commit_hash.clone());
             let graph_colors: Vec<Color> = test_graph_color_set()
                 .colors
@@ -2281,16 +2283,13 @@ mod tests {
                 }],
                 unstaged: Vec::new(),
             });
-            let filtered = opts.filtered.then(|| FilteredGraphData {
-                graph: Rc::new(text_graph_filtered(commits)),
-                cell_width: graph_cell_width,
-            });
+            let filtered = opts.filtered.then(|| Rc::new(text_graph_filtered(commits)));
             let mut state = CommitListState::new(
                 infos,
                 Rc::new(graph),
                 graph_colors,
                 head_hash,
-                graph_cell_width,
+                opts.cell_width_type,
                 Head::None,
                 FxHashMap::default(),
                 false,
@@ -2332,7 +2331,18 @@ mod tests {
 
         /// Graph column only (x in 0..6), one string per row in `rows`.
         fn graph_rows(buf: &Buffer, rows: std::ops::RangeInclusive<u16>) -> Vec<String> {
-            rows.map(|y| (0..6).map(|x| buf[(x, y)].symbol()).collect())
+            graph_rows_width(buf, rows, 6)
+        }
+
+        /// Same as `graph_rows`, but for a graph column narrower/wider than
+        /// the fixed `0..6` every double-width test uses -- needed for
+        /// single-width fixtures, where the column is 3 cells wide.
+        fn graph_rows_width(
+            buf: &Buffer,
+            rows: std::ops::RangeInclusive<u16>,
+            width: u16,
+        ) -> Vec<String> {
+            rows.map(|y| (0..width).map(|x| buf[(x, y)].symbol()).collect())
                 .collect()
         }
 
@@ -2361,6 +2371,37 @@ mod tests {
 
             // c1 (not selected): no bg override.
             assert_ne!(buf[(0, 2)].bg, SELECTED_BG);
+        }
+
+        #[test]
+        fn render_graph_single_width_folds_cells_and_sizes_column_correctly() {
+            // #21: the bug was `graph_area_cell_width()` and `build_text_cells`
+            // disagreeing on how many cells a `Single` graph column needs.
+            // Snapshot tests can't catch that -- they only see the cell
+            // contents, never the column width the widget actually allocated.
+            // This is the one place that width is observable.
+            let commits = text_graph_commits();
+            let mut state = build_state(
+                &commits,
+                text_graph(&commits),
+                Opts {
+                    cell_width_type: CellWidthType::Single,
+                    ..Default::default()
+                },
+            );
+            let buf = render_commit_list(&mut state, 10);
+
+            assert_eq!(
+                graph_rows_width(&buf, 1..=3, 3),
+                ["│◯─", "●─╭", "│ ●"],
+                "single width keeps whichever half has higher glyph_priority"
+            );
+
+            // Marker column starts right after the graph column (width
+            // cell_count(3) + 1 pad = 4). If `graph_area_cell_width()` were
+            // still sized for `Double` (7), this `│` would land one cell
+            // further right than here.
+            assert_eq!(buf[(4, 1)].symbol(), "│");
         }
 
         #[test]
@@ -2569,6 +2610,52 @@ mod tests {
                 graph_rows(&buf, 1..=3),
                 ["◯     ", "●     ", "●     "],
                 "must render text_graph_filtered's shape, not the primary graph's"
+            );
+        }
+
+        #[test]
+        fn graph_area_cell_width_reflects_current_graph_not_primary() {
+            // `graph_area_cell_width()` and `current_graph()` share the same
+            // `show_remote_refs` / `filtered` fallback and must always agree
+            // on which graph is "current". `text_graph_filtered` (used just
+            // above) happens to share `max_pos_x: 2` with the primary
+            // fixture, so a `graph_area_cell_width()` that silently fell
+            // back to the primary graph would produce the same width there
+            // and go undetected. This test's filtered graph has a
+            // deliberately different `max_pos_x`, purely to exercise the
+            // width computation -- no rendering involved.
+            let primary = Graph {
+                commit_hashes: Vec::new(),
+                commit_pos_map: FxHashMap::default(),
+                edges: Vec::new(),
+                max_pos_x: 5, // double width: (5+1)*2 + 1 pad = 13
+            };
+            let filtered = Graph {
+                commit_hashes: Vec::new(),
+                commit_pos_map: FxHashMap::default(),
+                edges: Vec::new(),
+                max_pos_x: 0, // double width: (0+1)*2 + 1 pad = 3
+            };
+            let mut state = CommitListState::new(
+                Vec::new(),
+                Rc::new(primary),
+                Vec::new(),
+                None,
+                CellWidthType::Double,
+                Head::None,
+                FxHashMap::default(),
+                false,
+                false,
+                Some(Rc::new(filtered)),
+                None,
+                FxHashSet::default(),
+                None,
+            );
+            state.set_show_remote_refs(false);
+            assert_eq!(
+                state.graph_area_cell_width(),
+                3,
+                "must use the filtered graph's width (3), not the primary's (13)"
             );
         }
     }

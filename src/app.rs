@@ -33,7 +33,6 @@ use crate::{
         commit_list::{CommitInfo, CommitListState, RawCommitIdx},
         pending_overlay::PendingOverlay,
     },
-    FilteredGraphData,
 };
 
 fn picker_digit_index(key: KeyEvent) -> Option<usize> {
@@ -239,7 +238,7 @@ impl<'a> App<'a> {
     pub fn new(
         repository: &'a Repository,
         graph: &Rc<Graph>,
-        filtered_graph: Option<FilteredGraphData>,
+        filtered_graph: Option<Rc<Graph>>,
         remote_only_commits: FxHashSet<CommitHash>,
         graph_color_set: &'a GraphColorSet,
         cell_width_type: CellWidthType,
@@ -273,18 +272,12 @@ impl<'a> App<'a> {
                 CommitInfo::new(commit, refs, graph_color)
             })
             .collect();
-        let graph_cell_width = match cell_width_type {
-            CellWidthType::Double => (graph.max_pos_x + 1) as u16 * 2,
-            CellWidthType::Single => (graph.max_pos_x + 1) as u16,
-        };
-
         let filtered_colors: Option<FxHashMap<CommitHash, ratatui::style::Color>> =
             filtered_graph.as_ref().map(|fg| {
-                fg.graph
-                    .commit_hashes
+                fg.commit_hashes
                     .iter()
                     .map(|commit_hash| {
-                        let (pos_x, _) = fg.graph.commit_pos_map[commit_hash];
+                        let (pos_x, _) = fg.commit_pos_map[commit_hash];
                         (
                             commit_hash.clone(),
                             graph_color_set.get(pos_x).to_ratatui_color(),
@@ -305,7 +298,7 @@ impl<'a> App<'a> {
             Rc::clone(graph),
             graph_colors,
             head_commit_hash,
-            graph_cell_width,
+            cell_width_type,
             head,
             ref_name_to_commit_index_map,
             ctx.core_config.search.ignore_case,
@@ -346,7 +339,7 @@ impl<'a> App<'a> {
         app
     }
 
-    pub fn into_parts(self) -> (Option<FilteredGraphData>, FxHashSet<CommitHash>) {
+    pub fn into_parts(self) -> (Option<Rc<Graph>>, FxHashSet<CommitHash>) {
         self.view.into_commit_list_state().into_graph_parts()
     }
 }

@@ -1221,7 +1221,7 @@ fn build_graph_snapshot_source(
         .map(|c| c.to_ratatui_color())
         .collect::<Vec<_>>();
 
-    let rows = graph::build_text_graph(&graph, &colors);
+    let rows = graph::build_text_graph(&graph, &colors, graph::CellWidthType::Double);
     let subjects = graph
         .commit_hashes
         .iter()

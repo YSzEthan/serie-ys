@@ -97,12 +97,6 @@ impl From<Option<InitialSelection>> for app::InitialSelection {
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-#[derive(Debug)]
-pub struct FilteredGraphData {
-    pub graph: Rc<Graph>,
-    pub cell_width: u16,
-}
-
 /// BFS from all local refs to find commits reachable only from remote branches.
 pub fn find_remote_only_commits(
     repository: &git::Repository,
@@ -161,8 +155,7 @@ pub fn compute_filtered_graph_from(
     repository: &git::Repository,
     full_graph: &Graph,
     remote_only: FxHashSet<git::CommitHash>,
-    cell_width_type: graph::CellWidthType,
-) -> (Option<FilteredGraphData>, FxHashSet<git::CommitHash>) {
+) -> (Option<Rc<Graph>>, FxHashSet<git::CommitHash>) {
     if remote_only.is_empty() {
         return (None, remote_only);
     }
@@ -182,27 +175,15 @@ pub fn compute_filtered_graph_from(
         head_has_named_ref(repository),
     ));
 
-    let cell_width = match cell_width_type {
-        graph::CellWidthType::Double => (filtered.max_pos_x + 1) as u16 * 2,
-        graph::CellWidthType::Single => (filtered.max_pos_x + 1) as u16,
-    };
-
-    (
-        Some(FilteredGraphData {
-            graph: filtered,
-            cell_width,
-        }),
-        remote_only,
-    )
+    (Some(filtered), remote_only)
 }
 
 fn build_graph_artifacts(
     repository: &git::Repository,
     graph: &Rc<Graph>,
-    cell_width_type: graph::CellWidthType,
-) -> (Option<FilteredGraphData>, FxHashSet<git::CommitHash>) {
+) -> (Option<Rc<Graph>>, FxHashSet<git::CommitHash>) {
     let remote_only = find_remote_only_commits(repository, graph);
-    compute_filtered_graph_from(repository, graph, remote_only, cell_width_type)
+    compute_filtered_graph_from(repository, graph, remote_only)
 }
 
 /// Fast-path helper: if the refs changed in a way that shifts commits between
@@ -212,15 +193,14 @@ fn try_refresh_filtered_for_ref_change(
     repository: &git::Repository,
     graph: &Graph,
     remote_only_commits: &mut FxHashSet<git::CommitHash>,
-    filtered_graph: &mut Option<FilteredGraphData>,
-    cell_width_type: graph::CellWidthType,
+    filtered_graph: &mut Option<Rc<Graph>>,
 ) -> bool {
     let new_remote_only = find_remote_only_commits(repository, graph);
     if &new_remote_only == remote_only_commits {
         return false;
     }
     let (rebuilt_filtered, rebuilt_remote_only) =
-        compute_filtered_graph_from(repository, graph, new_remote_only, cell_width_type);
+        compute_filtered_graph_from(repository, graph, new_remote_only);
     *filtered_graph = rebuilt_filtered;
     *remote_only_commits = rebuilt_remote_only;
     true
@@ -319,8 +299,7 @@ pub fn run() -> Result<()> {
         head_has_named_ref(&repository),
     ));
     let mut cell_width_type = check::decide_cell_width_type(&graph, graph_width)?;
-    let (mut filtered_graph, mut remote_only_commits) =
-        build_graph_artifacts(&repository, &graph, cell_width_type);
+    let (mut filtered_graph, mut remote_only_commits) = build_graph_artifacts(&repository, &graph);
 
     let ret = loop {
         if terminal.is_none() {
@@ -372,7 +351,6 @@ pub fn run() -> Result<()> {
                         &graph,
                         &mut remote_only_commits,
                         &mut filtered_graph,
-                        cell_width_type,
                     );
                     if filtered_changed {
                         if let Some(t) = terminal.as_mut() {
@@ -391,7 +369,7 @@ pub fn run() -> Result<()> {
                     ));
                     cell_width_type = check::decide_cell_width_type(&graph, graph_width)?;
                     (filtered_graph, remote_only_commits) =
-                        build_graph_artifacts(&repository, &graph, cell_width_type);
+                        build_graph_artifacts(&repository, &graph);
 
                     if let Some(t) = terminal.as_mut() {
                         t.clear()?;

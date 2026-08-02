@@ -20,7 +20,8 @@ fn decide_cell_width_type_from(
     cell_width_type: Option<GraphWidthType>,
 ) -> Result<CellWidthType> {
     let single_image_cell_width = max_pos_x + 1;
-    let double_image_cell_width = single_image_cell_width * 2;
+    let double_image_cell_width =
+        single_image_cell_width * CellWidthType::Double.cells_per_column();
 
     match cell_width_type {
         Some(GraphWidthType::Double) => {
