@@ -1283,10 +1283,13 @@ fn render_text_graph_styled(
 }
 
 /// `single[c]` must equal whichever of `double[2c]`/`double[2c+1]` is
-/// non-`Blank` (`double[2c]` wins ties -- matches `place`'s `>=` rule).
-/// This is issue #21's fix, checked directly against `TextCell.glyph`
-/// rather than resolved characters, so it exercises `build_text_cells`
-/// itself independent of any `GlyphSet` (that's covered separately by
+/// non-`Blank`. The right half is only ever `Blank` or `Horiz` (the lowest
+/// non-blank `glyph_priority`), so a non-blank left always outranks it --
+/// this is a value-domain argument, not `place`'s `>=` tie-break rule (the
+/// only tie is left == right == `Horiz`, where it plainly doesn't matter
+/// which one "wins"). Checked directly against `TextCell.glyph` rather than
+/// resolved characters, so it exercises `build_text_cells` itself
+/// independent of any `GlyphSet` (that's covered separately by
 /// `graph/text.rs`'s own unit tests). Runs for every case regardless of
 /// which width its golden happens to be, since `GraphSnapshotSource`
 /// always builds both.
@@ -1297,6 +1300,12 @@ fn assert_single_width_folds_double(option: &GenerateGraphOption, source: &Graph
         .zip(&source.single_rows)
         .enumerate()
     {
+        assert_eq!(
+            double_row.len(),
+            single_row.len() * 2,
+            "{}: row {row} single width isn't half of double width",
+            option.output_name
+        );
         for (col, single_cell) in single_row.iter().enumerate() {
             let left = double_row[2 * col].glyph;
             let right = double_row[2 * col + 1].glyph;

@@ -32,8 +32,14 @@ pub fn decide_cell_width_type(
     }
 }
 
+/// The graph column's right pad (see `graph_area_cell_width`) plus the
+/// marker column right next to it (`calc_cell_widths`'s `marker_cell_width`,
+/// always 1) -- the two non-graph columns a graph of this width also needs
+/// room for.
+const NON_GRAPH_COLUMNS: usize = 2;
+
 fn auto_cell_width_type(cell_count: usize, term_width: usize) -> CellWidthType {
-    let double_width = cell_count * CellWidthType::Double.cells_per_column() + 2;
+    let double_width = cell_count * CellWidthType::Double.cells_per_column() + NON_GRAPH_COLUMNS;
     if double_width <= term_width {
         CellWidthType::Double
     } else {

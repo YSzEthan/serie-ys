@@ -151,13 +151,13 @@ pub fn find_remote_only_commits(
         .collect()
 }
 
-pub fn compute_filtered_graph_from(
+fn compute_filtered_graph_from(
     repository: &git::Repository,
     full_graph: &Graph,
-    remote_only: FxHashSet<git::CommitHash>,
-) -> (Option<Rc<Graph>>, FxHashSet<git::CommitHash>) {
+    remote_only: &FxHashSet<git::CommitHash>,
+) -> Option<Rc<Graph>> {
     if remote_only.is_empty() {
-        return (None, remote_only);
+        return None;
     }
 
     let visible_hashes: FxHashSet<git::CommitHash> = full_graph
@@ -168,14 +168,12 @@ pub fn compute_filtered_graph_from(
         .collect();
 
     let head = resolve_head_commit_hash(repository);
-    let filtered = Rc::new(graph::calc_graph_filtered(
+    Some(Rc::new(graph::calc_graph_filtered(
         repository,
         &visible_hashes,
         head.as_ref(),
         head_has_named_ref(repository),
-    ));
-
-    (Some(filtered), remote_only)
+    )))
 }
 
 fn build_graph_artifacts(
@@ -183,7 +181,8 @@ fn build_graph_artifacts(
     graph: &Rc<Graph>,
 ) -> (Option<Rc<Graph>>, FxHashSet<git::CommitHash>) {
     let remote_only = find_remote_only_commits(repository, graph);
-    compute_filtered_graph_from(repository, graph, remote_only)
+    let filtered = compute_filtered_graph_from(repository, graph, &remote_only);
+    (filtered, remote_only)
 }
 
 /// Fast-path helper: if the refs changed in a way that shifts commits between
@@ -199,10 +198,8 @@ fn try_refresh_filtered_for_ref_change(
     if &new_remote_only == remote_only_commits {
         return false;
     }
-    let (rebuilt_filtered, rebuilt_remote_only) =
-        compute_filtered_graph_from(repository, graph, new_remote_only);
-    *filtered_graph = rebuilt_filtered;
-    *remote_only_commits = rebuilt_remote_only;
+    *filtered_graph = compute_filtered_graph_from(repository, graph, &new_remote_only);
+    *remote_only_commits = new_remote_only;
     true
 }
 
