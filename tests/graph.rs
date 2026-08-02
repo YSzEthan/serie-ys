@@ -101,6 +101,11 @@ fn branch_001() -> TestResult {
         GenerateGraphOption::new("branch_001_topo", git::SortCommit::Topological),
         GenerateGraphOption::new("branch_001_max_count", git::SortCommit::Chronological)
             .with_max_count(10),
+        // #21: one dense case checked into a golden purely so a human can
+        // see what single-width connector loss actually looks like. The
+        // folding invariant already covers correctness for all 41 cases.
+        GenerateGraphOption::new("branch_001_single", git::SortCommit::Chronological)
+            .with_single_width(),
     ];
 
     copy_git_dir(repo_path, "branch_001");
@@ -1162,6 +1167,10 @@ struct GenerateGraphOption {
     // (`None`) — exactly matching the PNG-era snapshot generation, which
     // always called `calc_graph(&repository, None, false)` unconditionally.
     reserve_head_col: bool,
+    // Which of `GraphSnapshotSource`'s two pre-built row sets this case's
+    // golden is written from. Doesn't affect the folding invariant below --
+    // that always checks both regardless of which one is "the" golden here.
+    cell_width: graph::CellWidthType,
 }
 
 impl GenerateGraphOption {
@@ -1171,6 +1180,7 @@ impl GenerateGraphOption {
             sort,
             max_count: None,
             reserve_head_col: false,
+            cell_width: graph::CellWidthType::Double,
         }
     }
 
@@ -1183,16 +1193,33 @@ impl GenerateGraphOption {
         self.reserve_head_col = true;
         self
     }
+
+    fn with_single_width(mut self) -> GenerateGraphOption {
+        self.cell_width = graph::CellWidthType::Single;
+        self
+    }
 }
 
 /// One case's graph, built once (a `git::Repository::load` + `calc_graph`)
-/// and rendered against all three styles. Building three times just to
-/// change which characters get printed would triple the number of git
-/// subprocess spawns across the whole suite for zero benefit — the graph
-/// topology doesn't depend on style at all, only `GlyphSet::resolve` does.
+/// and rendered against both cell widths and all three styles. Rebuilding
+/// per width/style just to change which characters get printed would
+/// multiply the number of git subprocess spawns across the whole suite for
+/// zero benefit — the graph topology doesn't depend on width or style at
+/// all, only `build_text_cells`'s folding (width) and `GlyphSet::resolve`
+/// (style) do.
 struct GraphSnapshotSource {
     subjects: Vec<String>,
-    rows: Vec<Vec<graph::TextCell>>,
+    double_rows: Vec<Vec<graph::TextCell>>,
+    single_rows: Vec<Vec<graph::TextCell>>,
+}
+
+impl GraphSnapshotSource {
+    fn rows(&self, width: graph::CellWidthType) -> &[Vec<graph::TextCell>] {
+        match width {
+            graph::CellWidthType::Double => &self.double_rows,
+            graph::CellWidthType::Single => &self.single_rows,
+        }
+    }
 }
 
 fn build_graph_snapshot_source(
@@ -1221,22 +1248,31 @@ fn build_graph_snapshot_source(
         .map(|c| c.to_ratatui_color())
         .collect::<Vec<_>>();
 
-    let rows = graph::build_text_graph(&graph, &colors, graph::CellWidthType::Double);
+    let double_rows = graph::build_text_graph(&graph, &colors, graph::CellWidthType::Double);
+    let single_rows = graph::build_text_graph(&graph, &colors, graph::CellWidthType::Single);
     let subjects = graph
         .commit_hashes
         .iter()
         .map(|h| repository.commit(h).unwrap().subject.clone())
         .collect();
 
-    GraphSnapshotSource { subjects, rows }
+    GraphSnapshotSource {
+        subjects,
+        double_rows,
+        single_rows,
+    }
 }
 
 /// Render exactly as the text-mode graph column does, via
 /// `graph::build_text_graph` and `GlyphSet::resolve`, one line per commit:
 /// `<graph glyphs>  <subject>`. No hash/date — see #16 plan for why.
-fn render_text_graph_styled(source: &GraphSnapshotSource, glyphs: graph::GlyphSet) -> String {
+fn render_text_graph_styled(
+    source: &GraphSnapshotSource,
+    glyphs: graph::GlyphSet,
+    width: graph::CellWidthType,
+) -> String {
     let mut out = String::new();
-    for (subject, cells) in source.subjects.iter().zip(&source.rows) {
+    for (subject, cells) in source.subjects.iter().zip(source.rows(width)) {
         let graph_str: String = cells.iter().map(|c| glyphs.resolve(c.glyph)).collect();
         out.push_str(graph_str.trim_end());
         out.push_str("  ");
@@ -1246,16 +1282,49 @@ fn render_text_graph_styled(source: &GraphSnapshotSource, glyphs: graph::GlyphSe
     out
 }
 
+/// `single[c]` must equal whichever of `double[2c]`/`double[2c+1]` is
+/// non-`Blank` (`double[2c]` wins ties -- matches `place`'s `>=` rule).
+/// This is issue #21's fix, checked directly against `TextCell.glyph`
+/// rather than resolved characters, so it exercises `build_text_cells`
+/// itself independent of any `GlyphSet` (that's covered separately by
+/// `graph/text.rs`'s own unit tests). Runs for every case regardless of
+/// which width its golden happens to be, since `GraphSnapshotSource`
+/// always builds both.
+fn assert_single_width_folds_double(option: &GenerateGraphOption, source: &GraphSnapshotSource) {
+    for (row, (double_row, single_row)) in source
+        .double_rows
+        .iter()
+        .zip(&source.single_rows)
+        .enumerate()
+    {
+        for (col, single_cell) in single_row.iter().enumerate() {
+            let left = double_row[2 * col].glyph;
+            let right = double_row[2 * col + 1].glyph;
+            let expected = if left != graph::Glyph::Blank {
+                left
+            } else {
+                right
+            };
+            assert_eq!(
+                single_cell.glyph, expected,
+                "{}: row {row} col {col} single-width fold mismatch",
+                option.output_name
+            );
+        }
+    }
+}
+
 fn generate_and_output_text_graphs(repo_path: &Path, options: &[GenerateGraphOption]) {
     create_output_dirs(OUTPUT_DIR);
     for option in options {
         let source = build_graph_snapshot_source(repo_path, option);
+        assert_single_width_folds_double(option, &source);
         for (suffix, glyphs) in [
             ("", graph::GlyphSet::ROUNDED),
             ("_angular", graph::GlyphSet::ANGULAR),
             ("_ascii", graph::GlyphSet::ASCII),
         ] {
-            let content = render_text_graph_styled(&source, glyphs);
+            let content = render_text_graph_styled(&source, glyphs, option.cell_width);
             let file_name = format!("{OUTPUT_DIR}/{}{suffix}.txt", option.output_name);
             std::fs::write(file_name, content).unwrap();
         }
