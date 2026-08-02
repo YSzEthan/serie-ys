@@ -163,7 +163,12 @@ fn parse_key_code_with_modifiers(
         "hyphen" => KeyCode::Char('-'),
         "minus" => KeyCode::Char('-'),
         "tab" => KeyCode::Tab,
-        c if c.len() == 1 => {
+        // `chars().count()`, not `len()`: the latter is the UTF-8 byte
+        // length, so every non-ASCII key (Bopomofo `ㄅ` is 3 bytes, Cyrillic
+        // `й` is 2) fell through to the error arm and made the whole config
+        // fail to load. Terminals deliver those as an ordinary
+        // `KeyCode::Char`, so there was never a reason to reject them.
+        c if c.chars().count() == 1 => {
             let mut c = c.chars().next().unwrap();
             if modifiers.contains(KeyModifiers::SHIFT) {
                 c = c.to_ascii_uppercase();
@@ -330,6 +335,31 @@ mod tests {
         let actual: KeyBind = toml::from_str(toml).unwrap();
 
         assert_eq!(actual, expected);
+    }
+
+    /// Non-ASCII keys used to blow up the whole config at startup, because
+    /// the single-char arm tested `str::len()` (UTF-8 bytes) instead of the
+    /// character count. Bopomofo is the motivating case: a Zhuyin IME that
+    /// can't do IMKit marked text injects `ㄜ` straight into the terminal
+    /// instead of `k`, so binding the Bopomofo key is the only way to drive
+    /// the app without switching input mode first.
+    #[test]
+    fn parse_key_event_accepts_non_ascii_chars() {
+        for raw in ["ㄜ", "й", "é"] {
+            let expected = KeyEvent::new(
+                KeyCode::Char(raw.chars().next().unwrap()),
+                KeyModifiers::empty(),
+            );
+            assert_eq!(parse_key_event(raw), Ok(expected), "{raw}");
+        }
+
+        assert_eq!(
+            parse_key_event("alt-ㄜ"),
+            Ok(KeyEvent::new(KeyCode::Char('ㄜ'), KeyModifiers::ALT)),
+        );
+
+        // Still rejects genuine multi-character garbage.
+        assert!(parse_key_event("ㄜㄨ").is_err());
     }
 
     #[rustfmt::skip]
