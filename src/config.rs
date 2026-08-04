@@ -713,6 +713,76 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
+    /// schema 只用 `^<字面前綴><數字>$` 這一種 pattern（`commands_1`、
+    /// `user_command_1`）。碰到其他形式直接 panic —— 默默放行等於沒有這道檢查。
+    fn schema_pattern_property<'a>(
+        schema: &'a serde_json::Value,
+        key: &str,
+    ) -> Option<&'a serde_json::Value> {
+        let patterns = schema.get("patternProperties")?.as_object()?;
+        patterns.iter().find_map(|(pattern, sub)| {
+            let prefix = pattern
+                .strip_prefix('^')
+                .and_then(|p| p.strip_suffix("[0-9]+$"))
+                .unwrap_or_else(|| panic!("看不懂的 patternProperties: {pattern}"));
+            let digits = key.strip_prefix(prefix)?;
+            let matches = !digits.is_empty() && digits.bytes().all(|b| b.is_ascii_digit());
+            matches.then_some(sub)
+        })
+    }
+
+    /// 檢查 TOML 表裡每個鍵在 `config.schema.json` 都有宣告。
+    ///
+    /// serde 這邊沒有 `deny_unknown_fields`，未知欄位一律靜默忽略，所以
+    /// 「範例能 parse」完全擋不住死鍵 —— `graph.color.edge` / `background`
+    /// 就是這樣在文件裡活過好幾個版本。真正會擋的是 schema 的
+    /// `additionalProperties: false`，這裡就照著它走一遍。
+    fn assert_keys_declared_in_schema(table: &toml::Table, schema: &serde_json::Value, path: &str) {
+        for (key, value) in table {
+            let child = schema
+                .get("properties")
+                .and_then(|p| p.get(key))
+                .or_else(|| schema_pattern_property(schema, key))
+                .unwrap_or_else(|| panic!("文件範例的 `{path}{key}` 不在 config.schema.json 裡"));
+            if let Some(sub_table) = value.as_table() {
+                if child.get("properties").is_some() {
+                    assert_keys_declared_in_schema(sub_table, child, &format!("{path}{key}."));
+                }
+            }
+        }
+    }
+
+    /// mdBook 的設定檔範例必須是真的能貼進 `config.toml` 直接用的東西。
+    ///
+    /// 兩件事各自抓到過真實錯誤：schema 比對抓死鍵（`graph.color.edge` /
+    /// `background` 隨圖片渲染路徑移除，文件卻還留著），預設值比對抓值漂移
+    /// （`ui.list.columns` 的順序在文件與 schema 都寫成 name/hash/date，
+    /// 實際是 date/name/hash）。
+    #[test]
+    fn documented_example_config_is_valid_and_shows_real_defaults() {
+        let doc = include_str!("../docs/src/configurations/config-file-format.md");
+        let example = doc
+            .split("```toml\n")
+            .nth(1)
+            .and_then(|s| s.split("```").next())
+            .expect("設定檔格式文件裡找不到 ```toml 範例區塊");
+
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../config.schema.json")).unwrap();
+        let table: toml::Table = toml::from_str(example)
+            .unwrap_or_else(|e| panic!("文件範例不是合法 TOML: {e}\n---\n{example}"));
+        assert_keys_declared_in_schema(&table, &schema, "");
+
+        let parsed: OptionalConfig = toml::from_str(example).unwrap();
+        let mut actual = Config::from(parsed);
+        // `core.option` 的四個欄位與 `keybind` 是 Option，「未設定」與「設定成
+        // 預設值」在型別上不同（命令列參數要能覆蓋，所以預設留到更後面才解析）。
+        // 範例把它們明寫出來正是它的用途，比對前歸零，其餘欄位照比。
+        actual.core.option = CoreOptionConfig::default();
+        actual.keybind = None;
+        assert_eq!(actual, Config::default());
+    }
+
     #[test]
     fn removed_config_field_does_not_break_sibling_fields() {
         let toml = r#"

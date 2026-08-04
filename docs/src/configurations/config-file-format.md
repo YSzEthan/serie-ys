@@ -1,6 +1,6 @@
-# Config File Format
+# 設定檔格式
 
-## Example
+## 範例
 
 ```toml
 [core.option]
@@ -24,7 +24,7 @@ clipboard = "Auto"
 cursor_type = "Native"
 
 [ui.list]
-columns = ["graph", "marker", "subject", "name", "hash", "date"]
+columns = ["graph", "marker", "subject", "date", "name", "hash"]
 subject_min_width = 20
 date_format = "%Y-%m-%d"
 date_width = 10
@@ -51,8 +51,6 @@ branches = [
   "#C678DD",
   "#56B6C2",
 ]
-edge = "#00000000"
-background = "#00000000"
 
 [color]
 fg = "reset"
@@ -97,146 +95,146 @@ status_error_fg = "red"
 divider_fg = "dark-gray"
 
 [keybind]
-# See the separate Custom Keybindings section for details.
+# 詳見另一節「自訂快捷鍵」。
 # ...
 ```
 
-## Configuration Options
+## 設定項目
 
 ### `core.option.order`
 
-The commit ordering algorithm.
+Commit 排序演算法。
 
-- type: `string` (enum)
-- default: `chrono`
-- possible values:
+- 型別：`string`（enum）
+- 預設值：`chrono`
+- 可選值：
   - `chrono`
   - `topo`
 
-The value specified in the command line argument takes precedence.
+命令列參數指定的值優先。
 
 ### `core.option.graph_width`
 
-The character width that a graph image unit cell occupies.
+圖形的每一欄佔用幾個終端字元格。
 
-- type: `string` (enum)
-- default: `auto`
-- possible values:
+- 型別：`string`（enum）
+- 預設值：`auto`
+- 可選值：
   - `auto`
   - `double`
   - `single`
 
-The value specified in the command line argument takes precedence.
+命令列參數指定的值優先。
 
 ### `core.option.graph_style`
 
-The commit graph edge style.
+Commit 圖形的邊線風格。
 
-- type: `string` (enum)
-- default: `rounded`
-- possible values:
+- 型別：`string`（enum）
+- 預設值：`rounded`
+- 可選值：
   - `rounded`
   - `angular`
   - `ascii`
 
-The value specified in the command line argument takes precedence.
+命令列參數指定的值優先。
 
 ### `core.option.initial_selection`
 
-The initial selection of commit when starting the application.
+啟動時初始選取的 commit。
 
-- type: `string` (enum)
-- default: `latest`
-- possible values:
+- 型別：`string`（enum）
+- 預設值：`latest`
+- 可選值：
   - `latest`
   - `head`
 
-The value specified in the command line argument takes precedence.
+命令列參數指定的值優先。
 
 ### `core.search.ignore_case`
 
-Whether to enable ignore case by default.
+是否預設啟用忽略大小寫。
 
-- type: `boolean`
-- default: `false`
+- 型別：`boolean`
+- 預設值：`false`
 
 ### `core.search.fuzzy`
 
-Whether to enable fuzzy matching by default.
+是否預設啟用模糊比對。
 
-- type: `boolean`
-- default: `false`
+- 型別：`boolean`
+- 預設值：`false`
 
 ### `core.user_command.commands_{n}`
 
-The command definition for executing external commands.
+執行外部指令的指令定義。
 
-Multiple commands can be specified in the format `commands_{n}`.
-For details about user command, see the separate [User command](../features/user-command.md) section.
+可以用 `commands_{n}` 的格式指定多組。詳情請參閱另一節[使用者自訂指令](../features/user-command.md)。
 
-- type: `object`
-- fields:
-  - `name`: `string` - The name of the user command.
-  - `type`: `string` (enum) - The type of user command.
-    - default: `inline`
-    - possible values:
-      - `inline`: Display the output of the command in the user command view.
-      - `silent`: Execute the command in the background without opening a view.
-      - `suspend`: Execute the command by suspending the application. This is useful for interactive commands.
-  - `commands`: `array of strings` - The command and its arguments.
-  - `refresh`: `boolean` - Whether to reload the repository and refresh the display after executing the command. Available for `silent` and `suspend` commands.
-    - default: `false`
-- examples:
-    - `commands_1 = { name = "git diff", commands = ["git", "--no-pager", "diff", "--color=always", "{{first_parent_hash}}", "{{target_hash}}"]}`
-    - `commands_2 = { name = "delete branch", type = "silent", commands = ["git", "branch", "-D", "{{branches}}"], refresh = true }`
-    - `commands_3 = { name = "amend commit", type = "suspend", commands = ["git", "commit", "--amend"], refresh = true }`
-  
+- 型別：`object`
+- 欄位：
+  - `name`：`string` —— 指令名稱。
+  - `type`：`string`（enum）—— 指令型別。
+    - 預設值：`inline`
+    - 可選值：
+      - `inline`：在使用者自訂指令視圖中顯示輸出。
+      - `silent`：在背景執行，不開啟視圖。
+      - `suspend`：暫停應用程式後執行，適合互動式指令。
+  - `commands`：`array of strings` —— 指令與其引數。
+  - `refresh`：`boolean` —— 執行後是否重新載入儲存庫並更新畫面。僅 `silent` 與 `suspend` 可用。
+    - 預設值：`false`
+- 範例：
+  - `commands_1 = { name = "git diff", commands = ["git", "--no-pager", "diff", "--color=always", "{{first_parent_hash}}", "{{target_hash}}"]}`
+  - `commands_2 = { name = "delete branch", type = "silent", commands = ["git", "branch", "-D", "{{branches}}"], refresh = true }`
+  - `commands_3 = { name = "amend commit", type = "suspend", commands = ["git", "commit", "--amend"], refresh = true }`
+
 ### `core.user_command.tab_width`
 
-The number of spaces to replace tabs in the user command output.
+使用者自訂指令輸出中，tab 展開成幾個空白。
 
-- type: `u16`
-- default: `4`
+- 型別：`u16`
+- 預設值：`4`
 
 ### `core.external.clipboard`
 
-The clipboard command to use for copy operations.
+複製操作使用的剪貼簿方式。
 
-- type: `object` (enum)
-- default: `Auto`
-- possible values:
-  - `Auto`: Use the default clipboard library (`arboard`). When `$SSH_CONNECTION` or `$SSH_TTY` is set, falls back to `Osc52` so the copy reaches the **local** clipboard instead of the remote host's X11/Wayland clipboard.
-  - `Osc52`: Always emit the OSC 52 terminal escape sequence to stdout; a supporting terminal (iTerm2, Kitty, WezTerm, foot, tmux with `set-clipboard on`, etc.) writes the text to the local clipboard. Works transparently over SSH without X11 forwarding.
-  - `{ Custom = { commands = ["..."] } }`: Use a custom command that receives text via stdin
-    - `commands`: `array of strings` - The command and its arguments.
-- examples:
-    - `clipboard = "Auto"`
-    - `clipboard = "Osc52"`
-    - `clipboard = { Custom = { commands = ["wl-copy"] } }`
-    - `clipboard = { Custom = { commands = ["xclip", "-selection", "clipboard"] } }`
+- 型別：`object`（enum）
+- 預設值：`Auto`
+- 可選值：
+  - `Auto`：使用預設剪貼簿函式庫（`arboard`）。當 `$SSH_CONNECTION` 或 `$SSH_TTY` 有設定時，改用 `Osc52`，讓複製結果進到**本機**剪貼簿，而不是遠端主機的 X11／Wayland 剪貼簿。
+  - `Osc52`：一律對 stdout 送出 OSC 52 終端跳脫序列；支援的終端機（iTerm2、Kitty、WezTerm、foot、開了 `set-clipboard on` 的 tmux 等）會把文字寫入本機剪貼簿。不需要 X11 forwarding 就能透過 SSH 運作。
+  - `{ Custom = { commands = ["..."] } }`：使用自訂指令，文字透過 stdin 傳入。
+    - `commands`：`array of strings` —— 指令與其引數。
+- 範例：
+  - `clipboard = "Auto"`
+  - `clipboard = "Osc52"`
+  - `clipboard = { Custom = { commands = ["wl-copy"] } }`
+  - `clipboard = { Custom = { commands = ["xclip", "-selection", "clipboard"] } }`
 
-Notes on `Osc52`:
-- tmux: 3.3+ ships with `allow-passthrough` off by default; add `set -g allow-passthrough on` to `~/.tmux.conf`. If you already have `set -g set-clipboard on`, tmux handles OSC 52 natively and you do not need passthrough.
-- Unsupported terminals silently ignore the sequence (no error surfaced), but this is still better than the previous behavior of copying to the wrong host's clipboard.
+`Osc52` 的注意事項：
+
+- tmux：3.3 以後 `allow-passthrough` 預設關閉，需要在 `~/.tmux.conf` 加上 `set -g allow-passthrough on`。若你已經設了 `set -g set-clipboard on`，tmux 會自行處理 OSC 52，不需要 passthrough。
+- 不支援的終端機會靜默忽略這個序列（不會有錯誤訊息），但這仍然好過以往那種複製到錯誤主機剪貼簿的行為。
 
 ### `ui.common.cursor_type`
 
-The type of a cursor to display in the input.
+輸入欄位中游標的顯示方式。
 
-- type: `object` (enum)
-- default: `Native`
-- possible values:
-  - `Native`: Use the terminal native cursor.
-  - `{ Virtual = "|" }`: Use a virtual cursor with the specified string.
-    - value: `string` - The string to display as the virtual cursor.
+- 型別：`object`（enum）
+- 預設值：`Native`
+- 可選值：
+  - `Native`：使用終端機原生游標。
+  - `{ Virtual = "|" }`：使用指定字串當作虛擬游標。
+    - 值：`string` —— 用來顯示虛擬游標的字串。
 
 ### `ui.list.columns`
 
-The order and visibility of columns in the commit list.
+Commit 清單中各欄的順序與顯示與否。
 
-- type: `array of strings` (enum)
-- default: `["graph", "marker", "subject", "name", "hash", "date"]`
-- possible values:
+- 型別：`array of strings`（enum）
+- 預設值：`["graph", "marker", "subject", "date", "name", "hash"]`
+- 可選值：
   - `graph`
   - `marker`
   - `subject`
@@ -246,86 +244,86 @@ The order and visibility of columns in the commit list.
 
 ### `ui.list.subject_min_width`
 
-The minimum width of a subject in the commit list.
+Commit 清單中 subject 的最小寬度。
 
-- type: `u16`
-- default: `20`
+- 型別：`u16`
+- 預設值：`20`
 
 ### `ui.list.date_format`
 
-The date format of a author date in the commit list.
+Commit 清單中 author date 的日期格式。
 
-- type: `string`
-- default: `"%Y-%m-%d"`
+- 型別：`string`
+- 預設值：`"%Y-%m-%d"`
 
-The format must be specified in strftime format.
+格式須使用 strftime 格式：
 https://docs.rs/chrono/latest/chrono/format/strftime/index.html
 
 ### `ui.list.date_width`
 
-The width of a author date in the commit list.
+Commit 清單中 author date 的寬度。
 
-- type: `u16`
-- default: `10`
+- 型別：`u16`
+- 預設值：`10`
 
 ### `ui.list.date_local`
 
-Whether to show a author date in the commit list in local timezone.
+Commit 清單中的 author date 是否以本地時區顯示。
 
-- type: `boolean`
-- default: `true`
+- 型別：`boolean`
+- 預設值：`true`
 
 ### `ui.list.name_width`
 
-The width of a author name in the commit list.
+Commit 清單中 author name 的寬度。
 
-- type: `u16`
-- default: `20`
+- 型別：`u16`
+- 預設值：`20`
 
 ### `ui.detail.height`
 
-The height of a commit detail area.
+Commit 詳情區域的高度。
 
-- type: `u16`
-- default: `20`
+- 型別：`u16`
+- 預設值：`20`
 
 ### `ui.detail.date_format`
 
-The date format of a author/committer date in the commit detail.
+Commit 詳情中 author／committer date 的日期格式。
 
-- type: `string`
-- default: `"%Y-%m-%d %H:%M:%S %z"`
+- 型別：`string`
+- 預設值：`"%Y-%m-%d %H:%M:%S %z"`
 
-The format must be specified in strftime format.
+格式須使用 strftime 格式：
 https://docs.rs/chrono/latest/chrono/format/strftime/index.html
 
 ### `ui.detail.date_local`
 
-Whether to show a author/committer date in the commit list in local timezone.
+Commit 詳情中的 author／committer date 是否以本地時區顯示。
 
-- type: `boolean`
-- default: `true`
+- 型別：`boolean`
+- 預設值：`true`
 
 ### `ui.user_command.height`
 
-The height of a user command area.
+使用者自訂指令區域的高度。
 
-- type: `u16`
-- default: `20`
+- 型別：`u16`
+- 預設值：`20`
 
 ### `ui.refs.width`
 
-The width of a refs list area.
+Refs 清單區域的寬度。
 
-- type: `u16`
-- default: `26`
+- 型別：`u16`
+- 預設值：`26`
 
 ### `graph.color.branches`
 
-Array of colors used for the commit graph.
+Commit 圖形使用的顏色陣列。
 
-- type: `array of strings`
-- default:
+- 型別：`array of strings`
+- 預設值：
   - `"#E06C76"`
   - `"#98C379"`
   - `"#E5C07B"`
@@ -333,46 +331,30 @@ Array of colors used for the commit graph.
   - `"#C678DD"`
   - `"#56B6C2"`
 
-Colors should be specified in the format `#RRGGBB` or `#RRGGBBAA`.
+顏色須以 `#RRGGBB` 或 `#RRGGBBAA` 格式指定。`AA`（alpha）仍會做 hex 格式檢查，但數值會被丟棄 —— 圖形改用文字繪製後就沒有任何消費者需要 alpha 了。
 
-### `graph.color.edge`
-
-Color of the edge surrounding the commit circles in the graph.
-
-- type: `string`
-- default: `"#00000000"`
-
-Colors should be specified in the format `#RRGGBB` or `#RRGGBBAA`.
-
-### `graph.color.background`
-
-Background color of the commit graph.
-
-- type: `string`
-- default: `"#00000000"`
-
-Colors should be specified in the format `#RRGGBB` or `#RRGGBBAA`.
+> `graph.color` 底下**只有** `branches` 一個鍵。舊版的 `edge` 與 `background` 已隨圖片渲染路徑一起移除，留在設定檔裡會被 schema 判定為非法。
 
 ### `color`
 
-The colors of each element of the application.
+應用程式各元素的顏色。
 
-Note: Graph colors are specified with `[graph.color]`.
+註：圖形的顏色是用 `[graph.color]` 指定的。
 
-- type: `string`
-- default: see the example above
+- 型別：`string`
+- 預設值：見上方範例
 
-Colors should be specified in one of the following formats:
+顏色可以用以下任一種格式指定：
 
-- ANSI color name
-  - `"red"`, `"bright-blue"`, `"light-red"`, `"reset"`, ...
-- 8-bit color (256-color) index values
-  - `"34"`, `"128"`, `"255"`, ...
-- 24-bit true color hex codes
-  - `"#abcdef"`, ...
+- ANSI 顏色名稱
+  - `"red"`、`"bright-blue"`、`"light-red"`、`"reset"` 等
+- 8-bit（256 色）索引值
+  - `"34"`、`"128"`、`"255"` 等
+- 24-bit true color 十六進位碼
+  - `"#abcdef"` 等
 
 ### `keybind`
 
-Key bindings for various actions in the application.
+應用程式中各個動作的快捷鍵。
 
-See the separate [Custom Keybindings](../keybindings/custom-keybindings.md) section for details.
+詳情請參閱另一節[自訂快捷鍵](../keybindings/custom-keybindings.md)。

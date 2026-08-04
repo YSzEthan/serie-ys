@@ -23,7 +23,7 @@
             },
             "graph_width": {
               "type": "string",
-              "description": "The character width that a graph image unit cell occupies. The value specified in the command line argument takes precedence.",
+              "description": "The number of terminal columns each graph column occupies. The value specified in the command line argument takes precedence.",
               "enum": [
                 "auto",
                 "double",
@@ -218,9 +218,9 @@
                 "graph",
                 "marker",
                 "subject",
+                "date",
                 "name",
-                "hash",
-                "date"
+                "hash"
               ]
             },
             "subject_min_width": {
