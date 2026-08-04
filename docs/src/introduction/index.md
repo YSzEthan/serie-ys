@@ -2,9 +2,9 @@
 
 **Serie**（[`/zéːriə/`](../faq/index.md)）是一個 TUI 應用程式，用 Unicode 製表字元渲染 commit 圖，效果類似 `git log --graph --all`。
 
-<img src="https://raw.githubusercontent.com/lusingander/serie/master/img/demo.gif">
+<img src="../img/list.svg" width="100%">
 
-（此 demo 展示的是 [Ratatui](https://github.com/ratatui/ratatui) 儲存庫！）
+（畫面由 `scripts/capture_screenshots.py` 從實際執行中的 `ysgit` 擷取，更多請見[截圖](../features/screenshots.md)）
 
 ## 為什麼？
 

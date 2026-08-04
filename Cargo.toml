@@ -12,7 +12,7 @@ categories = ["command-line-utilities"]
 edition = "2021"
 rust-version = "1.88.0"
 
-exclude = ["/.github", "/img"]
+exclude = ["/.github", "/docs", "/scripts"]
 
 [[bin]]
 name = "ysgit"

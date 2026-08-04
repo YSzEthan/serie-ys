@@ -6,9 +6,9 @@
 
 在終端機中呈現豐富的 git commit 圖，如同魔法般 📚
 
-<img src="./img/demo.gif">
+<img src="./docs/src/img/list.svg" width="100%">
 
-（此 demo 展示的是 [Ratatui](https://github.com/ratatui/ratatui) 儲存庫！）
+（畫面由 `scripts/capture_screenshots.py` 從實際執行中的 `ysgit` 擷取）
 
 ## 關於
 
@@ -21,7 +21,7 @@ Serie（[`/zéːriə/`](docs/src/faq/index.md)）是一個 TUI 應用程式，�
 - **Tag 管理** — 按 `t` 建立 tag，`Ctrl-t` 刪除 tag，支援推送到 remote
 - **Remote refs 切換** — 按 `o` 顯示/隱藏 remote-only 的 commit，使用 BFS filtered graph 重新計算佈局
 - **Ref 刪除** — 在 refs 列表中刪除 branch（local/remote）或 tag
-- **篩選 (Filter)** — 按 `f` 篩選 commit 列表
+- **篩選 (Filter)** — 按 `'` 篩選 commit 列表（`f` 是 fetch）
 - **狀態列快捷鍵提示** — 狀態列顯示當前視圖可用的快捷鍵
 - **等待覆蓋層** — 長時間 git 操作（push/delete remote）時顯示等待提示
 
@@ -153,21 +153,25 @@ commit 圖是用一般文字繪製的，不送任何圖片跳脫序列。因此*
 
 ## 截圖
 
-<img src="./img/list.png" width=600>
-<img src="./img/detail.png" width=600>
-<img src="./img/refs.png" width=600>
-<img src="./img/searching.png" width=600>
-<img src="./img/applied.png" width=600>
-<img src="./img/diff_git.png" width=600>
-<img src="./img/diff_difft.png" width=600>
+Commit 詳情（`Enter`）：
 
-> 以上截圖沿用自上游，拍攝時 commit 圖還是用圖片協議渲染的，與此 fork 目前的文字繪圖外觀略有差異。
+<img src="./docs/src/img/detail.svg" width="100%">
 
-以下儲存庫用於上述範例：
+Refs 清單（`Tab`）—— 此 fork 可以在這裡刪除 branch 與 tag：
 
-- [ratatui/ratatui](https://github.com/ratatui/ratatui)
-- [charmbracelet/vhs](https://github.com/charmbracelet/vhs)
-- [lusingander/stu](https://github.com/lusingander/stu)
+<img src="./docs/src/img/refs.svg" width="100%">
+
+篩選（`'`）—— 此 fork 新增，會用 BFS 重算 filtered graph 的佈局：
+
+<img src="./docs/src/img/filter.svg" width="100%">
+
+畫面全部由 `scripts/capture_screenshots.py` 擷取：在 pty 裡跑起 `ysgit`、送出按鍵、把終端輸出轉成 SVG。UI 一改，重跑一次就是最新的畫面，不會像螢幕截圖那樣默默過期：
+
+```
+$ cargo build --release
+$ scripts/generate_test_repo.sh /tmp/demo-repo 120
+$ scripts/capture_screenshots.py /tmp/demo-repo docs/src/img/
+```
 
 ## 貢獻
 

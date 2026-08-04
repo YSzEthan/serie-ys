@@ -56,6 +56,18 @@ commit 圖的測試放在 [./tests/graph.rs](./tests/graph.rs)。
 新增測試案例時，請把對應的快照放到 `./tests/graph/` 底下。
 既有圖形有變動時，覆蓋快照並確認沒有非預期的改動 —— 文字快照的 `git diff` 會直接顯示哪些字元移動了。
 
+### 更新文件裡的畫面
+
+`docs/src/img/*.svg` 不是螢幕截圖，是 `scripts/capture_screenshots.py` 在 pty 裡跑起 `ysgit`、送出按鍵、把終端輸出逐格轉成 SVG 的結果。UI 有變動時重跑一次即可：
+
+```
+$ cargo build --release
+$ scripts/generate_test_repo.sh /tmp/demo-repo 120
+$ scripts/capture_screenshots.py /tmp/demo-repo docs/src/img/
+```
+
+示範倉庫刻意用產生的而非本專案自己的歷史：有分支、merge 與 tag 才看得出 graph，也不會把實際工作內容拍進文件。
+
 ## 授權條款
 
 本專案採用 [MIT 授權條款](LICENSE)。貢獻者提交貢獻即表示同意遵守該授權條款。
