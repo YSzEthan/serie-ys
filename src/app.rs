@@ -505,19 +505,14 @@ impl App<'_> {
                             self.app_status.last_quit_press = None;
                             let event_with_count =
                                 process_numeric_prefix(&self.app_status.numeric_prefix, *ue, key);
-                            // 只在 browsing view 攔截，確保 modal/input view（CreateTag、
-                            // DeleteTag、DeleteRef、UserCommand）保有自己的 keymap。
-                            if self.view.is_browsing_view() {
-                                let global_event = match event_with_count.event {
-                                    UserEvent::GitHubToggle => Some(AppEvent::OpenGitHub),
-                                    UserEvent::HelpToggle => Some(AppEvent::OpenHelp),
-                                    _ => None,
-                                };
-                                if let Some(app_event) = global_event {
-                                    self.app_status.numeric_prefix.clear();
-                                    self.ec.send(app_event);
-                                    continue;
-                                }
+                            if let Some(app_event) = global_app_event(
+                                event_with_count.event,
+                                self.view.is_browsing_view(),
+                                self.is_input_mode(),
+                            ) {
+                                self.app_status.numeric_prefix.clear();
+                                self.ec.send(app_event);
+                                continue;
                             }
                             self.view.handle_event(event_with_count, key);
                             self.app_status.numeric_prefix.clear();
@@ -2375,6 +2370,30 @@ fn selected_commit_details(
     (commit.clone(), changes, refs)
 }
 
+/// 這個事件該不該在 app 層攔成全域事件，而不是往下交給 view 處理。
+///
+/// 兩個條件缺一不可：
+///
+/// - `browsing_view`：modal / input view（CreateTag、DeleteTag、DeleteRef、
+///   UserCommand、GitHub）保有自己的 keymap，不能被攔。
+/// - `!input_mode`：**這條原本漏了**。filter 與 search 的輸入框活在 List view
+///   的狀態列裡，而 List 本身就是 browsing view，所以只看前一個條件會把使用者
+///   正在打的 `g` 與 `?` 攔成 github / help —— `log`、`config`、`graph`、
+///   `merge` 這些字通通打不進去，打到一半畫面還會跳走。
+///
+/// 放行之後不需要另外轉換事件：`view::list` 的 `resolve_input_action` 有
+/// catch-all，非控制類事件一律當成文字輸入。
+fn global_app_event(event: UserEvent, browsing_view: bool, input_mode: bool) -> Option<AppEvent> {
+    if !browsing_view || input_mode {
+        return None;
+    }
+    match event {
+        UserEvent::GitHubToggle => Some(AppEvent::OpenGitHub),
+        UserEvent::HelpToggle => Some(AppEvent::OpenHelp),
+        _ => None,
+    }
+}
+
 fn process_numeric_prefix(
     numeric_prefix: &str,
     user_event: UserEvent,
@@ -2495,6 +2514,51 @@ mod tests {
         let dummy_key_event = KeyEvent::from(KeyCode::Enter); // KeyEvent is not used in the logic
         let actual = process_numeric_prefix(numeric_prefix, user_event, dummy_key_event);
         assert_eq!(actual, expected);
+    }
+
+    /// 打字時 `g` 與 `?` 必須進得了輸入框。
+    ///
+    /// 原本的判斷只有 `is_browsing_view()`，但 filter / search 的輸入框就長在
+    /// List view 裡，於是 `log`、`config`、`graph`、`merge`⋯⋯ 打到含 g 的那個
+    /// 字母就被攔去開 GitHub view，`?` 則跳出說明頁。
+    #[rustfmt::skip]
+    #[rstest]
+    // browsing view + 非輸入模式：正常攔截
+    #[case(UserEvent::GitHubToggle, true,  false, true)]
+    #[case(UserEvent::HelpToggle,   true,  false, true)]
+    // 輸入模式：一律放行給 view 當文字處理
+    #[case(UserEvent::GitHubToggle, true,  true,  false)]
+    #[case(UserEvent::HelpToggle,   true,  true,  false)]
+    // 非 browsing view（modal）：本來就不攔
+    #[case(UserEvent::GitHubToggle, false, false, false)]
+    #[case(UserEvent::HelpToggle,   false, false, false)]
+    // 其他事件無論如何都不是全域事件
+    #[case(UserEvent::NavigateDown, true,  false, false)]
+    #[case(UserEvent::Search,       true,  false, false)]
+    fn global_app_event_never_swallows_typed_keys(
+        #[case] event: UserEvent,
+        #[case] browsing_view: bool,
+        #[case] input_mode: bool,
+        #[case] intercepted: bool,
+    ) {
+        let actual = global_app_event(event, browsing_view, input_mode);
+        assert_eq!(
+            actual.is_some(),
+            intercepted,
+            "event={event:?} browsing={browsing_view} input={input_mode} 得到 {actual:?}"
+        );
+    }
+
+    #[test]
+    fn global_app_event_maps_to_the_matching_view() {
+        assert!(matches!(
+            global_app_event(UserEvent::GitHubToggle, true, false),
+            Some(AppEvent::OpenGitHub)
+        ));
+        assert!(matches!(
+            global_app_event(UserEvent::HelpToggle, true, false),
+            Some(AppEvent::OpenHelp)
+        ));
     }
 
     #[rstest]

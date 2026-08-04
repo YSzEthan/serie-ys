@@ -53,9 +53,10 @@ VIEWS = [
     ("list", "", "commit 清單"),
     ("detail", "\r", "commit 詳情"),
     ("refs", "\t", "refs 清單"),
-    # 關鍵字避開 g 與 ?：這兩個鍵在輸入模式下會被 app 層攔成 github/help
-    # （src/app.rs 的 is_browsing_view 沒排除輸入中的狀態列）。
-    ("filter", "'cache", "篩選"),
+    # 關鍵字刻意含 g：輸入模式下的 g 曾經被 app 層攔去開 GitHub view
+    # （見 src/app.rs 的 global_app_event）。這條要是又壞掉，重跑擷取就會
+    # 拍到 GitHub view 而不是篩選結果，等於一道哨兵。
+    ("filter", "'logging", "篩選"),
 ]
 
 
