@@ -27,7 +27,9 @@ use serde::Deserialize;
 #[command(name = "ysgit", version)]
 struct Args {
     /// Path to git repository [default: current directory]
-    #[arg(default_value = ".")]
+    // `hide_default_value`: the doc comment above already spells the default out
+    // in words, so letting clap append its own `[default: .]` printed it twice.
+    #[arg(default_value = ".", hide_default_value = true)]
     path: String,
 
     /// Maximum number of commits to render
@@ -38,7 +40,7 @@ struct Args {
     #[arg(short, long, value_name = "TYPE")]
     order: Option<CommitOrderType>,
 
-    /// Commit graph image cell width [default: auto]
+    /// Commit graph cell width [default: auto]
     #[arg(short, long, value_name = "TYPE")]
     graph_width: Option<GraphWidthType>,
 
