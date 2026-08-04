@@ -1,5 +1,39 @@
 # Changelog
 
+## [1.9.0](https://github.com/YSzEthan/serie-ys/compare/v1.8.0...v1.9.0) (2026-07-31)
+
+
+### Features
+
+* gh 預覽區 commit 記錄可用 z 鍵整體摺疊 ([ab0c37d](https://github.com/YSzEthan/serie-ys/commit/ab0c37de8e09ba99933363e2c6e25933f32a39d7))
+* gh 預覽區分隔線依區段上色 ([74d3181](https://github.com/YSzEthan/serie-ys/commit/74d3181af5fde9f1fc660f7671bf79f280db8949))
+* gh 預覽區改用 timelineItems，留言與 commit 依時間交錯顯示 ([6928e02](https://github.com/YSzEthan/serie-ys/commit/6928e02fa1f7add483cbb8647a7802a6d97cd53f))
+* gh 預覽區顯示 PR 是否可以 merge ([f932c4a](https://github.com/YSzEthan/serie-ys/commit/f932c4a9bc8d08f3423af7cf92d99dfbce5b5919))
+* 全畫面展開 GitHub emoji shortcode ([b2ae26d](https://github.com/YSzEthan/serie-ys/commit/b2ae26de105ca7c17a8ccc4d40964cee9dd8bd90))
+* 分隔線改用粉彩色調（藍灰 146、綠灰 151） ([d57e539](https://github.com/YSzEthan/serie-ys/commit/d57e5392b156aadccad195155cc2bb4f3f73ff31))
+
+
+### Bug Fixes
+
+* fuzzy 搜尋 highlight 的索引錯位 ([026006a](https://github.com/YSzEthan/serie-ys/commit/026006a84635ed0ba04bc37111ac6227b6bc7606))
+* gh 預覽區捲不到底，改由 Paragraph::scroll 處理捲動 ([dc38baa](https://github.com/YSzEthan/serie-ys/commit/dc38baad869d127836af4840d3ddf7e3a6bfe8a3))
+* markdown renderer 濾除 bot 留言雜訊，表格改按實際寬度排版 ([3898be4](https://github.com/YSzEthan/serie-ys/commit/3898be4f803dccf50ab1f10d0e206c1bac568c75))
+* suspend 期間收到 SIGTERM 不再拆掉外部程式的終端 ([b852ef3](https://github.com/YSzEthan/serie-ys/commit/b852ef3810a3347a11d870006694d7e17967309f))
+* terminal 關閉後 event thread 空轉吃滿 CPU ([35a67af](https://github.com/YSzEthan/serie-ys/commit/35a67afa6c06442c284f5ba88a4630531ab42931))
+* 大小寫不敏感搜尋的 highlight 標到隔壁的字 ([16e0ec4](https://github.com/YSzEthan/serie-ys/commit/16e0ec4da16e0cab8441245174c1ee4341b1ac6b))
+* 帶 variation selector 的 emoji 讓 marquee 卡死並持續重繪 ([ce0a1b0](https://github.com/YSzEthan/serie-ys/commit/ce0a1b03a5f97167275acb63702c53f652875acd))
+
+
+### Performance
+
+* 搜尋時不再為每個 commit 重建 SearchMatcher ([47aeb9b](https://github.com/YSzEthan/serie-ys/commit/47aeb9b0b8d48d25ac7e1b34cfc786896ee8b5a9))
+
+
+### Refactors
+
+* gh 預覽內容改用 PreviewInput 統一輸入來源，comments 全面改名為 timeline ([c86087d](https://github.com/YSzEthan/serie-ys/commit/c86087d6d952bbb333c68b5adc5c86ad043eaa70))
+* 搜尋路徑不再走 commit_quick_matches，欄位清單收成一份 ([59e7133](https://github.com/YSzEthan/serie-ys/commit/59e7133bd57f4abe75aab08927aefdceba7234d1))
+
 ## [1.8.0](https://github.com/YSzEthan/serie-ys/compare/v1.7.0...v1.8.0) (2026-07-29)
 
 
