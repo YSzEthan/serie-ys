@@ -1,63 +1,61 @@
-# Contribution Guide
+# 貢獻指南
 
-Thank you for considering contributing. Please review the guidelines below before making a contribution.
+感謝你考慮貢獻。動手之前請先看過以下指引。
 
-To ensure that your contributions are considered, please follow this guidelines. Contributions that do not adhere to these guidelines may not be accepted.
+未遵循這些指引的貢獻可能不會被接受。
 
-## Reporting Issues
+## 回報 issue
 
-Before reporting, please check if an issue with the same content already exists.
+回報前請先確認是否已有相同內容的 issue。
 
-Also, please refer to [FAQ](https://lusingander.github.io/serie/faq/index.html).
+也請先參閱[常見問題](docs/src/faq/index.md)。
 
-### Reporting Bugs
+### 回報 bug
 
-When reporting a bug, please include the following information:
+回報 bug 時請附上以下資訊：
 
-- Application version
-  - `serie --version`
-- Version of the terminal emulator and the OS it's running on
-- Information about the git repository to reproduce the issue
-  - If possible, provide the smallest possible repository (debugging a repository with 100,000 commits is difficult)
+- 應用程式版本
+  - `ysgit --version`
+- 終端機版本與其執行的作業系統
+- 重現問題所需的 git 儲存庫資訊
+  - 可以的話請提供最小的重現儲存庫（要在十萬筆 commit 的儲存庫上除錯很困難）
 
-### Suggesting Features
+### 提議新功能
 
-Before proposing a new feature, please review the [Goals](https://lusingander.github.io/serie/introduction/index.html#goals) and [Non-Goals](https://lusingander.github.io/serie/introduction/index.html#non-goals).
+提議新功能前，請先看過[目標與非目標](docs/src/introduction/index.md)。
 
-### Terminal Emulator Compatibility
+### 終端機相容性
 
-If the application does not work with your terminal emulator, please first check whether the terminal emulator supports the target image display protocol.
+commit 圖是用一般文字繪製的，沒有終端協議需要支援。顯示不正常時，請先確認你的字型是否有[相容性](docs/src/getting-started/compatibility.md)一節列出的製表字元，以及 `-s ascii` 是否能正常顯示。
 
-For information on tested terminal emulators, refer to [Compatibility](https://lusingander.github.io/serie/getting-started/compatibility.html).
+## Pull request
 
-## Pull Requests
+歡迎 pull request，但不保證一定會被接受。遵循以下指引可以提高被接受的機率。
 
-We welcome pull requests, but please note that they are not guaranteed to be accepted. Following this guideline will increase the likelihood of your pull request being approved.
+### 建立 pull request
 
-### Creating pull requests
+- 建立 pull request 時，請比照[回報 issue](#回報-issue) 的指引。
+- 不是每個 pull request 都需要先開 issue。小幅或直接了當的修改（例如文件修正、明顯的 bug 修復）可以直接開 pull request。
+- 較複雜或會改變行為的修改，強烈建議先開 issue 討論做法，避免白做工。
+- 不要夾帶與該 pull request 主題無關的修改。
 
-- When creating a pull request, please ensure you follow the same guidelines as [mentioned for issues](#reporting-issues).
-- An issue is not required for every pull request. For small or straightforward changes (such as documentation fixes or obvious bug fixes), feel free to open a pull request directly.
-- For more complex changes or behavior-altering fixes, opening an issue first is strongly recommended to discuss the approach and avoid unnecessary rework.
-- Do not include fixes that are not directly related to the pull request topic.
+### 持續整合
 
-### Continuous Integration
+使用 [GitHub Actions](.github/workflows/build.yml) 執行基本檢查：
 
-We use [GitHub Actions](https://github.com/lusingander/serie/blob/master/.github/workflows/build.yml) to perform basic checks:
+- stable 與 MSRV 兩個 Rust 版本都跑。
+- 執行 build、test、format、lint。
 
-- Run both stable and MSRV versions of Rust.
-- Run build, test, format, and lint.
+### 改善 commit 圖
 
-### Improving the Commit Graph
+歡迎改善 commit 圖。
 
-Improvements to the commit graph are welcome.
+commit 圖的測試放在 [./tests/graph.rs](./tests/graph.rs)。
 
-Tests for the commit graph are conducted in [./tests/graph.rs](./tests/graph.rs).
+執行測試會把渲染結果（`.txt` 快照）與測試用儲存庫輸出到 `./out/graph`。
+新增測試案例時，請把對應的快照放到 `./tests/graph/` 底下。
+既有圖形有變動時，覆蓋快照並確認沒有非預期的改動 —— 文字快照的 `git diff` 會直接顯示哪些字元移動了。
 
-Running the tests will output images and the test repository to `./out/graph`.
-If you add new test cases, please add these images under `./tests/graph/`.
-If existing graphs are modified, overwrite the images and ensure no unexpected changes have occurred.
+## 授權條款
 
-## License
-
-This project is licensed under the [MIT License](LICENSE). By contributing, contributors agree to abide by the terms of the applicable license.
+本專案採用 [MIT 授權條款](LICENSE)。貢獻者提交貢獻即表示同意遵守該授權條款。

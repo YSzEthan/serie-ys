@@ -1,7 +1,7 @@
-# Getting Started
+# 快速開始
 
-- [Requirements](./requirements.md)
-- [Installation](./installation.md)
-- [Basic Usage](./basic-usage.md)
-- [Command Line Options](./command-line-options.md)
-- [Compatibility](./compatibility.md)
+- [系統需求](./requirements.md)
+- [安裝](./installation.md)
+- [基本用法](./basic-usage.md)
+- [命令列選項](./command-line-options.md)
+- [相容性](./compatibility.md)

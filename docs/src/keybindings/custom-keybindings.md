@@ -1,51 +1,52 @@
-# Custom Keybindings
+# 自訂快捷鍵
 
-You can set your own custom key bindings.
+你可以設定自己的快捷鍵。
 
-Custom key bindings can be applied by writing them in the `[keybind]` section of [the config file](../configurations/config-file-format.md).
+在[設定檔](../configurations/config-file-format.md)的 `[keybind]` 段落中撰寫即可套用。
 
-The default key binding settings are described in [`./assets/default-keybind.toml`](https://github.com/lusingander/serie/blob/master/assets/default-keybind.toml).
-You can set key bindings for each action in the same format.
+預設快捷鍵設定寫在 [`./assets/default-keybind.toml`](https://github.com/YSzEthan/serie-ys/blob/main/assets/default-keybind.toml)，你可以用相同格式為各個 action 設定快捷鍵。
 
-- It is possible to set multiple key bindings for one action.
-- If you do not set key bindings for an action, the default key bindings will be assigned.
-- You can disable an action by setting `[]` as the key bindings.
+- 一個 action 可以設定多組快捷鍵。
+- 未設定快捷鍵的 action 會沿用預設值。
+- 把快捷鍵設成 `[]` 即可停用該 action。
 
-## Key Formats
+## 按鍵格式
 
-You can use the following formats to define key bindings.
+可以使用以下格式定義快捷鍵。
 
-### Modifier Keys
+### 修飾鍵
 
 - `ctrl-`
 - `alt-`
 - `shift-`
 
-Modifiers can be combined, for example: `ctrl-shift-a`.
+修飾鍵可以組合，例如：`ctrl-shift-a`。
 
-### Special Keys
+### 特殊鍵
 
-| Key | Description |
+| 按鍵 | 說明 |
 | --- | --- |
 | `esc` | Escape |
 | `enter` | Enter |
-| `left` | Left arrow |
-| `right` | Right arrow |
-| `up` | Up arrow |
-| `down` | Down arrow |
+| `left` | 左方向鍵 |
+| `right` | 右方向鍵 |
+| `up` | 上方向鍵 |
+| `down` | 下方向鍵 |
 | `home` | Home |
 | `end` | End |
 | `pageup` | Page Up |
 | `pagedown` | Page Down |
-| `backtab` | Back Tab (Shift + Tab) |
+| `backtab` | Back Tab（Shift + Tab） |
 | `backspace` | Backspace |
 | `delete` | Delete |
 | `insert` | Insert |
-| `f1` - `f12` | Function keys |
-| `space` | Space |
-| `hyphen`, `minus` | Hyphen (-) |
+| `f1` - `f12` | 功能鍵 |
+| `space` | 空白鍵 |
+| `hyphen`、`minus` | 連字號（-） |
 | `tab` | Tab |
 
-### Character Keys
+### 字元鍵
 
-Any single character not listed above (e.g., `a`, `b`, `1`, `!`) can be used as a key.
+上面沒列到的任何單一字元（例如 `a`、`b`、`1`、`!`）都可以當按鍵使用。
+
+非 ASCII 字元同樣可以，例如注音的 `ㄜ`、西里爾字母的 `й`、帶重音的 `é`。判斷依據是字元數而非位元組數，所以一個多位元組字元算一個按鍵。

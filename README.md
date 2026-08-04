@@ -12,7 +12,7 @@
 
 ## 關於
 
-Serie（[`/zéːriə/`](https://lusingander.github.io/serie/faq/index.html#how-do-i-pronounce-serie)）是一個 TUI 應用程式，利用終端模擬器的圖片顯示協議來渲染 commit 圖，效果類似 `git log --graph --all`。
+Serie（[`/zéːriə/`](docs/src/faq/index.md)）是一個 TUI 應用程式，用 Unicode 製表字元渲染 commit 圖，效果類似 `git log --graph --all`。
 
 ## Fork 新增功能
 
@@ -40,51 +40,56 @@ Serie（[`/zéːriə/`](https://lusingander.github.io/serie/faq/index.html#how-d
 
 - 實作功能完整的 Git 客戶端。
 - 建立具有複雜 UI 的 TUI 應用程式。
-- 在任何終端環境中都能運作。
 
 ## 文件
 
-如需詳細的使用方式、設定和進階功能，請參閱[完整文件](https://lusingander.github.io/serie/)。
+如需詳細的使用方式、設定和進階功能，請參閱 [docs/](docs/src/SUMMARY.md)。
 
 ## 系統需求
 
 - Git
-- 支援的終端模擬器
-  - 詳情請參閱[相容性](https://lusingander.github.io/serie/getting-started/compatibility.html)。
+- 能顯示 Unicode 製表字元（`● │ ─ ╭ ╮ ╯ ╰`）的終端機
+  - 字型缺字時改用 `-s ascii`，只用純 ASCII 繪圖。
+  - 詳情請參閱[相容性](#相容性)。
 
 ## 安裝
 
-從此 fork 安裝（需要 Rust toolchain）：
+從 [releases](https://github.com/YSzEthan/serie-ys/releases) 下載預先編譯好的執行檔（macOS arm64／x64、Linux、Windows，附 `checksum.txt`），或用 Rust toolchain 自行安裝：
 
 ```
 $ cargo install --git https://github.com/YSzEthan/serie-ys.git
 ```
 
-或從原版 crates.io 安裝（不含 fork 新增功能）：
+也可以從原版 crates.io 安裝（不含 fork 新增功能，執行檔名為 `serie`）：
 
 ```
 $ cargo install --locked serie
 ```
 
-其他下載方式請參閱[安裝說明](https://lusingander.github.io/serie/getting-started/installation.html)。
+各平台的詳細步驟請參閱 [docs/src/getting-started/installation.md](docs/src/getting-started/installation.md)。
 
 ## 使用方式
 
 ### 基本用法
 
-在你的 git 儲存庫目錄中執行 `serie`：
+在你的 git 儲存庫目錄中執行 `ysgit`，或直接把路徑當參數傳進去：
 
 ```
 $ cd <你的 git 儲存庫>
-$ serie
+$ ysgit
+
+$ ysgit <你的 git 儲存庫>
 ```
 
 ### 選項
 
 ```
-Serie - 在終端機中呈現豐富的 git commit 圖，如同魔法般 📚
+ysgit - 在終端機中呈現豐富的 git commit 圖，如同魔法般 📚
 
-用法：serie [OPTIONS]
+用法：ysgit [OPTIONS] [PATH]
+
+參數：
+  [PATH]  git 儲存庫路徑 [預設: 當前目錄]
 
 選項：
   -n, --max-count <NUMBER>        渲染的最大 commit 數量
@@ -96,13 +101,15 @@ Serie - 在終端機中呈現豐富的 git commit 圖，如同魔法般 📚
   -V, --version                   顯示版本
 ```
 
-各選項的詳細說明請參閱[命令列選項](https://lusingander.github.io/serie/getting-started/command-line-options.html)。
+> 此 fork 的執行檔名為 `ysgit`（見 `Cargo.toml` 的 `[[bin]]`），不是上游的 `serie`。
+
+各選項的詳細說明請參閱[命令列選項](docs/src/getting-started/command-line-options.md)。
 
 ### 快捷鍵
 
 按 `?` 鍵即可查看快捷鍵列表。
 
-[預設快捷鍵](https://lusingander.github.io/serie/keybindings/index.html)可以自訂覆蓋。詳情請參閱[自訂快捷鍵](https://lusingander.github.io/serie/keybindings/custom-keybindings.html)。
+[預設快捷鍵](docs/src/keybindings/index.md)可以自訂覆蓋。詳情請參閱[自訂快捷鍵](docs/src/keybindings/custom-keybindings.md)。
 
 ### 設定
 
@@ -116,30 +123,33 @@ Serie - 在終端機中呈現豐富的 git commit 圖，如同魔法般 📚
 若設定檔不存在，所有項目將使用預設值。
 若設定檔存在但部分項目未設定，未設定的項目將使用預設值。
 
-設定檔格式的詳細資訊請參閱[設定檔格式](https://lusingander.github.io/serie/configurations/config-file-format.html)。
+設定檔格式的詳細資訊請參閱[設定檔格式](docs/src/configurations/config-file-format.md)。
+
+#### 舊設定檔裡的死鍵
+
+隨著圖片渲染路徑移除，`core.option.protocol` 與 `graph.row_image_width` 這類鍵已經不存在了。舊設定檔留著它們的話：
+
+- **編輯器會標紅** —— `config.schema.json` 全面設了 `additionalProperties: false`，吃這份 schema 的編輯器會把未知鍵判定為錯誤。這是刻意的，用來提醒你清掉死鍵。
+- **但程式不會報錯** —— `src/config.rs` 沒有用 `deny_unknown_fields`，serde 對未知欄位預設靜默忽略，同一段落裡的其他鍵照常生效。
+
+換句話說「schema 擋、runtime 不擋」。死鍵不會讓程式起不來，但也不會有任何效果，建議直接刪掉。
 
 ### 使用者自訂指令
 
 使用者自訂指令功能可讓你執行自訂的外部指令。
 你可以在專用視圖中顯示像 `git diff` 這樣的指令輸出，在背景執行像刪除分支這樣的指令，或透過暫停應用程式來執行 `vim` 等互動式指令。
 
-指令設定方式詳見[使用者自訂指令](https://lusingander.github.io/serie/features/user-command.html)。
+指令設定方式詳見[使用者自訂指令](docs/src/features/user-command.md)。
 
 ## 相容性
 
-### 支援的終端機
+commit 圖是用一般文字繪製的，不送任何圖片跳脫序列。因此**沒有終端機白名單**：只要能畫出 Unicode 製表字元的終端機都能用。
 
-支援以下圖片協議：
+- 字型缺 `● ◯ │ ─ ╭ ╮ ╯ ╰` 這些字時，用 `-s ascii` 退回純 ASCII（`* o | - +`）。
+- 終端多工器（tmux、screen、Zellij 等）**可以正常使用**。上游因為圖片協議無法穿透多工器而排除它們，這個限制在此 fork 已經不存在。
+- Sixel、iTerm2 inline images、kitty graphics protocol 都不再需要，有沒有支援都不影響。
 
-- [Inline Images Protocol (iTerm2)](https://iterm2.com/documentation-images.html)
-- [Terminal graphics protocol (kitty)](https://sw.kovidgoyal.net/kitty/graphics-protocol/)
-
-更多資訊請參閱[相容性](https://lusingander.github.io/serie/getting-started/compatibility.html)。
-
-### 不支援的環境
-
-- 不支援 Sixel 圖形。
-- 不支援終端多工器（screen、tmux、Zellij 等）。
+> 這是此 fork 與上游最大的行為差異，上游文件的[相容性](https://lusingander.github.io/serie/getting-started/compatibility.html)一節不適用於這裡。
 
 ## 截圖
 
@@ -150,6 +160,8 @@ Serie - 在終端機中呈現豐富的 git commit 圖，如同魔法般 📚
 <img src="./img/applied.png" width=600>
 <img src="./img/diff_git.png" width=600>
 <img src="./img/diff_difft.png" width=600>
+
+> 以上截圖沿用自上游，拍攝時 commit 圖還是用圖片協議渲染的，與此 fork 目前的文字繪圖外觀略有差異。
 
 以下儲存庫用於上述範例：
 

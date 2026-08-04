@@ -1,4 +1,4 @@
-# Features
+# 功能
 
-- [User Command](./user-command.md)
-- [Screenshots](./screenshots.md)
+- [使用者自訂指令](./user-command.md)
+- [截圖](./screenshots.md)

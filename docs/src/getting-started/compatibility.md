@@ -1,32 +1,28 @@
-# Compatibility
+# 相容性
 
-## Supported terminal emulators
+commit 圖是用一般文字繪製的，不送任何圖片跳脫序列，因此**沒有終端機白名單** —— 只要畫得出 Unicode 製表字元的終端機都能用。
 
-These image protocols are supported:
+## 需要哪些字元
 
-- [Inline Images Protocol (iTerm2)](https://iterm2.com/documentation-images.html)
-- [Terminal graphics protocol (kitty)](https://sw.kovidgoyal.net/kitty/graphics-protocol/)
+預設的 `rounded` 風格會用到這些字元：
 
-The terminals on which each has been confirmed to work are listed below.
+```
+● ◯ │ ─ ╭ ╮ ╯ ╰
+```
 
-### Inline Images Protocol
+字型缺字（或寬度算錯）時，改用其他 `--graph-style`（見[命令列選項](./command-line-options.md)）：
 
-| Terminal emulator                                                                   | Note                                                                                                                                         |
-| ----------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- |
-| [iTerm2](https://iterm2.com)                                                        | But slower than other terminals                                                                                                              |
-| [WezTerm](https://wezfurlong.org/wezterm/)                                          |                                                                                                                                              |
-| [VSCode integrated terminal](https://code.visualstudio.com/docs/terminal/basics) \* | Requires the [`terminal.integrated.enableImages` setting](https://code.visualstudio.com/docs/terminal/advanced#_image-support) to be enabled |
+- `angular` 把圓角換成直角（`┌ ┐ ┘ └`），一般字型的涵蓋率較高。
+- `ascii` 完全不用製表字元，只用 `* o | - +`。
 
-\*Not only the VSCode integrated terminal, but any terminal emulator using [xterm.js](https://xtermjs.org) may basically work in the same way as long as [image display feature is enabled](https://github.com/xtermjs/xterm.js/tree/master/addons/addon-image).
+## 終端多工器
 
-### Terminal graphics protocol
+tmux、screen、Zellij 等都可以正常使用。早期版本把 commit 圖當圖片渲染，而圖片協議無法穿透多工器；這個限制已經不存在了。
 
-| Terminal emulator                         | Note |
-| ----------------------------------------- | ---- |
-| [kitty](https://sw.kovidgoyal.net/kitty/) |      |
-| [Ghostty](https://ghostty.org)            |      |
+## 不再相關的項目
 
-## Unsupported environments
+- **Sixel 圖形** —— 用不到。
+- **Inline Images Protocol (iTerm2)** —— 用不到。
+- **Terminal graphics protocol (kitty)** —— 用不到。
 
-- Sixel graphics is not supported.
-- Terminal multiplexers (screen, tmux, Zellij, etc.) are not supported.
+終端機支不支援這些協議，對 commit 圖的顯示沒有任何影響。

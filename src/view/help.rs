@@ -73,23 +73,6 @@ impl HelpBlock {
         }
     }
 
-    /// 給 mdBook 英文文件用的標題（in-app help 是中文介面）。
-    #[cfg(test)]
-    fn title_en(self) -> &'static str {
-        match self {
-            HelpBlock::Common => "Common",
-            HelpBlock::Help => "Help",
-            HelpBlock::List => "Commit List",
-            HelpBlock::Detail => "Commit Detail",
-            HelpBlock::Refs => "Refs List",
-            HelpBlock::GitHub => "GitHub View",
-            HelpBlock::CreateTag => "Create Tag",
-            HelpBlock::DeleteTag => "Delete Tag",
-            HelpBlock::DeleteRef => "Delete Ref",
-            HelpBlock::UserCommand => "User Command",
-        }
-    }
-
     /// 實作這個分區 keymap 的原始碼。一致性測試據此比對宣稱與實作。
     #[cfg(test)]
     fn source_files(self) -> &'static [&'static str] {
@@ -618,37 +601,34 @@ mod tests {
     /// 處理常式裡，不經過 `KeyBind`，所以進不了 `help_blocks`。
     /// 不揭露就是產出一份「看起來完整但不完整」的文件。
     const HARDCODED_KEYS_SECTION: &str = "\
-## Hardcoded keys
+## 寫死的按鍵
 
-These keys are fixed and cannot be changed via config, because they belong to
-transient prompts rather than a view's keymap.
+以下按鍵無法透過設定檔變更，因為它們屬於一次性的提示互動，不歸任何 view 的 keymap 管。
 
-| Key | Where | Action |
+| 按鍵 | 出現位置 | 動作 |
 | --- | ----- | ------ |
-| <kbd>1</kbd>–<kbd>9</kbd> | Ref / checkout / related / branch pickers | Pick the n-th entry |
-| <kbd>m</kbd> <kbd>s</kbd> <kbd>r</kbd> | Merge PR prompt (step 1) | Merge / squash / rebase |
-| <kbd>y</kbd> <kbd>n</kbd> | Merge PR prompt (step 2) | Delete the branch after merging, or not |
-| <kbd>f</kbd> | Delete branch confirmation | Force delete |
-| <kbd>Tab</kbd> <kbd>Shift-Tab</kbd> | Create tag dialog | Move between fields |
-| <kbd>Space</kbd> | Create tag dialog (checkbox) | Toggle the checkbox |
+| <kbd>1</kbd>–<kbd>9</kbd> | Ref／checkout／關聯／branch 選擇器 | 選第 n 項 |
+| <kbd>m</kbd> <kbd>s</kbd> <kbd>r</kbd> | Merge PR 提示（第 1 步） | merge／squash／rebase |
+| <kbd>y</kbd> <kbd>n</kbd> | Merge PR 提示（第 2 步） | merge 後是否刪除該 branch |
+| <kbd>f</kbd> | 刪除 branch 確認 | 強制刪除 |
+| <kbd>Tab</kbd> <kbd>Shift-Tab</kbd> | Create tag 對話框 | 在欄位間移動 |
+| <kbd>Space</kbd> | Create tag 對話框（核取方塊） | 切換核取狀態 |
 ";
 
     fn render_doc(keybind: &KeyBind, core_config: &CoreConfig) -> String {
         let mut out = String::new();
         out.push_str(
-            "# Keybindings\n\n\
-             <!-- Generated from `src/view/help.rs` by `cargo test`. Do not edit by hand. -->\n\
-             <!-- To regenerate: UPDATE_KEYBINDINGS_DOC=1 cargo test -->\n\n\
-             Press <kbd>?</kbd> in the app to see this list at any time, with your own\n\
-             overrides already applied.\n\n\
-             The keys below are the defaults; see\n\
-             [Custom Keybindings](./custom-keybindings.md) for how to change them.\n\n\
-             ## Default keybindings\n",
+            "# 快捷鍵\n\n\
+             <!-- 由 `cargo test` 從 `src/view/help.rs` 產生，請勿手動編輯。 -->\n\
+             <!-- 重新產生：UPDATE_KEYBINDINGS_DOC=1 cargo test -->\n\n\
+             在應用程式中按 <kbd>?</kbd> 可隨時查看這份清單，且已套用你自己的覆寫設定。\n\n\
+             以下是預設值，修改方式請參閱[自訂快捷鍵](./custom-keybindings.md)。\n\n\
+             ## 預設快捷鍵\n",
         );
 
         for (block, specs) in help_blocks(keybind, core_config) {
-            out.push_str(&format!("\n### {}\n\n", block.title_en()));
-            out.push_str("| Key | Description | Config key |\n| --- | --- | --- |\n");
+            out.push_str(&format!("\n### {}\n\n", block.title()));
+            out.push_str("| 按鍵 | 說明 | 設定鍵名 |\n| --- | --- | --- |\n");
             for spec in specs {
                 let keys: Vec<String> = spec
                     .events
@@ -665,7 +645,7 @@ transient prompts rather than a view's keymap.
                 out.push_str(&format!(
                     "| {} | {} | {} |\n",
                     keys.join(" "),
-                    spec.en,
+                    spec.cn,
                     names.join(" ")
                 ));
             }

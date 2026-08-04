@@ -1,29 +1,28 @@
-# Introduction
+# 簡介
 
-**Serie** ([`/zéːriə/`](https://lusingander.github.io/serie/faq/index.html#how-do-i-pronounce-serie)) is a TUI application that uses the terminal emulators' image display protocol to render commit graphs like `git log --graph --all`.
+**Serie**（[`/zéːriə/`](../faq/index.md)）是一個 TUI 應用程式，用 Unicode 製表字元渲染 commit 圖，效果類似 `git log --graph --all`。
 
 <img src="https://raw.githubusercontent.com/lusingander/serie/master/img/demo.gif">
 
-(This demo shows [Ratatui](https://github.com/ratatui/ratatui) repository!)
+（此 demo 展示的是 [Ratatui](https://github.com/ratatui/ratatui) 儲存庫！）
 
-## Why?
+## 為什麼？
 
-While some users prefer to use Git via CLI, they often rely on a GUI or feature-rich TUI to view commit logs. Others may find `git log --graph` sufficient.
+雖然有些使用者偏好透過 CLI 使用 Git，但他們在查看 commit 記錄時往往需要依賴 GUI 或功能豐富的 TUI。也有些人覺得 `git log --graph` 就已足夠。
 
-Personally, I found the output from `git log --graph` difficult to read, even with additional options. Learning complex tools just to view logs seemed cumbersome.
+就我個人而言，即使加上額外選項，`git log --graph` 的輸出仍然難以閱讀。僅僅為了查看記錄就去學習複雜的工具，似乎太過繁瑣。
 
-## Goals
+## 目標
 
-- Provide a rich `git log --graph` experience in the terminal.
-- Offer commit graph-centric browsing of Git repositories.
+- 在終端機中提供豐富的 `git log --graph` 體驗。
+- 提供以 commit 圖為核心的 Git 儲存庫瀏覽方式。
 
-## Non-Goals
+## 非目標
 
-- Implement a fully-featured Git client.
-- Create a TUI application with a complex UI.
-- Works in any terminal environment.
+- 實作功能完整的 Git 客戶端。
+- 建立具有複雜 UI 的 TUI 應用程式。
 
 ---
 
-_Built with Rust and [ratatui](https://github.com/ratatui/ratatui)._  
-_Serie is available on [GitHub](https://github.com/lusingander/serie) under the MIT license._
+_以 Rust 與 [ratatui](https://github.com/ratatui/ratatui) 打造。_  
+_Serie 以 MIT 授權條款發布於 [GitHub](https://github.com/lusingander/serie)。_

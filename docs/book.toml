@@ -1,11 +1,11 @@
 [book]
 authors = ["Kyosuke Fujimoto"]
-language = "en"
+language = "zh-TW"
 src = "src"
-title = "Serie"
-description = "Serie Documentation"
+title = "ysgit"
+description = "ysgit 文件（serie fork）"
 
 [output.html]
-git-repository-url = "https://github.com/lusingander/serie"
-site-url = "/serie/"
+git-repository-url = "https://github.com/YSzEthan/serie-ys"
+site-url = "/serie-ys/"
 default-theme = "rust"

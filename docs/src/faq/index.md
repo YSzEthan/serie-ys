@@ -1,26 +1,21 @@
-# FAQ
+# 常見問題
 
-## Why doesn't the graph display?
+## 圖形顯示成方框、問號或字元錯位
 
-Serie displays graphs using specific terminal graphics protocols (such as Kitty and iTerm2 inline images).
+commit 圖是用 Unicode 製表字元（`● ◯ │ ─ ╭ ╮ ╯ ╰`）繪製的。字型沒有涵蓋全部字元時，改用 `-s angular`（直角，字型涵蓋率較高）或 `-s ascii`（只用純 ASCII）。
 
-**If your terminal emulator doesn't support one of these protocols, Serie will not work — there is no fallback or workaround.**
+過程中不涉及任何終端協議，所以這一定是字型問題，不會是終端機支援度的問題。詳見[相容性](../getting-started/compatibility.md)。
 
-This is a fundamental requirement, not a limitation that can be worked around.
-For a list of supported terminal emulators and compatible environments, see [Compatibility](../getting-started/compatibility.md).
+## 跟其他 git TUI 客戶端相比有什麼優勢？
 
-## What are the advantages over other git TUI clients?
+- 分支一多仍然讀得懂的 commit 圖
+- 簡潔乾淨的介面
 
-Compared to other git TUI clients, Serie offers the following advantages:
+反過來說，以下情況可能不適合你：
 
-- High-quality graph visualization using terminal graphics protocols
-- Simple and clean interface
+- 你已經滿意 `git log --graph` 或現有 TUI 客戶端的圖形顯示
+- 你需要在 TUI 客戶端裡做複雜的 git 操作
 
-On the other hand, Serie may not be for you if:
+## Serie 怎麼念？
 
-- You're satisfied with `git log --graph` or the graph display in existing TUI clients
-- You need to perform complex git operations within a TUI client
-
-## How do I pronounce "Serie"?
-
-It is pronounced as the German word Serie (**/ˈzeːriə/**), roughly like **"ZAY-ree-eh"**, not like the English "series".
+念法同德文的 Serie（**/ˈzeːriə/**），大致是 **「ZAY-ree-eh」**，不是英文的 "series"。

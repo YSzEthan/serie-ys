@@ -1,25 +1,25 @@
-# User Command
+# 使用者自訂指令
 
-The User command feature allows you to execute custom external commands.
-There are three types of user commands: `inline`, `silent` and `suspend`.
+使用者自訂指令功能可讓你執行自訂的外部指令。共有三種型別：`inline`、`silent` 與 `suspend`。
 
-- `inline` (default)
-  - Displays the output (stdout) of the command in a dedicated view within the TUI.
-  - This allows you to do things like view commit diffs using your favorite tools.
+- `inline`（預設）
+  - 在 TUI 的專用視圖中顯示指令的輸出（stdout）。
+  - 例如可以用你慣用的工具檢視 commit diff。
 - `silent`
-  - Executes the command in the background without opening a view.
-  - This is useful for operations that don't require checking output, such as deleting branches or adding tags.
+  - 在背景執行指令，不開啟視圖。
+  - 適合不需要看輸出的操作，例如刪除 branch 或加 tag。
 - `suspend`
-  - Executes the command by suspending the application.
-  - This is useful for interactive commands that require terminal control, such as `git commit --amend` (which opens an editor) or `git diff` with a pager.
+  - 暫停應用程式後執行指令。
+  - 適合需要控制終端機的互動式指令，例如會開編輯器的 `git commit --amend`，或搭配 pager 的 `git diff`。
 
-To define a user command, you need to configure the following two settings:
-- Keybinding definition. Specify the key to execute each user command.
-  - Config: `keybind.user_command_{n}`
-- Command definition. Specify the actual command you want to execute.
-  - Config: `core.user_command.commands_{n}`
+定義一個使用者自訂指令需要設定兩項：
 
-Example configuration in `config.toml`:
+- 快捷鍵定義。指定執行各個使用者自訂指令的按鍵。
+  - 設定鍵名：`keybind.user_command_{n}`
+- 指令定義。指定實際要執行的指令。
+  - 設定鍵名：`core.user_command.commands_{n}`
+
+`config.toml` 設定範例：
 
 ```toml
 [keybind]
@@ -29,70 +29,68 @@ user_command_3 = ["b"]
 user_command_4 = ["a"]
 
 [core.user_command]
-# Inline command (default)
+# Inline 指令（預設）
 commands_1 = { "name" = "git diff", commands = ["git", "--no-pager", "diff", "--color=always", "{{first_parent_hash}}", "{{target_hash}}"] }
-# Inline command with custom area size
+# Inline 指令，並指定顯示區域大小
 commands_2 = { "name" = "xxx", commands = ["xxx", "{{first_parent_hash}}", "{{target_hash}}", "--width", "{{area_width}}", "--height", "{{area_height}}"] }
-# Silent command with refresh
+# Silent 指令，執行後重新載入
 commands_3 = { "name" = "delete branch", type = "silent", commands = ["git", "branch", "-D", "{{branches}}"], refresh = true }
-# Suspend command with refresh
+# Suspend 指令，執行後重新載入
 commands_4 = { "name" = "amend commit", type = "suspend", commands = ["git", "commit", "--amend"], refresh = true }
 ```
 
 ## Refresh
 
-For `silent` and `suspend` commands, you can set `refresh = true` to automatically reload the repository and refresh the display (e.g., commit list) after the command is executed.
-This is useful when the command modifies the repository state.
+`silent` 與 `suspend` 型別可以設定 `refresh = true`，指令執行完畢後自動重新載入儲存庫並更新畫面（例如 commit 清單）。指令會改動儲存庫狀態時很有用。
 
-Note that `refresh = true` cannot be used with `inline` commands.
+注意 `refresh = true` 不能用在 `inline` 指令上。
 
-## Variables
+## 變數
 
-The following variables can be used in command definitions.
-They will be replaced with their respective values command is executed.
+指令定義中可以使用以下變數，執行時會替換成對應的值。
 
-### Variable list
+### 變數清單
 
 - `{{target_hash}}`
-  - The hash of the selected commit.
-  - example: `b0ce4cb9c798576af9b4accc9f26ddce5e72063d`
+  - 選取的 commit 的 hash。
+  - 範例：`b0ce4cb9c798576af9b4accc9f26ddce5e72063d`
 - `{{first_parent_hash}}`
-  - The hash of the first parent of the selected commit.
-  - example: `c103d9744df8ebf100773a11345f011152ec5581`
+  - 選取的 commit 的第一個 parent 的 hash。
+  - 範例：`c103d9744df8ebf100773a11345f011152ec5581`
 - `{{parent_hashes}}`
-  - The hashes of all parents of the selected commit, separated by a space.
-  - example: `c103d9744df8ebf100773a11345f011152ec5581 a1b2c3d4e5f67890123456789abcdef0123456789`
+  - 選取的 commit 的所有 parent 的 hash，以空白分隔。
+  - 範例：`c103d9744df8ebf100773a11345f011152ec5581 a1b2c3d4e5f67890123456789abcdef0123456789`
 - `{{refs}}`
-  - The names of all refs (branches, remote branches, tags) pointing to the selected commit, separated by a space.
-  - example: `master v1.0.0`
+  - 指向選取 commit 的所有 ref（branch、remote branch、tag）名稱，以空白分隔。
+  - 範例：`master v1.0.0`
 - `{{branches}}`
-  - The names of all branches pointing to the selected commit, separated by a space.
-  - example: `master feature-branch`
+  - 指向選取 commit 的所有 branch 名稱，以空白分隔。
+  - 範例：`master feature-branch`
 - `{{remote_branches}}`
-  - The names of all remote branches pointing to the selected commit, separated by a space.
-  - example: `origin/master origin/feature-branch`
+  - 指向選取 commit 的所有 remote branch 名稱，以空白分隔。
+  - 範例：`origin/master origin/feature-branch`
 - `{{tags}}`
-  - The names of all tags pointing to the selected commit, separated by a space.
-  - example: `v1.0.0 v1.0.1`
+  - 指向選取 commit 的所有 tag 名稱，以空白分隔。
+  - 範例：`v1.0.0 v1.0.1`
 - `{{stash}}`
-  - The name of the stash when the selected commit is a stash commit. Otherwise, this is an empty string.
-  - example: `stash@{0}`
+  - 選取的 commit 是 stash commit 時，該 stash 的名稱；否則為空字串。
+  - 範例：`stash@{0}`
 - `{{area_width}}`
-  - Width of the user command display area (number of cells).
-  - example: `80`
+  - 使用者自訂指令顯示區域的寬度（字元格數）。
+  - 範例：`80`
 - `{{area_height}}`
-  - Height of the user command display area (number of cells).
-  - example: `30`
+  - 使用者自訂指令顯示區域的高度（字元格數）。
+  - 範例：`30`
 
-### List variables and argument expansion
+### 清單型變數與引數展開
 
-Variables that represent multiple values (marked with "separated by a space" below) are handled specially:
+代表多個值的變數（上面標示「以空白分隔」的那些）有特殊處理：
 
-- Standalone Marker
-  - If used as a single argument (e.g., `["git", "branch", "-D", "{{branches}}"]`), it is expanded into multiple separate arguments (e.g., `["git", "branch", "-D", "br1", "br2"]`).
-- Combined Marker
-  - If combined with other characters (e.g., `["echo", "refs: {{refs}}"]`), it is replaced as a single space-separated string (e.g., `["echo", "refs: ref1 ref2"]`).
-- Empty List
-  - If the list is empty and used as a standalone marker, the argument is completely removed (e.g., `["git", "branch", "-D", "{{branches}}"]` becomes `["git", "branch", "-D"]`).
+- 獨立標記
+  - 單獨作為一個引數時（例如 `["git", "branch", "-D", "{{branches}}"]`），會展開成多個獨立引數（例如 `["git", "branch", "-D", "br1", "br2"]`）。
+- 混合標記
+  - 與其他字元組合時（例如 `["echo", "refs: {{refs}}"]`），會替換成單一的空白分隔字串（例如 `["echo", "refs: ref1 ref2"]`）。
+- 空清單
+  - 清單為空且作為獨立標記時，該引數會被整個移除（例如 `["git", "branch", "-D", "{{branches}}"]` 變成 `["git", "branch", "-D"]`）。
 
-Using standalone markers is recommended when passing multiple values to commands that expect separate arguments, and it correctly handles names containing spaces.
+要把多個值傳給預期分開引數的指令時，建議使用獨立標記，這樣含空白的名稱也能正確處理。

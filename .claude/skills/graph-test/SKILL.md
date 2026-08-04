@@ -19,6 +19,7 @@ description: "執行圖形渲染整合測試並檢查輸出快照。當使用者
    cargo test --test graph <test_name> --verbose
    ```
 
-3. 測試完成後，告知使用者視覺快照已儲存至 `./out/graph/`，可供手動檢查。
+3. 測試完成後，告知使用者文字快照已儲存至 `./out/graph/`，可供手動檢查。
 
-4. 若使用者想檢視特定快照，在 macOS 上使用 `open ./out/graph/<名稱>.png`。
+4. 若使用者想檢視特定快照，直接讀 `./out/graph/<名稱>.txt`；要看與 golden 的差異用
+   `diff ./tests/graph/<名稱>.txt ./out/graph/<名稱>.txt`。
