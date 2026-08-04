@@ -48,9 +48,9 @@ Serie（[`/zéːriə/`](docs/src/faq/index.md)）是一個 TUI 應用程式，�
 ## 系統需求
 
 - Git
-- 能顯示 Unicode 製表字元（`● │ ─ ╭ ╮ ╯ ╰`）的終端機
-  - 字型缺字時改用 `-s ascii`，只用純 ASCII 繪圖。
-  - 詳情請參閱[相容性](#相容性)。
+- 能顯示 Unicode 製表字元（`● ◯ │ ─ ╭ ╮ ╯ ╰`）的終端機
+  - 字型缺字時改用 `-s angular`（直角，字型涵蓋率較高）或 `-s ascii`（純 ASCII）。
+  - 詳情請參閱[相容性](docs/src/getting-started/compatibility.md)。
 
 ## 安裝
 
@@ -125,14 +125,7 @@ ysgit - 在終端機中呈現豐富的 git commit 圖，如同魔法般 📚
 
 設定檔格式的詳細資訊請參閱[設定檔格式](docs/src/configurations/config-file-format.md)。
 
-#### 舊設定檔裡的死鍵
-
-隨著圖片渲染路徑移除，`core.option.protocol` 與 `graph.row_image_width` 這類鍵已經不存在了。舊設定檔留著它們的話：
-
-- **編輯器會標紅** —— `config.schema.json` 全面設了 `additionalProperties: false`，吃這份 schema 的編輯器會把未知鍵判定為錯誤。這是刻意的，用來提醒你清掉死鍵。
-- **但程式不會報錯** —— `src/config.rs` 沒有用 `deny_unknown_fields`，serde 對未知欄位預設靜默忽略，同一段落裡的其他鍵照常生效。
-
-換句話說「schema 擋、runtime 不擋」。死鍵不會讓程式起不來，但也不會有任何效果，建議直接刪掉。
+舊設定檔若還留著 `core.option.protocol`、`graph.row_image_width` 這類已隨圖片渲染路徑移除的鍵，會是「schema 擋、runtime 不擋」—— 編輯器標紅，但程式照常啟動、該鍵不生效。詳見[舊設定檔裡的死鍵](docs/src/configurations/index.md)。
 
 ### 使用者自訂指令
 
@@ -145,7 +138,7 @@ ysgit - 在終端機中呈現豐富的 git commit 圖，如同魔法般 📚
 
 commit 圖是用一般文字繪製的，不送任何圖片跳脫序列。因此**沒有終端機白名單**：只要能畫出 Unicode 製表字元的終端機都能用。
 
-- 字型缺 `● ◯ │ ─ ╭ ╮ ╯ ╰` 這些字時，用 `-s ascii` 退回純 ASCII（`* o | - +`）。
+- 字型缺 `● ◯ │ ─ ╭ ╮ ╯ ╰` 這些字時，用 `-s angular`（直角）或 `-s ascii`（`* o | - +`）。
 - 終端多工器（tmux、screen、Zellij 等）**可以正常使用**。上游因為圖片協議無法穿透多工器而排除它們，這個限制在此 fork 已經不存在。
 - Sixel、iTerm2 inline images、kitty graphics protocol 都不再需要，有沒有支援都不影響。
 
@@ -165,13 +158,7 @@ Refs 清單（`Tab`）—— 此 fork 可以在這裡刪除 branch 與 tag：
 
 <img src="./docs/src/img/filter.svg" width="100%">
 
-畫面全部由 `scripts/capture_screenshots.py` 擷取：在 pty 裡跑起 `ysgit`、送出按鍵、把終端輸出轉成 SVG。UI 一改，重跑一次就是最新的畫面，不會像螢幕截圖那樣默默過期：
-
-```
-$ cargo build --release
-$ scripts/generate_test_repo.sh /tmp/demo-repo 120
-$ scripts/capture_screenshots.py /tmp/demo-repo docs/src/img/
-```
+這些不是螢幕截圖，是從執行中的 `ysgit` 擷取出來的 SVG。作法與重跑方式見[截圖](docs/src/features/screenshots.md)。
 
 ## 貢獻
 

@@ -58,15 +58,7 @@ commit 圖的測試放在 [./tests/graph.rs](./tests/graph.rs)。
 
 ### 更新文件裡的畫面
 
-`docs/src/img/*.svg` 不是螢幕截圖，是 `scripts/capture_screenshots.py` 在 pty 裡跑起 `ysgit`、送出按鍵、把終端輸出逐格轉成 SVG 的結果。UI 有變動時重跑一次即可：
-
-```
-$ cargo build --release
-$ scripts/generate_test_repo.sh /tmp/demo-repo 120
-$ scripts/capture_screenshots.py /tmp/demo-repo docs/src/img/
-```
-
-示範倉庫刻意用產生的而非本專案自己的歷史：有分支、merge 與 tag 才看得出 graph，也不會把實際工作內容拍進文件。
+UI 有變動時，`docs/src/img/*.svg` 要重新擷取。作法見[截圖](docs/src/features/screenshots.md)。
 
 ## 授權條款
 

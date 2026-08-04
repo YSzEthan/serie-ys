@@ -7,7 +7,7 @@ diff 看得懂，而且這支腳本可以重跑 —— 圖不會像先前那批�
 
 用法：
     scripts/generate_test_repo.sh /tmp/demo-repo 120
-    scripts/capture_screenshots.py /tmp/demo-repo img/
+    scripts/capture_screenshots.py /tmp/demo-repo docs/src/img/
 
 刻意用產生出來的測試倉庫而不是本專案自己的歷史：測試倉庫有分支、merge
 與 tag，graph 才看得出東西，而且不會把實際工作內容拍進 README。

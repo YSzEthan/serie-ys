@@ -12,7 +12,10 @@ categories = ["command-line-utilities"]
 edition = "2021"
 rust-version = "1.88.0"
 
-exclude = ["/.github", "/docs", "/scripts"]
+# `/docs` 整個排掉會讓打包出來的 crate 編不動測試：`src/config.rs` 用
+# `include_str!` 讀 docs/src/configurations/config-file-format.md。只排掉
+# 擷取出來的畫面（唯一佔空間的部分），文字檔留著。
+exclude = ["/.github", "/scripts", "/docs/src/img"]
 
 [[bin]]
 name = "ysgit"
