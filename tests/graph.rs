@@ -1202,14 +1202,16 @@ impl GenerateGraphOption {
 /// (style) do.
 struct GraphSnapshotSource {
     subjects: Vec<String>,
-    double_rows: Vec<Vec<graph::TextCell>>,
+    double_l_rows: Vec<Vec<graph::TextCell>>,
+    double_f_rows: Vec<Vec<graph::TextCell>>,
     single_rows: Vec<Vec<graph::TextCell>>,
 }
 
 impl GraphSnapshotSource {
     fn rows(&self, width: graph::CellWidthType) -> &[Vec<graph::TextCell>] {
         match width {
-            graph::CellWidthType::Double => &self.double_rows,
+            graph::CellWidthType::DoubleL => &self.double_l_rows,
+            graph::CellWidthType::DoubleF => &self.double_f_rows,
             graph::CellWidthType::Single => &self.single_rows,
         }
     }
@@ -1241,7 +1243,8 @@ fn build_graph_snapshot_source(
         .map(|c| c.to_ratatui_color())
         .collect::<Vec<_>>();
 
-    let double_rows = graph::build_text_graph(&graph, &colors, graph::CellWidthType::Double);
+    let double_l_rows = graph::build_text_graph(&graph, &colors, graph::CellWidthType::DoubleL);
+    let double_f_rows = graph::build_text_graph(&graph, &colors, graph::CellWidthType::DoubleF);
     let single_rows = graph::build_text_graph(&graph, &colors, graph::CellWidthType::Single);
     let subjects = graph
         .commit_hashes
@@ -1251,7 +1254,8 @@ fn build_graph_snapshot_source(
 
     GraphSnapshotSource {
         subjects,
-        double_rows,
+        double_l_rows,
+        double_f_rows,
         single_rows,
     }
 }
@@ -1275,45 +1279,103 @@ fn render_text_graph_styled(
     out
 }
 
-/// A column is occupied under `Single` exactly when it was occupied under
-/// `Double` -- nothing appears from nowhere, nothing goes missing.
+/// Which directions a `Glyph` actually draws. Spelled out literally rather
+/// than derived from `graph`: the `DIR_*` constants are private to
+/// `text.rs`, and deriving this would turn the invariant below into a
+/// tautology. Dots aren't lines, so they opt out.
+const UP: u8 = 1;
+const DOWN: u8 = 2;
+const LEFT: u8 = 4;
+const RIGHT: u8 = 8;
+
+fn glyph_dirs(glyph: graph::Glyph) -> Option<u8> {
+    Some(match glyph {
+        graph::Glyph::Blank => 0,
+        graph::Glyph::Vert => UP | DOWN,
+        graph::Glyph::Horiz => LEFT | RIGHT,
+        graph::Glyph::CornerTL => DOWN | RIGHT,
+        graph::Glyph::CornerTR => DOWN | LEFT,
+        graph::Glyph::CornerBL => UP | RIGHT,
+        graph::Glyph::CornerBR => UP | LEFT,
+        graph::Glyph::TeeDown => DOWN | LEFT | RIGHT,
+        graph::Glyph::TeeUp => UP | LEFT | RIGHT,
+        graph::Glyph::TeeRight => UP | DOWN | RIGHT,
+        graph::Glyph::TeeLeft => UP | DOWN | LEFT,
+        graph::Glyph::Cross => UP | DOWN | LEFT | RIGHT,
+        graph::Glyph::CommitDot | graph::Glyph::HeadDot => return None,
+    })
+}
+
+/// The two things that have to hold between widths, checked on every case.
 ///
-/// This replaced an invariant asserting `single[c]` equalled whichever half
-/// of `double` was non-blank. That version encoded the very bug issue #29
-/// fixed: "equals one of the halves" is another way of saying "the other
-/// half may be discarded". It also could not survive junctions, where a
-/// cell is derived from both halves and matches neither.
+/// 1. **`Single` is `DoubleF`'s symbol half** -- same glyph, same colour.
+///    They come off the same accumulated `Column`, so this pins that the two
+///    widths can't drift apart. The single exception is a column whose only
+///    direction is rightward: `DoubleF` leaves the symbol blank and puts the
+///    `─` in the connector, while `Single` has just the one cell to draw it
+///    in. This subsumes the occupancy check it replaced (both halves blank
+///    iff the single cell is blank).
 ///
-/// Which junction character a cell resolves to is checked by
-/// `graph/text.rs`'s unit tests (exhaustive over all 16 direction
-/// combinations) and by the goldens; occupancy is the part worth asserting
-/// across every case here. Checked against `TextCell.glyph` rather than
-/// rendered characters, so no `GlyphSet` is involved.
-fn assert_single_width_matches_double_occupancy(
-    option: &GenerateGraphOption,
-    source: &GraphSnapshotSource,
-) {
-    for (row, (double_row, single_row)) in source
-        .double_rows
+/// 2. **`DoubleF` never draws less than `DoubleL`** -- the symbol half's
+///    directions are a superset. That is precisely what #30 claims to fix,
+///    and unlike an occupancy comparison (which is a construction-level
+///    identity here, true for any edge set) it can actually fail: drop a bit
+///    from the union and this fires.
+///
+/// Both compare `TextCell` rather than rendered characters, so no
+/// `GlyphSet` is involved. Which junction character a union resolves to is
+/// pinned by `graph/text.rs`'s unit tests, exhaustive over all 16 direction
+/// combinations.
+fn assert_cross_width_invariants(option: &GenerateGraphOption, source: &GraphSnapshotSource) {
+    let name = option.output_name;
+    for (row, ((legacy_row, fused_row), single_row)) in source
+        .double_l_rows
         .iter()
+        .zip(&source.double_f_rows)
         .zip(&source.single_rows)
         .enumerate()
     {
         assert_eq!(
-            double_row.len(),
+            fused_row.len(),
             single_row.len() * 2,
-            "{}: row {row} single width isn't half of double width",
-            option.output_name
+            "{name}: row {row} single width isn't half of double width"
         );
+        assert_eq!(
+            legacy_row.len(),
+            fused_row.len(),
+            "{name}: row {row} the two double widths disagree on cell count"
+        );
+
         for (col, single_cell) in single_row.iter().enumerate() {
-            let occupied_in_double = double_row[2 * col].glyph != graph::Glyph::Blank
-                || double_row[2 * col + 1].glyph != graph::Glyph::Blank;
+            let symbol = fused_row[2 * col];
+            let connector = fused_row[2 * col + 1];
+
+            let lone_right_stub =
+                symbol.glyph == graph::Glyph::Blank && connector.glyph != graph::Glyph::Blank;
+            let expected = if lone_right_stub {
+                (graph::Glyph::Horiz, connector.color)
+            } else {
+                (symbol.glyph, symbol.color)
+            };
             assert_eq!(
-                single_cell.glyph != graph::Glyph::Blank,
-                occupied_in_double,
-                "{}: row {row} col {col} occupancy differs between widths",
-                option.output_name
+                (single_cell.glyph, single_cell.color),
+                expected,
+                "{name}: row {row} col {col} single doesn't match double-f's symbol half"
             );
+
+            if let (Some(fused), Some(legacy)) = (
+                glyph_dirs(symbol.glyph),
+                glyph_dirs(legacy_row[2 * col].glyph),
+            ) {
+                assert_eq!(
+                    fused & legacy,
+                    legacy,
+                    "{name}: row {row} col {col} double-f lost a direction double-l had \
+                     ({:?} vs {:?})",
+                    symbol.glyph,
+                    legacy_row[2 * col].glyph
+                );
+            }
         }
     }
 }
@@ -1331,7 +1393,8 @@ impl SnapshotKey {
     /// Every width's suffix is spelled once, here.
     fn width_suffix(self) -> &'static str {
         match self.width {
-            graph::CellWidthType::Double => "_l",
+            graph::CellWidthType::DoubleL => "_l",
+            graph::CellWidthType::DoubleF => "_f",
             graph::CellWidthType::Single => "_single",
         }
     }
@@ -1349,8 +1412,11 @@ impl SnapshotKey {
     }
 }
 
-const WIDTHS: [graph::CellWidthType; 2] =
-    [graph::CellWidthType::Double, graph::CellWidthType::Single];
+const WIDTHS: [graph::CellWidthType; 3] = [
+    graph::CellWidthType::DoubleL,
+    graph::CellWidthType::DoubleF,
+    graph::CellWidthType::Single,
+];
 
 const STYLES: [(&str, graph::GlyphSet); 3] = [
     ("", graph::GlyphSet::ROUNDED),
@@ -1362,7 +1428,7 @@ fn generate_and_output_text_graphs(repo_path: &Path, options: &[GenerateGraphOpt
     create_output_dirs(OUTPUT_DIR);
     for option in options {
         let source = build_graph_snapshot_source(repo_path, option);
-        assert_single_width_matches_double_occupancy(option, &source);
+        assert_cross_width_invariants(option, &source);
         for key in option.keys() {
             for (style_suffix, glyphs) in STYLES {
                 let content = render_text_graph_styled(&source, glyphs, key.width);

@@ -1,0 +1,8 @@
+●─────╮  Merge branch '10a'
+│ ●───┼─╮  Merge branch '10b' into 30
+│ │ ●─┤ │  Merge branch '10a' into 20
+│ │ │ ● │  012
+│ ● │ │ │  031
+│ │ ● │ │  021
+│ │ │ ●─╯  011
+●─┴─┴─╯  001

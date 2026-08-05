@@ -291,6 +291,12 @@ impl CommitList<'_> {
             // `╰`/`╯` also reach upward yet have always been listed -- this
             // list has always been looser than
             // `EdgeType::has_downward_continuation`, and stays that way here.
+            //
+            // So the same column can answer differently depending on width:
+            // a `RightBottom` crossed by a `Horizontal` is `╯` under
+            // `DoubleL` (extends) and `┴` under `DoubleF`/`Single` (does
+            // not). The stricter answer is the correct one; the loose `╯`
+            // survives because tightening it is a separate change from #30.
             let draw_vertical = matches!(
                 cell.glyph,
                 Glyph::CommitDot
@@ -1104,7 +1110,7 @@ mod tests {
                     working_changes: false,
                     inline_detail_height: 0,
                     filtered: false,
-                    cell_width_type: CellWidthType::Double,
+                    cell_width_type: CellWidthType::DoubleF,
                 }
             }
         }
@@ -1271,19 +1277,43 @@ mod tests {
             );
         }
 
-        /// The same fixture under `Double`: two cells per column means the
-        /// edges never share one, so no junction is needed and nothing here
-        /// changed with issue #29.
+        /// The same fixture under `DoubleF`: the symbol half carries the
+        /// union, so it comes out as the `Single` rendering with a connector
+        /// cell spliced in after each column.
         #[test]
-        fn render_graph_double_width_keeps_halves_separate_when_edges_collide() {
+        fn render_graph_double_f_width_unions_colliding_edges() {
             let commits = text_graph_commits();
             let mut state = build_state(&commits, text_graph_colliding(&commits), Opts::default());
             let buf = render_commit_list(&mut state, 10);
 
             assert_eq!(
                 graph_rows_width(&buf, 1..=3, 6),
+                ["┼─┼─◯ ", "┬─┴─● ", "● │   "],
+                "double-f's symbol half draws the same junction single does"
+            );
+        }
+
+        /// The same fixture under `DoubleL`, which is why that width still
+        /// exists: this is what double drew before issue #30. Row 2 is the
+        /// defect -- col 1 shows `╯` and the `Horizontal` crossing it is
+        /// gone, with no trace in the connector either.
+        #[test]
+        fn render_graph_double_l_width_keeps_the_pre_30_rendering() {
+            let commits = text_graph_commits();
+            let mut state = build_state(
+                &commits,
+                text_graph_colliding(&commits),
+                Opts {
+                    cell_width_type: CellWidthType::DoubleL,
+                    ..Default::default()
+                },
+            );
+            let buf = render_commit_list(&mut state, 10);
+
+            assert_eq!(
+                graph_rows_width(&buf, 1..=3, 6),
                 ["│─│─◯ ", "│─╯─● ", "● │   "],
-                "double width never collapses two edges onto one cell"
+                "double-l still gives each half-cell to the winning edge"
             );
         }
 
@@ -1372,6 +1402,51 @@ mod tests {
 
             // c1/c2 pushed down by the 2-row gap.
             assert_eq!(graph_rows(&buf, 4..=5), ["● ──╭─", "│   ● "]);
+        }
+
+        /// `┴` is deliberately absent from `put_text_spacer`'s whitelist: a
+        /// line that ends going up has nothing to continue below it.
+        /// `DoubleF` is the first double width that can produce one, so this
+        /// is a visible behaviour change and not just a new character --
+        /// the very same column under `DoubleL` is `╯`, which *is*
+        /// whitelisted and does extend downward.
+        ///
+        /// `text_graph` can't reach this (one edge per column, never a
+        /// junction), so the colliding fixture is the only way to cover it.
+        #[test]
+        fn spacer_row_stops_at_tee_up_under_double_f() {
+            let commits = text_graph_commits();
+
+            let spacer_symbols = |width: CellWidthType| {
+                let mut state = build_state(
+                    &commits,
+                    text_graph_colliding(&commits),
+                    Opts {
+                        inline_detail_height: 1,
+                        cell_width_type: width,
+                        ..Default::default()
+                    },
+                );
+                // `select_next` is a no-op until a render has set `height`,
+                // so the first pass is only there to make the second one
+                // land on row 1 -- `┬─┴─●` under double-f, `│─╯─●` under
+                // double-l. Its spacer then sits at y=3.
+                render_commit_list(&mut state, 10);
+                state.select_next();
+                let buf = render_commit_list(&mut state, 10);
+                [0u16, 2, 4].map(|x| buf[(x, 3u16)].symbol().to_string())
+            };
+
+            assert_eq!(
+                spacer_symbols(CellWidthType::DoubleF),
+                ["│", " ", "│"],
+                "┬ and the dot extend downward, ┴ does not"
+            );
+            assert_eq!(
+                spacer_symbols(CellWidthType::DoubleL),
+                ["│", "│", "│"],
+                "the same column is ╯ under double-l, which does extend"
+            );
         }
 
         #[test]
@@ -1524,7 +1599,7 @@ mod tests {
                 Rc::new(primary),
                 Vec::new(),
                 None,
-                CellWidthType::Double,
+                CellWidthType::DoubleF,
                 Head::None,
                 FxHashMap::default(),
                 false,

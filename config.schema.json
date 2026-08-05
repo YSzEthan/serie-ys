@@ -23,9 +23,11 @@
             },
             "graph_width": {
               "type": "string",
-              "description": "The number of terminal columns each graph column occupies. The value specified in the command line argument takes precedence.",
+              "description": "The number of terminal columns each graph column occupies. The value specified in the command line argument takes precedence. \"double\" is accepted as an alias for \"double-f\".",
               "enum": [
                 "auto",
+                "double-l",
+                "double-f",
                 "double",
                 "single"
               ],

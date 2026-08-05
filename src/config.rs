@@ -783,6 +783,59 @@ mod tests {
         assert_eq!(actual, Config::default());
     }
 
+    /// `graph_width` 的可選值散在四個地方：`GraphWidthType` 的 derive、
+    /// `config.schema.json` 的 enum、還有兩份文件的清單。上面那個測試只比
+    /// 「鍵」有沒有宣告，值漂移它一律放行 —— #30 把三個值變成五個時，這
+    /// 道檢查是唯一會響的。
+    ///
+    /// 比的是 clap 認得的全部字串（canonical 加別名），所以 schema 少列
+    /// 別名、或留著已經拿掉的值，兩種方向都會被抓到。
+    #[test]
+    fn graph_width_schema_enum_matches_every_accepted_cli_value() {
+        use clap::ValueEnum;
+
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../config.schema.json")).unwrap();
+        let mut declared: Vec<String> = schema["properties"]["core"]["properties"]["option"]
+            ["properties"]["graph_width"]["enum"]
+            .as_array()
+            .expect("config.schema.json 裡的 graph_width 沒有 enum")
+            .iter()
+            .map(|v| v.as_str().expect("enum 值不是字串").to_string())
+            .collect();
+
+        let mut accepted: Vec<String> = GraphWidthType::value_variants()
+            .iter()
+            .flat_map(|variant| {
+                variant
+                    .to_possible_value()
+                    .expect("每個變體都該有對應的命令列值")
+                    .get_name_and_aliases()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+
+        declared.sort();
+        accepted.sort();
+        assert_eq!(declared, accepted);
+    }
+
+    /// `double` 是 `double-f` 的別名，clap 與 serde 各有一套 alias 設定，
+    /// 上面那個測試只走得到 clap 那邊。
+    #[test]
+    fn config_accepts_double_as_an_alias_for_double_f() {
+        let toml = r#"
+            [core.option]
+            graph_width = "double"
+        "#;
+        let config: Config = toml::from_str::<OptionalConfig>(toml).unwrap().into();
+        assert_eq!(
+            config.core.option.graph_width,
+            Some(GraphWidthType::DoubleF)
+        );
+    }
+
     #[test]
     fn removed_config_field_does_not_break_sibling_fields() {
         let toml = r#"
