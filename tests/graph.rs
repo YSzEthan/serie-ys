@@ -1328,10 +1328,10 @@ struct SnapshotKey {
 }
 
 impl SnapshotKey {
-    /// The `_single` suffix is spelled once, here.
+    /// Every width's suffix is spelled once, here.
     fn width_suffix(self) -> &'static str {
         match self.width {
-            graph::CellWidthType::Double => "",
+            graph::CellWidthType::Double => "_l",
             graph::CellWidthType::Single => "_single",
         }
     }
