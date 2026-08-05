@@ -785,8 +785,8 @@ mod tests {
 
     /// `graph_width` 的可選值散在四個地方：`GraphWidthType` 的 derive、
     /// `config.schema.json` 的 enum、還有兩份文件的清單。上面那個測試只比
-    /// 「鍵」有沒有宣告，值漂移它一律放行 —— #30 把三個值變成五個時，這
-    /// 道檢查是唯一會響的。
+    /// 「鍵」有沒有宣告，值漂移它一律放行 —— 可選值增減時這道檢查是唯一
+    /// 會響的。
     ///
     /// 比的是 clap 認得的全部字串（canonical 加別名），所以 schema 少列
     /// 別名、或留著已經拿掉的值，兩種方向都會被抓到。
@@ -819,21 +819,6 @@ mod tests {
         declared.sort();
         accepted.sort();
         assert_eq!(declared, accepted);
-    }
-
-    /// `double` 是 `double-f` 的別名，clap 與 serde 各有一套 alias 設定，
-    /// 上面那個測試只走得到 clap 那邊。
-    #[test]
-    fn config_accepts_double_as_an_alias_for_double_f() {
-        let toml = r#"
-            [core.option]
-            graph_width = "double"
-        "#;
-        let config: Config = toml::from_str::<OptionalConfig>(toml).unwrap().into();
-        assert_eq!(
-            config.core.option.graph_width,
-            Some(GraphWidthType::DoubleF)
-        );
     }
 
     #[test]

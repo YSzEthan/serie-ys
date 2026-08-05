@@ -1202,16 +1202,19 @@ impl GenerateGraphOption {
 /// (style) do.
 struct GraphSnapshotSource {
     subjects: Vec<String>,
-    double_l_rows: Vec<Vec<graph::TextCell>>,
-    double_f_rows: Vec<Vec<graph::TextCell>>,
+    double_rows: Vec<Vec<graph::TextCell>>,
     single_rows: Vec<Vec<graph::TextCell>>,
+    /// Kept so the cross-width invariants can work out, per column, whether
+    /// `Double` was allowed to merge it. Deriving that from the rendered
+    /// cells would just restate the implementation.
+    edges: Vec<Vec<graph::Edge>>,
+    colors: Vec<ratatui::style::Color>,
 }
 
 impl GraphSnapshotSource {
     fn rows(&self, width: graph::CellWidthType) -> &[Vec<graph::TextCell>] {
         match width {
-            graph::CellWidthType::DoubleL => &self.double_l_rows,
-            graph::CellWidthType::DoubleF => &self.double_f_rows,
+            graph::CellWidthType::Double => &self.double_rows,
             graph::CellWidthType::Single => &self.single_rows,
         }
     }
@@ -1243,8 +1246,7 @@ fn build_graph_snapshot_source(
         .map(|c| c.to_ratatui_color())
         .collect::<Vec<_>>();
 
-    let double_l_rows = graph::build_text_graph(&graph, &colors, graph::CellWidthType::DoubleL);
-    let double_f_rows = graph::build_text_graph(&graph, &colors, graph::CellWidthType::DoubleF);
+    let double_rows = graph::build_text_graph(&graph, &colors, graph::CellWidthType::Double);
     let single_rows = graph::build_text_graph(&graph, &colors, graph::CellWidthType::Single);
     let subjects = graph
         .commit_hashes
@@ -1254,9 +1256,10 @@ fn build_graph_snapshot_source(
 
     GraphSnapshotSource {
         subjects,
-        double_l_rows,
-        double_f_rows,
+        double_rows,
         single_rows,
+        edges: graph.edges,
+        colors,
     }
 }
 
@@ -1279,76 +1282,113 @@ fn render_text_graph_styled(
     out
 }
 
-/// Which directions a `Glyph` actually draws. Spelled out literally rather
-/// than derived from `graph`: the `DIR_*` constants are private to
-/// `text.rs`, and deriving this would turn the invariant below into a
-/// tautology. Dots aren't lines, so they opt out.
-const UP: u8 = 1;
-const DOWN: u8 = 2;
-const LEFT: u8 = 4;
-const RIGHT: u8 = 8;
-
-fn glyph_dirs(glyph: graph::Glyph) -> Option<u8> {
-    Some(match glyph {
-        graph::Glyph::Blank => 0,
-        graph::Glyph::Vert => UP | DOWN,
-        graph::Glyph::Horiz => LEFT | RIGHT,
-        graph::Glyph::CornerTL => DOWN | RIGHT,
-        graph::Glyph::CornerTR => DOWN | LEFT,
-        graph::Glyph::CornerBL => UP | RIGHT,
-        graph::Glyph::CornerBR => UP | LEFT,
-        graph::Glyph::TeeDown => DOWN | LEFT | RIGHT,
-        graph::Glyph::TeeUp => UP | LEFT | RIGHT,
-        graph::Glyph::TeeRight => UP | DOWN | RIGHT,
-        graph::Glyph::TeeLeft => UP | DOWN | LEFT,
-        graph::Glyph::Cross => UP | DOWN | LEFT | RIGHT,
-        graph::Glyph::CommitDot | graph::Glyph::HeadDot => return None,
-    })
+/// Whether an edge that loses its half-cell disappears without a trace.
+/// Spelled out literally rather than derived from `graph`, so a wrong entry
+/// in `halves` and a wrong entry here can't cancel out -- same reasoning as
+/// `ANGULAR_SUBST` and `halves_match_the_original_edge_type_table`.
+fn leaves_no_trace(edge_type: graph::EdgeType) -> bool {
+    match edge_type {
+        graph::EdgeType::Vertical
+        | graph::EdgeType::Up
+        | graph::EdgeType::Down
+        | graph::EdgeType::Left
+        | graph::EdgeType::RightTop
+        | graph::EdgeType::RightBottom => true,
+        graph::EdgeType::Horizontal
+        | graph::EdgeType::Right
+        | graph::EdgeType::LeftTop
+        | graph::EdgeType::LeftBottom => false,
+    }
 }
 
-/// The two things that have to hold between widths, checked on every case.
+fn is_junction(glyph: graph::Glyph) -> bool {
+    matches!(
+        glyph,
+        graph::Glyph::TeeDown
+            | graph::Glyph::TeeUp
+            | graph::Glyph::TeeRight
+            | graph::Glyph::TeeLeft
+            | graph::Glyph::Cross
+    )
+}
+
+/// Recomputes `Column::can_merge`'s two reasons from the raw edges,
+/// independently of the renderer. Kept separate rather than reduced to one
+/// bool because the colour half of the invariant below only holds under the
+/// first of them.
 ///
-/// 1. **`Single` is `DoubleF`'s symbol half** -- same glyph, same colour.
-///    They come off the same accumulated `Column`, so this pins that the two
-///    widths can't drift apart. The single exception is a column whose only
-///    direction is rightward: `DoubleF` leaves the symbol blank and puts the
-///    `─` in the connector, while `Single` has just the one cell to draw it
-///    in. This subsumes the occupancy check it replaced (both halves blank
-///    iff the single cell is blank).
+/// A column with fewer than two edges has no pair to disagree, so it counts
+/// as uniform -- merging it is a no-op either way, and saying yes puts it
+/// through the equality check rather than skipping it.
+fn column_merge_reasons(source: &GraphSnapshotSource, row: usize, col: usize) -> (bool, usize) {
+    let in_col: Vec<_> = source.edges[row]
+        .iter()
+        .filter(|e| e.pos_x == col)
+        .collect();
+    let color_of = |e: &graph::Edge| source.colors[e.associated_line_pos_x % source.colors.len()];
+    let uniform = in_col.windows(2).all(|w| color_of(w[0]) == color_of(w[1]));
+    let traceless = in_col
+        .iter()
+        .filter(|e| leaves_no_trace(e.edge_type))
+        .count();
+    (uniform, traceless)
+}
+
+/// What has to hold between the two widths, checked on every case.
 ///
-/// 2. **`DoubleF` never draws less than `DoubleL`** -- the symbol half's
-///    directions are a superset. That is precisely what #30 claims to fix,
-///    and unlike an occupancy comparison (which is a construction-level
-///    identity here, true for any edge set) it can actually fail: drop a bit
-///    from the union and this fires.
+/// 1. **Where `Double` merged, `Single` drew the same glyph.** The one
+///    exception is a column whose only direction is rightward: `Double`
+///    leaves the symbol blank and puts the `─` in the connector, while
+///    `Single` has just the one cell to draw it in.
+/// 2. **Where it didn't merge, `Double` drew no junction at all** -- the
+///    cell holds one edge's own glyph, never a combination.
 ///
-/// Both compare `TextCell` rather than rendered characters, so no
-/// `GlyphSet` is involved. Which junction character a union resolves to is
-/// pinned by `graph/text.rs`'s unit tests, exhaustive over all 16 direction
+/// The colour is only compared for columns that are entirely one colour.
+/// `Double` takes every colour from the winner-takes-all pass (`place`, last
+/// writer wins on a tie) while `Single` takes it from `Column::symbol_color`
+/// (first writer wins), so a column merged under the *traceless* rule can
+/// legitimately disagree: two equal-rank edges of different colours resolve
+/// opposite ways. Where the whole column is one colour there is nothing for
+/// the two tie-breaks to disagree about.
+///
+/// Together these pin the merge rule in both directions: a junction in the
+/// symbol half implies the column was mergeable, and a mergeable column
+/// implies the symbol half agrees with `Single`. Writing the rule backwards,
+/// dropping it, or widening it to "merge whenever there are edges" all fail
+/// here. (The superset relation this replaced did not: it held just as well
+/// with the merge pass deleted entirely.)
+///
+/// Compares `TextCell` rather than rendered characters, so no `GlyphSet` is
+/// involved. Which junction character a union resolves to is pinned by
+/// `graph/text.rs`'s unit tests, exhaustive over all 16 direction
 /// combinations.
 fn assert_cross_width_invariants(option: &GenerateGraphOption, source: &GraphSnapshotSource) {
     let name = option.output_name;
-    for (row, ((legacy_row, fused_row), single_row)) in source
-        .double_l_rows
+    for (row, (double_row, single_row)) in source
+        .double_rows
         .iter()
-        .zip(&source.double_f_rows)
         .zip(&source.single_rows)
         .enumerate()
     {
         assert_eq!(
-            fused_row.len(),
+            double_row.len(),
             single_row.len() * 2,
             "{name}: row {row} single width isn't half of double width"
         );
-        assert_eq!(
-            legacy_row.len(),
-            fused_row.len(),
-            "{name}: row {row} the two double widths disagree on cell count"
-        );
 
         for (col, single_cell) in single_row.iter().enumerate() {
-            let symbol = fused_row[2 * col];
-            let connector = fused_row[2 * col + 1];
+            let symbol = double_row[2 * col];
+            let connector = double_row[2 * col + 1];
+
+            let (uniform, traceless) = column_merge_reasons(source, row, col);
+            if !(uniform || traceless >= 2) {
+                assert!(
+                    !is_junction(symbol.glyph),
+                    "{name}: row {row} col {col} merged a column it shouldn't have ({:?})",
+                    symbol.glyph
+                );
+                continue;
+            }
 
             let lone_right_stub =
                 symbol.glyph == graph::Glyph::Blank && connector.glyph != graph::Glyph::Blank;
@@ -1358,22 +1398,13 @@ fn assert_cross_width_invariants(option: &GenerateGraphOption, source: &GraphSna
                 (symbol.glyph, symbol.color)
             };
             assert_eq!(
-                (single_cell.glyph, single_cell.color),
-                expected,
-                "{name}: row {row} col {col} single doesn't match double-f's symbol half"
+                single_cell.glyph, expected.0,
+                "{name}: row {row} col {col} merged column doesn't match single width"
             );
-
-            if let (Some(fused), Some(legacy)) = (
-                glyph_dirs(symbol.glyph),
-                glyph_dirs(legacy_row[2 * col].glyph),
-            ) {
+            if uniform {
                 assert_eq!(
-                    fused & legacy,
-                    legacy,
-                    "{name}: row {row} col {col} double-f lost a direction double-l had \
-                     ({:?} vs {:?})",
-                    symbol.glyph,
-                    legacy_row[2 * col].glyph
+                    single_cell.color, expected.1,
+                    "{name}: row {row} col {col} single-coloured column disagrees on colour"
                 );
             }
         }
@@ -1393,8 +1424,7 @@ impl SnapshotKey {
     /// Every width's suffix is spelled once, here.
     fn width_suffix(self) -> &'static str {
         match self.width {
-            graph::CellWidthType::DoubleL => "",
-            graph::CellWidthType::DoubleF => "_f",
+            graph::CellWidthType::Double => "",
             graph::CellWidthType::Single => "_single",
         }
     }
@@ -1412,10 +1442,8 @@ impl SnapshotKey {
     }
 }
 
-const WIDTHS: [graph::CellWidthType; 2] = [
-    graph::CellWidthType::DoubleL,
-    graph::CellWidthType::Single,
-];
+const WIDTHS: [graph::CellWidthType; 2] =
+    [graph::CellWidthType::Double, graph::CellWidthType::Single];
 
 const STYLES: [(&str, graph::GlyphSet); 3] = [
     ("", graph::GlyphSet::ROUNDED),

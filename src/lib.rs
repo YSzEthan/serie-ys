@@ -70,21 +70,11 @@ impl From<Option<CommitOrderType>> for git::SortCommit {
     }
 }
 
-/// `kebab-case`, not `lowercase`: the two double variants need the dash to
-/// spell `double-l` / `double-f`. The three single-word values are spelled
-/// the same either way, so nothing existing moves.
-///
-/// `double` stays accepted as an alias for `double-f`. It never promised
-/// particular characters, and #30 is a bug fix -- pinning old configs to
-/// `double-l` would just freeze the bug in place for them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
-#[serde(rename_all = "kebab-case")]
+#[serde(rename_all = "lowercase")]
 pub enum GraphWidthType {
     Auto,
-    DoubleL,
-    #[serde(alias = "double")]
-    #[value(alias = "double")]
-    DoubleF,
+    Double,
     Single,
 }
 

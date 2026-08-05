@@ -121,9 +121,7 @@ Commit 排序演算法。
 - 預設值：`auto`
 - 可選值：
   - `auto`
-  - `double-f`
-  - `double-l`
-  - `double`（`double-f` 的別名）
+  - `double`
   - `single`
 
 命令列參數指定的值優先。

@@ -30,10 +30,10 @@ pub enum Glyph {
     CornerBL,
     CornerBR,
     /// Junction glyphs: a cell carrying three or four directions at once.
-    /// Produced by the two widths that union a column's directions
-    /// (`Single`, `DoubleF`). `DoubleL` settles collisions by priority
-    /// instead, so no single character ever has to carry three directions
-    /// there -- which is exactly the information loss #30 is about.
+    /// Produced wherever a column's directions get unioned -- always under
+    /// `Single`, and under `Double` for the columns `Column::can_merge`
+    /// allows. Where it doesn't, collisions are settled by priority and the
+    /// loser's directions are simply not drawn.
     TeeDown,
     TeeUp,
     TeeRight,
@@ -43,8 +43,8 @@ pub enum Glyph {
 
 /// Which of the four compass directions a piece of line touches.
 ///
-/// This is the single source of truth for edge geometry: every cell width
-/// derives its glyphs from it (`halves` for the two doubles, `merged` for
+/// This is the single source of truth for edge geometry: both cell widths
+/// derive their glyphs from it (`halves` for `Double`, `merged` for
 /// `Single`), so a new `EdgeType` only ever needs one entry.
 const DIR_UP: u8 = 1;
 const DIR_DOWN: u8 = 2;
@@ -84,8 +84,8 @@ fn edge_dirs(edge_type: EdgeType) -> u8 {
 /// centre, so its symbol half stays empty -- the one case where the symbol
 /// isn't just `merged(dirs)`.
 ///
-/// Takes either a single edge's directions (`DoubleL`, which resolves
-/// collisions before it gets here) or a whole column's union (`DoubleF`).
+/// Takes either a single edge's directions (winner-takes-all resolves the
+/// collision before it gets here) or a whole column's union.
 fn halves(dirs: u8) -> (Glyph, Glyph) {
     let symbol = if dirs == DIR_RIGHT {
         Glyph::Blank
@@ -102,7 +102,7 @@ fn halves(dirs: u8) -> (Glyph, Glyph) {
 
 /// Every direction combination resolved to one character. `Single` uses it
 /// directly (one cell per column, so everything reaching that column has to
-/// fit in one character); both double widths reach it through `halves`.
+/// fit in one character); `Double` reaches it through `halves`.
 ///
 /// Exhaustive over the four booleans, so every direction combination has an
 /// answer. The "only vertical bits" / "only horizontal bits" arms are where
@@ -300,22 +300,18 @@ pub fn build_text_graph(
 
 /// Convert edges to lazygit-style text cells (symbol + connector per column).
 ///
-/// Returns `cell_count * width.cells_per_column()` cells. There is really
-/// only one fork here -- whether a column's edges are unioned or fight over
-/// the cell:
+/// Returns `cell_count * width.cells_per_column()` cells. Where several edges
+/// share a column the two widths differ:
 ///
-/// - `DoubleL` gives each half-cell to the highest-priority edge and drops
-///   the rest (the pre-#30 behaviour, kept verbatim)
-/// - `DoubleF` and `Single` union every edge's directions per column, then
-///   resolve the total: `halves` splits it back into [symbol, connector],
-///   `merged` squeezes it into one cell. Either way several lines meeting in
-///   one column come out as a box-drawing junction (`┼┬┴├┤`) instead of the
-///   loser vanishing.
+/// - `Single` has one cell per column, so it always unions every edge's
+///   directions and resolves the total through `merged`
+/// - `Double` unions only where that doesn't cost colour information --
+///   see `Column::can_merge` -- and otherwise gives each half-cell to the
+///   highest-priority edge
 ///
-/// One acknowledged gap remains in all three: edges on the commit's own
-/// column are still dropped, since the dot owns that cell. Harmless in
-/// practice (the line continues in the neighbouring column) but it is real
-/// lost information.
+/// One acknowledged gap remains in both: edges on the commit's own column are
+/// dropped, since the dot owns that cell. Harmless in practice (the line
+/// continues in the neighbouring column) but it is real lost information.
 pub(crate) fn build_text_cells(
     commit_pos_x: usize,
     cell_count: usize,
@@ -323,6 +319,8 @@ pub(crate) fn build_text_cells(
     colors: &[RatatuiColor],
     width: CellWidthType,
 ) -> Vec<TextCell> {
+    // An empty palette makes every edge `Reset`, so every column reads as
+    // uniform and `Double` unions everywhere. Only reachable from tests.
     let color_of = |idx: usize| -> RatatuiColor {
         if colors.is_empty() {
             RatatuiColor::Reset
@@ -331,30 +329,43 @@ pub(crate) fn build_text_cells(
         }
     };
 
+    let columns = accumulate_columns(cell_count, edges, color_of);
     match width {
-        CellWidthType::DoubleL => legacy_double_cells(commit_pos_x, cell_count, edges, color_of),
-        CellWidthType::DoubleF => {
-            let columns = accumulate_columns(cell_count, edges, color_of);
-            fused_double_cells(&columns, commit_pos_x, color_of(commit_pos_x))
-        }
-        CellWidthType::Single => {
-            let columns = accumulate_columns(cell_count, edges, color_of);
-            single_cells(&columns, commit_pos_x, color_of(commit_pos_x))
-        }
+        CellWidthType::Double => double_cells(&columns, commit_pos_x, edges, color_of),
+        CellWidthType::Single => single_cells(&columns, commit_pos_x, color_of(commit_pos_x)),
     }
 }
 
-/// One graph column's accumulated state, shared by `DoubleF` and `Single`.
+/// The colours of every edge reaching one column, collapsed.
 ///
-/// Both colours go to whoever writes first, which is the opposite of
-/// `place`'s `>=` (last writer wins) and deliberately so: now that a
-/// collision renders as a visible junction rather than silently dropping the
-/// loser, the colour shouldn't depend on the order `calc.rs` happens to push
-/// edges. `calc.rs` really does push several `Right` edges at one `pos_x`
-/// with different `associated_line_pos_x` (one per parent of a multi-parent
-/// commit), so this is a reachable difference, not a theoretical one.
-/// Goldens compare characters and the cross-width invariants compare glyphs,
-/// so only `text.rs`'s own unit tests pin it.
+/// `Empty` is not the same as `Uniform(Reset)`: with an empty palette every
+/// edge really is `Reset`, so starting out as `Uniform(Reset)` would call the
+/// first genuinely-coloured edge a conflict.
+#[derive(Debug, Clone, Copy, Default)]
+enum ColumnColors {
+    #[default]
+    Empty,
+    /// The payload is only read while accumulating, to compare against later
+    /// edges. Nothing downstream takes its colour from here -- that is what
+    /// `Column::symbol_color` is for.
+    Uniform(RatatuiColor),
+    Mixed,
+}
+
+/// One graph column's accumulated state.
+///
+/// `symbol_rank` / `symbol_color` serve `Single`, `colors` / `traceless`
+/// serve `Double`; both share `dirs`.
+///
+/// The colour goes to whoever writes first, the opposite of `place`'s `>=`
+/// (last writer wins) and deliberately so: where a collision renders as a
+/// visible junction rather than silently dropping the loser, the colour
+/// shouldn't depend on the order `calc.rs` happens to push edges. `calc.rs`
+/// really does push several `Right` edges at one `pos_x` with different
+/// `associated_line_pos_x` (one per parent of a multi-parent commit), so this
+/// is a reachable difference, not a theoretical one. Goldens compare
+/// characters and the cross-width invariants compare glyphs, so only
+/// `text.rs`'s own unit tests pin it.
 #[derive(Debug, Clone, Copy, Default)]
 struct Column {
     dirs: u8,
@@ -363,10 +374,10 @@ struct Column {
     /// draws `Blank`, whose colour is never looked at.
     symbol_rank: u8,
     symbol_color: RatatuiColor,
-    /// First edge that extends rightward. Unlike the rank above there's no
-    /// value to compare, so the `Option` is what distinguishes "not written"
-    /// from "written as `Reset`". Only `DoubleF` draws it.
-    connector: Option<RatatuiColor>,
+    colors: ColumnColors,
+    /// How many edges here would vanish without a trace if they lost. Only
+    /// the count up to 2 matters.
+    traceless: u8,
 }
 
 impl Column {
@@ -380,26 +391,41 @@ impl Column {
             self.symbol_rank = rank;
             self.symbol_color = color;
         }
-        if dirs & DIR_RIGHT != 0 {
-            self.connector.get_or_insert(color);
+        self.colors = match self.colors {
+            ColumnColors::Empty => ColumnColors::Uniform(color),
+            ColumnColors::Uniform(seen) if seen == color => ColumnColors::Uniform(seen),
+            _ => ColumnColors::Mixed,
+        };
+        if leaves_no_trace(dirs) {
+            self.traceless = self.traceless.saturating_add(1);
         }
         self.dirs |= dirs;
     }
 
-    /// A column's symbol half. The commit's own column is owned by the dot;
-    /// everywhere else draws `glyph` in the winning edge's colour.
-    fn symbol_cell(&self, glyph: Glyph, dot: Option<RatatuiColor>) -> TextCell {
-        match dot {
-            Some(color) => TextCell {
-                glyph: Glyph::CommitDot,
-                color,
-            },
-            None => TextCell {
-                glyph,
-                color: self.symbol_color,
-            },
-        }
+    /// Whether `Double` may replace this column's winning symbol with the
+    /// union of every edge reaching it. Two independent reasons to allow it:
+    ///
+    /// 1. **Every edge here is the same colour.** A junction cell has one
+    ///    foreground colour, so merging two differently-coloured lines into
+    ///    one `┼` erases one line's identity -- the reader sees a single
+    ///    line crossing where there are two. Same colour, nothing to erase.
+    /// 2. **Two or more edges would vanish without a trace.** Not merging
+    ///    costs an entire line rather than a colour, which is worse. The
+    ///    41-case snapshot suite happens to have no mixed-colour collision
+    ///    of this kind, but `calc.rs`'s detour can produce one: its overlap
+    ///    scan covers `(child_pos_y + 1)..pos_y` and so misses edges already
+    ///    sitting on row `pos_y` itself, where the `RightBottom` lands.
+    fn can_merge(&self) -> bool {
+        matches!(self.colors, ColumnColors::Uniform(_)) || self.traceless >= 2
     }
+}
+
+/// Whether an edge that loses its half-cell disappears with nothing left to
+/// hint at it: its symbol half is non-blank (so it wanted the cell) and it
+/// doesn't extend rightward (so the connector half stays empty too). True for
+/// `Vertical` / `Up` / `Down` / `Left` / `RightTop` / `RightBottom`.
+fn leaves_no_trace(dirs: u8) -> bool {
+    halves(dirs).0 != Glyph::Blank && dirs & DIR_RIGHT == 0
 }
 
 fn accumulate_columns(
@@ -431,56 +457,86 @@ fn single_cells(columns: &[Column], commit_pos_x: usize, dot_color: RatatuiColor
         .iter()
         .enumerate()
         .map(|(col, column)| {
-            let dot = (col == commit_pos_x).then_some(dot_color);
-            column.symbol_cell(merged(column.dirs), dot)
+            if col == commit_pos_x {
+                TextCell {
+                    glyph: Glyph::CommitDot,
+                    color: dot_color,
+                }
+            } else {
+                TextCell {
+                    glyph: merged(column.dirs),
+                    color: column.symbol_color,
+                }
+            }
         })
         .collect()
 }
 
-/// `DoubleF`: the same union, split back across [symbol, connector].
+/// `Double`: winner-takes-all, then union the columns where that costs
+/// nothing (`Column::can_merge`).
 ///
-/// The symbol half is exactly what `Single` draws, except for a column whose
-/// only direction is rightward -- there the line never reaches the centre,
-/// so the symbol stays blank and the connector carries the `─` alone.
-fn fused_double_cells(
+/// Two passes rather than one because the two half-cells compete
+/// *independently*: a column drawn `│─` has the `│` from one line and the
+/// `─` from another, so no "pick a winning edge, then `halves()` it" shape
+/// can express it. Only the symbol half's direction source varies by column;
+/// the connector half is identical either way (winner-takes-all draws `─`
+/// there iff some edge extends rightward, which is exactly the union's
+/// `DIR_RIGHT` bit).
+///
+/// The overwrite replaces the glyph but keeps the colour, which needs two
+/// things to hold:
+///
+/// 1. A non-blank winning symbol took its colour from some edge of this
+///    column. Under the uniform-colour rule that is *the* colour; under the
+///    traceless rule it may be the loser's, but a junction's colour is
+///    arbitrary between the lines it joins anyway.
+/// 2. A *blank* winning symbol leaves the cell at `TextCell::BLANK`, whose
+///    colour is `Reset`. `halves(dirs).0` is blank only for `DIR_RIGHT`
+///    alone, and a column whose every edge is a lone `Right` unions to
+///    exactly `DIR_RIGHT`, so the overwrite is a no-op there. If some future
+///    `EdgeType` ever gets a blank symbol half, this breaks silently into a
+///    coloured junction rendered in `Reset` -- hence the assertion.
+fn double_cells(
     columns: &[Column],
     commit_pos_x: usize,
-    dot_color: RatatuiColor,
+    edges: &[Edge],
+    color_of: impl Fn(usize) -> RatatuiColor,
 ) -> Vec<TextCell> {
-    columns
-        .iter()
-        .enumerate()
-        .flat_map(|(col, column)| {
-            let (symbol, connector) = halves(column.dirs);
-            let dot = (col == commit_pos_x).then_some(dot_color);
-            [
-                column.symbol_cell(symbol, dot),
-                TextCell {
-                    glyph: connector,
-                    color: column.connector.unwrap_or(RatatuiColor::Reset),
-                },
-            ]
-        })
-        .collect()
+    let mut cells = winner_takes_all_cells(commit_pos_x, columns.len(), edges, color_of);
+    let per_col = CellWidthType::Double.cells_per_column();
+
+    for (col, column) in columns.iter().enumerate() {
+        // The dot owns its own column: `place` gave it priority 10, nothing
+        // can outrank it.
+        if col == commit_pos_x || !column.can_merge() {
+            continue;
+        }
+        let symbol = halves(column.dirs).0;
+        let cell = &mut cells[col * per_col];
+        debug_assert!(
+            cell.glyph != Glyph::Blank || symbol == Glyph::Blank,
+            "a blank winner would keep `Reset` under a non-blank union"
+        );
+        cell.glyph = symbol;
+    }
+    cells
 }
 
-/// `DoubleL`: the pre-#30 double, frozen.
+/// Each half-cell to the highest-priority edge, ties broken by whoever pushed
+/// last. This is what all of `Double` used to be; it is now what `Double`
+/// falls back to for columns that can't merge.
 ///
-/// Each half-cell goes to the highest-priority edge, ties broken by whoever
-/// pushed last. When two edges both want a non-blank symbol and neither
-/// extends rightward (`Vertical` / `Left` / `RightTop` / `RightBottom`
-/// against each other), the loser vanishes with nothing left in the right
-/// half to hint at it. That is the defect #30 is about, and `DoubleF` is
-/// where it's fixed -- this function exists because all three widths were
-/// wanted side by side, not because it's right. Don't "improve" it: its
-/// whole definition is "identical to what double used to draw".
-fn legacy_double_cells(
+/// When two edges both want a non-blank symbol and neither extends rightward,
+/// the loser vanishes with nothing left in the right half to hint at it --
+/// see `leaves_no_trace`, which is why `can_merge` overrides this in exactly
+/// that case.
+fn winner_takes_all_cells(
     commit_pos_x: usize,
     cell_count: usize,
     edges: &[Edge],
     color_of: impl Fn(usize) -> RatatuiColor,
 ) -> Vec<TextCell> {
-    let per_col = CellWidthType::DoubleL.cells_per_column();
+    let per_col = CellWidthType::Double.cells_per_column();
     let mut cells: Vec<TextCell> = vec![TextCell::BLANK; cell_count * per_col];
 
     let place = |cells: &mut Vec<TextCell>, idx: usize, glyph: Glyph, color: RatatuiColor| {
@@ -515,10 +571,10 @@ fn legacy_double_cells(
 /// Higher wins; horizontal `─` loses to vertical `│` so through-branches
 /// remain continuous when a horizontal run passes by.
 ///
-/// Serves both paths, in two different roles. `DoubleL` uses it to decide
-/// which glyph takes a shared half-cell outright. `DoubleF` and `Single`
-/// don't let glyphs compete at all -- their directions combine -- so there
-/// it only picks whose colour the resulting junction inherits.
+/// Serves two different roles. `winner_takes_all_cells` uses it to decide
+/// which glyph takes a shared half-cell outright. `Column::absorb` uses it
+/// where directions combine instead of competing, and there it only picks
+/// whose colour the resulting junction inherits.
 fn glyph_priority(glyph: Glyph) -> u8 {
     match glyph {
         Glyph::CommitDot | Glyph::HeadDot => 10,
@@ -538,21 +594,16 @@ fn glyph_priority(glyph: Glyph) -> u8 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CellWidthType {
-    /// `double-l`: each half-cell goes to the highest-priority edge, the
-    /// rest are dropped. The only double there was before #30.
-    DoubleL, // 2 cells
-    /// `double-f`: a column's directions are unioned first, then split back
-    /// into [symbol, connector]. What `auto` picks when the width allows.
-    DoubleF, // 2 cells
+    Double,
     Single,
 }
 
 impl CellWidthType {
-    /// Terminal columns one graph column occupies. Both doubles draw
+    /// Terminal columns one graph column occupies. `Double` draws
     /// [symbol, connector]; `Single` draws the symbol only.
     pub fn cells_per_column(self) -> usize {
         match self {
-            CellWidthType::DoubleL | CellWidthType::DoubleF => 2,
+            CellWidthType::Double => 2,
             CellWidthType::Single => 1,
         }
     }
@@ -570,28 +621,18 @@ pub fn graph_cell_width(graph: &Graph, width: CellWidthType) -> u16 {
 mod tests {
     use super::*;
 
-    /// The tests below that use this fixture put at most one edge in any
-    /// column, so the two doubles are provably identical there: with a
-    /// single edge the union *is* that edge's directions, and `place`'s
-    /// priority never gets anyone to compete with. Running them against
-    /// both variants pins that equality, and stops `DoubleF` from resting
-    /// on the collision tests alone for basic-shape coverage.
-    const DOUBLES: [CellWidthType; 2] = [CellWidthType::DoubleL, CellWidthType::DoubleF];
-
     #[test]
     fn text_cells_simple_vertical() {
         // Single commit dot with a vertical edge on the same column.
         let edges = vec![Edge::new(EdgeType::Vertical, 0, 0)];
         let colors = vec![RatatuiColor::Red, RatatuiColor::Green];
-        for width in DOUBLES {
-            let cells = build_text_cells(0, 1, &edges, &colors, width);
-            assert_eq!(cells.len(), 2, "{width:?}");
-            // Commit dot wins at pos_x=0 (edge doesn't clobber).
-            assert_eq!(cells[0].glyph, Glyph::CommitDot, "{width:?}");
-            assert_eq!(cells[0].color, RatatuiColor::Red, "{width:?}");
-            // Connector is blank for vertical.
-            assert_eq!(cells[1].glyph, Glyph::Blank, "{width:?}");
-        }
+        let cells = build_text_cells(0, 1, &edges, &colors, CellWidthType::Double);
+        assert_eq!(cells.len(), 2);
+        // Commit dot wins at pos_x=0 (edge doesn't clobber).
+        assert_eq!(cells[0].glyph, Glyph::CommitDot);
+        assert_eq!(cells[0].color, RatatuiColor::Red);
+        // Connector is blank for vertical.
+        assert_eq!(cells[1].glyph, Glyph::Blank);
     }
 
     #[test]
@@ -602,15 +643,13 @@ mod tests {
             Edge::new(EdgeType::LeftTop, 1, 1),
         ];
         let colors = vec![RatatuiColor::Red, RatatuiColor::Green];
-        for width in DOUBLES {
-            let cells = build_text_cells(0, 2, &edges, &colors, width);
-            assert_eq!(cells.len(), 4, "{width:?}");
-            assert_eq!(cells[0].glyph, Glyph::CommitDot, "{width:?}");
-            // Col 1: ╭ with ─ connector.
-            assert_eq!(cells[2].glyph, Glyph::CornerTL, "{width:?}");
-            assert_eq!(cells[2].color, RatatuiColor::Green, "{width:?}");
-            assert_eq!(cells[3].glyph, Glyph::Horiz, "{width:?}");
-        }
+        let cells = build_text_cells(0, 2, &edges, &colors, CellWidthType::Double);
+        assert_eq!(cells.len(), 4);
+        assert_eq!(cells[0].glyph, Glyph::CommitDot);
+        // Col 1: ╭ with ─ connector.
+        assert_eq!(cells[2].glyph, Glyph::CornerTL);
+        assert_eq!(cells[2].color, RatatuiColor::Green);
+        assert_eq!(cells[3].glyph, Glyph::Horiz);
     }
 
     #[test]
@@ -621,59 +660,55 @@ mod tests {
             Edge::new(EdgeType::Horizontal, 1, 0),
         ];
         let colors = vec![RatatuiColor::Red];
-        for width in DOUBLES {
-            let cells = build_text_cells(2, 3, &edges, &colors, width);
-            assert_eq!(cells.len(), 6, "{width:?}");
-            assert_eq!(cells[0].glyph, Glyph::Horiz, "{width:?}");
-            assert_eq!(cells[1].glyph, Glyph::Horiz, "{width:?}");
-            assert_eq!(cells[2].glyph, Glyph::Horiz, "{width:?}");
-            assert_eq!(cells[3].glyph, Glyph::Horiz, "{width:?}");
-            // Commit dot wins at col 2.
-            assert_eq!(cells[4].glyph, Glyph::CommitDot, "{width:?}");
-        }
+        let cells = build_text_cells(2, 3, &edges, &colors, CellWidthType::Double);
+        assert_eq!(cells.len(), 6);
+        assert_eq!(cells[0].glyph, Glyph::Horiz);
+        assert_eq!(cells[1].glyph, Glyph::Horiz);
+        assert_eq!(cells[2].glyph, Glyph::Horiz);
+        assert_eq!(cells[3].glyph, Glyph::Horiz);
+        // Commit dot wins at col 2.
+        assert_eq!(cells[4].glyph, Glyph::CommitDot);
     }
 
     #[test]
     fn text_cells_left_right_stubs_stay_on_own_half() {
-        for width in DOUBLES {
-            // Left stub at col 1: left half `─`, right half blank
-            let edges = vec![Edge::new(EdgeType::Left, 1, 0)];
-            let cells = build_text_cells(0, 2, &edges, &[RatatuiColor::Red], width);
-            assert_eq!(cells[2].glyph, Glyph::Horiz, "{width:?}");
-            assert_eq!(cells[3].glyph, Glyph::Blank, "{width:?}");
+        // Left stub at col 1: left half `─`, right half blank
+        let edges = vec![Edge::new(EdgeType::Left, 1, 0)];
+        let cells = build_text_cells(0, 2, &edges, &[RatatuiColor::Red], CellWidthType::Double);
+        assert_eq!(cells[2].glyph, Glyph::Horiz);
+        assert_eq!(cells[3].glyph, Glyph::Blank);
 
-            // Right stub at col 0: left half blank, right half `─`
-            let edges = vec![Edge::new(EdgeType::Right, 0, 0)];
-            let cells = build_text_cells(1, 2, &edges, &[RatatuiColor::Red], width);
-            // commit is at col 1 so cells[2] is the dot; col 0 left half stays blank
-            assert_eq!(cells[0].glyph, Glyph::Blank, "{width:?}");
-            assert_eq!(cells[1].glyph, Glyph::Horiz, "{width:?}");
-        }
+        // Right stub at col 0: left half blank, right half `─`
+        let edges = vec![Edge::new(EdgeType::Right, 0, 0)];
+        let cells = build_text_cells(1, 2, &edges, &[RatatuiColor::Red], CellWidthType::Double);
+        // commit is at col 1 so cells[2] is the dot; col 0 left half stays blank
+        assert_eq!(cells[0].glyph, Glyph::Blank);
+        assert_eq!(cells[1].glyph, Glyph::Horiz);
     }
 
-    /// `DoubleL`'s defining behaviour: the higher-priority glyph takes the
-    /// symbol half outright. The horizontal survives only because it also
-    /// owns the connector half -- swap it for a `RightTop` and it would
-    /// vanish without trace, which is what #30 is about.
+    /// Two differently-coloured lines crossing: merging them into one `┼`
+    /// would erase one line's colour, so the column keeps winner-takes-all.
+    /// The horizontal survives here only because it also owns the connector
+    /// half -- swap it for a `RightTop` and it would vanish without trace,
+    /// which is why `leaves_no_trace` overrides the colour rule.
     #[test]
-    fn text_cells_double_l_lets_vertical_win_over_horizontal() {
+    fn text_cells_double_keeps_winner_when_a_column_is_multi_coloured() {
         let colors = vec![RatatuiColor::Red, RatatuiColor::Green, RatatuiColor::Blue];
         for edges in colliding_edge_orders(EdgeType::Horizontal, 0, EdgeType::Vertical, 2) {
-            let cells = build_text_cells(0, 3, &edges, &colors, CellWidthType::DoubleL);
+            let cells = build_text_cells(0, 3, &edges, &colors, CellWidthType::Double);
             assert_eq!(cells[2].glyph, Glyph::Vert);
             assert_eq!(cells[2].color, RatatuiColor::Blue);
             assert_eq!(cells[3].glyph, Glyph::Horiz);
         }
     }
 
-    /// The same collision under `DoubleF`: the symbol half now carries both
-    /// edges. Colour still follows the vertical (rank 3 beats rank 1), and
-    /// the connector half is unchanged.
+    /// The same two edge types on one line: nothing to erase, so the symbol
+    /// half carries both directions.
     #[test]
-    fn text_cells_double_f_unions_vertical_and_horizontal() {
+    fn text_cells_double_unions_a_single_coloured_column() {
         let colors = vec![RatatuiColor::Red, RatatuiColor::Green, RatatuiColor::Blue];
-        for edges in colliding_edge_orders(EdgeType::Horizontal, 0, EdgeType::Vertical, 2) {
-            let cells = build_text_cells(0, 3, &edges, &colors, CellWidthType::DoubleF);
+        for edges in colliding_edge_orders(EdgeType::Horizontal, 2, EdgeType::Vertical, 2) {
+            let cells = build_text_cells(0, 3, &edges, &colors, CellWidthType::Double);
             assert_eq!(cells[2].glyph, Glyph::Cross);
             assert_eq!(cells[2].color, RatatuiColor::Blue);
             assert_eq!(cells[3].glyph, Glyph::Horiz);
@@ -683,11 +718,9 @@ mod tests {
     #[test]
     fn text_cells_empty_colors_fallback() {
         let edges = vec![Edge::new(EdgeType::Vertical, 0, 0)];
-        for width in DOUBLES {
-            let cells = build_text_cells(0, 1, &edges, &[], width);
-            assert_eq!(cells[0].glyph, Glyph::CommitDot, "{width:?}");
-            assert_eq!(cells[0].color, RatatuiColor::Reset, "{width:?}");
-        }
+        let cells = build_text_cells(0, 1, &edges, &[], CellWidthType::Double);
+        assert_eq!(cells[0].glyph, Glyph::CommitDot);
+        assert_eq!(cells[0].color, RatatuiColor::Reset);
     }
 
     /// Two edges colliding on column 1, in both push orders. Every
@@ -705,16 +738,17 @@ mod tests {
         ]
     }
 
-    /// The four collisions where `DoubleL` loses an edge with zero trace:
-    /// both symbols non-blank, both connectors blank, so the loser leaves
-    /// nothing behind in the right half either. (#30's table lists three --
-    /// it missed `Left`, whose symbol is `─` and whose connector is blank
-    /// just like the corners'.)
+    /// The four collisions where the loser leaves zero trace: both symbols
+    /// non-blank, both connectors blank, so there is nothing in the right
+    /// half to hint at the edge that lost. (#30's table lists three -- it
+    /// missed `Left`, whose symbol is `─` and whose connector is blank just
+    /// like the corners'.)
     ///
-    /// All four union to `U|D|L`, so `DoubleF` draws the same `┤` for every
-    /// one of them.
+    /// All four union to `U|D|L`, so a mergeable column draws `┤` for every
+    /// one of them. Here they share a line, so the colour rule alone allows
+    /// it; `leaves_no_trace` would too.
     #[test]
-    fn text_cells_double_f_keeps_both_edges_where_double_l_dropped_one() {
+    fn text_cells_double_keeps_both_edges_where_the_loser_left_no_trace() {
         let colors = vec![RatatuiColor::Red];
         let cases: &[(EdgeType, EdgeType)] = &[
             (EdgeType::Vertical, EdgeType::RightTop),
@@ -725,67 +759,84 @@ mod tests {
         for (a, b) in cases {
             // Both edges land on column 1, whose halves are cells 2 and 3.
             for edges in colliding_edge_orders(*a, 0, *b, 0) {
-                let fused = build_text_cells(0, 2, &edges, &colors, CellWidthType::DoubleF);
-                assert_eq!(fused[2].glyph, Glyph::TeeLeft, "{a:?} + {b:?}");
-                assert_eq!(fused[3].glyph, Glyph::Blank, "{a:?} + {b:?} connector");
+                let cells = build_text_cells(0, 2, &edges, &colors, CellWidthType::Double);
+                assert_eq!(cells[2].glyph, Glyph::TeeLeft, "{a:?} + {b:?}");
+                assert_eq!(cells[3].glyph, Glyph::Blank, "{a:?} + {b:?} connector");
 
-                // The `DoubleL` half of the story: whatever is on screen is
-                // one edge's own symbol, never both -- and the connector
-                // holds no trace of the other.
-                let legacy = build_text_cells(0, 2, &edges, &colors, CellWidthType::DoubleL);
+                // What the fallback would have drawn: one edge's own symbol,
+                // never both, and a connector holding no trace of the other.
+                // Called directly so this stays pinned even though no width
+                // reaches it for these inputs any more.
+                let winner = winner_takes_all_cells(0, 2, &edges, |i| colors[i % colors.len()]);
                 let alone = [*a, *b].map(|edge| halves(edge_dirs(edge)).0);
                 assert!(
-                    alone.contains(&legacy[2].glyph),
+                    alone.contains(&winner[2].glyph),
                     "{a:?} + {b:?}: expected one edge's own symbol, got {:?}",
-                    legacy[2].glyph
+                    winner[2].glyph
                 );
-                assert_eq!(legacy[3].glyph, Glyph::Blank, "{a:?} + {b:?} connector");
+                assert_eq!(winner[3].glyph, Glyph::Blank, "{a:?} + {b:?} connector");
             }
         }
     }
 
-    /// Colour ties go to the first writer, so nothing here depends on
-    /// `calc.rs`'s push order -- the opposite of `DoubleL`'s `>=`.
+    /// The second half of `can_merge`: two edges that would both vanish
+    /// without a trace get unioned even when their colours differ, because
+    /// losing a whole line beats losing a colour.
     ///
-    /// `calc.rs` reaches the connector case for real: a multi-parent commit
+    /// The 41-case snapshot suite has no collision of this shape, but
+    /// `calc.rs`'s detour can produce one -- its overlap scan covers
+    /// `(child_pos_y + 1)..pos_y` and so misses edges already sitting on row
+    /// `pos_y`, which is exactly where the `RightBottom` lands.
+    #[test]
+    fn text_cells_double_unions_multi_coloured_columns_that_would_lose_a_line() {
+        let colors = vec![RatatuiColor::Red, RatatuiColor::Green, RatatuiColor::Blue];
+        for edges in colliding_edge_orders(EdgeType::RightBottom, 1, EdgeType::Vertical, 2) {
+            let cells = build_text_cells(0, 2, &edges, &colors, CellWidthType::Double);
+            assert_eq!(cells[2].glyph, Glyph::TeeLeft);
+            assert_eq!(cells[3].glyph, Glyph::Blank);
+        }
+    }
+
+    /// `Column`'s colour ties go to the first writer, the opposite of
+    /// `place`'s `>=`. Only `Single` reads them -- `Double` takes every
+    /// colour from the winner-takes-all pass.
+    ///
+    /// `calc.rs` reaches the first case for real: a multi-parent commit
     /// pushes one `Right` per parent at the same `pos_x`, each carrying its
     /// own parent's colour.
     #[test]
-    fn text_cells_double_f_colour_ties_go_to_the_first_edge() {
+    fn single_width_colour_ties_go_to_the_first_edge() {
         let colors = vec![RatatuiColor::Red, RatatuiColor::Green, RatatuiColor::Blue];
 
-        // Column 1's halves are cells 2 and 3.
-        //
-        // Two `Right` edges on one column, different lines: the symbol half
-        // stays blank (nothing reaches the centre), the connector takes the
-        // first edge's colour.
         let edges = vec![
             Edge::new(EdgeType::Right, 1, 1),
             Edge::new(EdgeType::Right, 1, 2),
         ];
-        let cells = build_text_cells(0, 2, &edges, &colors, CellWidthType::DoubleF);
-        assert_eq!(cells[2].glyph, Glyph::Blank);
-        assert_eq!(cells[3].glyph, Glyph::Horiz);
-        assert_eq!(cells[3].color, RatatuiColor::Green);
+        let cells = build_text_cells(0, 2, &edges, &colors, CellWidthType::Single);
+        assert_eq!(cells[1].glyph, Glyph::Horiz);
+        assert_eq!(cells[1].color, RatatuiColor::Green);
 
-        // Two corners, equal rank: the symbol half keeps the first one's
-        // colour even though the second one contributes directions.
-        let edges = vec![
-            Edge::new(EdgeType::RightTop, 1, 1),
-            Edge::new(EdgeType::RightBottom, 1, 2),
-        ];
-        let cells = build_text_cells(0, 2, &edges, &colors, CellWidthType::DoubleF);
-        assert_eq!(cells[2].glyph, Glyph::TeeLeft);
-        assert_eq!(cells[2].color, RatatuiColor::Green);
-
-        // Same two edges, opposite order: now the other one is first.
-        let edges = vec![
-            Edge::new(EdgeType::RightBottom, 1, 2),
-            Edge::new(EdgeType::RightTop, 1, 1),
-        ];
-        let cells = build_text_cells(0, 2, &edges, &colors, CellWidthType::DoubleF);
-        assert_eq!(cells[2].glyph, Glyph::TeeLeft);
-        assert_eq!(cells[2].color, RatatuiColor::Blue);
+        // Two corners of equal rank, both push orders: whoever came first.
+        for (edges, expected) in [
+            (
+                vec![
+                    Edge::new(EdgeType::RightTop, 1, 1),
+                    Edge::new(EdgeType::RightBottom, 1, 2),
+                ],
+                RatatuiColor::Green,
+            ),
+            (
+                vec![
+                    Edge::new(EdgeType::RightBottom, 1, 2),
+                    Edge::new(EdgeType::RightTop, 1, 1),
+                ],
+                RatatuiColor::Blue,
+            ),
+        ] {
+            let cells = build_text_cells(0, 2, &edges, &colors, CellWidthType::Single);
+            assert_eq!(cells[1].glyph, Glyph::TeeLeft);
+            assert_eq!(cells[1].color, expected);
+        }
     }
 
     /// `halves` replaced a hand-written `EdgeType -> (left, right)` table.

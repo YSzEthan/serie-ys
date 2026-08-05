@@ -1,7 +1,7 @@
 ●  004
 │ ●  081
 │ ●  071
-●─╯  Merge branch '60'
+●─┤  Merge branch '60'
 │ ●  061
 ●─│─╮  Merge branch '50'
 │ │ ●  052
@@ -10,11 +10,11 @@
 │ │ │ ●  032
 │ │ │ ●  031
 ● │ │ │  003
-●─╯ │ │  Merge branch '40'
+●─┤ │ │  Merge branch '40'
 │ ● │ │  041
 ●─╯─╯─╯  002
 ●─╮  Merge branch '20'
 │ ●  021
-●─╯  Merge branch '10'
+●─┤  Merge branch '10'
 │ ●  011
 ●─╯  001

@@ -1,6 +1,6 @@
 ●─╮  Merge branch '40'
 │ ●  041
-│ │─●─╮  Merge branches '10' and '30' into 20
+│ ├─●─╮  Merge branches '10' and '30' into 20
 │ ● │ │  032
 │ ● │ │  031
 │ │ │ ●  012

@@ -292,11 +292,14 @@ impl CommitList<'_> {
             // list has always been looser than
             // `EdgeType::has_downward_continuation`, and stays that way here.
             //
-            // So the same column can answer differently depending on width:
-            // a `RightBottom` crossed by a `Horizontal` is `╯` under
-            // `DoubleL` (extends) and `┴` under `DoubleF`/`Single` (does
-            // not). The stricter answer is the correct one; the loose `╯`
-            // survives because tightening it is a separate change from #30.
+            // So the same column can answer differently depending on how it
+            // was drawn: a `RightBottom` crossed by a `Horizontal` is `┴`
+            // where the two got merged (doesn't extend) and `╯` where they
+            // didn't (does). Under `Double` that hinges on whether the two
+            // edges share a colour, so changing `graph.color.branches` can
+            // change whether a spacer row has a line in that column. The
+            // stricter answer is the correct one; the loose `╯` survives
+            // because tightening it is a separate change.
             let draw_vertical = matches!(
                 cell.glyph,
                 Glyph::CommitDot
@@ -1086,6 +1089,42 @@ mod tests {
             )
         }
 
+        /// Every collision in `text_graph_colliding` puts two *different*
+        /// lines in one column, so `Double` never merges there. Here each
+        /// row's col 0 collides within one line instead, so merging costs no
+        /// colour and `Double` unions it. Col 0 of row 1 is deliberately a
+        /// shape that ends going up (`┴`), which the spacer test needs.
+        ///
+        /// Col 1 is left as a two-line collision on purpose, so one fixture
+        /// covers both branches side by side. Without this fixture the merge
+        /// branch of `double_cells` would have no widget-level coverage at
+        /// all.
+        fn text_graph_colliding_same_line(commits: &[Commit]) -> Graph {
+            graph_fixture(
+                commits,
+                [(2, 0), (2, 1), (0, 2)],
+                vec![
+                    // col 0: one line's corner plus its own continuation
+                    // downward -> `┤`. col 1: two lines, and only one of
+                    // them would vanish -> stays `│` with the `─` beside it.
+                    vec![
+                        Edge::new(EdgeType::RightBottom, 0, 0),
+                        Edge::new(EdgeType::Down, 0, 0),
+                        Edge::new(EdgeType::Vertical, 1, 1),
+                        Edge::new(EdgeType::Horizontal, 1, 2),
+                    ],
+                    // col 0: the same line's corner crossed by its own
+                    // horizontal run -> `┴`, which ends going up.
+                    vec![
+                        Edge::new(EdgeType::RightBottom, 0, 0),
+                        Edge::new(EdgeType::Horizontal, 0, 0),
+                        Edge::new(EdgeType::Vertical, 1, 1),
+                    ],
+                    vec![Edge::new(EdgeType::Vertical, 1, 1)],
+                ],
+            )
+        }
+
         struct Opts {
             /// Index into `commits`, fed to `CommitListState`'s shared
             /// `head_commit_hash` (drives `is_head` in `put_text_cells`).
@@ -1110,7 +1149,7 @@ mod tests {
                     working_changes: false,
                     inline_detail_height: 0,
                     filtered: false,
-                    cell_width_type: CellWidthType::DoubleF,
+                    cell_width_type: CellWidthType::Double,
                 }
             }
         }
@@ -1277,43 +1316,39 @@ mod tests {
             );
         }
 
-        /// The same fixture under `DoubleF`: the symbol half carries the
-        /// union, so it comes out as the `Single` rendering with a connector
-        /// cell spliced in after each column.
+        /// The same fixture under `Double`. Every collision here is between
+        /// two different lines, so merging would erase a colour and the
+        /// columns stay winner-takes-all -- unlike `Single` above, which has
+        /// no second half-cell to fall back on and always unions.
         #[test]
-        fn render_graph_double_f_width_unions_colliding_edges() {
+        fn render_graph_double_width_keeps_winner_when_lines_differ() {
             let commits = text_graph_commits();
             let mut state = build_state(&commits, text_graph_colliding(&commits), Opts::default());
             let buf = render_commit_list(&mut state, 10);
 
             assert_eq!(
                 graph_rows_width(&buf, 1..=3, 6),
-                ["┼─┼─◯ ", "┬─┴─● ", "● │   "],
-                "double-f's symbol half draws the same junction single does"
+                ["│─│─◯ ", "│─╯─● ", "● │   "],
+                "multi-coloured columns give each half-cell to the winning edge"
             );
         }
 
-        /// The same fixture under `DoubleL`, which is why that width still
-        /// exists: this is what double drew before issue #30. Row 2 is the
-        /// defect -- col 1 shows `╯` and the `Horizontal` crossing it is
-        /// gone, with no trace in the connector either.
+        /// Collisions within one line: nothing to erase, so `Double` unions
+        /// them and the symbol halves match what `Single` would draw.
         #[test]
-        fn render_graph_double_l_width_keeps_the_pre_30_rendering() {
+        fn render_graph_double_width_unions_same_line_collisions() {
             let commits = text_graph_commits();
             let mut state = build_state(
                 &commits,
-                text_graph_colliding(&commits),
-                Opts {
-                    cell_width_type: CellWidthType::DoubleL,
-                    ..Default::default()
-                },
+                text_graph_colliding_same_line(&commits),
+                Opts::default(),
             );
             let buf = render_commit_list(&mut state, 10);
 
             assert_eq!(
                 graph_rows_width(&buf, 1..=3, 6),
-                ["│─│─◯ ", "│─╯─● ", "● │   "],
-                "double-l still gives each half-cell to the winning edge"
+                ["┤ │─◯ ", "┴─│ ● ", "● │   "],
+                "single-coloured columns merge, the two-line column doesn't"
             );
         }
 
@@ -1405,47 +1440,49 @@ mod tests {
         }
 
         /// `┴` is deliberately absent from `put_text_spacer`'s whitelist: a
-        /// line that ends going up has nothing to continue below it.
-        /// `DoubleF` is the first double width that can produce one, so this
-        /// is a visible behaviour change and not just a new character --
-        /// the very same column under `DoubleL` is `╯`, which *is*
-        /// whitelisted and does extend downward.
+        /// line that ends going up has nothing to continue below it. Whether
+        /// a column *becomes* `┴` under `Double` now depends on colour, so
+        /// this is where that shows on screen -- the same corner-meets-
+        /// horizontal shape draws `┴` when both edges are one line and `╯`
+        /// when they aren't, and only the latter extends downward.
         ///
-        /// `text_graph` can't reach this (one edge per column, never a
-        /// junction), so the colliding fixture is the only way to cover it.
+        /// `text_graph` can't reach either (one edge per column, never a
+        /// collision), so the two colliding fixtures are the only cover.
         #[test]
-        fn spacer_row_stops_at_tee_up_under_double_f() {
+        fn spacer_row_stops_at_tee_up_but_not_at_corner() {
             let commits = text_graph_commits();
 
-            let spacer_symbols = |width: CellWidthType| {
+            let spacer_symbols = |graph: Graph| {
                 let mut state = build_state(
                     &commits,
-                    text_graph_colliding(&commits),
+                    graph,
                     Opts {
                         inline_detail_height: 1,
-                        cell_width_type: width,
                         ..Default::default()
                     },
                 );
                 // `select_next` is a no-op until a render has set `height`,
-                // so the first pass is only there to make the second one
-                // land on row 1 -- `┬─┴─●` under double-f, `│─╯─●` under
-                // double-l. Its spacer then sits at y=3.
+                // so the first pass is only there to make the second one land
+                // on row 1, whose spacer then sits at y=3.
                 render_commit_list(&mut state, 10);
                 state.select_next();
                 let buf = render_commit_list(&mut state, 10);
                 [0u16, 2, 4].map(|x| buf[(x, 3u16)].symbol().to_string())
             };
 
+            // Row 1 is `┴─│ ●`: the merged column ends going up.
             assert_eq!(
-                spacer_symbols(CellWidthType::DoubleF),
-                ["│", " ", "│"],
-                "┬ and the dot extend downward, ┴ does not"
+                spacer_symbols(text_graph_colliding_same_line(&commits)),
+                [" ", "│", "│"],
+                "┴ does not extend downward, the vertical and the dot do"
             );
+            // Row 1 is `│─╯─●`: the same shape left unmerged is `╯`, which
+            // has always been on the whitelist even though it also ends
+            // going up.
             assert_eq!(
-                spacer_symbols(CellWidthType::DoubleL),
+                spacer_symbols(text_graph_colliding(&commits)),
                 ["│", "│", "│"],
-                "the same column is ╯ under double-l, which does extend"
+                "an unmerged corner still extends"
             );
         }
 
@@ -1599,7 +1636,7 @@ mod tests {
                 Rc::new(primary),
                 Vec::new(),
                 None,
-                CellWidthType::DoubleF,
+                CellWidthType::Double,
                 Head::None,
                 FxHashMap::default(),
                 false,

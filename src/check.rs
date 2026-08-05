@@ -6,8 +6,8 @@ use crate::{
 };
 
 /// Never refuses to start (#21): an explicit width is honored as-is, and
-/// `auto` degrades to `Single` when a double width doesn't fit. If even
-/// `Single` doesn't fit, rendering truncates rather than erroring out --
+/// `auto` degrades to `Single` when `Double` doesn't fit. If even `Single`
+/// doesn't fit, rendering truncates rather than erroring out --
 /// `put_text_cells` already clips at the area's right edge, so a graph too
 /// wide for the terminal just loses its rightmost columns instead of
 /// refusing to open.
@@ -16,8 +16,7 @@ pub fn decide_cell_width_type(
     cell_width_type: Option<GraphWidthType>,
 ) -> Result<CellWidthType> {
     match cell_width_type {
-        Some(GraphWidthType::DoubleL) => Ok(CellWidthType::DoubleL),
-        Some(GraphWidthType::DoubleF) => Ok(CellWidthType::DoubleF),
+        Some(GraphWidthType::Double) => Ok(CellWidthType::Double),
         Some(GraphWidthType::Single) => Ok(CellWidthType::Single),
         Some(GraphWidthType::Auto) | None => {
             // Only `auto` needs to know the terminal size, so only `auto`
@@ -39,12 +38,10 @@ pub fn decide_cell_width_type(
 /// room for.
 const NON_GRAPH_COLUMNS: usize = 2;
 
-/// `DoubleF` rather than `DoubleL` is what `auto` upgrades to: #30 is a bug
-/// fix, so the default should be the width that doesn't drop lines.
 fn auto_cell_width_type(cell_count: usize, term_width: usize) -> CellWidthType {
-    let double_width = cell_count * CellWidthType::DoubleF.cells_per_column() + NON_GRAPH_COLUMNS;
+    let double_width = cell_count * CellWidthType::Double.cells_per_column() + NON_GRAPH_COLUMNS;
     if double_width <= term_width {
-        CellWidthType::DoubleF
+        CellWidthType::Double
     } else {
         CellWidthType::Single
     }
@@ -56,7 +53,7 @@ mod tests {
 
     #[test]
     fn auto_prefers_double_when_it_fits() {
-        assert_eq!(auto_cell_width_type(3, 20), CellWidthType::DoubleF);
+        assert_eq!(auto_cell_width_type(3, 20), CellWidthType::Double);
     }
 
     #[test]
