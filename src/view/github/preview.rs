@@ -1,6 +1,7 @@
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
+    widgets::{Paragraph, Wrap},
 };
 
 use crate::github::Mergeable;
@@ -136,7 +137,7 @@ pub(super) struct PreviewInput<'v> {
 }
 
 impl PreviewInput<'_> {
-    pub(super) fn cache_key(&self) -> PreviewKey {
+    fn cache_key(&self) -> PreviewKey {
         // Count alone is not enough: "loaded but empty" and "still loading"
         // both have zero items yet render differently. Exhaustive on purpose —
         // a new `TimelineLoad` variant must not silently fold into Pending and
@@ -193,7 +194,7 @@ pub(super) enum SelectedItemExtra<'v> {
 /// ~20 sites that reset `preview_offset`, and relying on each to also mark the
 /// cache stale would eventually miss one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct PreviewKey {
+struct PreviewKey {
     tab: GitHubTab,
     number: u64,
     stage: TimelineStage,
@@ -207,13 +208,70 @@ pub(super) struct PreviewKey {
     width: u16,
 }
 
+/// 一次建置的產物。完全不對外可見——連 `pub(super)` 都不需要，
+/// `PreviewCache` 是它唯一的存取入口。
 #[derive(Debug)]
-pub(super) struct PreviewCache {
-    pub(super) key: PreviewKey,
-    pub(super) lines: Vec<Line<'static>>,
-    pub(super) overlay: Option<PreviewOverlay>,
+struct CachedPreview {
+    key: PreviewKey,
+    lines: Vec<Line<'static>>,
+    overlay: Option<PreviewOverlay>,
     /// Line count *after* wrapping — what `preview_offset` is measured in.
-    pub(super) visual_len: usize,
+    visual_len: usize,
+}
+
+#[derive(Debug, Default)]
+pub(super) struct PreviewCache {
+    cached: Option<CachedPreview>,
+    /// Rebuild counter, test-only. `build_preview_content` is pure, so two
+    /// calls with an unchanged `PreviewInput` produce identical output
+    /// whether the second one actually reused the cache or quietly rebuilt
+    /// it — comparing output alone can't tell "reused" apart from "rebuilt
+    /// to the same result". This is the only way to observe the difference
+    /// from outside `get_or_build`.
+    #[cfg(test)]
+    build_count: usize,
+}
+
+impl PreviewCache {
+    /// Rebuild the preview only when its inputs changed, returning the
+    /// wrapped line count either way. `render_preview` runs at the marquee
+    /// tick rate (10 Hz) whenever the selected row overflows, and both
+    /// `markdown::render` and `line_count` walk the entire body plus every
+    /// comment — so recomputing per frame burns CPU while idle.
+    ///
+    /// Wrapping is left to `Paragraph` rather than reusing
+    /// `commit_detail::wrap_line_spans`: that one breaks mid-word, which
+    /// would mangle the English prose common in PR bodies.
+    pub(super) fn get_or_build(&mut self, input: &PreviewInput) -> usize {
+        let key = input.cache_key();
+        if let Some(c) = self.cached.as_ref().filter(|c| c.key == key) {
+            return c.visual_len;
+        }
+        #[cfg(test)]
+        {
+            self.build_count += 1;
+        }
+        let (lines, overlay) = build_preview_content(input);
+        let visual_len = Paragraph::new(borrow_lines(&lines))
+            .wrap(Wrap { trim: false })
+            .line_count(input.width);
+        self.cached = Some(CachedPreview {
+            key,
+            lines,
+            overlay,
+            visual_len,
+        });
+        visual_len
+    }
+
+    /// 冷快取回傳空切片；`render_preview` 一定先呼叫 `get_or_build`。
+    pub(super) fn lines(&self) -> &[Line<'static>] {
+        self.cached.as_ref().map_or(&[], |c| &c.lines)
+    }
+
+    pub(super) fn overlay(&self) -> Option<&PreviewOverlay> {
+        self.cached.as_ref().and_then(|c| c.overlay.as_ref())
+    }
 }
 
 /// Re-borrow cached lines instead of cloning them: `Paragraph` needs an owned
@@ -293,5 +351,104 @@ fn append_relation_lines(
     }
     if parent.is_some() || !sub_issues.is_empty() {
         lines.push(crate::view::markdown::rule_line(width));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn loaded_entry(mergeable: Option<Mergeable>) -> TimelineEntry {
+        TimelineEntry {
+            state: TimelineLoad::Loaded,
+            mergeable,
+            ..Default::default()
+        }
+    }
+
+    fn pr_input(entry: &TimelineEntry) -> PreviewInput<'_> {
+        PreviewInput {
+            tab: GitHubTab::PullRequests,
+            number: 1,
+            width: 40,
+            body_rev: 0,
+            entry: Some(entry),
+            expand_commits: true,
+            item: Some(SelectedItem {
+                title: "t",
+                state: "OPEN",
+                author: "alice",
+                labels: &[],
+                body: "body",
+                url: "",
+                extra: SelectedItemExtra::PullRequest {
+                    base_ref_name: "main",
+                    head_ref_name: "topic",
+                },
+            }),
+        }
+    }
+
+    #[test]
+    fn get_or_build_reuses_cache_for_an_unchanged_input() {
+        let entry = loaded_entry(None);
+        let input = pr_input(&entry);
+        let mut cache = PreviewCache::default();
+
+        let first_len = cache.get_or_build(&input);
+        assert_eq!(cache.build_count, 1);
+
+        // Why build_count and not just comparing output: see its field doc.
+        let second_len = cache.get_or_build(&input);
+        assert_eq!(
+            cache.build_count, 1,
+            "unchanged input must not trigger a rebuild"
+        );
+        assert_eq!(first_len, second_len);
+    }
+
+    /// mergeable 掛在 TimelineEntry 上，不是 selected item 的獨立欄位——這
+    /// 釘住 cache key 有獨立追蹤它，不是靠 stage 變化順便觸發。兩個 entry
+    /// 都是 Loaded，兩個 input 之間唯一的差異就是 mergeable 本身。
+    #[test]
+    fn get_or_build_rebuilds_when_mergeable_changes() {
+        let mut cache = PreviewCache::default();
+
+        cache.get_or_build(&pr_input(&loaded_entry(None)));
+        cache.get_or_build(&pr_input(&loaded_entry(Some(Mergeable::Mergeable))));
+
+        assert_eq!(
+            cache.build_count, 2,
+            "mergeable change must invalidate the cache"
+        );
+        assert!(
+            cache
+                .lines()
+                .iter()
+                .any(|l| l.spans.iter().any(|s| s.content.contains("(mergeable)"))),
+            "rebuilt content must reflect the new mergeable state, got: {:?}",
+            cache.lines()
+        );
+    }
+
+    /// `body_rev` 是唯一在 `PreviewKey` 裡代表「body 內容變了」的欄位——
+    /// `PreviewKey` 本身不存 body 文字（太貴）。兩個 input 的 body 文字
+    /// 故意給一樣的，只讓 body_rev 不同：光比對畫面內容區分不出「有沒有
+    /// 重建」，因為就算重建，輸出也會長得一模一樣，只能靠 build_count。
+    #[test]
+    fn get_or_build_rebuilds_when_body_rev_changes() {
+        let entry = loaded_entry(None);
+        let mut cache = PreviewCache::default();
+
+        cache.get_or_build(&pr_input(&entry));
+        cache.get_or_build(&PreviewInput {
+            body_rev: 1,
+            ..pr_input(&entry)
+        });
+
+        assert_eq!(
+            cache.build_count, 2,
+            "body_rev change must invalidate the cache"
+        );
     }
 }

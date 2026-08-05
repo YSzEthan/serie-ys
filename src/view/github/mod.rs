@@ -168,7 +168,7 @@ pub struct GitHubView<'a> {
     /// since `is_draft` never reaches `build_preview_content`; that changes the
     /// day the preview starts showing draft status.
     body_rev: u64,
-    preview_cache: Option<PreviewCache>,
+    preview_cache: PreviewCache,
     /// Preview content height, recorded by `render_preview`. The scroll
     /// handlers use it instead of re-deriving it from `height`.
     preview_height: usize,
@@ -221,7 +221,7 @@ impl<'a> GitHubView<'a> {
             timeline: FxHashMap::default(),
             last_preview_len: 0,
             body_rev: 0,
-            preview_cache: None,
+            preview_cache: PreviewCache::default(),
             preview_height: 0,
             expand_commits: true,
             tx,
@@ -825,27 +825,11 @@ mod tests {
         // The clamp must be in wrapped lines, not source lines. Comparing
         // against the cache's own source count is what gives this test teeth:
         // the old logical-line arithmetic made the two equal.
-        let source_lines = view.preview_cache.as_ref().map_or(0, |c| c.lines.len());
+        let source_lines = view.preview_cache.lines().len();
         assert!(
             total > source_lines,
             "last_preview_len must count wrapped lines ({total}) not source lines ({source_lines})"
         );
-    }
-
-    #[test]
-    fn preview_cache_is_reused_until_an_input_changes() {
-        let mut view = view_with_long_body();
-        render_to_string(&mut view);
-        let key = view.preview_cache.as_ref().map(|c| c.key);
-        assert!(key.is_some());
-
-        render_to_string(&mut view);
-        assert_eq!(view.preview_cache.as_ref().map(|c| c.key), key);
-
-        // A body swap must invalidate it even though the PR number is unchanged.
-        view.update_body_for_item(1, GhItemKind::PullRequest, "short".to_string());
-        render_to_string(&mut view);
-        assert_ne!(view.preview_cache.as_ref().map(|c| c.key), key);
     }
 
     fn timeline_page(items: Vec<GhTimelineItem>, next_cursor: Option<String>) -> GhTimelinePage {
@@ -1089,35 +1073,8 @@ mod tests {
         );
     }
 
-    /// mergeable rides along on `TimelineEntry`, not a separate field on
-    /// `pull_requests[idx]` — this pins down that the cache key tracks it in
-    /// isolation. The page is loaded *before* capturing `key_before`, so the
-    /// only thing that changes between the two snapshots is `mergeable`
-    /// itself — otherwise `stage` flipping Pending → Ready on first load
-    /// would change the key regardless of whether `mergeable` was tracked.
     #[test]
-    fn cache_key_changes_once_mergeable_arrives() {
-        let mut view = view_with_body("body".to_string());
-        view.append_timeline_items(1, GhItemKind::PullRequest, timeline_page(Vec::new(), None));
-        render_to_string(&mut view);
-        let key_before = view.preview_cache.as_ref().map(|c| c.key);
-
-        view.append_timeline_items(
-            1,
-            GhItemKind::PullRequest,
-            GhTimelinePage {
-                mergeable: Some(Mergeable::Mergeable),
-                ..timeline_page(Vec::new(), None)
-            },
-        );
-        render_to_string(&mut view);
-        let key_after = view.preview_cache.as_ref().map(|c| c.key);
-
-        assert_ne!(key_before, key_after);
-    }
-
-    #[test]
-    fn collapsing_commits_replaces_them_with_a_summary_and_changes_the_key() {
+    fn collapsing_commits_replaces_them_with_a_summary() {
         let mut view = view_with_body("body".to_string());
         view.append_timeline_items(
             1,
@@ -1131,19 +1088,19 @@ mod tests {
                 None,
             ),
         );
+        // Warm the cache before toggling: a cold cache rebuilds unconditionally
+        // regardless of whether `expand_commits` is even tracked in the cache
+        // key, which would let this test pass even if that tracking broke.
         render_to_string(&mut view);
-        let key_expanded = view.preview_cache.as_ref().map(|c| c.key);
 
         view.toggle_commit_log();
         let screen = render_to_string(&mut view);
-        let key_collapsed = view.preview_cache.as_ref().map(|c| c.key);
 
         assert!(!screen.contains("aaaaaaa"), "got:\n{screen}");
         assert!(!screen.contains("bbbbbbb"), "got:\n{screen}");
         assert!(screen.contains("2 commits"), "got:\n{screen}");
         // The comment in between must survive collapsing — only commits fold.
         assert!(screen.contains("one"), "got:\n{screen}");
-        assert_ne!(key_expanded, key_collapsed);
     }
 
     #[test]

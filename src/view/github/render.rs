@@ -9,7 +9,7 @@ use ratatui::{
 use crate::github::{GhIssue, GhPullRequest};
 
 use super::{
-    preview::{borrow_lines, build_preview_content, PreviewCache, RowData},
+    preview::{borrow_lines, RowData},
     GitHubFocus, GitHubTab, GitHubView, LoadState,
 };
 
@@ -354,7 +354,14 @@ impl<'a> GitHubView<'a> {
         // scroll handlers read it back rather than re-deriving it from `height`.
         self.preview_height = inner.height as usize;
 
-        let visual_len = self.refresh_preview_cache(inner.width);
+        // `preview_input(&self)` 借走整個 self，borrow checker 看不出它沒碰
+        // preview_cache，所以無法同時 &mut 它。先剝離成 local 讓兩個借用
+        // 不重疊，順序不能反過來。還原要留在下面幾個 early return 之前——
+        // 挪到函式尾端的話，return 會把 cache 丟掉，preview 靜默變空白。
+        let mut cache = std::mem::take(&mut self.preview_cache);
+        let visual_len = cache.get_or_build(&self.preview_input(inner.width));
+        self.preview_cache = cache;
+
         self.last_preview_len = visual_len;
         // Clamp preview_offset to avoid scrolling past content. Both sides are
         // visual (post-wrap) lines — `Paragraph::scroll` skips wrapped lines,
@@ -366,11 +373,7 @@ impl<'a> GitHubView<'a> {
         self.preview_offset = self.preview_offset.min(max_offset);
         let scroll = self.preview_offset as u16;
 
-        let cache = self
-            .preview_cache
-            .as_ref()
-            .expect("refresh_preview_cache always populates");
-        let paragraph = Paragraph::new(borrow_lines(&cache.lines))
+        let paragraph = Paragraph::new(borrow_lines(self.preview_cache.lines()))
             .wrap(Wrap { trim: false })
             .scroll((scroll, 0));
         f.render_widget(paragraph, inner);
@@ -390,7 +393,7 @@ impl<'a> GitHubView<'a> {
         if scroll != 0 || inner.height == 0 {
             return;
         }
-        let Some(ov) = cache.overlay.as_ref() else {
+        let Some(ov) = self.preview_cache.overlay() else {
             return;
         };
         let (x, y) = (inner.left(), inner.top());
@@ -405,34 +408,6 @@ impl<'a> GitHubView<'a> {
         for i in 1..label_width.min(remaining) {
             buf[(x + i, y)].set_skip(true);
         }
-    }
-
-    /// Rebuild the preview only when its inputs changed, returning the wrapped
-    /// line count. `render` runs at the marquee tick rate (10 Hz) whenever the
-    /// selected row overflows, and both `markdown::render` and `line_count`
-    /// walk the entire body plus every comment — so recomputing per frame
-    /// burns CPU while idle.
-    ///
-    /// Wrapping is left to `Paragraph` rather than reusing
-    /// `commit_detail::wrap_line_spans`: that one breaks mid-word, which would
-    /// mangle the English prose common in PR bodies.
-    fn refresh_preview_cache(&mut self, width: u16) -> usize {
-        let input = self.preview_input(width);
-        let key = input.cache_key();
-        if let Some(cache) = self.preview_cache.as_ref().filter(|c| c.key == key) {
-            return cache.visual_len;
-        }
-        let (lines, overlay) = build_preview_content(&input);
-        let visual_len = Paragraph::new(borrow_lines(&lines))
-            .wrap(Wrap { trim: false })
-            .line_count(width);
-        self.preview_cache = Some(PreviewCache {
-            key,
-            lines,
-            overlay,
-            visual_len,
-        });
-        visual_len
     }
 
     fn render_checkbox_preview(&self, f: &mut Frame, area: Rect) {
