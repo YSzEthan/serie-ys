@@ -1,5 +1,0 @@
-●─╮  Merge branch '10'
-│ ●  013
-●─┼─╮  Merge branch '20'
-│ │ ●  023
-● │ │  Merge branch '40'

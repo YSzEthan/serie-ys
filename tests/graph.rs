@@ -1393,7 +1393,7 @@ impl SnapshotKey {
     /// Every width's suffix is spelled once, here.
     fn width_suffix(self) -> &'static str {
         match self.width {
-            graph::CellWidthType::DoubleL => "_l",
+            graph::CellWidthType::DoubleL => "",
             graph::CellWidthType::DoubleF => "_f",
             graph::CellWidthType::Single => "_single",
         }
@@ -1412,9 +1412,8 @@ impl SnapshotKey {
     }
 }
 
-const WIDTHS: [graph::CellWidthType; 3] = [
+const WIDTHS: [graph::CellWidthType; 2] = [
     graph::CellWidthType::DoubleL,
-    graph::CellWidthType::DoubleF,
     graph::CellWidthType::Single,
 ];
 
