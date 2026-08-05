@@ -797,6 +797,33 @@ pub fn set_item_state(
     Ok(())
 }
 
+// ── PR merge ──
+
+#[derive(Debug, Clone, Copy)]
+pub enum MergeMethod {
+    Merge,
+    Squash,
+    Rebase,
+}
+
+impl MergeMethod {
+    pub fn as_flag(self) -> &'static str {
+        match self {
+            MergeMethod::Merge => "--merge",
+            MergeMethod::Squash => "--squash",
+            MergeMethod::Rebase => "--rebase",
+        }
+    }
+
+    pub fn display(self) -> &'static str {
+        match self {
+            MergeMethod::Merge => "merge",
+            MergeMethod::Squash => "squash",
+            MergeMethod::Rebase => "rebase",
+        }
+    }
+}
+
 pub fn merge_pr(path: &Path, number: u64, method: &str, delete_branch: bool) -> Result<(), String> {
     let num_str = number.to_string();
     let mut args = vec!["pr", "merge", &num_str, method];

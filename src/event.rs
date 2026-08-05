@@ -182,6 +182,30 @@ pub enum AppEvent {
         number: u64,
         is_draft: bool,
     },
+    /// 使用者在狀態列 prompt 裡按下確認、請求執行——跟上面 `PrDraftToggled`
+    /// 這類「已完成」的結果事件不同時態，命名故意用 `Requested` 而非
+    /// `Confirmed` 拉開差異。
+    DeleteBranchRequested {
+        name: String,
+        force: bool,
+    },
+    MergePrRequested {
+        number: u64,
+        state: String,
+        method: crate::github::MergeMethod,
+        delete_branch: bool,
+    },
+    ToggleItemStateRequested {
+        number: u64,
+        kind: crate::github::GhItemKind,
+        action: crate::github::StateAction,
+        filter_state: String,
+    },
+    TogglePrDraftRequested {
+        number: u64,
+        action: crate::github::PrDraftAction,
+        filter_state: String,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

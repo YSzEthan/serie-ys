@@ -4,27 +4,23 @@ use std::time::{Duration, Instant};
 use ratatui::{
     crossterm::event::{KeyCode, KeyEvent},
     layout::{Constraint, Layout, Rect},
-    style::{Color, Modifier, Style, Stylize},
-    text::{Line, Span},
-    widgets::{Block, Borders, Padding, Paragraph},
+    style::{Color, Stylize},
+    widgets::Block,
     DefaultTerminal, Frame,
 };
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{
     color::{ColorTheme, GraphColorSet},
-    config::{CoreConfig, CursorType, UiConfig, UserCommand, UserCommandType},
-    event::{
-        AppEvent, CheckoutPickKind, EventController, RefCopyKind, RelatedItem, UserEvent,
-        UserEventWithCount,
-    },
+    config::{CoreConfig, UiConfig, UserCommand, UserCommandType},
+    event::{AppEvent, EventController, UserEvent, UserEventWithCount},
     external::{
         copy_to_clipboard, exec_user_command, exec_user_command_suspend, ExternalCommandParameters,
     },
     git::{Commit, CommitHash, FileChange, Head, Ref, RefType, Repository},
     github::{
-        is_merge_conflict_error, merge_pr, set_item_state, set_pr_draft, GhItemKind, PrDraftAction,
-        StateAction,
+        is_merge_conflict_error, merge_pr, set_item_state, set_pr_draft, GhItemKind, MergeMethod,
+        PrDraftAction, StateAction,
     },
     graph::{CellWidthType, Graph, GraphStyle},
     keybind::KeyBind,
@@ -35,13 +31,9 @@ use crate::{
     },
 };
 
-fn picker_digit_index(key: KeyEvent) -> Option<usize> {
-    let KeyCode::Char(c) = key.code else {
-        return None;
-    };
-    let digit = c.to_digit(10)?;
-    (digit as usize).checked_sub(1)
-}
+use status_line::StatusLineState;
+
+mod status_line;
 
 const SSH_OPEN_PREFIX: &str = "SSH: ⌘/⌥/⇧+Click ";
 
@@ -60,117 +52,6 @@ fn short_link_label(url: &str) -> String {
         return format!("[#{n}]");
     }
     "[open]".to_string()
-}
-
-/// 單階段 y/n 確認的狀態列，與 [`App::yes_no_answer`] 接受的鍵一致。
-fn confirm_line(prompt: String, hint_fg: Color) -> Line<'static> {
-    Line::from(vec![
-        prompt.into(),
-        "[y/Enter]".fg(hint_fg),
-        " confirm  ".into(),
-        "[n/Esc]".fg(hint_fg),
-        " cancel".into(),
-    ])
-}
-
-#[derive(Debug, Clone, Copy)]
-enum MergeMethod {
-    Merge,
-    Squash,
-    Rebase,
-}
-
-impl MergeMethod {
-    fn as_flag(self) -> &'static str {
-        match self {
-            MergeMethod::Merge => "--merge",
-            MergeMethod::Squash => "--squash",
-            MergeMethod::Rebase => "--rebase",
-        }
-    }
-
-    fn display(self) -> &'static str {
-        match self {
-            MergeMethod::Merge => "merge",
-            MergeMethod::Squash => "squash",
-            MergeMethod::Rebase => "rebase",
-        }
-    }
-}
-
-#[derive(Debug, Clone, Copy)]
-enum MergePrStage {
-    PickMethod,
-    AskDeleteBranch {
-        method: MergeMethod,
-    },
-    Confirm {
-        method: MergeMethod,
-        delete_branch: bool,
-    },
-}
-
-/// 單階段 y/n 確認的答案。
-#[derive(Debug, Clone, Copy)]
-enum Answer {
-    Confirm,
-    Cancel,
-    Ignore,
-}
-
-#[derive(Debug, Default)]
-enum StatusLine {
-    #[default]
-    None,
-    Input(String, Option<u16>, Option<String>),
-    RefPicker {
-        options: Vec<String>,
-        kind: RefCopyKind,
-    },
-    CheckoutPicker {
-        options: Vec<String>,
-        kind: CheckoutPickKind,
-    },
-    DeleteBranchPicker {
-        options: Vec<String>,
-        total: usize,
-    },
-    DeleteBranchConfirm {
-        name: String,
-    },
-    MergePrPrompt {
-        number: u64,
-        head_ref: String,
-        state: String,
-        stage: MergePrStage,
-    },
-    ToggleStatePrompt {
-        number: u64,
-        kind: GhItemKind,
-        action: StateAction,
-        filter_state: String,
-    },
-    TogglePrDraftPrompt {
-        number: u64,
-        action: PrDraftAction,
-        filter_state: String,
-    },
-    RelatedPicker {
-        items: Vec<RelatedItem>,
-    },
-    NotificationInfo(String),
-    NotificationSuccess(String),
-    NotificationWarn(String),
-    NotificationError(String),
-    /// A notification whose tail is an OSC 8 hyperlink. The renderer must
-    /// bypass `Line::raw` — which would split the escape byte-by-byte across
-    /// cells — and instead stuff the entire payload into one cell via
-    /// `set_symbol` + `set_skip` on the following cells.
-    NotificationHyperlink {
-        prefix: &'static str,
-        label: String,
-        url: String,
-    },
 }
 
 #[derive(Clone, Copy)]
@@ -202,7 +83,6 @@ pub struct AppContext {
 
 #[derive(Debug, Default)]
 struct AppStatus {
-    status_line: StatusLine,
     numeric_prefix: String,
     view_area: Rect,
     last_quit_press: Option<Instant>,
@@ -213,6 +93,7 @@ pub struct App<'a> {
     repository: &'a Repository,
     view: View<'a>,
     app_status: AppStatus,
+    status_line_state: StatusLineState,
     pending_message: Option<String>,
     github_cache: Option<GitHubCache>,
     github_loading: bool,
@@ -316,11 +197,13 @@ impl<'a> App<'a> {
             }
         }
         let view = View::of_list(commit_list_state, ctx.clone(), ec.sender());
+        let status_line_state = StatusLineState::new(ctx.clone(), ec.sender());
 
         let mut app = Self {
             repository,
             view,
             app_status: AppStatus::default(),
+            status_line_state,
             pending_message: None,
             github_cache: None,
             github_loading: false,
@@ -393,74 +276,14 @@ impl App<'_> {
 
                     // Picker intercepts input; ForceQuit (Ctrl-C) falls through so
                     // 使用者在 picker 中仍能離開程式。
-                    if !matches!(self.ctx.keybind.get(&key), Some(UserEvent::ForceQuit)) {
-                        match self.app_status.status_line {
-                            StatusLine::RefPicker { .. } => {
-                                self.handle_ref_picker_key(key);
-                                continue;
-                            }
-                            StatusLine::CheckoutPicker { .. } => {
-                                self.handle_checkout_picker_key(key);
-                                continue;
-                            }
-                            StatusLine::RelatedPicker { .. } => {
-                                self.handle_related_picker_key(key);
-                                continue;
-                            }
-                            StatusLine::DeleteBranchPicker { .. } => {
-                                self.handle_delete_branch_picker_key(key);
-                                continue;
-                            }
-                            StatusLine::DeleteBranchConfirm { .. } => {
-                                self.handle_delete_branch_confirm_key(key);
-                                continue;
-                            }
-                            StatusLine::MergePrPrompt { .. } => {
-                                self.handle_merge_pr_prompt_key(key);
-                                continue;
-                            }
-                            StatusLine::ToggleStatePrompt { .. }
-                            | StatusLine::TogglePrDraftPrompt { .. } => {
-                                self.handle_yes_no_prompt_key(key);
-                                continue;
-                            }
-                            // 明確列出不攔截的變體，而非 `_ => {}` — 漏接一個 modal
-                            // 只會讓它卡在畫面上完全不吃鍵，編譯器不會提醒。
-                            StatusLine::None
-                            | StatusLine::Input(_, _, _)
-                            | StatusLine::NotificationInfo(_)
-                            | StatusLine::NotificationSuccess(_)
-                            | StatusLine::NotificationWarn(_)
-                            | StatusLine::NotificationError(_)
-                            | StatusLine::NotificationHyperlink { .. } => {}
-                        }
+                    if !matches!(self.ctx.keybind.get(&key), Some(UserEvent::ForceQuit))
+                        && self.status_line_state.handle_intercepting_key(key)
+                    {
+                        continue;
                     }
 
-                    match self.app_status.status_line {
-                        StatusLine::None
-                        | StatusLine::Input(_, _, _)
-                        | StatusLine::RefPicker { .. }
-                        | StatusLine::CheckoutPicker { .. }
-                        | StatusLine::RelatedPicker { .. }
-                        | StatusLine::DeleteBranchPicker { .. }
-                        | StatusLine::DeleteBranchConfirm { .. }
-                        | StatusLine::MergePrPrompt { .. }
-                        | StatusLine::ToggleStatePrompt { .. }
-                        | StatusLine::TogglePrDraftPrompt { .. } => {
-                            // do nothing
-                        }
-                        StatusLine::NotificationInfo(_)
-                        | StatusLine::NotificationSuccess(_)
-                        | StatusLine::NotificationWarn(_)
-                        | StatusLine::NotificationHyperlink { .. } => {
-                            // Clear message and pass key input as is
-                            self.clear_status_line();
-                        }
-                        StatusLine::NotificationError(_) => {
-                            // Clear message and cancel key input
-                            self.clear_status_line();
-                            continue;
-                        }
+                    if self.status_line_state.dismiss_notification() {
+                        continue;
                     }
 
                     let user_event = self.ctx.keybind.get(&key);
@@ -493,7 +316,8 @@ impl App<'_> {
                                 continue;
                             } else {
                                 self.app_status.last_quit_press = Some(Instant::now());
-                                self.info_notification("Press q again to quit".into());
+                                self.status_line_state
+                                    .set_notification_info("Press q again to quit".into());
                                 self.ec.sender().send_after(
                                     AppEvent::ClearStatusLine,
                                     Duration::from_millis(600),
@@ -713,22 +537,22 @@ impl App<'_> {
                     return Ok(Ret::Refresh(request));
                 }
                 AppEvent::ClearStatusLine => {
-                    self.clear_status_line();
+                    self.status_line_state.clear();
                 }
                 AppEvent::UpdateStatusInput(msg, cursor_pos, msg_r) => {
-                    self.update_status_input(msg, cursor_pos, msg_r);
+                    self.status_line_state.update_input(msg, cursor_pos, msg_r);
                 }
                 AppEvent::NotifyInfo(msg) => {
-                    self.info_notification(msg);
+                    self.status_line_state.set_notification_info(msg);
                 }
                 AppEvent::NotifySuccess(msg) => {
-                    self.success_notification(msg);
+                    self.status_line_state.set_notification_success(msg);
                 }
                 AppEvent::NotifyWarn(msg) => {
-                    self.warn_notification(msg);
+                    self.status_line_state.set_notification_warn(msg);
                 }
                 AppEvent::NotifyError(msg) => {
-                    self.error_notification(msg);
+                    self.status_line_state.set_notification_error(msg);
                 }
                 AppEvent::ShowPendingOverlay { message } => {
                     self.pending_message = Some(message);
@@ -747,17 +571,13 @@ impl App<'_> {
                     self.view.refresh();
                 }
                 AppEvent::OpenRefPicker { options, kind } => {
-                    self.app_status.status_line = StatusLine::RefPicker { options, kind };
+                    self.status_line_state.open_ref_picker(options, kind);
                 }
                 AppEvent::OpenCheckoutPicker { options, kind } => {
-                    self.app_status.status_line = StatusLine::CheckoutPicker { options, kind };
+                    self.status_line_state.open_checkout_picker(options, kind);
                 }
                 AppEvent::OpenRelatedPicker { items } => {
-                    if items.is_empty() {
-                        self.info_notification("No related issues".into());
-                    } else {
-                        self.app_status.status_line = StatusLine::RelatedPicker { items };
-                    }
+                    self.status_line_state.open_related_picker(items);
                 }
                 AppEvent::OpenDeleteBranch { names } => {
                     let head_branch = match self.repository.head() {
@@ -767,22 +587,19 @@ impl App<'_> {
                     dispatch_delete_branch(&self.ec.sender(), &names, head_branch);
                 }
                 AppEvent::OpenDeleteBranchPicker { options, total } => {
-                    self.app_status.status_line = StatusLine::DeleteBranchPicker { options, total };
+                    self.status_line_state
+                        .open_delete_branch_picker(options, total);
                 }
                 AppEvent::OpenDeleteBranchConfirm { name } => {
-                    self.app_status.status_line = StatusLine::DeleteBranchConfirm { name };
+                    self.status_line_state.open_delete_branch_confirm(name);
                 }
                 AppEvent::OpenMergePrMethodPicker {
                     number,
                     head_ref,
                     state,
                 } => {
-                    self.app_status.status_line = StatusLine::MergePrPrompt {
-                        number,
-                        head_ref,
-                        state,
-                        stage: MergePrStage::PickMethod,
-                    };
+                    self.status_line_state
+                        .open_merge_pr_prompt(number, head_ref, state);
                 }
                 AppEvent::OpenToggleStatePrompt {
                     number,
@@ -790,23 +607,23 @@ impl App<'_> {
                     action,
                     filter_state,
                 } => {
-                    self.app_status.status_line = StatusLine::ToggleStatePrompt {
+                    self.status_line_state.open_toggle_state_prompt(
                         number,
                         kind,
                         action,
                         filter_state,
-                    };
+                    );
                 }
                 AppEvent::OpenTogglePrDraftPrompt {
                     number,
                     action,
                     filter_state,
                 } => {
-                    self.app_status.status_line = StatusLine::TogglePrDraftPrompt {
+                    self.status_line_state.open_toggle_pr_draft_prompt(
                         number,
                         action,
                         filter_state,
-                    };
+                    );
                 }
                 AppEvent::PrDraftToggled { number, is_draft } => {
                     if let View::GitHub(ref mut view) = self.view {
@@ -819,6 +636,32 @@ impl App<'_> {
                             pr.is_draft = is_draft;
                         }
                     }
+                }
+                AppEvent::DeleteBranchRequested { name, force } => {
+                    self.spawn_delete_branch(name, force);
+                }
+                AppEvent::MergePrRequested {
+                    number,
+                    state,
+                    method,
+                    delete_branch,
+                } => {
+                    self.spawn_merge_pr(number, state, method, delete_branch);
+                }
+                AppEvent::ToggleItemStateRequested {
+                    number,
+                    kind,
+                    action,
+                    filter_state,
+                } => {
+                    self.spawn_toggle_state(number, kind, action, filter_state);
+                }
+                AppEvent::TogglePrDraftRequested {
+                    number,
+                    action,
+                    filter_state,
+                } => {
+                    self.spawn_toggle_pr_draft(number, action, filter_state);
                 }
                 AppEvent::GitHubJumpToIssue { number } => {
                     if let View::GitHub(ref mut view) = self.view {
@@ -846,304 +689,17 @@ impl App<'_> {
 
         let marquee_frame = self.marquee_frame;
         self.view.render(f, view_area, marquee_frame);
-        self.render_status_line(f, status_line_area);
+        self.status_line_state.render(
+            f,
+            status_line_area,
+            &self.view,
+            &self.app_status.numeric_prefix,
+        );
 
         if let Some(message) = &self.pending_message {
             let overlay = PendingOverlay::new(message, &self.ctx.color_theme);
             f.render_widget(overlay, f.area());
         }
-    }
-}
-
-impl App<'_> {
-    fn render_status_line(&self, f: &mut Frame, area: Rect) {
-        let text: Line = match &self.app_status.status_line {
-            StatusLine::NotificationHyperlink { prefix, label, url } => {
-                self.render_hyperlink_notification(f, area, prefix, label, url);
-                return;
-            }
-            StatusLine::None => {
-                if self.app_status.numeric_prefix.is_empty() {
-                    self.build_hotkey_hints()
-                } else {
-                    Line::raw(self.app_status.numeric_prefix.as_str())
-                        .fg(self.ctx.color_theme.status_input_transient_fg)
-                }
-            }
-            StatusLine::Input(msg, _, transient_msg) => {
-                let msg_w = console::measure_text_width(msg.as_str());
-                if let Some(t_msg) = transient_msg {
-                    let t_msg_w = console::measure_text_width(t_msg.as_str());
-                    let pad_w = area.width as usize - msg_w - t_msg_w - 2 /* pad */;
-                    Line::from(vec![
-                        msg.as_str().fg(self.ctx.color_theme.status_input_fg),
-                        " ".repeat(pad_w).into(),
-                        t_msg
-                            .as_str()
-                            .fg(self.ctx.color_theme.status_input_transient_fg),
-                    ])
-                } else {
-                    Line::raw(msg).fg(self.ctx.color_theme.status_input_fg)
-                }
-            }
-            StatusLine::RefPicker { options, kind } => {
-                self.render_picker_line(kind.picker_prompt(), options)
-            }
-            StatusLine::CheckoutPicker { options, kind } => {
-                self.render_picker_line(kind.picker_prompt(), options)
-            }
-            StatusLine::RelatedPicker { items } => self.render_related_picker_line(items),
-            StatusLine::DeleteBranchPicker { options, total } => {
-                let mut spans: Vec<Span<'_>> = vec!["Delete branch: ".into()];
-                for (i, name) in options.iter().enumerate() {
-                    spans.push(
-                        format!("[{}]", i + 1).fg(self.ctx.color_theme.status_interactive_fg),
-                    );
-                    spans.push(name.as_str().into());
-                    spans.push("  ".into());
-                }
-                if *total > options.len() {
-                    let extra = total - options.len();
-                    spans.push(
-                        format!("(+{extra} more, use tab view)")
-                            .fg(self.ctx.color_theme.status_interactive_fg),
-                    );
-                } else {
-                    spans.push("(Esc to cancel)".fg(self.ctx.color_theme.status_interactive_fg));
-                }
-                Line::from(spans)
-            }
-            StatusLine::DeleteBranchConfirm { name } => {
-                let hint_fg = self.ctx.color_theme.status_interactive_fg;
-                Line::from(vec![
-                    format!("Delete '{name}'? ").into(),
-                    "[y]es".fg(hint_fg),
-                    " / ".into(),
-                    "[n]o".fg(hint_fg),
-                    " / ".into(),
-                    "[f]orce".fg(hint_fg),
-                ])
-            }
-            StatusLine::MergePrPrompt {
-                number,
-                head_ref,
-                stage,
-                ..
-            } => {
-                let hint_fg = self.ctx.color_theme.status_interactive_fg;
-                match stage {
-                    MergePrStage::PickMethod => Line::from(vec![
-                        format!("Merge PR #{number} ({head_ref}): ").into(),
-                        "[m]".fg(hint_fg),
-                        "erge  ".into(),
-                        "[s]".fg(hint_fg),
-                        "quash  ".into(),
-                        "[r]".fg(hint_fg),
-                        "ebase  ".into(),
-                        "(Esc cancel)".fg(hint_fg),
-                    ]),
-                    MergePrStage::AskDeleteBranch { method } => Line::from(vec![
-                        format!(
-                            "Delete branch '{head_ref}' after {} merge? ",
-                            method.display()
-                        )
-                        .into(),
-                        "[y]es".fg(hint_fg),
-                        " / ".into(),
-                        "[n]o".fg(hint_fg),
-                        "  (Esc cancel)".fg(hint_fg),
-                    ]),
-                    MergePrStage::Confirm {
-                        method,
-                        delete_branch,
-                    } => {
-                        let del = if *delete_branch { "yes" } else { "no" };
-                        Line::from(vec![
-                            format!(
-                                "Merge #{number} with {}, delete branch: {del}  ",
-                                method.display()
-                            )
-                            .into(),
-                            "[y/Enter]".fg(hint_fg),
-                            " execute  ".into(),
-                            "[Esc]".fg(hint_fg),
-                            " cancel".into(),
-                        ])
-                    }
-                }
-            }
-            StatusLine::ToggleStatePrompt {
-                number,
-                kind,
-                action,
-                ..
-            } => confirm_line(
-                action.prompt(*kind, *number),
-                self.ctx.color_theme.status_interactive_fg,
-            ),
-            StatusLine::TogglePrDraftPrompt { number, action, .. } => confirm_line(
-                action.prompt(*number),
-                self.ctx.color_theme.status_interactive_fg,
-            ),
-            StatusLine::NotificationInfo(msg) => {
-                Line::raw(msg).fg(self.ctx.color_theme.status_info_fg)
-            }
-            StatusLine::NotificationSuccess(msg) => Line::raw(msg)
-                .add_modifier(Modifier::BOLD)
-                .fg(self.ctx.color_theme.status_success_fg),
-            StatusLine::NotificationWarn(msg) => Line::raw(msg)
-                .add_modifier(Modifier::BOLD)
-                .fg(self.ctx.color_theme.status_warn_fg),
-            StatusLine::NotificationError(msg) => Line::raw(format!("ERROR: {msg}"))
-                .add_modifier(Modifier::BOLD)
-                .fg(self.ctx.color_theme.status_error_fg),
-        };
-        let paragraph = Paragraph::new(text).block(
-            Block::default()
-                .borders(Borders::TOP)
-                .style(Style::default().fg(self.ctx.color_theme.divider_fg))
-                .padding(Padding::horizontal(1)),
-        );
-        f.render_widget(paragraph, area);
-
-        if let StatusLine::Input(_, Some(cursor_pos), _) = &self.app_status.status_line {
-            let (x, y) = (area.x + cursor_pos + 1, area.y + 1);
-            match &self.ctx.ui_config.common.cursor_type {
-                CursorType::Native => {
-                    f.set_cursor_position((x, y));
-                }
-                CursorType::Virtual(cursor) => {
-                    let style = Style::default().fg(self.ctx.color_theme.virtual_cursor_fg);
-                    f.buffer_mut().set_string(x, y, cursor, style);
-                }
-            }
-        }
-    }
-
-    fn render_hyperlink_notification(
-        &self,
-        f: &mut Frame,
-        area: Rect,
-        prefix: &str,
-        label: &str,
-        url: &str,
-    ) {
-        let block = Block::default()
-            .borders(Borders::TOP)
-            .style(Style::default().fg(self.ctx.color_theme.divider_fg))
-            .padding(Padding::horizontal(1));
-        let inner = block.inner(area);
-        f.render_widget(block, area);
-
-        let buf = f.buffer_mut();
-        let style = Style::default().fg(self.ctx.color_theme.status_info_fg);
-        buf.set_string(inner.left(), inner.top(), prefix, style);
-        let prefix_w = console::measure_text_width(prefix) as u16;
-        let x0 = inner.left().saturating_add(prefix_w);
-        if x0 >= inner.right() {
-            return;
-        }
-        let payload = crate::external::format_osc8_hyperlink(url, label);
-        let label_width = console::measure_text_width(label) as u16;
-        buf[(x0, inner.top())].set_symbol(&payload).set_style(style);
-        let remaining = inner.right().saturating_sub(x0);
-        for i in 1..label_width.min(remaining) {
-            buf[(x0 + i, inner.top())].set_skip(true);
-        }
-    }
-
-    fn render_related_picker_line<'s>(&self, items: &'s [RelatedItem]) -> Line<'s> {
-        use crate::event::RelatedGroup;
-        let mut spans: Vec<Span<'s>> = Vec::new();
-        let mut last_group: Option<RelatedGroup> = None;
-        for (i, item) in items.iter().enumerate() {
-            if last_group != Some(item.group) {
-                if last_group.is_some() {
-                    spans.push(" ; ".into());
-                }
-                spans.push(format!("{} - ", item.group.label()).into());
-                last_group = Some(item.group);
-            } else {
-                spans.push("、".into());
-            }
-            spans.push(format!("{}", i + 1).fg(self.ctx.color_theme.status_interactive_fg));
-            let num = format!(":#{}", item.number);
-            let span: Span = if item.state.eq_ignore_ascii_case("CLOSED")
-                || item.state.eq_ignore_ascii_case("MERGED")
-            {
-                num.add_modifier(Modifier::DIM)
-            } else {
-                num.into()
-            };
-            spans.push(span);
-        }
-        spans.push("  ".into());
-        spans.push("(Esc to cancel)".fg(self.ctx.color_theme.status_interactive_fg));
-        Line::from(spans)
-    }
-
-    fn render_picker_line<'s>(&self, prompt: &'s str, options: &'s [String]) -> Line<'s> {
-        let mut spans: Vec<Span<'s>> = vec![prompt.into()];
-        for (i, name) in options.iter().enumerate() {
-            spans.push(format!("[{}]", i + 1).fg(self.ctx.color_theme.status_interactive_fg));
-            spans.push(name.as_str().into());
-            spans.push("  ".into());
-        }
-        spans.push("(Esc to cancel)".fg(self.ctx.color_theme.status_interactive_fg));
-        Line::from(spans)
-    }
-
-    fn build_hotkey_hints(&self) -> Line<'static> {
-        let hints: Vec<(UserEvent, &str)> = match &self.view {
-            View::List(_) => vec![
-                (UserEvent::Search, "search"),
-                (UserEvent::Filter, "filter"),
-                (UserEvent::IgnoreCaseToggle, "case"),
-                (UserEvent::CreateTag, "tag"),
-                (UserEvent::RefList, "refs"),
-                (UserEvent::RemoteRefsToggle, "remote"),
-                (UserEvent::GitHubToggle, "github"),
-                (UserEvent::Refresh, "refresh"),
-                (UserEvent::HelpToggle, "help"),
-            ],
-            View::Detail(_) => vec![
-                (UserEvent::ShortCopy, "copy"),
-                (UserEvent::Close, "close"),
-                (UserEvent::HelpToggle, "help"),
-            ],
-            View::Refs(_) => vec![
-                (UserEvent::Checkout, "checkout"),
-                (UserEvent::DeleteRef, "delete"),
-                (UserEvent::Cancel, "close"),
-                (UserEvent::HelpToggle, "help"),
-            ],
-            View::CreateTag(_) | View::DeleteTag(_) | View::DeleteRef(_) => vec![
-                (UserEvent::Confirm, "confirm"),
-                (UserEvent::Cancel, "cancel"),
-            ],
-            View::Help(_) => vec![(UserEvent::Close, "close")],
-            View::GitHub(ref view) => view.status_hints(),
-            _ => vec![],
-        };
-
-        let key_fg = self.ctx.color_theme.help_key_fg;
-        let desc_fg = self.ctx.color_theme.status_input_transient_fg;
-
-        let mut spans: Vec<Span<'static>> = Vec::new();
-        for (i, (event, desc)) in hints.iter().enumerate() {
-            if let Some(key) = self.ctx.keybind.keys_for_event(*event).first() {
-                if i > 0 {
-                    spans.push(Span::raw("  "));
-                }
-                spans.push(Span::styled(key.clone(), Style::default().fg(key_fg)));
-                spans.push(Span::raw(" "));
-                spans.push(Span::styled(
-                    (*desc).to_string(),
-                    Style::default().fg(desc_fg),
-                ));
-            }
-        }
-        Line::from(spans)
     }
 }
 
@@ -1170,173 +726,7 @@ impl App<'_> {
     }
 
     fn is_input_mode(&self) -> bool {
-        matches!(
-            self.app_status.status_line,
-            StatusLine::Input(_, _, _)
-                | StatusLine::RefPicker { .. }
-                | StatusLine::CheckoutPicker { .. }
-                | StatusLine::RelatedPicker { .. }
-                | StatusLine::DeleteBranchPicker { .. }
-                | StatusLine::DeleteBranchConfirm { .. }
-        ) || matches!(self.view, View::CreateTag(_))
-    }
-
-    fn handle_ref_picker_key(&mut self, key: KeyEvent) {
-        if let Some(UserEvent::Cancel) = self.ctx.keybind.get(&key) {
-            self.app_status.status_line = StatusLine::None;
-            return;
-        }
-        let StatusLine::RefPicker { options, kind } = &self.app_status.status_line else {
-            return;
-        };
-        let Some(idx) = picker_digit_index(key) else {
-            return;
-        };
-        let Some(name) = options.get(idx) else { return };
-        let label = kind.copy_label();
-        let value = name.clone();
-        self.app_status.status_line = StatusLine::None;
-        self.copy_to_clipboard(label.into(), value);
-    }
-
-    fn handle_related_picker_key(&mut self, key: KeyEvent) {
-        if let Some(UserEvent::Cancel) = self.ctx.keybind.get(&key) {
-            self.app_status.status_line = StatusLine::None;
-            return;
-        }
-        if let Some(UserEvent::DetailPaneToggle) = self.ctx.keybind.get(&key) {
-            self.app_status.status_line = StatusLine::None;
-            return;
-        }
-        let StatusLine::RelatedPicker { items } = &self.app_status.status_line else {
-            return;
-        };
-        let Some(idx) = picker_digit_index(key) else {
-            return;
-        };
-        let Some(item) = items.get(idx) else { return };
-        let number = item.number;
-        self.app_status.status_line = StatusLine::None;
-        self.ec.send(AppEvent::GitHubJumpToIssue { number });
-    }
-
-    fn handle_checkout_picker_key(&mut self, key: KeyEvent) {
-        if let Some(UserEvent::Cancel) = self.ctx.keybind.get(&key) {
-            self.app_status.status_line = StatusLine::None;
-            return;
-        }
-        let StatusLine::CheckoutPicker { options, .. } = &self.app_status.status_line else {
-            return;
-        };
-        let Some(idx) = picker_digit_index(key) else {
-            return;
-        };
-        let Some(name) = options.get(idx) else { return };
-        let target = name.clone();
-        self.app_status.status_line = StatusLine::None;
-        self.checkout_commit(target);
-    }
-
-    fn handle_delete_branch_picker_key(&mut self, key: KeyEvent) {
-        if let Some(UserEvent::Cancel) = self.ctx.keybind.get(&key) {
-            self.app_status.status_line = StatusLine::None;
-            return;
-        }
-        let StatusLine::DeleteBranchPicker { options, .. } = &self.app_status.status_line else {
-            return;
-        };
-        let Some(idx) = picker_digit_index(key) else {
-            return;
-        };
-        let Some(name) = options.get(idx) else { return };
-        let name = name.clone();
-        self.app_status.status_line = StatusLine::DeleteBranchConfirm { name };
-    }
-
-    fn handle_delete_branch_confirm_key(&mut self, key: KeyEvent) {
-        let user_event = self.ctx.keybind.get(&key);
-        if matches!(user_event, Some(UserEvent::Cancel)) {
-            self.app_status.status_line = StatusLine::None;
-            return;
-        }
-        let StatusLine::DeleteBranchConfirm { name } = &self.app_status.status_line else {
-            return;
-        };
-        let name = name.clone();
-        match user_event {
-            Some(UserEvent::Confirm) => {
-                self.app_status.status_line = StatusLine::None;
-                self.spawn_delete_branch(name, false);
-            }
-            _ if matches!(key.code, KeyCode::Char('f') | KeyCode::Char('F')) => {
-                self.app_status.status_line = StatusLine::None;
-                self.spawn_delete_branch(name, true);
-            }
-            _ => {}
-        }
-    }
-
-    fn handle_merge_pr_prompt_key(&mut self, key: KeyEvent) {
-        let StatusLine::MergePrPrompt {
-            number,
-            ref head_ref,
-            ref state,
-            stage,
-        } = self.app_status.status_line
-        else {
-            return;
-        };
-        let (number, head_ref, state) = (number, head_ref.clone(), state.clone());
-
-        // 每個 stage 先消化自己的答案鍵（優先於全域 cancel，因為 cancel 預設含 'n'，
-        // 會與 AskDeleteBranch 的「no」撞鍵），回傳「下一個 stage」；
-        // Confirm 是終點（執行/取消），自行早退。
-        let next = match stage {
-            MergePrStage::PickMethod => match key.code {
-                KeyCode::Char('m') | KeyCode::Char('M') => Some(MergeMethod::Merge),
-                KeyCode::Char('s') | KeyCode::Char('S') => Some(MergeMethod::Squash),
-                KeyCode::Char('r') | KeyCode::Char('R') => Some(MergeMethod::Rebase),
-                _ => None,
-            }
-            .map(|method| MergePrStage::AskDeleteBranch { method }),
-
-            MergePrStage::AskDeleteBranch { method } => match key.code {
-                KeyCode::Char('y') | KeyCode::Char('Y') => Some(true),
-                KeyCode::Char('n') | KeyCode::Char('N') => Some(false),
-                _ => None,
-            }
-            .map(|delete_branch| MergePrStage::Confirm {
-                method,
-                delete_branch,
-            }),
-
-            MergePrStage::Confirm {
-                method,
-                delete_branch,
-            } => {
-                let is_confirm = matches!(self.ctx.keybind.get(&key), Some(UserEvent::Confirm))
-                    || matches!(key.code, KeyCode::Enter);
-                if is_confirm {
-                    self.app_status.status_line = StatusLine::None;
-                    self.spawn_merge_pr(number, state, method, delete_branch);
-                } else if matches!(self.ctx.keybind.get(&key), Some(UserEvent::Cancel)) {
-                    self.app_status.status_line = StatusLine::None;
-                }
-                return;
-            }
-        };
-
-        if let Some(stage) = next {
-            self.app_status.status_line = StatusLine::MergePrPrompt {
-                number,
-                head_ref,
-                state,
-                stage,
-            };
-        } else if matches!(self.ctx.keybind.get(&key), Some(UserEvent::Cancel)) {
-            // 這顆鍵不是本階段的答案 → 才輪到全域 cancel
-            self.app_status.status_line = StatusLine::None;
-        }
+        self.status_line_state.is_input_mode_variant() || matches!(self.view, View::CreateTag(_))
     }
 
     fn spawn_merge_pr(&self, number: u64, state: String, method: MergeMethod, delete_branch: bool) {
@@ -1367,52 +757,6 @@ impl App<'_> {
                 }
             }
         });
-    }
-
-    /// 解讀 y/n 確認鍵。cancel 必須先判 — 預設 `cancel = ["esc", "n"]` 含 `n`，
-    /// 順序反了「no」就會被當成確認。把這個順序依賴收在這裡，呼叫端不必再記。
-    fn yes_no_answer(&self, key: KeyEvent) -> Answer {
-        if matches!(self.ctx.keybind.get(&key), Some(UserEvent::Cancel))
-            || matches!(key.code, KeyCode::Char('n') | KeyCode::Char('N'))
-        {
-            return Answer::Cancel;
-        }
-        if matches!(self.ctx.keybind.get(&key), Some(UserEvent::Confirm))
-            || matches!(
-                key.code,
-                KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y')
-            )
-        {
-            return Answer::Confirm;
-        }
-        Answer::Ignore
-    }
-
-    /// 單階段 y/n 確認的 modal。答完就收掉狀態列，取出的 prompt 決定要跑什麼。
-    fn handle_yes_no_prompt_key(&mut self, key: KeyEvent) {
-        let answer = self.yes_no_answer(key);
-        if matches!(answer, Answer::Ignore) {
-            return;
-        }
-        // take 同時結束對 status_line 的借用並清掉 modal
-        let prompt = std::mem::take(&mut self.app_status.status_line);
-        if matches!(answer, Answer::Cancel) {
-            return;
-        }
-        match prompt {
-            StatusLine::ToggleStatePrompt {
-                number,
-                kind,
-                action,
-                filter_state,
-            } => self.spawn_toggle_state(number, kind, action, filter_state),
-            StatusLine::TogglePrDraftPrompt {
-                number,
-                action,
-                filter_state,
-            } => self.spawn_toggle_pr_draft(number, action, filter_state),
-            _ => {}
-        }
     }
 
     fn spawn_toggle_pr_draft(&self, number: u64, action: PrDraftAction, filter_state: String) {
@@ -2234,35 +1578,6 @@ impl App<'_> {
         }
     }
 
-    fn clear_status_line(&mut self) {
-        self.app_status.status_line = StatusLine::None;
-    }
-
-    fn update_status_input(
-        &mut self,
-        msg: String,
-        cursor_pos: Option<u16>,
-        transient_msg: Option<String>,
-    ) {
-        self.app_status.status_line = StatusLine::Input(msg, cursor_pos, transient_msg);
-    }
-
-    fn info_notification(&mut self, msg: String) {
-        self.app_status.status_line = StatusLine::NotificationInfo(msg);
-    }
-
-    fn success_notification(&mut self, msg: String) {
-        self.app_status.status_line = StatusLine::NotificationSuccess(msg);
-    }
-
-    fn warn_notification(&mut self, msg: String) {
-        self.app_status.status_line = StatusLine::NotificationWarn(msg);
-    }
-
-    fn error_notification(&mut self, msg: String) {
-        self.app_status.status_line = StatusLine::NotificationError(msg);
-    }
-
     fn copy_to_clipboard(&self, name: String, value: String) {
         match copy_to_clipboard(value, &self.ctx.core_config.external.clipboard) {
             Ok(_) => {
@@ -2281,11 +1596,11 @@ impl App<'_> {
                 self.ec.send(AppEvent::NotifyInfo(format!("Opening {url}")));
             }
             Ok(crate::external::OpenUrlOutcome::Hyperlinked(url)) => {
-                self.app_status.status_line = StatusLine::NotificationHyperlink {
-                    prefix: SSH_OPEN_PREFIX,
-                    label: short_link_label(&url),
+                self.status_line_state.set_notification_hyperlink(
+                    SSH_OPEN_PREFIX,
+                    short_link_label(&url),
                     url,
-                };
+                );
             }
             Err(msg) => {
                 self.ec.send(AppEvent::NotifyError(msg));
