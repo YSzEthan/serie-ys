@@ -1,8 +1,8 @@
 ●╮  Merge branch '50'
-●│╮  Merge branch '40'
-●││╮  Merge branch '30'
-●│││╮  Merge branch '20'
-●││││╮  Merge branch '10'
+●┼╮  Merge branch '40'
+●┼┼╮  Merge branch '30'
+●┼┼┼╮  Merge branch '20'
+●┼┼┼┼╮  Merge branch '10'
 │●││││  052
 ││●│││  042
 │││●││  032
@@ -13,5 +13,5 @@
 │││●││  031
 ││││●│  021
 │││││●  011
-●╯╯╯╯╯  002
+●┴┴┴┴╯  002
 ●  001

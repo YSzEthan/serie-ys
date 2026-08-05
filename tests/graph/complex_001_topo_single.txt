@@ -1,0 +1,21 @@
+●  025
+●╮  Merge branch '50' into 20
+│●  051
+├●  Merge branch '20' into 50
+●│  024
+●│  023
+●╯  022
+●───╮  Merge branch '10' into 20
+●   │  021
+│●  │  032
+││●╮│  Merge branch '40'
+│││●│  041
+││├●│  Merge branch 'master' into 40
+││●││  003
+│├●││  Merge branch '30'
+│●│││  031
+│●╯││  002
+││ ●╯  013
+││ ●  012
+││ ●  011
+●┴─╯  001

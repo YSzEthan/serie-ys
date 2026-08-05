@@ -1,0 +1,14 @@
+●─╮  Merge branch '10'
+│●┤  Merge branch '10' into 40
+││●╮  Merge branch '30' into 10
+│││●  032
+│││●─╮  Merge branch '10' into 30
+│││● │  031
+││●┼╮│  Merge branch '20' into 10
+│●││││  041
+│●┼┼╯│  022
+│●┤│ │  Merge branch '10' into 20
+││●┼─╯  012
+││●│  011
+│●││  021
+●┴┴╯  001

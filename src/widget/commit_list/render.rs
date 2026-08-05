@@ -285,8 +285,12 @@ impl CommitList<'_> {
             if x >= area.right() {
                 break;
             }
-            // Horizontal-only edges don't extend into the spacer row, so only
-            // redraw `│` at columns that had a dot or vertical-reaching glyph.
+            // Only redraw `│` where something reaches downward. Of the
+            // junctions that means `┬├┤┼`; `┴` is excluded, since drawing a
+            // line beneath "this one ends going up" would be plainly wrong.
+            // `╰`/`╯` also reach upward yet have always been listed -- this
+            // list has always been looser than
+            // `EdgeType::has_downward_continuation`, and stays that way here.
             let draw_vertical = matches!(
                 cell.glyph,
                 Glyph::CommitDot
@@ -296,6 +300,10 @@ impl CommitList<'_> {
                     | Glyph::CornerTR
                     | Glyph::CornerBL
                     | Glyph::CornerBR
+                    | Glyph::TeeDown
+                    | Glyph::TeeRight
+                    | Glyph::TeeLeft
+                    | Glyph::Cross
             );
             if !draw_vertical {
                 continue;
@@ -985,13 +993,10 @@ mod tests {
         /// coincide and a regression that hardcodes column 0 would slip past the
         /// virtual-row test undetected.
         fn text_graph(commits: &[Commit]) -> Graph {
-            let h = |i: usize| commits[i].commit_hash.clone();
-            Graph {
-                commit_hashes: commits.iter().map(|c| c.commit_hash.clone()).collect(),
-                commit_pos_map: [(h(0), (1, 0)), (h(1), (0, 1)), (h(2), (2, 2))]
-                    .into_iter()
-                    .collect(),
-                edges: vec![
+            graph_fixture(
+                commits,
+                [(1, 0), (0, 1), (2, 2)],
+                vec![
                     vec![
                         Edge::new(EdgeType::Vertical, 0, 0),
                         Edge::new(EdgeType::Horizontal, 2, 2),
@@ -1002,6 +1007,24 @@ mod tests {
                     ],
                     vec![Edge::new(EdgeType::Vertical, 0, 0)],
                 ],
+            )
+        }
+
+        /// The three fixtures differ only in where the dots sit and which
+        /// edges each row carries.
+        fn graph_fixture(
+            commits: &[Commit],
+            positions: [(usize, usize); 3],
+            edges: Vec<Vec<Edge>>,
+        ) -> Graph {
+            Graph {
+                commit_hashes: commits.iter().map(|c| c.commit_hash.clone()).collect(),
+                commit_pos_map: commits
+                    .iter()
+                    .map(|c| c.commit_hash.clone())
+                    .zip(positions)
+                    .collect(),
+                edges,
                 max_pos_x: 2,
             }
         }
@@ -1013,19 +1036,48 @@ mod tests {
         /// identically, a `current_graph()` that always returns the primary
         /// graph would pass the test undetected.
         fn text_graph_filtered(commits: &[Commit]) -> Graph {
-            let h = |i: usize| commits[i].commit_hash.clone();
-            Graph {
-                commit_hashes: commits.iter().map(|c| c.commit_hash.clone()).collect(),
-                commit_pos_map: [(h(0), (0, 0)), (h(1), (0, 1)), (h(2), (0, 2))]
-                    .into_iter()
-                    .collect(),
-                edges: vec![
+            graph_fixture(
+                commits,
+                [(0, 0), (0, 1), (0, 2)],
+                vec![
                     vec![Edge::new(EdgeType::Vertical, 0, 0)],
                     vec![Edge::new(EdgeType::Vertical, 0, 0)],
                     vec![],
                 ],
-                max_pos_x: 2,
-            }
+            )
+        }
+
+        /// Every column here carries two edges at once, which `text_graph`
+        /// never does -- its three rows put each edge in its own column, so
+        /// under `Single` nothing ever shares a cell. Without this fixture
+        /// the widget path (`text_cells_for_hash` -> `put_text_cells` ->
+        /// `GlyphSet::resolve`) would have no coverage of junction glyphs at
+        /// all: `render_graph_single_width_folds_cells_and_sizes_column_correctly`
+        /// renders identically before and after issue #29.
+        fn text_graph_colliding(commits: &[Commit]) -> Graph {
+            graph_fixture(
+                commits,
+                [(2, 0), (2, 1), (0, 2)],
+                vec![
+                    // cols 0 and 1: a vertical crossed by a horizontal run -> `┼`
+                    vec![
+                        Edge::new(EdgeType::Vertical, 0, 0),
+                        Edge::new(EdgeType::Horizontal, 0, 2),
+                        Edge::new(EdgeType::Vertical, 1, 1),
+                        Edge::new(EdgeType::Horizontal, 1, 2),
+                    ],
+                    // col 0: a branch tip pointing down, crossed horizontally
+                    // -> `┬` (NOT `┼`: nothing continues upward here)
+                    // col 1: corner meeting a horizontal run -> `┴`
+                    vec![
+                        Edge::new(EdgeType::Down, 0, 0),
+                        Edge::new(EdgeType::Horizontal, 0, 2),
+                        Edge::new(EdgeType::RightBottom, 1, 1),
+                        Edge::new(EdgeType::Horizontal, 1, 2),
+                    ],
+                    vec![Edge::new(EdgeType::Vertical, 1, 1)],
+                ],
+            )
         }
 
         struct Opts {
@@ -1186,7 +1238,7 @@ mod tests {
             assert_eq!(
                 graph_rows_width(&buf, 1..=3, 3),
                 ["│◯─", "●─╭", "│ ●"],
-                "single width keeps whichever half has higher glyph_priority"
+                "one edge per column: each cell resolves to that edge's own glyph"
             );
 
             // Marker column starts right after the graph column (width
@@ -1194,6 +1246,45 @@ mod tests {
             // still sized for `Double` (7), this `│` would land one cell
             // further right than here.
             assert_eq!(buf[(4, 1)].symbol(), "│");
+        }
+
+        /// Issue #29: the only end-to-end check that junction glyphs reach
+        /// the screen. Before the fix these columns rendered as `│`/`╯` with
+        /// the horizontal runs swallowed whole.
+        #[test]
+        fn render_graph_single_width_draws_junctions_where_edges_collide() {
+            let commits = text_graph_commits();
+            let mut state = build_state(
+                &commits,
+                text_graph_colliding(&commits),
+                Opts {
+                    cell_width_type: CellWidthType::Single,
+                    ..Default::default()
+                },
+            );
+            let buf = render_commit_list(&mut state, 10);
+
+            assert_eq!(
+                graph_rows_width(&buf, 1..=3, 3),
+                ["┼┼◯", "┬┴●", "●│ "],
+                "colliding edges combine instead of the loser vanishing"
+            );
+        }
+
+        /// The same fixture under `Double`: two cells per column means the
+        /// edges never share one, so no junction is needed and nothing here
+        /// changed with issue #29.
+        #[test]
+        fn render_graph_double_width_keeps_halves_separate_when_edges_collide() {
+            let commits = text_graph_commits();
+            let mut state = build_state(&commits, text_graph_colliding(&commits), Opts::default());
+            let buf = render_commit_list(&mut state, 10);
+
+            assert_eq!(
+                graph_rows_width(&buf, 1..=3, 6),
+                ["│─│─◯ ", "│─╯─● ", "● │   "],
+                "double width never collapses two edges onto one cell"
+            );
         }
 
         #[test]

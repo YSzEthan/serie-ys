@@ -101,11 +101,6 @@ fn branch_001() -> TestResult {
         GenerateGraphOption::new("branch_001_topo", git::SortCommit::Topological),
         GenerateGraphOption::new("branch_001_max_count", git::SortCommit::Chronological)
             .with_max_count(10),
-        // #21: one dense case checked into a golden purely so a human can
-        // see what single-width connector loss actually looks like. The
-        // folding invariant already covers correctness for all 41 cases.
-        GenerateGraphOption::new("branch_001_single", git::SortCommit::Chronological)
-            .with_single_width(),
     ];
 
     copy_git_dir(repo_path, "branch_001");
@@ -1167,10 +1162,6 @@ struct GenerateGraphOption {
     // (`None`) — exactly matching the PNG-era snapshot generation, which
     // always called `calc_graph(&repository, None, false)` unconditionally.
     reserve_head_col: bool,
-    // Which of `GraphSnapshotSource`'s two pre-built row sets this case's
-    // golden is written from. Doesn't affect the folding invariant below --
-    // that always checks both regardless of which one is "the" golden here.
-    cell_width: graph::CellWidthType,
 }
 
 impl GenerateGraphOption {
@@ -1180,7 +1171,6 @@ impl GenerateGraphOption {
             sort,
             max_count: None,
             reserve_head_col: false,
-            cell_width: graph::CellWidthType::Double,
         }
     }
 
@@ -1194,9 +1184,12 @@ impl GenerateGraphOption {
         self
     }
 
-    fn with_single_width(mut self) -> GenerateGraphOption {
-        self.cell_width = graph::CellWidthType::Single;
-        self
+    /// Every snapshot this case owns: one per cell width.
+    fn keys(&self) -> impl Iterator<Item = SnapshotKey> {
+        let name = self.output_name;
+        WIDTHS
+            .into_iter()
+            .map(move |width| SnapshotKey { name, width })
     }
 }
 
@@ -1282,18 +1275,24 @@ fn render_text_graph_styled(
     out
 }
 
-/// `single[c]` must equal whichever of `double[2c]`/`double[2c+1]` is
-/// non-`Blank`. The right half is only ever `Blank` or `Horiz` (the lowest
-/// non-blank `glyph_priority`), so a non-blank left always outranks it --
-/// this is a value-domain argument, not `place`'s `>=` tie-break rule (the
-/// only tie is left == right == `Horiz`, where it plainly doesn't matter
-/// which one "wins"). Checked directly against `TextCell.glyph` rather than
-/// resolved characters, so it exercises `build_text_cells` itself
-/// independent of any `GlyphSet` (that's covered separately by
-/// `graph/text.rs`'s own unit tests). Runs for every case regardless of
-/// which width its golden happens to be, since `GraphSnapshotSource`
-/// always builds both.
-fn assert_single_width_folds_double(option: &GenerateGraphOption, source: &GraphSnapshotSource) {
+/// A column is occupied under `Single` exactly when it was occupied under
+/// `Double` -- nothing appears from nowhere, nothing goes missing.
+///
+/// This replaced an invariant asserting `single[c]` equalled whichever half
+/// of `double` was non-blank. That version encoded the very bug issue #29
+/// fixed: "equals one of the halves" is another way of saying "the other
+/// half may be discarded". It also could not survive junctions, where a
+/// cell is derived from both halves and matches neither.
+///
+/// Which junction character a cell resolves to is checked by
+/// `graph/text.rs`'s unit tests (exhaustive over all 16 direction
+/// combinations) and by the goldens; occupancy is the part worth asserting
+/// across every case here. Checked against `TextCell.glyph` rather than
+/// rendered characters, so no `GlyphSet` is involved.
+fn assert_single_width_matches_double_occupancy(
+    option: &GenerateGraphOption,
+    source: &GraphSnapshotSource,
+) {
     for (row, (double_row, single_row)) in source
         .double_rows
         .iter()
@@ -1307,35 +1306,68 @@ fn assert_single_width_folds_double(option: &GenerateGraphOption, source: &Graph
             option.output_name
         );
         for (col, single_cell) in single_row.iter().enumerate() {
-            let left = double_row[2 * col].glyph;
-            let right = double_row[2 * col + 1].glyph;
-            let expected = if left != graph::Glyph::Blank {
-                left
-            } else {
-                right
-            };
+            let occupied_in_double = double_row[2 * col].glyph != graph::Glyph::Blank
+                || double_row[2 * col + 1].glyph != graph::Glyph::Blank;
             assert_eq!(
-                single_cell.glyph, expected,
-                "{}: row {row} col {col} single-width fold mismatch",
+                single_cell.glyph != graph::Glyph::Blank,
+                occupied_in_double,
+                "{}: row {row} col {col} occupancy differs between widths",
                 option.output_name
             );
         }
     }
 }
 
+/// Identifies one snapshot: a case rendered at one cell width. Both widths
+/// are checked in for every case, so the width is part of a snapshot's
+/// identity rather than a property of the case.
+#[derive(Clone, Copy)]
+struct SnapshotKey {
+    name: &'static str,
+    width: graph::CellWidthType,
+}
+
+impl SnapshotKey {
+    /// The `_single` suffix is spelled once, here.
+    fn width_suffix(self) -> &'static str {
+        match self.width {
+            graph::CellWidthType::Double => "",
+            graph::CellWidthType::Single => "_single",
+        }
+    }
+
+    fn golden(self) -> String {
+        format!("{SNAPSHOT_DIR}/{}{}.txt", self.name, self.width_suffix())
+    }
+
+    fn actual(self, style_suffix: &str) -> String {
+        format!(
+            "{OUTPUT_DIR}/{}{}{style_suffix}.txt",
+            self.name,
+            self.width_suffix()
+        )
+    }
+}
+
+const WIDTHS: [graph::CellWidthType; 2] =
+    [graph::CellWidthType::Double, graph::CellWidthType::Single];
+
+const STYLES: [(&str, graph::GlyphSet); 3] = [
+    ("", graph::GlyphSet::ROUNDED),
+    ("_angular", graph::GlyphSet::ANGULAR),
+    ("_ascii", graph::GlyphSet::ASCII),
+];
+
 fn generate_and_output_text_graphs(repo_path: &Path, options: &[GenerateGraphOption]) {
     create_output_dirs(OUTPUT_DIR);
     for option in options {
         let source = build_graph_snapshot_source(repo_path, option);
-        assert_single_width_folds_double(option, &source);
-        for (suffix, glyphs) in [
-            ("", graph::GlyphSet::ROUNDED),
-            ("_angular", graph::GlyphSet::ANGULAR),
-            ("_ascii", graph::GlyphSet::ASCII),
-        ] {
-            let content = render_text_graph_styled(&source, glyphs, option.cell_width);
-            let file_name = format!("{OUTPUT_DIR}/{}{suffix}.txt", option.output_name);
-            std::fs::write(file_name, content).unwrap();
+        assert_single_width_matches_double_occupancy(option, &source);
+        for key in option.keys() {
+            for (style_suffix, glyphs) in STYLES {
+                let content = render_text_graph_styled(&source, glyphs, key.width);
+                std::fs::write(key.actual(style_suffix), content).unwrap();
+            }
         }
     }
 }
@@ -1376,6 +1408,11 @@ const ASCII_SUBST: &[(char, char)] = &[
     ('╮', '+'),
     ('╰', '+'),
     ('╯', '+'),
+    ('┬', '+'),
+    ('┴', '+'),
+    ('├', '+'),
+    ('┤', '+'),
+    ('┼', '+'),
 ];
 
 fn substitute(input: &str, table: &[(char, char)]) -> String {
@@ -1401,25 +1438,27 @@ fn assert_text_graphs(options: &[GenerateGraphOption]) {
             "UPDATE_SNAPSHOTS was set: wrote/updated {} snapshot(s) under {SNAPSHOT_DIR}. \
              This run intentionally fails so it can't be mistaken for a real pass — \
              re-run `cargo test --test graph` without UPDATE_SNAPSHOTS to verify.",
-            options.len()
+            options.len() * WIDTHS.len()
         );
     }
 
     let mut errors = Vec::new();
     for option in options {
-        match compare_text_snapshot(option) {
-            Ok(()) => {
-                // Only check style invariants once the rounded golden itself
-                // matches -- otherwise a single real regression shows up as
-                // three redundant failures for the same case, burying the
-                // actual cause.
-                for (suffix, table) in [("_angular", ANGULAR_SUBST), ("_ascii", ASCII_SUBST)] {
-                    if let Err(e) = compare_style_invariant(option, suffix, table) {
-                        errors.push(e);
+        for key in option.keys() {
+            match compare_text_snapshot(key) {
+                Ok(()) => {
+                    // Only check style invariants once the rounded golden itself
+                    // matches -- otherwise a single real regression shows up as
+                    // three redundant failures for the same case, burying the
+                    // actual cause.
+                    for (suffix, table) in [("_angular", ANGULAR_SUBST), ("_ascii", ASCII_SUBST)] {
+                        if let Err(e) = compare_style_invariant(key, suffix, table) {
+                            errors.push(e);
+                        }
                     }
                 }
+                Err(e) => errors.push(e),
             }
-            Err(e) => errors.push(e),
         }
     }
     if !errors.is_empty() {
@@ -1430,16 +1469,17 @@ fn assert_text_graphs(options: &[GenerateGraphOption]) {
 fn update_text_snapshots(options: &[GenerateGraphOption]) {
     create_output_dirs(SNAPSHOT_DIR);
     for option in options {
-        let actual_file = format!("{OUTPUT_DIR}/{}.txt", option.output_name);
-        let snapshot_file = format!("{SNAPSHOT_DIR}/{}.txt", option.output_name);
-        let content = std::fs::read_to_string(&actual_file)
-            .unwrap_or_else(|e| panic!("failed to read generated output {actual_file}: {e}"));
-        std::fs::write(&snapshot_file, content).unwrap();
+        for key in option.keys() {
+            let actual_file = key.actual("");
+            let content = std::fs::read_to_string(&actual_file)
+                .unwrap_or_else(|e| panic!("failed to read generated output {actual_file}: {e}"));
+            std::fs::write(key.golden(), content).unwrap();
+        }
     }
 }
 
-fn compare_text_snapshot(option: &GenerateGraphOption) -> Result<(), String> {
-    let snapshot_file = format!("{}/{}.txt", SNAPSHOT_DIR, option.output_name);
+fn compare_text_snapshot(key: SnapshotKey) -> Result<(), String> {
+    let snapshot_file = key.golden();
     let expected = std::fs::read_to_string(&snapshot_file).map_err(|_| {
         format!(
             "missing snapshot {snapshot_file} — run \
@@ -1447,14 +1487,14 @@ fn compare_text_snapshot(option: &GenerateGraphOption) -> Result<(), String> {
         )
     })?;
 
-    let actual_file = format!("{}/{}.txt", OUTPUT_DIR, option.output_name);
+    let actual_file = key.actual("");
     let actual = std::fs::read_to_string(&actual_file).unwrap();
 
     if actual == expected {
         return Ok(());
     }
     Err(snapshot_diff_message(
-        &format!("text graph differs for {}", option.output_name),
+        &format!("text graph differs for {}", snapshot_file),
         &actual_file,
         &expected,
         &actual,
@@ -1465,15 +1505,14 @@ fn compare_text_snapshot(option: &GenerateGraphOption) -> Result<(), String> {
 /// not a golden file) equals the rounded golden with `table` applied. Only
 /// called after `compare_text_snapshot` already passed for this case.
 fn compare_style_invariant(
-    option: &GenerateGraphOption,
+    key: SnapshotKey,
     suffix: &str,
     table: &[(char, char)],
 ) -> Result<(), String> {
-    let snapshot_file = format!("{}/{}.txt", SNAPSHOT_DIR, option.output_name);
-    let golden = std::fs::read_to_string(&snapshot_file).unwrap();
+    let golden = std::fs::read_to_string(key.golden()).unwrap();
     let expected = substitute(&golden, table);
 
-    let actual_file = format!("{OUTPUT_DIR}/{}{suffix}.txt", option.output_name);
+    let actual_file = key.actual(suffix);
     let actual = std::fs::read_to_string(&actual_file).unwrap();
 
     if actual == expected {
@@ -1482,7 +1521,7 @@ fn compare_style_invariant(
     Err(snapshot_diff_message(
         &format!(
             "{suffix} substitution invariant differs for {}",
-            option.output_name
+            key.golden()
         ),
         &actual_file,
         &expected,

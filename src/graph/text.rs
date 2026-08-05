@@ -29,6 +29,100 @@ pub enum Glyph {
     CornerTR,
     CornerBL,
     CornerBR,
+    /// Junction glyphs: a cell carrying three or four directions at once.
+    /// Only `Single` produces these -- `Double` splits a column across two
+    /// cells, so its two edges never need to share one character.
+    TeeDown,
+    TeeUp,
+    TeeRight,
+    TeeLeft,
+    Cross,
+}
+
+/// Which of the four compass directions a piece of line touches.
+///
+/// This is the single source of truth for edge geometry: both cell widths
+/// derive their glyphs from it (`halves` for `Double`, `merged` for
+/// `Single`), so a new `EdgeType` only ever needs one entry.
+const DIR_UP: u8 = 1;
+const DIR_DOWN: u8 = 2;
+const DIR_LEFT: u8 = 4;
+const DIR_RIGHT: u8 = 8;
+
+/// The directions an edge actually touches.
+///
+/// Deliberately does NOT fold `Up`/`Down`/`Left`/`Right` into full lines.
+/// Drawing a half-stub as a full line is a *rendering* concession (there are
+/// no `╵╷╴╶` glyphs in the sets), and it belongs in `merged`, not here:
+/// folding at this layer makes unions invent lines that don't exist. A
+/// `Down` edge sharing a column with a `Horizontal` one would come out as
+/// `┼`, claiming a line continues upward -- worse than the bug being fixed,
+/// because a missing line is absent information while a wrong junction is
+/// false information the reader will follow.
+fn edge_dirs(edge_type: EdgeType) -> u8 {
+    match edge_type {
+        EdgeType::Vertical => DIR_UP | DIR_DOWN,
+        EdgeType::Up => DIR_UP,
+        EdgeType::Down => DIR_DOWN,
+        EdgeType::Horizontal => DIR_LEFT | DIR_RIGHT,
+        EdgeType::Left => DIR_LEFT,
+        EdgeType::Right => DIR_RIGHT,
+        EdgeType::RightTop => DIR_DOWN | DIR_LEFT,
+        EdgeType::RightBottom => DIR_UP | DIR_LEFT,
+        EdgeType::LeftTop => DIR_DOWN | DIR_RIGHT,
+        EdgeType::LeftBottom => DIR_UP | DIR_RIGHT,
+    }
+}
+
+/// `Double` layout: a column spans [symbol, connector]. The connector only
+/// ever carries "extends rightward"; everything else lives in the symbol,
+/// which draws the same shape `Single` would.
+///
+/// A lone rightward stub is the one edge whose line never reaches the
+/// column's centre, so its symbol half stays empty. Only ever called with a
+/// single edge's directions -- unions belong to `Single`, which has one cell
+/// to fit them into.
+fn halves(dirs: u8) -> (Glyph, Glyph) {
+    let symbol = if dirs == DIR_RIGHT {
+        Glyph::Blank
+    } else {
+        merged(dirs)
+    };
+    let connector = if dirs & DIR_RIGHT != 0 {
+        Glyph::Horiz
+    } else {
+        Glyph::Blank
+    };
+    (symbol, connector)
+}
+
+/// `Single` layout: one cell per column, so every direction reaching that
+/// column has to fit in one character.
+///
+/// Exhaustive over the four booleans, so every direction combination has an
+/// answer. The "only vertical bits" / "only horizontal bits" arms are where
+/// the half-stub concession from #19 lives (`Up` alone still renders as a
+/// full `│`) -- see `edge_dirs` for why it belongs here and not there.
+fn merged(dirs: u8) -> Glyph {
+    let up = dirs & DIR_UP != 0;
+    let down = dirs & DIR_DOWN != 0;
+    let left = dirs & DIR_LEFT != 0;
+    let right = dirs & DIR_RIGHT != 0;
+
+    match (up, down, left, right) {
+        (false, false, false, false) => Glyph::Blank,
+        (_, _, false, false) => Glyph::Vert,
+        (false, false, _, _) => Glyph::Horiz,
+        (false, true, false, true) => Glyph::CornerTL,
+        (false, true, true, false) => Glyph::CornerTR,
+        (true, false, false, true) => Glyph::CornerBL,
+        (true, false, true, false) => Glyph::CornerBR,
+        (true, true, false, true) => Glyph::TeeRight,
+        (true, true, true, false) => Glyph::TeeLeft,
+        (false, true, true, true) => Glyph::TeeDown,
+        (true, false, true, true) => Glyph::TeeUp,
+        (true, true, true, true) => Glyph::Cross,
+    }
 }
 
 /// Maps each `Glyph` to the character a given graph style draws it as.
@@ -46,6 +140,11 @@ pub struct GlyphSet {
     pub corner_tr: &'static str,
     pub corner_bl: &'static str,
     pub corner_br: &'static str,
+    pub tee_down: &'static str,
+    pub tee_up: &'static str,
+    pub tee_right: &'static str,
+    pub tee_left: &'static str,
+    pub cross: &'static str,
 }
 
 impl GlyphSet {
@@ -58,6 +157,13 @@ impl GlyphSet {
         corner_tr: "╮",
         corner_bl: "╰",
         corner_br: "╯",
+        // Unicode has no rounded tee/cross, so these match ANGULAR's --
+        // the same way `vert`/`horiz` are already shared across styles.
+        tee_down: "┬",
+        tee_up: "┴",
+        tee_right: "├",
+        tee_left: "┤",
+        cross: "┼",
     };
 
     pub const ANGULAR: GlyphSet = GlyphSet {
@@ -69,6 +175,11 @@ impl GlyphSet {
         corner_tr: "┐",
         corner_bl: "└",
         corner_br: "┘",
+        tee_down: "┬",
+        tee_up: "┴",
+        tee_right: "├",
+        tee_left: "┤",
+        cross: "┼",
     };
 
     pub const ASCII: GlyphSet = GlyphSet {
@@ -80,6 +191,11 @@ impl GlyphSet {
         corner_tr: "+",
         corner_bl: "+",
         corner_br: "+",
+        tee_down: "+",
+        tee_up: "+",
+        tee_right: "+",
+        tee_left: "+",
+        cross: "+",
     };
 
     pub fn from_style(style: GraphStyle) -> GlyphSet {
@@ -101,6 +217,11 @@ impl GlyphSet {
             Glyph::CornerTR => self.corner_tr,
             Glyph::CornerBL => self.corner_bl,
             Glyph::CornerBR => self.corner_br,
+            Glyph::TeeDown => self.tee_down,
+            Glyph::TeeUp => self.tee_up,
+            Glyph::TeeRight => self.tee_right,
+            Glyph::TeeLeft => self.tee_left,
+            Glyph::Cross => self.cross,
         }
     }
 }
@@ -174,16 +295,19 @@ pub fn build_text_graph(
 
 /// Convert edges to lazygit-style text cells (symbol + connector per column).
 ///
-/// Returns `cell_count * width.cells_per_column()` cells. `Double` draws each
-/// column as [symbol, connector]; `Single` draws the symbol only, keeping
-/// whichever of the two has higher `glyph_priority` (the same rule that
-/// already resolves overlapping glyphs within a column). This means a
-/// horizontal run gets swallowed wherever it crosses an already-occupied
-/// column -- e.g. a 5-way merge's connecting lines vanish entirely under
-/// `Single`, leaving just the dots and corners. That's an accepted trade-off
-/// (a compact, occasionally illegible graph beats a graph that doesn't fit
-/// at all), not a bug -- see issue #21's follow-up for the proper fix
-/// (box-drawing junction glyphs).
+/// Returns `cell_count * width.cells_per_column()` cells. The two widths
+/// resolve `edge_dirs` differently: `Double` splits each column into
+/// [symbol, connector] via `halves`, so two edges sharing a column land in
+/// different cells and never compete. `Single` has one cell per column, so
+/// it unions every edge's directions and resolves the total through
+/// `merged`, yielding a box-drawing junction (`┼┬┴├┤`) where several lines
+/// meet. Before that union existed, the higher-priority glyph took the cell
+/// outright and the loser vanished -- a 5-way merge's connecting lines
+/// disappeared entirely, leaving dots and corners with nothing joining them.
+///
+/// One acknowledged gap remains: edges on the commit's own column are still
+/// dropped, since the dot owns that cell. Harmless in practice (the line
+/// continues in the neighbouring column) but it is real lost information.
 pub(crate) fn build_text_cells(
     commit_pos_x: usize,
     cell_count: usize,
@@ -191,9 +315,6 @@ pub(crate) fn build_text_cells(
     colors: &[RatatuiColor],
     width: CellWidthType,
 ) -> Vec<TextCell> {
-    let per_col = width.cells_per_column();
-    let mut cells: Vec<TextCell> = vec![TextCell::BLANK; cell_count * per_col];
-
     let color_of = |idx: usize| -> RatatuiColor {
         if colors.is_empty() {
             RatatuiColor::Reset
@@ -201,6 +322,13 @@ pub(crate) fn build_text_cells(
             colors[idx % colors.len()]
         }
     };
+
+    if width == CellWidthType::Single {
+        return build_single_width_cells(commit_pos_x, cell_count, edges, color_of);
+    }
+
+    let per_col = width.cells_per_column();
+    let mut cells: Vec<TextCell> = vec![TextCell::BLANK; cell_count * per_col];
 
     let place = |cells: &mut Vec<TextCell>, idx: usize, glyph: Glyph, color: RatatuiColor| {
         if glyph == Glyph::Blank || idx >= cells.len() {
@@ -219,39 +347,91 @@ pub(crate) fn build_text_cells(
     );
 
     for edge in edges {
-        // `left` fills the left half of the column, `right` the right half.
-        // Under `Double` they're two distinct cells; under `Single` they
-        // collapse onto the same cell and `place`'s priority rule keeps
-        // whichever one wins (see the fn doc comment).
-        // Half-stubs (Left/Right/Up/Down) only touch their own side so they don't
-        // poke into the neighbouring column.
-        let (left, right) = match edge.edge_type {
-            EdgeType::Vertical | EdgeType::Up | EdgeType::Down => (Glyph::Vert, Glyph::Blank),
-            EdgeType::Horizontal => (Glyph::Horiz, Glyph::Horiz),
-            EdgeType::Left => (Glyph::Horiz, Glyph::Blank),
-            EdgeType::Right => (Glyph::Blank, Glyph::Horiz),
-            EdgeType::RightTop => (Glyph::CornerTR, Glyph::Blank),
-            EdgeType::RightBottom => (Glyph::CornerBR, Glyph::Blank),
-            EdgeType::LeftTop => (Glyph::CornerTL, Glyph::Horiz),
-            EdgeType::LeftBottom => (Glyph::CornerBL, Glyph::Horiz),
-        };
-
+        let (symbol, connector) = halves(edge_dirs(edge.edge_type));
         let color = color_of(edge.associated_line_pos_x);
         let idx = edge.pos_x * per_col;
 
-        place(&mut cells, idx, left, color);
-        place(&mut cells, idx + per_col - 1, right, color);
+        place(&mut cells, idx, symbol, color);
+        place(&mut cells, idx + per_col - 1, connector, color);
     }
 
     cells
 }
 
+/// `Single`'s one-cell-per-column path: accumulate directions per column,
+/// then resolve each column once.
+///
+/// Colour uses strict `>` (first writer of the winning priority keeps it),
+/// unlike `place`'s `>=`. Two corners carry equal priority, and now that a
+/// collision renders as a visible junction rather than silently dropping the
+/// loser, `>=` would make the colour depend on the order `calc.rs` happens
+/// to push edges. Nothing in the snapshot suite would catch that -- goldens
+/// compare characters, not colours -- so the tie is settled here instead.
+fn build_single_width_cells(
+    commit_pos_x: usize,
+    cell_count: usize,
+    edges: &[Edge],
+    color_of: impl Fn(usize) -> RatatuiColor,
+) -> Vec<TextCell> {
+    #[derive(Clone, Copy, Default)]
+    struct Acc {
+        dirs: u8,
+        color: RatatuiColor,
+        priority: u8,
+    }
+
+    let mut acc = vec![Acc::default(); cell_count];
+
+    for edge in edges {
+        // Out-of-range columns are ignored rather than panicking, matching
+        // `place`'s tolerance -- `build_text_cells` is reachable from tests
+        // with hand-built edges.
+        let Some(slot) = acc.get_mut(edge.pos_x) else {
+            continue;
+        };
+        let dirs = edge_dirs(edge.edge_type);
+        slot.dirs |= dirs;
+
+        let priority = glyph_priority(merged(dirs));
+        if priority > slot.priority {
+            slot.priority = priority;
+            slot.color = color_of(edge.associated_line_pos_x);
+        }
+    }
+
+    acc.iter()
+        .enumerate()
+        .map(|(col, slot)| {
+            if col == commit_pos_x {
+                TextCell {
+                    glyph: Glyph::CommitDot,
+                    color: color_of(commit_pos_x),
+                }
+            } else {
+                TextCell {
+                    glyph: merged(slot.dirs),
+                    color: slot.color,
+                }
+            }
+        })
+        .collect()
+}
+
 /// Precedence for overlapping glyphs on the same text-graph cell.
 /// Higher wins; horizontal `─` loses to vertical `│` so through-branches
 /// remain continuous when a horizontal run passes by.
+///
+/// Under `Double` this decides which glyph a shared cell shows. Under
+/// `Single` glyphs no longer compete -- their directions combine -- so this
+/// only picks whose colour the resulting junction inherits.
 fn glyph_priority(glyph: Glyph) -> u8 {
     match glyph {
         Glyph::CommitDot | Glyph::HeadDot => 10,
+        // Unreachable today: `place` only ever sees `halves` output, and the
+        // other caller passes a single edge's directions (two bits at most),
+        // which can't form a junction. Listed for exhaustiveness; ranked
+        // above `Vert` so the ordering still reads correctly if that changes.
+        Glyph::TeeDown | Glyph::TeeUp | Glyph::TeeRight | Glyph::TeeLeft | Glyph::Cross => 7,
         Glyph::Vert => 5,
         Glyph::CornerTL | Glyph::CornerTR | Glyph::CornerBL | Glyph::CornerBR => 3,
         Glyph::Horiz => 1,
@@ -379,10 +559,132 @@ mod tests {
         assert_eq!(cells[0].color, RatatuiColor::Reset);
     }
 
-    /// Single-mode folding: for every `EdgeType`, `single[c]` must equal
-    /// whichever of `double[2c]`/`double[2c+1]` has the higher
-    /// `glyph_priority` -- issue #21's table, derived from first
-    /// principles rather than hardcoded per-variant.
+    /// `halves` replaced a hand-written `EdgeType -> (left, right)` table.
+    /// That table is reproduced here verbatim as the anchor: derivation
+    /// needs something literal to be checked against, or a wrong direction
+    /// entry and a wrong `halves` arm could cancel out and still pass. Same
+    /// reasoning as `glyph_set_tables_match_style_charts`.
+    #[rustfmt::skip]
+    #[test]
+    fn halves_match_the_original_edge_type_table() {
+        let table: &[(EdgeType, (Glyph, Glyph))] = &[
+            (EdgeType::Vertical,    (Glyph::Vert,     Glyph::Blank)),
+            (EdgeType::Up,          (Glyph::Vert,     Glyph::Blank)),
+            (EdgeType::Down,        (Glyph::Vert,     Glyph::Blank)),
+            (EdgeType::Horizontal,  (Glyph::Horiz,    Glyph::Horiz)),
+            (EdgeType::Left,        (Glyph::Horiz,    Glyph::Blank)),
+            (EdgeType::Right,       (Glyph::Blank,    Glyph::Horiz)),
+            (EdgeType::RightTop,    (Glyph::CornerTR, Glyph::Blank)),
+            (EdgeType::RightBottom, (Glyph::CornerBR, Glyph::Blank)),
+            (EdgeType::LeftTop,     (Glyph::CornerTL, Glyph::Horiz)),
+            (EdgeType::LeftBottom,  (Glyph::CornerBL, Glyph::Horiz)),
+        ];
+        for (edge_type, expected) in table {
+            assert_eq!(halves(edge_dirs(*edge_type)), *expected, "{edge_type:?}");
+        }
+    }
+
+    /// Every direction combination, spelled out. The lookup below walks
+    /// `0..16` rather than the table, so an omitted or duplicated row fails
+    /// instead of quietly shrinking what gets checked -- a length assertion
+    /// alone would let "one missing, one duplicated" through.
+    #[rustfmt::skip]
+    #[test]
+    fn merged_covers_every_direction_combination() {
+        let u = DIR_UP;
+        let d = DIR_DOWN;
+        let l = DIR_LEFT;
+        let r = DIR_RIGHT;
+        let cases: &[(u8, Glyph)] = &[
+            (0,             Glyph::Blank),
+            // A lone half-stub still renders as a full line: there are no
+            // `╵╷╴╶` glyphs, so this is where #19's concession lives.
+            (u,             Glyph::Vert),
+            (d,             Glyph::Vert),
+            (u | d,         Glyph::Vert),
+            (l,             Glyph::Horiz),
+            (r,             Glyph::Horiz),
+            (l | r,         Glyph::Horiz),
+            (d | r,         Glyph::CornerTL),
+            (d | l,         Glyph::CornerTR),
+            (u | r,         Glyph::CornerBL),
+            (u | l,         Glyph::CornerBR),
+            (u | d | r,     Glyph::TeeRight),
+            (u | d | l,     Glyph::TeeLeft),
+            (d | l | r,     Glyph::TeeDown),
+            (u | l | r,     Glyph::TeeUp),
+            (u | d | l | r, Glyph::Cross),
+        ];
+        for dirs in 0..16u8 {
+            let matches: Vec<Glyph> =
+                cases.iter().filter(|(d, _)| *d == dirs).map(|(_, g)| *g).collect();
+            assert_eq!(matches.len(), 1, "表格對 dirs={dirs:#06b} 少列或重複列了");
+            assert_eq!(merged(dirs), matches[0], "dirs={dirs:#06b}");
+        }
+    }
+
+    /// The bug issue #29 is about: under `Single` two edges share one cell,
+    /// and the loser used to vanish outright. Now their directions combine.
+    ///
+    /// The colour is the winner's (vertical outranks horizontal), and it
+    /// stays the winner's regardless of the order `calc.rs` pushed the
+    /// edges -- see `build_single_width_cells` on why the tie-break is
+    /// strict rather than `place`'s `>=`.
+    #[test]
+    fn single_width_unions_colliding_edges_into_a_junction() {
+        let colors = vec![RatatuiColor::Red, RatatuiColor::Green, RatatuiColor::Blue];
+        let h_first = vec![
+            Edge::new(EdgeType::Horizontal, 1, 0),
+            Edge::new(EdgeType::Vertical, 1, 2),
+        ];
+        let v_first = vec![
+            Edge::new(EdgeType::Vertical, 1, 2),
+            Edge::new(EdgeType::Horizontal, 1, 0),
+        ];
+        for edges in [h_first, v_first] {
+            let cells = build_text_cells(0, 3, &edges, &colors, CellWidthType::Single);
+            assert_eq!(cells[1].glyph, Glyph::Cross);
+            assert_eq!(cells[1].color, RatatuiColor::Blue);
+        }
+    }
+
+    /// Half-stubs must not be widened into full lines before the union, or
+    /// a junction would claim directions no edge actually reaches. `Down`
+    /// crossed by a `Horizontal` is `┬`; treating `Down` as a full `│`
+    /// would produce `┼` and send the reader chasing a line upward that
+    /// isn't there.
+    #[rustfmt::skip]
+    #[test]
+    fn single_width_junctions_never_invent_directions() {
+        let colors = vec![RatatuiColor::Red];
+        let cases: &[(EdgeType, EdgeType, Glyph)] = &[
+            (EdgeType::Down, EdgeType::Horizontal, Glyph::TeeDown),
+            (EdgeType::Up,   EdgeType::Horizontal, Glyph::TeeUp),
+            (EdgeType::Down, EdgeType::Right,      Glyph::CornerTL),
+            (EdgeType::Up,   EdgeType::Left,       Glyph::CornerBR),
+        ];
+        for (a, b, expected) in cases {
+            let edges = vec![Edge::new(*a, 1, 0), Edge::new(*b, 1, 0)];
+            let cells = build_text_cells(0, 2, &edges, &colors, CellWidthType::Single);
+            assert_eq!(cells[1].glyph, *expected, "{a:?} + {b:?}");
+        }
+    }
+
+    /// Hand-built edges may point past the column count; `place` tolerates
+    /// that, and the single-width accumulator has to as well.
+    #[test]
+    fn single_width_ignores_out_of_range_edges() {
+        let edges = vec![Edge::new(EdgeType::Vertical, 9, 0)];
+        let cells = build_text_cells(0, 2, &edges, &[RatatuiColor::Red], CellWidthType::Single);
+        assert_eq!(cells.len(), 2);
+        assert_eq!(cells[1].glyph, Glyph::Blank);
+    }
+
+    /// What a lone edge looks like under `Single`. With nothing to collide
+    /// with there is no junction, so each `EdgeType` keeps the glyph it has
+    /// always had -- including the half-stubs, which still widen into full
+    /// lines for want of `╵╷╴╶`. Issue #29 changed how *collisions* resolve;
+    /// this table pins that it left the uncollided cases alone.
     #[test]
     fn text_cells_single_width_folds_per_edge_type() {
         let colors = vec![RatatuiColor::Red];
@@ -422,7 +724,7 @@ mod tests {
     /// test coverage.
     #[test]
     fn glyph_set_tables_match_style_charts() {
-        let cases: &[(GlyphSet, [(Glyph, &str); 9])] = &[
+        let cases: &[(GlyphSet, [(Glyph, &str); 14])] = &[
             (
                 GlyphSet::ROUNDED,
                 [
@@ -435,6 +737,13 @@ mod tests {
                     (Glyph::CornerTR, "╮"),
                     (Glyph::CornerBL, "╰"),
                     (Glyph::CornerBR, "╯"),
+                    // Junctions have no rounded forms, so rounded and
+                    // angular agree here.
+                    (Glyph::TeeDown, "┬"),
+                    (Glyph::TeeUp, "┴"),
+                    (Glyph::TeeRight, "├"),
+                    (Glyph::TeeLeft, "┤"),
+                    (Glyph::Cross, "┼"),
                 ],
             ),
             (
@@ -449,6 +758,11 @@ mod tests {
                     (Glyph::CornerTR, "┐"),
                     (Glyph::CornerBL, "└"),
                     (Glyph::CornerBR, "┘"),
+                    (Glyph::TeeDown, "┬"),
+                    (Glyph::TeeUp, "┴"),
+                    (Glyph::TeeRight, "├"),
+                    (Glyph::TeeLeft, "┤"),
+                    (Glyph::Cross, "┼"),
                 ],
             ),
             (
@@ -463,6 +777,11 @@ mod tests {
                     (Glyph::CornerTR, "+"),
                     (Glyph::CornerBL, "+"),
                     (Glyph::CornerBR, "+"),
+                    (Glyph::TeeDown, "+"),
+                    (Glyph::TeeUp, "+"),
+                    (Glyph::TeeRight, "+"),
+                    (Glyph::TeeLeft, "+"),
+                    (Glyph::Cross, "+"),
                 ],
             ),
         ];
