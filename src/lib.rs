@@ -13,8 +13,9 @@ mod fuzzy;
 mod keybind;
 mod view;
 mod widget;
+mod wizard;
 
-use std::{collections::VecDeque, path::Path, rc::Rc};
+use std::{collections::VecDeque, io::IsTerminal, path::Path, rc::Rc};
 
 use app::{App, Ret};
 use clap::{Parser, ValueEnum};
@@ -38,6 +39,10 @@ struct Args {
     // 若讓 clap 再自動附加 `[default: .]` 就會重複顯示兩次。
     #[arg(default_value = ".", hide_default_value = true)]
     path: String,
+
+    /// 以互動式目錄瀏覽器選擇 [PATH]（類似 ranger；可搭配上面的路徑引數指定起始目錄）
+    #[arg(short = 'p', long)]
+    path_browser: bool,
 
     /// 要渲染的最大 commit 數量
     #[arg(short = 'n', long, value_name = "NUMBER")]
@@ -267,7 +272,25 @@ pub fn run() -> Result<()> {
         prev_hook(info);
     }));
 
-    let args = Args::parse();
+    // `-h`／`--help` 在真人終端機下改成互動選單，非 TTY（管線、CI）維持原本
+    // `Args::parse()` 印靜態文字＋exit(0) 的行為。刻意不碰 Args 的 help/version
+    // 欄位（維持 clap 原生的 ArgAction::Help/Version）：這是唯一能保證非 TTY 輸出、
+    // 錯誤提示（"try '--help'"）、`-h` 後接無效值時的中止時機都跟改動前逐字不變
+    // 的做法 —— `Args::parse()` 本來就是 `try_parse().unwrap_or_else(|e| e.exit())`，
+    // 這裡只是在那個 unwrap 之前多插一個分支。
+    let mut args = match Args::try_parse() {
+        Ok(a) => a,
+        Err(e)
+            if e.kind() == clap::error::ErrorKind::DisplayHelp
+                && std::io::stdout().is_terminal() =>
+        {
+            let Some(a) = wizard::run()? else {
+                return Ok(()); // Esc／Ctrl-C：放棄，跟原本 --help 一樣 exit(0)
+            };
+            a
+        }
+        Err(e) => e.exit(),
+    };
     let (core_config, ui_config, graph_config, color_theme, keybind_patch) = config::load()?;
     let keybind = keybind::KeyBind::new(keybind_patch);
 
@@ -284,6 +307,16 @@ pub fn run() -> Result<()> {
         .into();
 
     let graph_color_set = color::GraphColorSet::new(&graph_config.color);
+
+    // -p：互動式目錄瀏覽器選 path。要在 EventController::init()（下面）之前跑，
+    // 否則會有兩邊搶讀 stdin 的問題。Esc 只是放棄挑選，`args.path` 維持原樣
+    // （預設 `.`）照樣往下啟動 —— 跟 -h wizard 的 Esc（整個放棄，等同原本
+    // --help 離開）語意不同。
+    if args.path_browser {
+        if let Some(p) = wizard::path_browser::run_standalone(&args.path, &color_theme)? {
+            args.path = p.to_string_lossy().into_owned();
+        }
+    }
 
     let ctx = Rc::new(app::AppContext {
         keybind,
@@ -411,8 +444,14 @@ mod tests {
     use super::*;
 
     #[test]
-    fn removed_protocol_flag_is_rejected() {
-        assert!(Args::try_parse_from(["ysgit", "-p", "kitty"]).is_err());
+    fn path_browser_flag_is_parsed() {
+        let args = Args::try_parse_from(["ysgit", "-p"]).unwrap();
+        assert!(args.path_browser);
+        assert_eq!(args.path, ".");
+
+        let args = Args::try_parse_from(["ysgit", "-p", "~/projects"]).unwrap();
+        assert!(args.path_browser);
+        assert_eq!(args.path, "~/projects");
     }
 
     #[test]
