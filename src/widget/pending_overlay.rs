@@ -25,9 +25,9 @@ impl<'a> PendingOverlay<'a> {
 impl Widget for PendingOverlay<'_> {
     fn render(self, area: Rect, buf: &mut Buffer) {
         let dialog_width = 40u16.min(area.width.saturating_sub(4));
-        let max_text_width = dialog_width.saturating_sub(4) as usize; // borders + padding
+        let max_text_width = dialog_width.saturating_sub(4) as usize; // 邊框 + padding
 
-        // Wrap message into lines
+        // 把訊息換行成多行
         let message_lines: Vec<Line> = wrap_text(self.message, max_text_width)
             .into_iter()
             .map(|s| Line::from(Span::raw(s).add_modifier(Modifier::BOLD)))
@@ -82,14 +82,14 @@ fn wrap_text(text: &str, max_width: usize) -> Vec<String> {
     let mut current_line = String::new();
 
     for word in text.split_whitespace() {
-        // Handle words longer than max_width by splitting them
+        // 超過 max_width 的單字要拆開處理
         if word.chars().count() > max_width {
-            // Flush current line first
+            // 先把目前這行輸出
             if !current_line.is_empty() {
                 lines.push(current_line);
                 current_line = String::new();
             }
-            // Split long word into chunks
+            // 把長單字拆成多個區塊
             let mut chars = word.chars().peekable();
             while chars.peek().is_some() {
                 let chunk: String = chars.by_ref().take(max_width).collect();

@@ -56,7 +56,7 @@ impl SearchMatcher {
         }
     }
 
-    /// Quick check if string matches without computing match positions
+    /// 快速檢查字串是否命中，不計算命中位置
     pub fn matches(&self, s: &str) -> bool {
         if self.query.is_empty() {
             return false;

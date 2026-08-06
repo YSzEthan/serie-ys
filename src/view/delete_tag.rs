@@ -92,12 +92,12 @@ impl<'a> DeleteTagView<'a> {
             return;
         };
 
-        // Prepare data for background thread
+        // 為背景執行緒準備資料
         let repo_path = self.repo_path.clone();
         let delete_from_remote = self.delete_from_remote;
         let tx = self.tx.clone();
 
-        // Build refresh context before closing
+        // 在關閉前先建好 refresh context
         let list_context = self
             .commit_list_state
             .as_ref()
@@ -110,7 +110,7 @@ impl<'a> DeleteTagView<'a> {
                 show_remote_refs: true,
             });
 
-        // Show pending overlay and close dialog
+        // 顯示 pending overlay 並關閉對話框
         let pending_msg = if delete_from_remote {
             format!("Deleting tag '{tag_name}' from local and remote...")
         } else {
@@ -121,7 +121,7 @@ impl<'a> DeleteTagView<'a> {
         });
         self.tx.send(AppEvent::CloseDeleteTag);
 
-        // Run git commands in background
+        // 在背景執行 git 指令
         thread::spawn(move || {
             if let Err(e) = delete_tag(&repo_path, &tag_name) {
                 tx.send(AppEvent::HidePendingOverlay);
@@ -135,13 +135,13 @@ impl<'a> DeleteTagView<'a> {
                     tx.send(AppEvent::NotifyError(format!(
                         "Local tag deleted, but failed to delete from remote: {e}"
                     )));
-                    // Still refresh to show deletion
+                    // 仍然要 refresh 以顯示刪除結果
                     tx.send(AppEvent::Refresh(RefreshViewContext::List { list_context }));
                     return;
                 }
             }
 
-            // Success
+            // 成功
             let msg = if delete_from_remote {
                 format!("Tag '{tag_name}' deleted from local and remote")
             } else {

@@ -37,9 +37,9 @@ mod status_line;
 
 const SSH_OPEN_PREFIX: &str = "SSH: ⌘/⌥/⇧+Click ";
 
-/// Short label for an OSC 8 hyperlink. GitHub issue/PR URLs collapse to
-/// `[#N]`; anything else falls back to `[open]`. Host-gated to `github.com`
-/// so URLs like `https://example.com/blog/issues/2024` aren't misread.
+/// OSC 8 超連結的簡短標籤。GitHub issue/PR 網址會縮成
+/// `[#N]`；其他一律 fallback 成 `[open]`。用 host 限定在 `github.com`，
+/// 避免像 `https://example.com/blog/issues/2024` 這種網址被誤判。
 fn short_link_label(url: &str) -> String {
     let on_github = url.starts_with("https://github.com/") || url.starts_with("http://github.com/");
     let is_issue_or_pr = url.contains("/issues/") || url.contains("/pull/");
@@ -75,9 +75,9 @@ pub struct AppContext {
     pub core_config: CoreConfig,
     pub ui_config: UiConfig,
     pub color_theme: ColorTheme,
-    /// Resolved graph style (CLI flag takes precedence over config file,
-    /// already merged -- unlike `core_config.option.graph_style`, which is
-    /// the raw config-file value and does NOT reflect a `-s` override).
+    /// 已解析完成的 graph 風格（CLI flag 優先於設定檔，已經合併過——
+    /// 不同於 `core_config.option.graph_style`，那是設定檔的原始值，
+    /// 不會反映 `-s` 的覆寫）。
     pub graph_style: GraphStyle,
 }
 
@@ -239,10 +239,10 @@ impl App<'_> {
                 }
 
                 if self.view.take_graph_clear() {
-                    // Full backing-buffer clear + repaint, requested via
-                    // `request_graph_clear()` (e.g. `toggle_remote_refs`).
-                    // Unrelated to `set_show_remote_refs`'s doc comment,
-                    // which covers a separate `terminal.clear()` in `lib.rs`.
+                    // 完整清空 backing buffer 並重繪，由
+                    // `request_graph_clear()` 觸發（例如 `toggle_remote_refs`）。
+                    // 跟 `set_show_remote_refs` 文件註解裡提到的無關，
+                    // 那個是 `lib.rs` 裡另一處獨立的 `terminal.clear()`。
                     terminal.clear()?;
                 }
                 terminal.draw(|f| self.render(f))?;
@@ -261,7 +261,7 @@ impl App<'_> {
                     continue;
                 }
                 AppEvent::Key(key) => {
-                    // Handle pending overlay - Esc hides it
+                    // 處理 pending overlay——Esc 會把它藏起來
                     if self.pending_message.is_some() {
                         if let Some(UserEvent::Cancel) = self.ctx.keybind.get(&key) {
                             self.pending_message = None;
@@ -270,11 +270,11 @@ impl App<'_> {
                             ));
                             continue;
                         }
-                        // Block other keys while pending
+                        // pending 期間擋掉其他按鍵
                         continue;
                     }
 
-                    // Picker intercepts input; ForceQuit (Ctrl-C) falls through so
+                    // Picker 會攔截輸入；ForceQuit（Ctrl-C）例外放行，讓
                     // 使用者在 picker 中仍能離開程式。
                     if !matches!(self.ctx.keybind.get(&key), Some(UserEvent::ForceQuit))
                         && self.status_line_state.handle_intercepting_key(key)
@@ -290,7 +290,7 @@ impl App<'_> {
 
                     if let Some(UserEvent::Cancel) = user_event {
                         if !self.app_status.numeric_prefix.is_empty() {
-                            // Clear numeric prefix and cancel the event
+                            // 清掉數字前綴並取消這個事件
                             self.app_status.numeric_prefix.clear();
                             continue;
                         }
@@ -940,7 +940,7 @@ impl App<'_> {
     }
 
     fn open_user_command_inline(&mut self, user_command_number: usize) {
-        // Guard: skip virtual row
+        // Guard：略過 virtual row
         let is_virtual = match &self.view {
             View::List(view) => view.as_list_state().is_virtual_row_selected(),
             View::Detail(view) => view.as_list_state().is_virtual_row_selected(),
@@ -966,7 +966,7 @@ impl App<'_> {
         );
         match result {
             Ok(output) => {
-                // take list state only when the command execution is successful, to avoid losing the state when the command fails
+                // 只有指令執行成功才取出 list state，避免指令失敗時把 state 弄丟
                 let commit_list_state = match self.view {
                     View::List(ref mut view) => view.take_list_state(),
                     View::Detail(ref mut view) => view.take_list_state(),
@@ -1048,7 +1048,7 @@ impl App<'_> {
                     self.view.refresh();
                 }
 
-                // notify after resuming and refreshing
+                // 在 resume 與 refresh 之後才通知
                 if let Err(err) = exec_result {
                     self.ec.send(AppEvent::NotifyError(err));
                 }
@@ -1781,16 +1781,16 @@ fn build_external_command_parameters<'a>(
             Ref::RemoteBranch { .. } => remote_branches.push(r.name()),
             Ref::Stash { .. } => {
                 stash = Some(r.name());
-                continue; // skip stashes from {{refs}}
+                continue; // {{refs}} 不列入 stash
             }
         }
         all_refs.push(r.name());
     }
 
-    let area_width = view_area.width.saturating_sub(4); // minus the left and right padding
+    let area_width = view_area.width.saturating_sub(4); // 扣掉左右 padding
     let area_height = (view_area.height.saturating_sub(1))
         .min(ctx.ui_config.user_command.height)
-        .saturating_sub(1); // minus the top border
+        .saturating_sub(1); // 扣掉上邊框
     Ok(ExternalCommandParameters {
         command,
         target_hash,
@@ -1813,20 +1813,20 @@ mod tests {
 
     #[rustfmt::skip]
     #[rstest]
-    #[case("",    UserEvent::NavigateDown, UserEventWithCount::new(UserEvent::NavigateDown, 1))] // no prefix
-    #[case("5",   UserEvent::NavigateUp,   UserEventWithCount::new(UserEvent::NavigateUp, 5))] // with prefix
-    #[case("0",   UserEvent::PageDown,     UserEventWithCount::new(UserEvent::PageDown, 1))] // zero should be converted to 1
-    #[case("42",  UserEvent::ScrollDown,   UserEventWithCount::new(UserEvent::ScrollDown, 42))] // multi-digit number
-    #[case("999", UserEvent::PageDown,     UserEventWithCount::new(UserEvent::PageDown, 999))] // large number
-    #[case("abc", UserEvent::ScrollUp,     UserEventWithCount::new(UserEvent::ScrollUp, 1))] // should fallback to 1
-    #[case("5",   UserEvent::Quit,         UserEventWithCount::new(UserEvent::Quit, 1))] // non-countable event with prefix
-    #[case("",    UserEvent::Confirm,      UserEventWithCount::new(UserEvent::Confirm, 1))] // non-countable event without prefix
+    #[case("",    UserEvent::NavigateDown, UserEventWithCount::new(UserEvent::NavigateDown, 1))] // 無前綴
+    #[case("5",   UserEvent::NavigateUp,   UserEventWithCount::new(UserEvent::NavigateUp, 5))] // 有前綴
+    #[case("0",   UserEvent::PageDown,     UserEventWithCount::new(UserEvent::PageDown, 1))] // 零應轉換成 1
+    #[case("42",  UserEvent::ScrollDown,   UserEventWithCount::new(UserEvent::ScrollDown, 42))] // 多位數
+    #[case("999", UserEvent::PageDown,     UserEventWithCount::new(UserEvent::PageDown, 999))] // 大數字
+    #[case("abc", UserEvent::ScrollUp,     UserEventWithCount::new(UserEvent::ScrollUp, 1))] // 應該 fallback 成 1
+    #[case("5",   UserEvent::Quit,         UserEventWithCount::new(UserEvent::Quit, 1))] // 不可計數事件，有前綴
+    #[case("",    UserEvent::Confirm,      UserEventWithCount::new(UserEvent::Confirm, 1))] // 不可計數事件，無前綴
     fn test_process_numeric_prefix(
         #[case] numeric_prefix: &str,
         #[case] user_event: UserEvent,
         #[case] expected: UserEventWithCount,
     ) {
-        let dummy_key_event = KeyEvent::from(KeyCode::Enter); // KeyEvent is not used in the logic
+        let dummy_key_event = KeyEvent::from(KeyCode::Enter); // 邏輯中不會用到 KeyEvent
         let actual = process_numeric_prefix(numeric_prefix, user_event, dummy_key_event);
         assert_eq!(actual, expected);
     }

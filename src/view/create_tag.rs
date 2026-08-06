@@ -64,7 +64,7 @@ impl<'a> CreateTagView<'a> {
     pub fn handle_event(&mut self, event_with_count: UserEventWithCount, key: KeyEvent) {
         use ratatui::crossterm::event::KeyCode;
 
-        // Handle Tab for focus switching (before UserEvent processing)
+        // 處理 Tab 切換焦點（要在 UserEvent 處理之前）
         if key.code == KeyCode::Tab {
             self.focus_next();
             return;
@@ -74,13 +74,13 @@ impl<'a> CreateTagView<'a> {
             return;
         }
 
-        // Handle Backspace for input (don't close dialog)
+        // 處理 Backspace 輸入（不要關閉對話框）
         if key.code == KeyCode::Backspace {
             self.handle_input(key);
             return;
         }
 
-        // In text fields, y/n are text input, not confirm/cancel
+        // 在文字欄位中，y/n 是文字輸入，不是 confirm/cancel
         if matches!(
             self.focused_field,
             FocusedField::TagName | FocusedField::Message
@@ -164,14 +164,14 @@ impl<'a> CreateTagView<'a> {
             Some(message.to_string())
         };
 
-        // Prepare data for background thread
+        // 為背景執行緒準備資料
         let repo_path = self.repo_path.clone();
         let tag_name = tag_name.to_string();
         let commit_hash = self.commit_hash.clone();
         let push_to_remote = self.push_to_remote;
         let tx = self.tx.clone();
 
-        // Build refresh context before closing
+        // 在關閉前先建好 refresh context
         let list_context = self
             .commit_list_state
             .as_ref()
@@ -184,7 +184,7 @@ impl<'a> CreateTagView<'a> {
                 show_remote_refs: true,
             });
 
-        // Show pending overlay and close dialog
+        // 顯示 pending overlay 並關閉對話框
         let pending_msg = if push_to_remote {
             format!("Creating and pushing tag '{tag_name}'...")
         } else {
@@ -195,7 +195,7 @@ impl<'a> CreateTagView<'a> {
         });
         self.tx.send(AppEvent::CloseCreateTag);
 
-        // Run git commands in background
+        // 在背景執行 git 指令
         thread::spawn(move || {
             if let Err(e) = create_tag(&repo_path, &tag_name, &commit_hash, message.as_deref()) {
                 tx.send(AppEvent::HidePendingOverlay);
@@ -209,13 +209,13 @@ impl<'a> CreateTagView<'a> {
                     tx.send(AppEvent::NotifyError(format!(
                         "Tag created locally, but push failed: {e}"
                     )));
-                    // Still refresh to show locally created tag
+                    // 仍然要 refresh 以顯示本機已建立的 tag
                     tx.send(AppEvent::Refresh(RefreshViewContext::List { list_context }));
                     return;
                 }
             }
 
-            // Success
+            // 成功
             let msg = if push_to_remote {
                 format!("Tag '{tag_name}' created and pushed to origin")
             } else {
@@ -232,11 +232,11 @@ impl<'a> CreateTagView<'a> {
             return;
         };
 
-        // Render commit list in background
+        // 在背景渲染 commit list
         let commit_list = CommitList::new(self.ctx.clone(), 0);
         f.render_stateful_widget(commit_list, area, list_state);
 
-        // Dialog dimensions
+        // 對話框尺寸
         let dialog_width = 50u16.min(area.width.saturating_sub(4));
         let dialog_height = 10u16.min(area.height.saturating_sub(2));
 
@@ -275,14 +275,14 @@ impl<'a> CreateTagView<'a> {
         ])
         .areas(inner_area);
 
-        // Commit hash
+        // Commit hash 顯示
         let commit_line = Line::from(vec![
             Span::raw("Commit: ").fg(self.ctx.color_theme.fg),
             Span::raw(self.commit_hash.as_short_hash()).fg(self.ctx.color_theme.list_hash_fg),
         ]);
         f.render_widget(Paragraph::new(commit_line), commit_area);
 
-        // Tag name input
+        // Tag 名稱輸入欄
         let tag_input_area = self.render_input_field(
             f,
             tag_name_area,
@@ -291,7 +291,7 @@ impl<'a> CreateTagView<'a> {
             FocusedField::TagName,
         );
 
-        // Message input
+        // 訊息輸入欄
         let msg_input_area = self.render_input_field(
             f,
             message_area,
@@ -300,7 +300,7 @@ impl<'a> CreateTagView<'a> {
             FocusedField::Message,
         );
 
-        // Push checkbox
+        // Push 勾選框
         let checkbox = if self.push_to_remote { "[x]" } else { "[ ]" };
         let checkbox_style = if self.focused_field == FocusedField::PushCheckbox {
             Style::default()
@@ -325,7 +325,7 @@ impl<'a> CreateTagView<'a> {
         );
         f.render_widget(Paragraph::new(hint_line).centered(), hint_area);
 
-        // Cursor positioning
+        // 游標定位
         if self.focused_field == FocusedField::TagName {
             let cursor_x = tag_input_area.x + 1 + self.tag_name_input.visual_cursor() as u16;
             f.set_cursor_position((

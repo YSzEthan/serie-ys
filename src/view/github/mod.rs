@@ -24,9 +24,8 @@ use timeline::{TimelineEntry, TimelineLoad};
 const PREFETCH_THRESHOLD: usize = 5;
 const TIMELINE_LOAD_MORE_THRESHOLD: usize = 5;
 
-/// Which region of the timeline a divider closes off. Colour is decided by
-/// what came *before* the divider, not what follows — reading top to bottom,
-/// that's the piece of context the eye needs while scrolling.
+/// 分隔線關閉的是 timeline 的哪個區段。顏色由分隔線*之前*的內容決定，
+/// 不是後面的——由上往下讀時，那才是眼睛在捲動時需要的上下文。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Section {
     Body,
@@ -35,12 +34,12 @@ enum Section {
 }
 
 impl Section {
-    /// Indexed rather than Rgb so these survive terminals without truecolor.
+    /// 用 Indexed 而非 Rgb，讓這些顏色在不支援 truecolor 的終端機上也能顯示。
     fn color(self) -> Color {
         match self {
-            Section::Body => Color::Indexed(146), // pastel blue-grey (#afafd7)
-            Section::Comment => Color::Indexed(151), // pastel green-grey (#afd7af)
-            Section::Commit => Color::Indexed(186), // pastel yellow-grey (#d7d787)
+            Section::Body => Color::Indexed(146),    // 粉藍灰 (#afafd7)
+            Section::Comment => Color::Indexed(151), // 粉綠灰 (#afd7af)
+            Section::Commit => Color::Indexed(186),  // 粉黃灰 (#d7d787)
         }
     }
 
@@ -149,8 +148,8 @@ pub struct GitHubView<'a> {
 
     flash_message: Option<(String, bool)>,
 
-    /// Render-time overflow flag (selected row's title+author wider than
-    /// available). App reads this to decide whether to tick `marquee_frame`.
+    /// 渲染時的溢出旗標（選取列的 title+author 寬度超過可用空間）。
+    /// App 讀取這個值來決定要不要跳動 `marquee_frame`。
     selected_row_overflows: Cell<bool>,
 
     issues_next_cursor: Option<String>,
@@ -163,17 +162,16 @@ pub struct GitHubView<'a> {
     timeline: FxHashMap<(GhItemKind, u64), TimelineEntry>,
     last_preview_len: usize,
 
-    /// Bumped on any in-place edit the preview can show — currently body
-    /// replacement and bulk reload. `set_pr_draft_flag` deliberately does not,
-    /// since `is_draft` never reaches `build_preview_content`; that changes the
-    /// day the preview starts showing draft status.
+    /// 在 preview 能顯示的任何就地編輯時遞增——目前是 body 取代與批次重新
+    /// 載入。`set_pr_draft_flag` 刻意不遞增，因為 `is_draft` 從未傳到
+    /// `build_preview_content`；等哪天 preview 開始顯示 draft 狀態，這點就要改。
     body_rev: u64,
     preview_cache: PreviewCache,
-    /// Preview content height, recorded by `render_preview`. The scroll
-    /// handlers use it instead of re-deriving it from `height`.
+    /// Preview 內容高度，由 `render_preview` 記錄。捲動處理函式直接用這個值，
+    /// 不會從 `height` 重新推算。
     preview_height: usize,
-    /// Whether the commit log shows individually or as one collapsed summary
-    /// line. All-or-nothing (`z` toggles the whole log), not per-commit.
+    /// commit log 是逐筆顯示還是收合成單一摘要列。全有全無（`z` 切換整個
+    /// log），不是逐筆切換。
     expand_commits: bool,
 
     tx: Sender,
@@ -290,9 +288,8 @@ impl<'a> GitHubView<'a> {
         }
     }
 
-    /// Returns `true` when the page was accepted (generation matched and
-    /// state updated). Caller uses this to decide whether to also sync the
-    /// cache, keeping view ↔ cache in lockstep.
+    /// 這一頁被接受時（generation 相符且狀態已更新）回傳 `true`。呼叫端
+    /// 用這個值來判斷要不要同步更新 cache，讓 view 與 cache 保持一致。
     pub fn append_issues(
         &mut self,
         items: Vec<GhIssue>,
@@ -524,10 +521,9 @@ impl<'a> GitHubView<'a> {
         }
     }
 
-    /// Collapsing/expanding doesn't reset `preview_offset` — unlike the ~20
-    /// sites that reset it on navigation, this is a content-density toggle,
-    /// not a "you're looking at something else now" moment. The existing
-    /// clamp in `render_preview` keeps it from scrolling past the new end.
+    /// 收合／展開不會重置 `preview_offset`——跟另外約 20 個在導覽時會重置
+    /// 它的地方不同，這只是內容密度的切換，不是「你現在看的是別的東西了」
+    /// 那種時刻。`render_preview` 裡既有的 clamp 會擋住捲過新結尾的情況。
     fn toggle_commit_log(&mut self) {
         self.expand_commits = !self.expand_commits;
     }
@@ -581,8 +577,8 @@ impl<'a> GitHubView<'a> {
         hints
     }
 
-    /// Unlike `action_hints`, not gated on `state == "OPEN"` — a closed or
-    /// merged PR still has a commit log worth collapsing.
+    /// 跟 `action_hints` 不同，不受 `state == "OPEN"` 限制——已關閉或已
+    /// merge 的 PR 一樣有值得收合的 commit log。
     fn commit_log_hint(&self) -> Option<(UserEvent, &'static str)> {
         if !matches!(self.active_tab, GitHubTab::PullRequests) {
             return None;
@@ -658,7 +654,7 @@ impl<'a> GitHubView<'a> {
         !self.search_input.value().is_empty()
     }
 
-    /// Map visible index to actual data index (through filter if active)
+    /// 把可視索引對應到實際資料索引（若有篩選則透過篩選對應）
     fn actual_index(&self, visible_idx: usize) -> usize {
         if self.has_active_filter() {
             self.current_filtered_indices()
@@ -682,10 +678,9 @@ impl<'a> GitHubView<'a> {
         }
     }
 
-    /// Borrows the selected issue/PR plus its timeline entry into one value —
-    /// everything `build_preview_content` and `PreviewInput::cache_key` read,
-    /// so neither can drift from the other by reading a field the other
-    /// doesn't know about.
+    /// 把選取的 issue/PR 及其 timeline entry 一併借出成單一值——這是
+    /// `build_preview_content` 與 `PreviewInput::cache_key` 讀取的全部內容，
+    /// 兩者不會因為讀到對方不知道的欄位而彼此失準。
     fn preview_input(&self, width: u16) -> PreviewInput<'_> {
         let (number, kind) = self
             .selected_number_and_kind()
@@ -742,8 +737,8 @@ mod tests {
     const TERM_H: u16 = 20;
     const LAST_MARKER: &str = "尾端標記";
 
-    /// A body long enough that every source line wraps several times at the
-    /// preview width — the condition the old slice-then-wrap code got wrong.
+    /// 每一行原始內容在 preview 寬度下都會折行好幾次的長 body——這正是
+    /// 舊版「先切片再折行」程式碼會出錯的情況。
     fn long_body() -> String {
         let mut body = String::new();
         for i in 0..10 {
@@ -790,17 +785,17 @@ mod tests {
                 view.render(f, area, 0);
             })
             .unwrap();
-        // `TestBackend`'s Display skips the blank filler cell that follows a
-        // double-width glyph, so CJK text comes back contiguous.
+        // `TestBackend` 的 Display 會跳過雙寬字元後面接的空白填充格，
+        // 所以 CJK 文字讀回來會是連續的。
         terminal.backend().to_string()
     }
 
     #[test]
     fn preview_scrolls_all_the_way_to_the_last_line() {
         let mut view = view_with_long_body();
-        // First render populates `last_preview_len` (visual lines).
+        // 第一次 render 會填入 `last_preview_len`（視覺行數）。
         render_to_string(&mut view);
-        // Ask for far more scroll than exists; render clamps it to the bottom.
+        // 要求遠超過實際內容的捲動量；render 會把它限制在底端。
         view.preview_offset = usize::MAX / 2;
         let screen = render_to_string(&mut view);
 
@@ -822,9 +817,9 @@ mod tests {
         let expected = total.saturating_sub(view.preview_height);
         assert_eq!(view.preview_offset, expected);
 
-        // The clamp must be in wrapped lines, not source lines. Comparing
-        // against the cache's own source count is what gives this test teeth:
-        // the old logical-line arithmetic made the two equal.
+        // 限制範圍算的必須是折行後的行數，不是原始行數。跟 cache 自己的
+        // 原始行數比對，才是這個測試真正有威力的地方：舊版用邏輯行計算，
+        // 會讓兩者算出一樣的值。
         let source_lines = view.preview_cache.lines().len();
         assert!(
             total > source_lines,
@@ -842,13 +837,13 @@ mod tests {
 
     #[test]
     fn preview_cache_invalidates_when_comments_load_empty() {
-        // Short body so the comment section is on screen without scrolling.
+        // body 短一點，讓留言區段不用捲動就在畫面上。
         let mut view = view_with_body("short".to_string());
         let screen = render_to_string(&mut view);
         assert!(screen.contains("loading comments"), "got:\n{screen}");
 
-        // Zero comments, but *loaded* — item count stays 0, so only the stage
-        // distinguishes this from the pending state.
+        // 零則留言，但*已載入*——項目數量仍是 0，所以只有 stage 能區分
+        // 這跟 pending 狀態的差別。
         view.append_timeline_items(1, GhItemKind::PullRequest, timeline_page(Vec::new(), None));
         let screen = render_to_string(&mut view);
 
@@ -913,9 +908,9 @@ mod tests {
         assert_eq!(
             dividers,
             vec![
-                // meta → body: markdown's own grey, unchanged
+                // meta → body：markdown 自己的灰色，維持不變
                 ('─', Some(Color::DarkGray)),
-                // body → first commit
+                // body → 第一個 commit
                 ('─', Some(Section::Body.color())),
                 // commit → comment
                 ('─', Some(Section::Commit.color())),
@@ -928,7 +923,7 @@ mod tests {
     #[test]
     fn preview_cache_invalidates_when_more_comments_start_loading() {
         let mut view = view_with_body("short".to_string());
-        // One page in, with another page available.
+        // 已載入一頁，且還有下一頁可以載入。
         view.append_timeline_items(
             1,
             GhItemKind::PullRequest,
@@ -938,11 +933,11 @@ mod tests {
             ),
         );
         let screen = render_to_string(&mut view);
-        // Short fragment: the full footer wraps at this width.
+        // 只取片段比對：在這個寬度下，完整的 footer 文字會折行。
         assert!(screen.contains("more comments"), "got:\n{screen}");
 
-        // Fetching the next page changes only `loading_more` — no item count,
-        // no stage change — so the footer only updates if the key tracks it.
+        // 抓取下一頁只會改變 `loading_more`——項目數量沒變、stage 也沒變——
+        // 所以 footer 只有在 key 有追蹤這個欄位時才會更新。
         view.preview_offset = usize::MAX / 2;
         view.maybe_load_more_timeline();
         let screen = render_to_string(&mut view);
@@ -985,9 +980,9 @@ mod tests {
         view
     }
 
-    /// The Issues tab shares every code path with PRs from `TimelineEntry`
-    /// down — this pins down that the shared `timelineItems` plumbing still
-    /// renders an Issue's body and comments the same way it did before 3b.
+    /// Issues 分頁從 `TimelineEntry` 以下跟 PR 共用每一條程式碼路徑——
+    /// 這個測試釘住了共用的 `timelineItems` 管線仍然跟 3b 之前一樣，
+    /// 正確渲染 Issue 的 body 與留言。
     #[test]
     fn issue_timeline_renders_like_pr_timeline() {
         let mut view = view_with_issue("issue body".to_string());
@@ -1019,10 +1014,9 @@ mod tests {
         );
     }
 
-    /// A page consisting entirely of nodes `TimelineItem::from_gh` drops
-    /// (unrecognized `__typename`) must fall back the same way a genuinely
-    /// empty page does — filtering happens *after* `entry.items.is_empty()`
-    /// would already have said "not empty".
+    /// 一頁全部都是 `TimelineItem::from_gh` 會丟棄的節點（無法辨識的
+    /// `__typename`）時，必須 fallback 成跟真正空頁一樣的行為——過濾動作
+    /// 發生在 `entry.items.is_empty()` 已經判定「不是空的」之*後*。
     #[test]
     fn all_unknown_timeline_still_draws_the_body_divider() {
         let mut view = view_with_body("body".to_string());
@@ -1088,9 +1082,9 @@ mod tests {
                 None,
             ),
         );
-        // Warm the cache before toggling: a cold cache rebuilds unconditionally
-        // regardless of whether `expand_commits` is even tracked in the cache
-        // key, which would let this test pass even if that tracking broke.
+        // 切換前先把 cache 熱好：冷 cache 一定會無條件重建，不管
+        // `expand_commits` 有沒有被 cache key 追蹤，這種情況下就算追蹤機制
+        // 壞了，這個測試也照樣會過。
         render_to_string(&mut view);
 
         view.toggle_commit_log();
@@ -1099,7 +1093,7 @@ mod tests {
         assert!(!screen.contains("aaaaaaa"), "got:\n{screen}");
         assert!(!screen.contains("bbbbbbb"), "got:\n{screen}");
         assert!(screen.contains("2 commits"), "got:\n{screen}");
-        // The comment in between must survive collapsing — only commits fold.
+        // 中間夾的留言必須在收合後存活——只有 commit 會被折疊。
         assert!(screen.contains("one"), "got:\n{screen}");
     }
 

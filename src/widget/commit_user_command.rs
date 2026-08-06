@@ -65,7 +65,7 @@ impl StatefulWidget for CommitUserCommand<'_> {
     type State = CommitUserCommandState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
-        let content_area_height = area.height as usize - 1; // minus the top border
+        let content_area_height = area.height as usize - 1; // 扣掉上方邊框
         self.update_state(state, self.lines.len(), content_area_height);
 
         self.render_user_command_lines(area, buf, state);

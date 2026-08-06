@@ -108,7 +108,7 @@ impl<'a> UserCommandView<'a> {
                 if n == self.user_command_number {
                     self.tx.send(AppEvent::CloseUserCommand);
                 } else {
-                    // switch to another user command
+                    // 切換到另一個 user command
                     self.tx.send(AppEvent::OpenUserCommand(n));
                 }
             }
@@ -245,7 +245,7 @@ fn build_user_command_output_lines(
 ) -> Result<Vec<Line<'static>>, String> {
     let tab_spaces = " ".repeat(ctx.core_config.user_command.tab_width as usize);
     command_output
-        .replace('\t', &tab_spaces) // tab is not rendered correctly, so replace it
+        .replace('\t', &tab_spaces) // tab 無法正確渲染，所以要替換掉
         .into_text()
         .map(|t| t.into_iter().collect())
         .map_err(|e| e.to_string())

@@ -157,10 +157,9 @@ enum StatusLine {
     NotificationSuccess(String),
     NotificationWarn(String),
     NotificationError(String),
-    /// A notification whose tail is an OSC 8 hyperlink. The renderer must
-    /// bypass `Line::raw` — which would split the escape byte-by-byte across
-    /// cells — and instead stuff the entire payload into one cell via
-    /// `set_symbol` + `set_skip` on the following cells.
+    /// 尾端是 OSC 8 超連結的通知。渲染時必須繞過 `Line::raw`——
+    /// 它會把跳脫序列逐 byte 拆到不同 cell——改成用
+    /// `set_symbol` + 後續 cell 的 `set_skip` 把整包 payload 塞進單一 cell。
     NotificationHyperlink {
         prefix: &'static str,
         label: String,

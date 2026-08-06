@@ -22,33 +22,33 @@ use graph::Graph;
 use rustc_hash::FxHashSet;
 use serde::Deserialize;
 
-/// ysgit - A rich git commit graph in your terminal, like magic 📚
+/// ysgit - 在你的終端機中呈現豐富的 git commit 圖，宛如魔法 📚
 #[derive(Parser)]
 #[command(name = "ysgit", version)]
 struct Args {
-    /// Path to git repository [default: current directory]
-    // `hide_default_value`: the doc comment above already spells the default out
-    // in words, so letting clap append its own `[default: .]` printed it twice.
+    /// git 倉庫路徑 [default: current directory]
+    // `hide_default_value`：上面的 doc comment 已經用文字寫出預設值了，
+    // 若讓 clap 再自動附加 `[default: .]` 就會重複顯示兩次。
     #[arg(default_value = ".", hide_default_value = true)]
     path: String,
 
-    /// Maximum number of commits to render
+    /// 要渲染的最大 commit 數量
     #[arg(short = 'n', long, value_name = "NUMBER")]
     max_count: Option<usize>,
 
-    /// Commit ordering algorithm [default: chrono]
+    /// Commit 排序演算法 [default: chrono]
     #[arg(short, long, value_name = "TYPE")]
     order: Option<CommitOrderType>,
 
-    /// Commit graph cell width [default: auto]
+    /// Commit 圖形格子寬度 [default: auto]
     #[arg(short, long, value_name = "TYPE")]
     graph_width: Option<GraphWidthType>,
 
-    /// Commit graph edge style [default: rounded]
+    /// Commit 圖形邊線風格 [default: rounded]
     #[arg(short = 's', long, value_name = "TYPE")]
     graph_style: Option<GraphStyle>,
 
-    /// Initial selection of commit [default: latest]
+    /// 初始選取的 commit [default: latest]
     #[arg(short, long, value_name = "TYPE")]
     initial_selection: Option<InitialSelection>,
 }
@@ -99,14 +99,14 @@ impl From<Option<InitialSelection>> for app::InitialSelection {
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-/// BFS from all local refs to find commits reachable only from remote branches.
+/// 從所有本地 ref 開始執行 BFS，找出只能從遠端分支到達的 commit。
 pub fn find_remote_only_commits(
     repository: &git::Repository,
     full_graph: &Graph,
 ) -> FxHashSet<git::CommitHash> {
     let all_hashes: FxHashSet<git::CommitHash> = full_graph.commit_hashes.iter().cloned().collect();
 
-    // Collect BFS seeds: commits with local refs (Branch, Tag, Stash) + HEAD
+    // 收集 BFS 起始點：帶有本地 ref（Branch、Tag、Stash）的 commit + HEAD
     let mut seeds: Vec<git::CommitHash> = Vec::new();
     for (commit_hash, refs) in repository.refs_with_commits() {
         if !all_hashes.contains(commit_hash) {
@@ -123,14 +123,14 @@ pub fn find_remote_only_commits(
         }
     }
 
-    // Also add HEAD target
+    // 同時加入 HEAD 指向的目標
     if let git::Head::Detached { target } = repository.head() {
         if all_hashes.contains(target) {
             seeds.push(target.clone());
         }
     }
 
-    // BFS from seeds, walking parent links
+    // 從起始點開始執行 BFS，沿著 parent 連結走訪
     let mut reachable: FxHashSet<git::CommitHash> = FxHashSet::default();
     let mut queue: VecDeque<git::CommitHash> = VecDeque::new();
     for seed in seeds {
@@ -146,7 +146,7 @@ pub fn find_remote_only_commits(
         }
     }
 
-    // Remote-only = in graph but not reachable from local refs
+    // Remote-only = 在圖形中但無法從本地 ref 到達
     all_hashes
         .into_iter()
         .filter(|h| !reachable.contains(h))
@@ -187,9 +187,9 @@ fn build_graph_artifacts(
     (filtered, remote_only)
 }
 
-/// Fast-path helper: if the refs changed in a way that shifts commits between
-/// local-reachable and remote-only, rebuild the filtered graph.
-/// Returns whether a rebuild actually happened (caller clears the screen if so).
+/// 快速路徑輔助函式：若 ref 的變化導致 commit 在 local-reachable 與
+/// remote-only 之間轉移，就重建過濾後的圖形。
+/// 回傳是否真的發生了重建（若有，呼叫端會清空畫面）。
 fn try_refresh_filtered_for_ref_change(
     repository: &git::Repository,
     graph: &Graph,
@@ -205,13 +205,12 @@ fn try_refresh_filtered_for_ref_change(
     true
 }
 
-/// Returns true when HEAD points at a commit that has a local branch or tag
-/// ref. Used to gate col-0 reservation in the graph layout — detached HEADs
-/// without any ref shouldn't elbow other branches out of col 0.
+/// 當 HEAD 指向帶有本地 branch 或 tag ref 的 commit 時回傳 true。
+/// 用來決定圖形佈局中是否保留 col 0 — 沒有任何 ref 的 detached HEAD
+/// 不該把其他分支擠出 col 0。
 ///
-/// `RemoteBranch` is deliberately excluded: a detached HEAD sitting on a
-/// commit that only has a remote ref isn't something the user has a local
-/// handle for, so we don't treat it as an anchor worth protecting.
+/// 這裡刻意排除 `RemoteBranch`：若 detached HEAD 停在只有遠端 ref 的
+/// commit 上，使用者並沒有對應的本地把手可用，因此不把它視為值得保護的錨點。
 fn head_has_named_ref(repository: &git::Repository) -> bool {
     match repository.head() {
         git::Head::Branch { .. } => true,
@@ -283,7 +282,7 @@ pub fn run() -> Result<()> {
     let mut refresh_view_context = None;
     let mut terminal = None;
 
-    // Start file watcher on repo root for auto-refresh
+    // 在 repo 根目錄啟動檔案監控，以便自動重新整理
     let repo_root = Path::new(&args.path)
         .canonicalize()
         .unwrap_or_else(|_| Path::new(&args.path).to_path_buf());
@@ -336,14 +335,14 @@ pub fn run() -> Result<()> {
                 let new_head = resolve_head_commit_hash(&new_repo);
                 let layout_inputs_same = old_head == new_head;
                 if repository.same_commits(&new_repo) && layout_inputs_same {
-                    // Fast path: commits unchanged — reuse the existing graph
-                    // so the screen doesn't flicker on watcher refresh.
-                    // App must release its &repository borrow before mutation.
+                    // 快速路徑：commit 沒有變化 — 重用現有圖形，
+                    // 讓畫面在 watcher 觸發的重新整理時不會閃爍。
+                    // App 必須先釋放對 &repository 的借用，才能進行修改。
                     (filtered_graph, remote_only_commits) = app.into_parts();
                     repository.update_metadata_from(new_repo);
-                    // No head_commit_hash to update here: App::new recomputes
-                    // it fresh from `repository`, which update_metadata_from
-                    // just brought current (it copies ref_map/head/working_changes).
+                    // 這裡不需要更新 head_commit_hash：App::new 會重新
+                    // 從 `repository` 計算，而 update_metadata_from
+                    // 剛把它更新到最新狀態（複製了 ref_map/head/working_changes）。
 
                     let filtered_changed = try_refresh_filtered_for_ref_change(
                         &repository,
@@ -357,8 +356,8 @@ pub fn run() -> Result<()> {
                         }
                     }
                 } else {
-                    // Slow path: commits changed — drop app, rebuild graph,
-                    // and clear the on-screen area for the new frame.
+                    // 慢速路徑：commit 有變化 — 釋放 app、重建圖形，
+                    // 並清空畫面區域以準備繪製新的一幀。
                     drop(app);
                     repository = new_repo;
                     graph = Rc::new(graph::calc_graph(

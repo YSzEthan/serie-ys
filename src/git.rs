@@ -13,7 +13,7 @@ use crate::Result;
 
 const GIT_EMPTY_TREE_HASH: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
-/// Arc<str> for cheap cloning and Send trait (required by mpsc::Sender<AppEvent>)
+/// 使用 Arc<str> 以便宜複製並滿足 Send trait（`mpsc::Sender<AppEvent>` 所需）
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CommitHash(Arc<str>);
 
@@ -207,7 +207,7 @@ impl Repository {
         &self.commits
     }
 
-    /// Compare commit hash sequences to check if the commit graph has changed.
+    /// 比較 commit hash 序列，檢查 commit 圖是否有變化。
     pub fn same_commits(&self, other: &Self) -> bool {
         self.commits
             .iter()
@@ -215,8 +215,8 @@ impl Repository {
             .eq(other.commits.iter().map(|c| &c.commit_hash))
     }
 
-    /// Update refs, head, and working changes from another repository,
-    /// keeping commits and derived data (index, children_map) unchanged.
+    /// 從另一個 repository 更新 refs、head 與 working changes，
+    /// commits 與衍生資料（index、children_map）維持不變。
     pub fn update_metadata_from(&mut self, other: Self) {
         self.ref_map = other.ref_map;
         self.head = other.head;
@@ -273,7 +273,7 @@ impl Repository {
         (commit, changes)
     }
 
-    /// Returns the commit and its refs without spawning git subprocesses for file changes.
+    /// 回傳 commit 與其 refs，不會為了檔案變更而另外啟動 git 子行程。
     pub fn commit_refs(&self, commit_hash: &CommitHash) -> (&Commit, Vec<Ref>) {
         let commit = self.commit(commit_hash).unwrap();
         let refs = self.refs(commit_hash).into_iter().cloned().collect();
@@ -325,12 +325,12 @@ fn load_all_commits(
     })
     .arg(format!("--pretty={}", load_commits_format()))
     .arg("--date=iso-strict")
-    .arg("-z"); // use NUL as a delimiter
+    .arg("-z"); // 用 NUL 作為分隔符
 
-    // exclude stashes and other refs
+    // 排除 stash 及其他 refs
     cmd.arg("--branches").arg("--remotes").arg("--tags");
 
-    // commits that are reachable from the stashes
+    // 加入 stash 可以走到的 commits
     stashes.iter().for_each(|stash| {
         cmd.arg(stash.parent_commit_hashes[0].as_str());
     });
@@ -400,7 +400,7 @@ fn load_all_stashes(path: &Path) -> Vec<Commit> {
         .arg("list")
         .arg(format!("--pretty={}", load_commits_format()))
         .arg("--date=iso-strict")
-        .arg("-z") // use NUL as a delimiter
+        .arg("-z") // 用 NUL 作為分隔符
         .current_dir(path)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
@@ -431,7 +431,7 @@ fn load_commits_format() -> String {
     [
         "%H", "%an", "%ae", "%ad", "%cn", "%ce", "%cd", "%s", "%b", "%P",
     ]
-    .join("%x1f") // use Unit Separator as a delimiter
+    .join("%x1f") // 用 Unit Separator 作為分隔符
 }
 
 fn parse_iso_date(s: &str) -> DateTime<FixedOffset> {
@@ -468,8 +468,8 @@ fn build_commit_index(commits: &[Commit]) -> CommitIndex {
 }
 
 fn merge_stashes_to_commits(commits: Vec<Commit>, stashes: Vec<Commit>) -> Vec<Commit> {
-    // Stash commit has multiple parent commits, but the first parent commit is the commit that the stash was created from.
-    // If the first parent commit is not found, the stash commit is ignored.
+    // stash commit 有多個 parent commit，但第一個 parent commit 才是建立該 stash 時所在的 commit。
+    // 如果找不到第一個 parent commit，該 stash commit 就會被忽略。
     let mut ret = Vec::new();
     let mut statsh_map: FxHashMap<CommitHash, Vec<Commit>> =
         stashes
@@ -527,8 +527,8 @@ fn load_refs(path: &Path) -> (RefMap, Head) {
         } else if let Some(r) = parse_branch_refs(hash, refs) {
             ref_map.entry(hash.into()).or_default().push(r);
         } else if let Some(r) = parse_tag_refs(hash, refs) {
-            // if annotated tag exists, it will be overwritten by the following line of the same tag
-            // this will make the tag point to the commit that the annotated tag points to
+            // 若存在 annotated tag，會被同一個 tag 後面那一行覆蓋
+            // 這樣可以讓 tag 指向 annotated tag 實際指到的 commit
             tag_map.insert(r.name().into(), r);
         }
     }
@@ -545,7 +545,7 @@ fn load_refs(path: &Path) -> (RefMap, Head) {
 }
 
 fn load_stashes_as_refs(path: &Path) -> RefMap {
-    let format = ["%gd", "%H", "%s"].join("%x1f"); // use Unit Separator as a delimiter
+    let format = ["%gd", "%H", "%s"].join("%x1f"); // 用 Unit Separator 作為分隔符
     let mut cmd = Command::new("git")
         .arg("stash")
         .arg("list")
@@ -723,12 +723,12 @@ pub fn load_working_changes(path: &Path) -> Result<WorkingChanges> {
         if line.len() < 4 {
             continue;
         }
-        let x = line.as_bytes()[0]; // staged status
-        let y = line.as_bytes()[1]; // unstaged status
+        let x = line.as_bytes()[0]; // staged 狀態
+        let y = line.as_bytes()[1]; // unstaged 狀態
         let file_path = &line[3..];
 
-        // Untracked files always appear as `??` — both columns must be
-        // handled together since `?` has no independent per-column meaning.
+        // 未追蹤檔案一律顯示為 `??` —— 兩個欄位必須一起處理，
+        // 因為單獨一個 `?` 沒有獨立的欄位意義。
         if x == b'?' && y == b'?' {
             unstaged.push(FileChange::Add {
                 path: file_path.into(),
@@ -737,20 +737,20 @@ pub fn load_working_changes(path: &Path) -> Result<WorkingChanges> {
             continue;
         }
 
-        // Parse staged changes (X column)
+        // 解析 staged 變更（X 欄）
         staged.extend(parse_status_char(x, file_path));
 
-        // Parse unstaged changes (Y column)
+        // 解析 unstaged 變更（Y 欄）
         unstaged.extend(parse_status_char(y, file_path));
     }
 
     let _ = cmd.wait();
 
-    // Get numstat for unstaged changes
+    // 取得 unstaged 變更的 numstat
     let unstaged_stats = get_diff_numstat(path, &[]);
     apply_numstat(&mut unstaged, &unstaged_stats);
 
-    // Get numstat for staged changes
+    // 取得 staged 變更的 numstat
     let staged_stats = get_diff_numstat(path, &["--cached"]);
     apply_numstat(&mut staged, &staged_stats);
 
@@ -822,8 +822,8 @@ fn get_diff_numstat(path: &Path, args: &[&str]) -> FxHashMap<String, (usize, usi
         if parts.len() >= 3 {
             let additions = parts[0].parse::<usize>().unwrap_or(0);
             let deletions = parts[1].parse::<usize>().unwrap_or(0);
-            // For renames, numstat shows the destination path
-            // Handle "from => to" format in numstat
+            // 對於 rename，numstat 顯示的是目的路徑
+            // 處理 numstat 中的 "from => to" 格式
             let file_path = parts[2..].join("\t");
             stats.insert(file_path, (additions, deletions));
         }
@@ -928,14 +928,14 @@ pub fn get_initial_commit_additions(path: &Path, commit_hash: &CommitHash) -> Ve
 
     cmd.wait().unwrap();
 
-    // Use empty tree hash to get numstat for initial commit
+    // 用 empty tree hash 取得初始 commit 的 numstat
     let numstat = get_diff_numstat(path, &[GIT_EMPTY_TREE_HASH, commit_hash.as_str()]);
     apply_numstat(&mut changes, &numstat);
 
     changes
 }
 
-/// Validates a git ref name using `git check-ref-format`.
+/// 用 `git check-ref-format` 驗證 git ref 名稱。
 fn validate_ref_name(name: &str) -> std::result::Result<(), String> {
     if name.is_empty() {
         return Err("Ref name cannot be empty".into());

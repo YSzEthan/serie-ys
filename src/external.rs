@@ -177,10 +177,9 @@ fn copy_to_clipboard_auto(value: String) -> Result<(), String> {
     })
 }
 
-/// Outcome of `open_url`. `Hyperlinked` means we couldn't (or shouldn't) spawn
-/// a browser locally — the caller should instead surface the URL as an OSC 8
-/// clickable button so the user's local terminal can hand it off to their
-/// own browser.
+/// `open_url` 的結果。`Hyperlinked` 表示我們無法（或不該）在本機開瀏覽器 ——
+/// 呼叫端應改為把這個 URL 呈現成 OSC 8 可點擊按鈕，交給使用者本機終端機的
+/// 瀏覽器處理。
 pub enum OpenUrlOutcome {
     Spawned,
     Hyperlinked(String),
@@ -210,9 +209,9 @@ pub fn open_url(url: &str) -> Result<OpenUrlOutcome, String> {
         .map_err(|e| format!("Failed to open URL: {e}"))
 }
 
-/// Format a URL + label into an OSC 8 hyperlink escape sequence. Terminals
-/// that support OSC 8 (ghostty, iTerm2, Kitty, WezTerm) render the label as
-/// a clickable link. tmux gets DCS-passthrough wrapping.
+/// 把 URL 加標籤格式化成 OSC 8 超連結跳脫序列。支援 OSC 8 的終端機（ghostty、
+/// iTerm2、Kitty、WezTerm）會把標籤渲染成可點擊連結。tmux 會另外包一層
+/// DCS passthrough。
 pub fn format_osc8_hyperlink(url: &str, label: &str) -> String {
     let raw = format!("\x1b]8;;{url}\x1b\\{label}\x1b]8;;\x1b\\");
     if is_tmux() {
@@ -282,14 +281,14 @@ fn build_user_command(params: &ExternalCommandParameters) -> Vec<String> {
             continue;
         }
         match arg.as_str() {
-            // If the marker is used as a standalone argument, expand it into multiple arguments.
-            // This allows the command to receive each item as a separate argument and correctly handle items that contain spaces.
+            // 若標記是單獨一個引數，就把它展開成多個引數。
+            // 這樣指令才能把每個項目當成獨立引數接收，正確處理內含空白的項目。
             USER_COMMAND_BRANCHES_MARKER => command.extend(to_vec(&params.branches)),
             USER_COMMAND_REMOTE_BRANCHES_MARKER => command.extend(to_vec(&params.remote_branches)),
             USER_COMMAND_TAGS_MARKER => command.extend(to_vec(&params.tags)),
             USER_COMMAND_REFS_MARKER => command.extend(to_vec(&params.all_refs)),
             USER_COMMAND_PARENT_HASHES_MARKER => command.extend(to_vec(&params.parent_hashes)),
-            // Otherwise, replace the marker within the single argument string.
+            // 否則就在該單一引數字串內取代標記。
             _ => command.push(replace_command_arg(arg, params)),
         }
     }
@@ -327,7 +326,7 @@ mod tests {
 
     #[test]
     fn format_osc52_raw_encodes_value() {
-        // "ABC" → base64 "QUJD"
+        // "ABC" 編碼成 base64 就是 "QUJD"
         assert_eq!(format_osc52_raw("ABC"), "\x1b]52;c;QUJD\x07");
     }
 

@@ -1,26 +1,26 @@
-//! Marquee scrolling helpers shared across list views.
+//! 各 list view 共用的 marquee 捲動輔助函式。
 //!
-//! Frame-driven pause → slide → pause → slide-back cycle. Callers advance
-//! `frame` once per animation tick (see `App::marquee_frame`).
+//! 以 frame 驅動的暫停 → 滑動 → 暫停 → 滑回 循環。呼叫端每個動畫 tick
+//! 推進一次 `frame`（見 `App::marquee_frame`）。
 
 use unicode_width::UnicodeWidthChar;
 
 use crate::event::TICK_INTERVAL;
 
-/// How long the marquee lingers at each endpoint before sliding.
+/// marquee 在每個端點停留多久才開始滑動。
 const MARQUEE_PAUSE: std::time::Duration = std::time::Duration::from_secs(1);
-/// `MARQUEE_PAUSE` in frame ticks. Recomputes if `TICK_INTERVAL` changes.
+/// `MARQUEE_PAUSE` 換算成 frame tick 數。`TICK_INTERVAL` 改變時會重新計算。
 pub const PAUSE_TICKS: u64 = (MARQUEE_PAUSE.as_millis() / TICK_INTERVAL.as_millis()) as u64;
 
-/// Result of a single marquee window slice.
+/// 單次 marquee 視窗切片的結果。
 pub struct MarqueeSlice {
     pub text: String,
-    /// Set when a double-width char straddles the offset boundary and a space
-    /// was prepended to keep alignment stable (prevents half-char jitter).
+    /// 當雙寬字元橫跨 offset 邊界、需要補一個空格來維持對齊穩定
+    /// （避免半個字元的抖動）時設為 true。
     pub prepended_space: bool,
-    /// Byte offset into the original text where the slice starts.
+    /// 切片在原始文字中的起始 byte offset。
     pub start_byte: usize,
-    /// Byte offset into the original text where the slice ends.
+    /// 切片在原始文字中的結束 byte offset。
     pub end_byte: usize,
 }
 
@@ -43,10 +43,10 @@ pub fn display_width(text: &str) -> usize {
         .sum()
 }
 
-/// Compute the visible slice of `text` at the current marquee `frame`.
-/// `available` is the target width in terminal cells.
+/// 計算 `text` 在目前 marquee `frame` 下可見的切片。
+/// `available` 是以終端機格數表示的目標寬度。
 ///
-/// When the text fits within `available`, the full text is returned as-is.
+/// 當文字寬度在 `available` 之內時，原樣回傳整段文字。
 pub fn scroll_window(text: &str, available: usize, frame: u64) -> MarqueeSlice {
     let char_info: Vec<(usize, usize)> = text
         .char_indices()
@@ -134,7 +134,7 @@ mod tests {
 
     #[test]
     fn paused_at_start() {
-        // 20 chars, available=10 → slide 10. Frame 0 → at start.
+        // 20 個字元，available=10 → 需要滑動 10 格。Frame 0 → 停在起始位置。
         let text = "abcdefghijklmnopqrst";
         let s = scroll_window(text, 10, 0);
         assert_eq!(s.text, "abcdefghij");
@@ -143,7 +143,7 @@ mod tests {
     #[test]
     fn sliding_after_pause() {
         let text = "abcdefghijklmnopqrst";
-        // phase = PAUSE_TICKS + 1 → offset 1
+        // phase = PAUSE_TICKS + 1 → offset 為 1
         let s = scroll_window(text, 10, PAUSE_TICKS + 1);
         assert_eq!(s.text, "bcdefghijk");
     }
@@ -180,11 +180,11 @@ mod tests {
 
     #[test]
     fn cjk_double_width_prepends_space() {
-        // "中文" is 2 chars, each width 2 → total width 4
-        // Plus "xxxxxx" → 10 width total; available=6 → slide 4.
-        // Frame exactly when boundary crosses a double-width char start.
+        // "中文" 是 2 個字元，各佔寬度 2 → 總寬度 4
+        // 加上 "xxxxxx" → 總寬度 10；available=6 → 需要滑動 4 格。
+        // 挑選邊界恰好跨過雙寬字元起點的 frame。
         let text = "中文xxxxxx";
-        // offset=1 would land on mid of "中" — expect prepended space
+        // offset=1 會落在 "中" 的中間 — 預期會補上前導空格
         let s = scroll_window(text, 6, PAUSE_TICKS + 1);
         assert!(s.prepended_space);
         assert!(s.text.starts_with(' '));

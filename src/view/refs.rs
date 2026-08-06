@@ -157,7 +157,7 @@ impl<'a> RefsView<'a> {
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect) {
-        let graph_width = self.as_list_state().graph_area_cell_width() + 1; // graph area + marker
+        let graph_width = self.as_list_state().graph_area_cell_width() + 1; // graph 區域 + marker
         let refs_width =
             (area.width.saturating_sub(graph_width)).min(self.ctx.ui_config.refs.width);
 

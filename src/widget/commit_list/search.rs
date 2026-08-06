@@ -59,7 +59,7 @@ pub(super) struct SearchMatch {
     pub(super) subject: Option<SearchMatchPosition>,
     pub(super) author_name: Option<SearchMatchPosition>,
     pub(super) commit_hash: Option<SearchMatchPosition>,
-    match_index: usize, // 1-based
+    match_index: usize, // 從 1 起算
 }
 
 enum SearchField<'a> {
@@ -307,7 +307,7 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn search_query_cursor_position(&self) -> u16 {
-        self.search_input.visual_cursor() as u16 + 1 // add 1 for "/"
+        self.search_input.visual_cursor() as u16 + 1 // 加 1 是為了 "/"
     }
 
     pub fn transient_message_string(&self) -> Option<String> {
@@ -330,7 +330,7 @@ impl<'a> CommitListState<'a> {
     fn update_search_matches(&mut self, ignore_case: bool, fuzzy: bool) {
         let query = self.search_input.value().to_string();
 
-        // Early return for empty query
+        // query 為空時提早返回
         if query.is_empty() {
             self.clear_search_matches();
             self.last_search_query.clear();
@@ -340,9 +340,9 @@ impl<'a> CommitListState<'a> {
 
         let matcher = SearchMatcher::new(&query, ignore_case, fuzzy);
 
-        // Determine if we can use incremental search:
-        // - New query extends the previous query (user typing more chars)
-        // - Same search settings (ignore_case, fuzzy)
+        // 判斷能不能用增量搜尋：
+        // - 新 query 是舊 query 的延伸（使用者多打了幾個字）
+        // - 搜尋設定沒變（ignore_case、fuzzy）
         let settings_unchanged =
             ignore_case == self.last_search_ignore_case && fuzzy == self.last_search_fuzzy;
         let can_use_incremental = settings_unchanged
@@ -446,7 +446,7 @@ impl<'a> CommitListState<'a> {
         }
     }
 
-    // Filter mode methods
+    // Filter 模式相關方法
 
     pub fn filter_state(&self) -> FilterState {
         self.filter_state
@@ -454,7 +454,7 @@ impl<'a> CommitListState<'a> {
 
     pub fn start_filter(&mut self) {
         if let FilterState::Inactive = self.filter_state {
-            // Filter mode uses fuzzy by default for better UX
+            // Filter 模式預設用 fuzzy，操作體驗比較好
             self.filter_state = FilterState::Filtering {
                 ignore_case: true,
                 fuzzy: true,
@@ -494,7 +494,7 @@ impl<'a> CommitListState<'a> {
     pub fn apply_filter(&mut self) {
         if let FilterState::Filtering { .. } = self.filter_state {
             self.filter_state = FilterState::Inactive;
-            // Keep filtered_indices active
+            // 讓 filtered_indices 繼續生效
         }
     }
 
@@ -545,7 +545,7 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn filter_query_cursor_position(&self) -> u16 {
-        // "filter: " prefix is 8 chars
+        // "filter: " 前綴佔 8 個字元
         8 + self.filter_input.visual_cursor() as u16
     }
 

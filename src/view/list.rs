@@ -45,7 +45,7 @@ impl<'a> ListView<'a> {
         let event = event_with_count.event;
         let count = event_with_count.count;
 
-        // Handle filter mode input
+        // 處理 filter 模式輸入
         if let FilterState::Filtering { .. } = self.as_list_state().filter_state() {
             match resolve_input_action(event, key) {
                 InputAction::Confirm => {
@@ -72,7 +72,7 @@ impl<'a> ListView<'a> {
             return;
         }
 
-        // Handle search mode input
+        // 處理 search 模式輸入
         if let SearchState::Searching { .. } = self.as_list_state().search_state() {
             match resolve_input_action(event, key) {
                 InputAction::Confirm => {
@@ -99,7 +99,7 @@ impl<'a> ListView<'a> {
             return;
         }
 
-        // Normal mode
+        // 正常模式
         match event {
             UserEvent::NavigateDown => {
                 for _ in 0..count {
@@ -224,7 +224,7 @@ impl<'a> ListView<'a> {
                 }
                 _ => {}
             }
-            // Do not return here
+            // 這裡不 return
         }
     }
 
@@ -361,9 +361,9 @@ impl<'a> ListView<'a> {
     }
 
     pub fn reset_commit_list_with(&mut self, list_context: &ListRefreshViewContext) {
-        // Order matters: set_show_remote_refs rebuilds filtered_indices and may
-        // change `total`, which reset_height / select_* depend on. Restore the
-        // visibility toggle *before* touching selection.
+        // 順序有影響：set_show_remote_refs 會重建 filtered_indices，
+        // 可能改變 reset_height / select_* 所依賴的 `total`。
+        // 要在動 selection *之前* 先還原顯示切換狀態。
         let ListRefreshViewContext {
             commit_hash,
             selected,
@@ -385,10 +385,10 @@ impl<'a> ListView<'a> {
     }
 }
 
-/// Resolved action for text input modes (search/filter).
+/// 文字輸入模式（search/filter）解析後的動作。
 ///
-/// When y/n keys are bound to Confirm/Cancel, they should be treated as text
-/// input rather than as control actions. This enum captures that decision.
+/// 當 y/n 按鍵被綁定到 Confirm/Cancel 時，應該視為文字輸入
+/// 而非控制動作。這個 enum 就是在捕捉這個判斷結果。
 enum InputAction {
     Confirm,
     Cancel,

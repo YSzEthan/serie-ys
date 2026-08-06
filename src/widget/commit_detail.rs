@@ -29,9 +29,9 @@ pub enum DetailPane {
 
 #[derive(Debug, Clone, Copy)]
 enum LineMode {
-    /// Render with marquee + body wrap at this width.
+    /// 以此寬度渲染，含 marquee 捲動與內文換行。
     Render(usize),
-    /// Measure logical line count: no marquee scroll, no body wrap.
+    /// 只算邏輯行數：不做 marquee 捲動，也不做內文換行。
     Measure,
 }
 
@@ -165,7 +165,7 @@ impl StatefulWidget for CommitDetail<'_> {
             .block(block.clone());
         left_paragraph.render(left_area, buf);
 
-        // Render vertical divider
+        // 渲染垂直分隔線
         render_vertical_divider(divider_area, buf, self.ctx.color_theme.divider_fg, glyphs);
 
         let right_paragraph = Paragraph::new(right_lines)
@@ -179,7 +179,7 @@ impl CommitDetail<'_> {
     pub fn content_height(&self) -> u16 {
         let left = self.info_lines(LineMode::Measure).len();
         let right = self.changes_lines().len();
-        (left.max(right) + 2) as u16 // +2 for top/bottom borders
+        (left.max(right) + 2) as u16 // +2 為上／下邊框
     }
 
     fn info_lines(&self, mode: LineMode) -> Vec<Line<'_>> {
@@ -196,7 +196,7 @@ impl CommitDetail<'_> {
         };
         let mut lines: Vec<Line> = Vec::new();
 
-        // Author
+        // 作者
         push_wrapped(
             &mut lines,
             Line::from(vec![
@@ -279,7 +279,7 @@ impl CommitDetail<'_> {
             wrap_at,
         );
 
-        // Parents
+        // 父提交
         if has_parent(self.commit) {
             let mut spans: Vec<Span> = vec![Span::styled(
                 "Parents: ",
@@ -310,8 +310,8 @@ impl CommitDetail<'_> {
             );
         }
 
-        // Divider + commit message. Subject is marquee-trimmed to `marquee_width`,
-        // so wrapping is a no-op; push raw to avoid the wrap-vs-no-wrap branch.
+        // 分隔線 + commit 訊息。Subject 已用 marquee 裁到 `marquee_width`，
+        // 所以換行處理形同無操作；直接 push 原始內容以避免換行／不換行的分支判斷。
         lines.push(Line::raw(""));
         let subject_slice = crate::widget::marquee::scroll_window(
             &self.commit.subject,
@@ -372,7 +372,7 @@ impl CommitDetail<'_> {
 fn dim_color(color: Color) -> Color {
     match color {
         Color::Rgb(r, g, b) => {
-            // Blend toward dark pink: average with (140,110,120) then darken
+            // 往暗粉紅色調混：先跟 (140,110,120) 取平均，再壓暗
             let r = ((r as u16 + 140) / 3) as u8;
             let g = ((g as u16 + 110) / 3) as u8;
             let b = ((b as u16 + 120) / 3) as u8;
@@ -513,7 +513,7 @@ impl StatefulWidget for WorkingChangesDetail<'_> {
             .block(block.clone());
         left_paragraph.render(left_area, buf);
 
-        // Render vertical divider
+        // 渲染垂直分隔線
         render_vertical_divider(divider_area, buf, self.ctx.color_theme.divider_fg, glyphs);
 
         let right_paragraph = Paragraph::new(right_lines)
@@ -527,7 +527,7 @@ impl WorkingChangesDetail<'_> {
     pub fn content_height(&self) -> u16 {
         let left = self.info_lines().len();
         let right = self.file_lines().len();
-        (left.max(right) + 2) as u16 // +2 for top/bottom borders
+        (left.max(right) + 2) as u16 // +2 為上／下邊框
     }
 
     fn info_lines(&self) -> Vec<Line<'_>> {
@@ -613,7 +613,7 @@ fn build_file_tree<'a>(changes: &'a [FileChange]) -> Vec<FileTreeNode<'a>> {
 
 fn insert_into_tree<'a>(nodes: &mut Vec<FileTreeNode<'a>>, parts: &[&str], change: &'a FileChange) {
     if parts.len() == 1 {
-        // Leaf file node
+        // 檔案葉節點
         nodes.push(FileTreeNode {
             name: parts[0].to_string(),
             change: Some(change),
@@ -622,7 +622,7 @@ fn insert_into_tree<'a>(nodes: &mut Vec<FileTreeNode<'a>>, parts: &[&str], chang
         return;
     }
 
-    // Find or create directory node
+    // 尋找或建立目錄節點
     let dir_name = parts[0];
     let existing = nodes
         .iter_mut()
@@ -644,7 +644,7 @@ fn insert_into_tree<'a>(nodes: &mut Vec<FileTreeNode<'a>>, parts: &[&str], chang
 fn collapse_single_dirs(nodes: &mut Vec<FileTreeNode<'_>>) {
     for node in nodes.iter_mut() {
         if node.change.is_none() {
-            // Collapse single-child directory chains
+            // 摺疊只有單一子節點的目錄鏈
             while node.children.len() == 1 && node.children[0].change.is_none() {
                 let child = node.children.remove(0);
                 node.name = format!("{}/{}", node.name, child.name);
@@ -656,7 +656,7 @@ fn collapse_single_dirs(nodes: &mut Vec<FileTreeNode<'_>>) {
 }
 
 fn sort_tree(nodes: &mut Vec<FileTreeNode<'_>>) {
-    // Directories first, then files, each sorted alphabetically
+    // 目錄排前面，接著是檔案，各自依字母順序排序
     nodes.sort_by(|a, b| {
         let a_is_dir = a.change.is_none();
         let b_is_dir = b.change.is_none();
@@ -679,7 +679,7 @@ fn flatten_tree_to_lines(
 
     for node in nodes {
         if let Some(change) = node.change {
-            // File node
+            // 檔案節點
             let color = match change {
                 FileChange::Add { .. } => color_theme.detail_file_change_add_fg,
                 FileChange::Modify { .. } => color_theme.detail_file_change_modify_fg,
@@ -708,7 +708,7 @@ fn flatten_tree_to_lines(
 
             lines.push(Line::from(spans));
         } else {
-            // Directory node
+            // 目錄節點
             lines.push(Line::from(vec![
                 indent.clone().into(),
                 Span::styled(
@@ -749,7 +749,7 @@ fn wrap_to_width(text: &str, width: usize) -> Vec<String> {
         current.push(c);
         current_w += cw;
     }
-    // Always emit at least one line; preserves blank body lines (paragraph breaks).
+    // 一定至少輸出一行；讓 body 裡的空白行（段落分隔）得以保留。
     if !current.is_empty() || lines.is_empty() {
         lines.push(current);
     }
@@ -785,10 +785,10 @@ fn split_span_at_width<'a>(span: Span<'a>, max_w: usize) -> (Span<'a>, Option<Sp
     (head, tail)
 }
 
-/// Wrap a multi-span line at `width` cells, preserving each span's style and `line.style`.
-/// Continuation lines are flush-left (no indent alignment).
-/// Contract: `width == 0` or empty `line.spans` returns `vec![line]` unchanged — these are
-/// real states under aggressive terminal resize / blank lines, not caller bugs.
+/// 以 `width` 格寬換行一個多 span 的 line，保留每個 span 的樣式與 `line.style`。
+/// 續行一律靠左對齊（不做縮排對齊）。
+/// 契約：`width == 0` 或 `line.spans` 為空時原樣回傳 `vec![line]` —— 這是終端機
+/// 劇烈縮放／空白行時會真實發生的狀態，不是呼叫端的錯誤。
 fn wrap_line_spans<'a>(line: Line<'a>, width: usize) -> Vec<Line<'a>> {
     if width == 0 || line.spans.is_empty() || line.width() <= width {
         return vec![line];

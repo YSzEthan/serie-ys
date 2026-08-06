@@ -13,16 +13,16 @@ use super::{
     GitHubFocus, GitHubTab, GitHubView, LoadState,
 };
 
-/// List row cell layout: paragraph padding (1) + indicator (2).
-/// Keep in sync with `render_issue_line` / `render_pr_line` — if the indicator
-/// width or the Paragraph padding changes, adjust this constant too.
+/// 列表列的欄位配置：paragraph padding (1) + indicator (2)。
+/// 要跟 `render_issue_line` / `render_pr_line` 保持同步——如果 indicator
+/// 寬度或 Paragraph padding 改了，這個常數也要跟著調整。
 const LIST_LINK_COL_OFFSET: u16 = 3;
 
 impl<'a> GitHubView<'a> {
     pub fn render(&mut self, f: &mut Frame, area: Rect, marquee_frame: u64) {
         self.height = area.height as usize;
-        // Render is the single source of truth for overflow — reset at entry
-        // so focuses that skip render_list (CheckboxEdit, Prompt) auto-clear.
+        // render 是溢出狀態的唯一真相來源——在進入時重置，讓跳過 render_list
+        // 的 focus（CheckboxEdit、Prompt）能自動清除。
         self.selected_row_overflows.set(false);
 
         // ── 三區 split：頂部 tab/prompt + 下半 list|preview ──
@@ -49,7 +49,7 @@ impl<'a> GitHubView<'a> {
         self.render_list(f, list_area, marquee_frame);
         self.render_preview(f, preview_area);
 
-        // ── Flash message ──
+        // ── 提示訊息 ──
         if let Some((ref msg, is_error)) = self.flash_message {
             let color = if is_error {
                 Color::Red
@@ -115,7 +115,7 @@ impl<'a> GitHubView<'a> {
             },
         ]);
 
-        // Prompt input line
+        // Prompt 輸入列
         let prompt_color = if self.focus == GitHubFocus::Prompt {
             Color::Cyan
         } else {
@@ -124,7 +124,7 @@ impl<'a> GitHubView<'a> {
         let prompt_prefix = Span::styled("> ", Style::default().fg(prompt_color));
         let prompt_value = Span::raw(self.search_input.value().to_string());
         let prompt_line = Line::from(vec![
-            Span::raw("  "), // left padding
+            Span::raw("  "), // 左側留白
             prompt_prefix,
             prompt_value,
         ]);
@@ -139,9 +139,9 @@ impl<'a> GitHubView<'a> {
 
         f.render_widget(Paragraph::new(prompt_line), prompt_area);
 
-        // Show cursor in prompt when focused
+        // focus 在 prompt 上時顯示游標
         if self.focus == GitHubFocus::Prompt {
-            let cursor_x = prompt_area.x + 2 /* pad */ + 2 /* "> " */ + self.search_input.visual_cursor() as u16;
+            let cursor_x = prompt_area.x + 2 /* 留白 */ + 2 /* "> " */ + self.search_input.visual_cursor() as u16;
             f.set_cursor_position((cursor_x, prompt_area.y));
         }
     }
@@ -163,7 +163,7 @@ impl<'a> GitHubView<'a> {
         f.render_widget(block, area);
 
         let has_next = self.current_has_next_cursor();
-        // Reserve one row for the load-more indicator when there's a next page
+        // 有下一頁時保留一列給 load-more 指示器
         let visible_height = if has_next {
             (inner.height as usize).saturating_sub(1)
         } else {
@@ -186,10 +186,10 @@ impl<'a> GitHubView<'a> {
             Paragraph::new(lines).block(Block::default().padding(Padding::horizontal(1)));
         f.render_widget(list_paragraph, inner);
 
-        // OSC 8 overlay on `#N` for each visible row. Cell layout lives in
-        // `LIST_LINK_COL_OFFSET` — keep in sync with the indicator + padding.
-        // tmux DCS passthrough loses cursor positioning, so the host terminal
-        // renders the label at an arbitrary column — skip overlay inside tmux.
+        // 對每個可視列的 `#N` 疊加 OSC 8。cell 版面配置定義在
+        // `LIST_LINK_COL_OFFSET`——要跟 indicator + padding 保持同步。
+        // tmux 的 DCS passthrough 會遺失游標定位，導致 host 終端機把 label
+        // 畫在任意欄位——在 tmux 裡跳過疊加。
         if crate::external::is_tmux() {
             return;
         }
@@ -209,7 +209,7 @@ impl<'a> GitHubView<'a> {
             }
             let label = format!("#{}", row.number);
             let label_width = console::measure_text_width(&label) as u16;
-            // Too narrow to fit the whole `#N` — skip overlay (partial hyperlink is worse than none)
+            // 寬度不足以放下完整的 `#N`——跳過疊加（部分超連結比沒有更糟）
             if label_width > remaining {
                 continue;
             }
@@ -245,7 +245,7 @@ impl<'a> GitHubView<'a> {
         marquee_frame: u64,
     ) -> Vec<RowData> {
         let pad = self.labels_pad_width_for_tab();
-        // Paragraph has Padding::horizontal(1) inside → inner content width is -2.
+        // Paragraph 內部有 Padding::horizontal(1) → 內容可用寬度要 -2。
         let content_width = inner_width.saturating_sub(2) as usize;
         let mut rows = Vec::with_capacity(visible_height);
         let mut overflow = false;
@@ -350,8 +350,8 @@ impl<'a> GitHubView<'a> {
         let inner = block.inner(area);
         f.render_widget(block, area);
 
-        // Render is the source of truth for the preview's usable height; the
-        // scroll handlers read it back rather than re-deriving it from `height`.
+        // render 是 preview 可用高度的真相來源；捲動處理函式直接讀回這個值，
+        // 不會從 `height` 重新推算。
         self.preview_height = inner.height as usize;
 
         // `preview_input(&self)` 借走整個 self，borrow checker 看不出它沒碰
@@ -363,10 +363,9 @@ impl<'a> GitHubView<'a> {
         self.preview_cache = cache;
 
         self.last_preview_len = visual_len;
-        // Clamp preview_offset to avoid scrolling past content. Both sides are
-        // visual (post-wrap) lines — `Paragraph::scroll` skips wrapped lines,
-        // not source lines. The `u16` bound belongs here too, so state and
-        // screen cannot disagree about where the bottom is.
+        // 限制 preview_offset，避免捲過內容底端。兩邊算的都是視覺（折行後）
+        // 行數——`Paragraph::scroll` 跳過的是折行後的行，不是原始行。`u16`
+        // 的邊界也該放在這裡，讓狀態跟畫面不會對「底端在哪」意見不合。
         let max_offset = visual_len
             .saturating_sub(inner.height as usize)
             .min(u16::MAX as usize);
@@ -378,18 +377,16 @@ impl<'a> GitHubView<'a> {
             .scroll((scroll, 0));
         f.render_widget(paragraph, inner);
 
-        // Overlay `#N` cells with OSC 8 hyperlinks. Must run after Paragraph
-        // render so we overwrite the pre-drawn plain `#N` glyph.
-        // tmux DCS passthrough loses cursor positioning, so the host terminal
-        // renders the label at an arbitrary column — skip overlay inside tmux.
+        // 用 OSC 8 超連結疊加 `#N` cell。必須在 Paragraph render 之後執行，
+        // 才能覆蓋掉先前畫上去的純文字 `#N` 字元。
+        // tmux 的 DCS passthrough 會遺失游標定位，導致 host 終端機把 label
+        // 畫在任意欄位——在 tmux 裡跳過疊加。
         if crate::external::is_tmux() {
             return;
         }
-        // The header's position is only trustworthy before scrolling: the
-        // scroll offset counts wrapped lines, not source lines, so the header
-        // itself scrolls off screen the moment `scroll != 0`. Restoring a
-        // hyperlink after that needs links attached to spans rather than a
-        // stored coordinate.
+        // header 的位置只有在還沒捲動時才可信：捲動偏移量算的是折行後的行，
+        // 不是原始行，所以一旦 `scroll != 0`，header 本身就已經捲出畫面。
+        // 要在那之後還原超連結，需要把連結附著在 span 上，而不是存一個座標。
         if scroll != 0 || inner.height == 0 {
             return;
         }
@@ -423,10 +420,10 @@ impl<'a> GitHubView<'a> {
         let inner = block.inner(area);
         f.render_widget(block, area);
 
-        // Available height minus footer line
+        // 可用高度扣掉 footer 那一列
         let content_height = inner.height.saturating_sub(1) as usize;
 
-        // Scroll offset for long task lists
+        // 給過長 task 清單用的捲動偏移量
         let offset = if panel.selected >= content_height {
             panel.selected - content_height + 1
         } else {
@@ -464,7 +461,7 @@ impl<'a> GitHubView<'a> {
             })
             .collect();
 
-        // Footer
+        // Footer 列
         lines.push(Line::from(Span::styled(
             " h/l:toggle  Enter:submit  Esc:cancel",
             Style::default().fg(Color::DarkGray),
@@ -526,8 +523,8 @@ pub(super) fn label_spans(labels: &[crate::github::GhLabel]) -> Vec<Span<'static
     spans
 }
 
-/// Returns `(line, scrolled)`. `scrolled=true` means the title+author tail
-/// got a marquee treatment due to overflow — caller keeps the ticker alive.
+/// 回傳 `(line, scrolled)`。`scrolled=true` 代表 title+author 尾段因溢出
+/// 而套用了跑馬燈效果——呼叫端要讓跑馬燈計時器繼續跳動。
 fn render_issue_line(
     issue: &GhIssue,
     selected: bool,
@@ -566,7 +563,7 @@ fn render_issue_line(
     spans.push(Span::raw(" "));
 
     let tail = format!("{}  @{}", issue.title, issue.author.login);
-    // 2 (indicator) + 7 (#N block `#XXXXX `) + 6 (state `{:<6}`) + labels_pad + 1 (space)
+    // 2 (indicator) + 7 (#N 區塊 `#XXXXX `) + 6 (state `{:<6}`) + labels_pad + 1 (空格)
     let prefix_width = 2 + 7 + 6 + labels_pad_width + 1;
     let (tail_spans, scrolled) = tail_spans(
         &tail,
@@ -578,8 +575,8 @@ fn render_issue_line(
     (Line::from(spans), scrolled)
 }
 
-/// Render `title  @author` (or similar) either truncated/untouched when not
-/// overflowing, or scrolled via marquee when selected + overflow + frame.
+/// 渲染 `title  @author`（或類似格式）：沒有溢出時保持截斷／原樣，
+/// 有溢出且被選取、又有 frame 時則透過跑馬燈捲動。
 fn tail_spans(
     tail: &str,
     available: usize,
@@ -596,7 +593,7 @@ fn tail_spans(
             let slice = crate::widget::marquee::scroll_window(tail, available, frame);
             return (vec![Span::styled(slice.text, style_title)], true);
         }
-        // Non-selected overflow row: truncate with ellipsis
+        // 未選取的溢出列：用刪節號截斷
         let truncated = console::truncate_str(tail, available, "…").to_string();
         return (vec![Span::styled(truncated, style_title)], false);
     }
@@ -658,7 +655,7 @@ fn render_pr_line(
     (Line::from(spans), scrolled)
 }
 
-/// Sum of the visible cells occupied by `label_spans(labels)`: `" [a, b]"`.
+/// `label_spans(labels)` 佔用的可視格數總和：`" [a, b]"`。
 fn labels_display_width(labels: &[crate::github::GhLabel]) -> usize {
     if labels.is_empty() {
         return 0;
@@ -667,7 +664,7 @@ fn labels_display_width(labels: &[crate::github::GhLabel]) -> usize {
         .iter()
         .map(|l| console::measure_text_width(&l.name))
         .sum();
-    let seps = labels.len().saturating_sub(1) * 2; // ", "
+    let seps = labels.len().saturating_sub(1) * 2; // ", " 分隔符
                                                    // " [" + names + seps + "]"
     3 + names + seps
 }

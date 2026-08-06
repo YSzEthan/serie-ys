@@ -18,19 +18,19 @@ pub struct CommitListState<'a> {
     pub(super) commits: Vec<CommitInfo<'a>>,
     commit_hash_to_raw: FxHashMap<CommitHash, RawCommitIdx>,
     graph: Rc<Graph>,
-    // Shared by the primary and filtered graph: both are built from the same
-    // `GraphColorSet` / `Repository`, so there's exactly one of each, not
-    // one pair per graph.
+    // 由主要 graph 與 filtered graph 共用：兩者都是從同一份
+    // `GraphColorSet` / `Repository` 建出來的，所以只有一份，
+    // 不是每個 graph 各配一份。
     graph_colors: Vec<Color>,
     pub(super) head_commit_hash: Option<CommitHash>,
     cell_width_type: CellWidthType,
     pub(super) head: Head,
 
-    // Filtered graph (for when remote-only commits are hidden)
+    // Filtered graph（remote-only commits 被隱藏時使用）
     filtered: Option<Rc<Graph>>,
-    // Marker-overlay color map (commit_hash -> color), keyed differently
-    // from `graph_colors` above (which is a pos_x-indexed palette). Not the
-    // same concept despite the similar name -- do not merge.
+    // Marker-overlay 的顏色對照表（commit_hash -> color），鍵的方式跟上面的
+    // `graph_colors`（以 pos_x 為索引的調色盤）不同。雖然名稱相近，
+    // 但不是同一個概念 -- 不要合併。
     filtered_graph_colors: Option<FxHashMap<CommitHash, Color>>,
 
     ref_name_to_commit_index_map: FxHashMap<String, RawCommitIdx>,
@@ -39,13 +39,13 @@ pub struct CommitListState<'a> {
     pub(super) search_input: Input,
     pub(super) search_matches: Vec<SearchMatch>,
 
-    // Optimization: track previous search for incremental search
+    // 最佳化：記住前一次搜尋，供增量搜尋使用
     pub(super) last_search_query: String,
     pub(super) last_matched_indices: Vec<RawCommitIdx>,
     pub(super) last_search_ignore_case: bool,
     pub(super) last_search_fuzzy: bool,
 
-    // Filter mode
+    // Filter 模式
     pub(super) filter_state: FilterState,
     pub(super) filter_input: Input,
     pub(super) filtered_indices: Vec<RawCommitIdx>,
@@ -145,12 +145,12 @@ impl<'a> CommitListState<'a> {
         (self.filtered, self.remote_only_commits)
     }
 
-    /// Width of `current_graph()`, not necessarily `self.graph` -- same
-    /// filtered/`show_remote_refs` fallback as `current_graph()` itself, so
-    /// this always matches the graph that actually gets rendered.
+    /// `current_graph()` 的寬度，不一定是 `self.graph` -- 走的是跟
+    /// `current_graph()` 本身一樣的 filtered/`show_remote_refs` fallback，
+    /// 所以永遠對得上實際被渲染的那個 graph。
     pub fn graph_area_cell_width(&self) -> u16 {
         crate::graph::graph_cell_width(self.current_graph(), self.cell_width_type) + 1
-        // right pad
+        // 右側留白
     }
 
     pub fn name_cell_width(&self) -> u16 {
@@ -161,9 +161,9 @@ impl<'a> CommitListState<'a> {
         self.inline_detail_height = h;
     }
 
-    /// Calculate the Rect for inline detail content (right of graph+marker columns).
-    /// `content_area` is the commit list content area (below header).
-    /// `graph_marker_width` is the combined width of graph + marker columns.
+    /// 計算 inline detail 內容的 Rect（在 graph+marker 欄位右側）。
+    /// `content_area` 是 commit list 的內容區域（header 下方）。
+    /// `graph_marker_width` 是 graph + marker 欄位加總的寬度。
     pub fn inline_detail_rect(&self, content_area: Rect, graph_marker_width: u16) -> Option<Rect> {
         if self.inline_detail_height == 0 {
             return None;
@@ -191,25 +191,23 @@ impl<'a> CommitListState<'a> {
         self.show_remote_refs
     }
 
-    /// Restore the remote-refs visibility flag after rebuilding a fresh
-    /// `CommitListState` (used by the refresh path to carry the user's
-    /// toggle across App instances).
+    /// 重建全新的 `CommitListState` 後，還原 remote-refs 顯示旗標
+    /// （refresh path 用這個把使用者的 toggle 狀態帶到新的 App instance）。
     ///
-    /// Contract: the caller is responsible for a full terminal redraw.
-    /// The refresh path already does this via `terminal.clear()` in
-    /// `lib.rs`, so this setter deliberately does **not** set
-    /// `needs_graph_clear` — doing so would cause a double clear and an
-    /// extra blank frame.
+    /// 約定：呼叫端負責完整的終端機重繪。
+    /// refresh path 已經透過 `lib.rs` 裡的 `terminal.clear()` 做過這件事，
+    /// 所以這個 setter 刻意 **不** 設定
+    /// `needs_graph_clear` —— 設了會造成 double clear，多出一個空白畫面。
     ///
-    /// Do not call from interactive key handlers. Use `toggle_remote_refs`
-    /// for those; it owns the full widget-local invalidation contract.
+    /// 不要從互動式按鍵處理函式呼叫。那些場合請用 `toggle_remote_refs`，
+    /// 它才擁有完整的 widget-local invalidation 約定。
     pub fn set_show_remote_refs(&mut self, show: bool) {
         if self.show_remote_refs == show {
             return;
         }
         self.show_remote_refs = show;
-        // rebuild_filtered_indices clamps selected/offset into the new index
-        // space, so callers don't have to care about ordering vs reset_height.
+        // rebuild_filtered_indices 會把 selected/offset 夾進新的索引空間，
+        // 所以呼叫端不必在意跟 reset_height 的先後順序。
         self.rebuild_filtered_indices();
     }
 
@@ -433,7 +431,7 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn selected_commit_hash(&self) -> &CommitHash {
-        // When virtual row is selected, return first commit hash as fallback
+        // 虛擬行被選中時，退而求其次回傳第一個 commit hash 作為 fallback
         &self.commit(self.current_selected_raw()).commit.commit_hash
     }
 

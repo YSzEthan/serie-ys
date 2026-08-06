@@ -1,11 +1,11 @@
-//! Light-weight markdown renderer for GitHub issue/PR bodies.
+//! GitHub issue/PR 內文用的輕量 markdown 渲染器。
 //!
-//! Line-based, no dep on external crates. Supports: headings (1-3),
-//! unordered/ordered lists, blockquote, hrule, fenced code, GFM tables laid
-//! out to the available width, `**bold**`, `` `code` ``, `[text](url)` and
-//! HTML entities. Link reference definitions, HTML comments and raw HTML are
-//! dropped — bot comments (Vercel, CI) are full of them and they carry
-//! nothing a terminal can show. `*italic*` is not handled.
+//! 以行為單位處理，不依賴外部 crate。支援：標題（1-3 級）、
+//! 無序／有序列表、引言區塊、水平線、fenced code、依可用寬度排版的
+//! GFM 表格、`**bold**`、`` `code` ``、`[text](url)` 以及
+//! HTML 實體。連結參考定義、HTML 註解與原始 HTML 一律捨棄——
+//! bot 留言（Vercel、CI）充斥這些東西，而它們在終端機裡什麼都顯示不出來。
+//! `*italic*` 則沒有處理。
 
 use ratatui::{
     style::{Color, Modifier, Style},
@@ -23,7 +23,7 @@ pub fn render(body: &str, width: usize) -> Vec<Line<'static>> {
     while i < raw.len() {
         let line = raw[i];
 
-        // Fenced code block
+        // Fenced code 區塊
         if line.trim_start().starts_with("```") {
             in_code = !in_code;
             out.push(rule_line(width));
@@ -44,10 +44,10 @@ pub fn render(body: &str, width: usize) -> Vec<Line<'static>> {
         let expanded = crate::emoji::expand(line);
         let line = &*expanded;
 
-        // HTML comments, tracked like code fences so they can span lines.
-        // Vercel hides a base64 blob in one at the top of every comment.
-        // Only recognised at the start of a line: mid-line comments are rare
-        // enough that handling them would complicate every other branch.
+        // HTML 註解，用和 code fence 一樣的方式追蹤，才能跨行。
+        // Vercel 每則留言開頭都會用它藏一段 base64 資料。
+        // 只在行首才視為註解：行中出現註解的情況很罕見，
+        // 為此把其他每個分支都弄複雜並不划算。
         if in_html_comment {
             in_html_comment = !line.contains("-->");
             i += 1;
@@ -59,7 +59,7 @@ pub fn render(body: &str, width: usize) -> Vec<Line<'static>> {
             continue;
         }
 
-        // Table (header + separator + rows)
+        // 表格（表頭 + 分隔線 + 內文列）
         if is_table_row(line) && i + 1 < raw.len() && is_separator_row(raw[i + 1]) {
             let mut rows: Vec<Vec<String>> = Vec::new();
             rows.push(split_cells(line));
@@ -73,13 +73,13 @@ pub fn render(body: &str, width: usize) -> Vec<Line<'static>> {
             continue;
         }
 
-        // Invisible in rendered markdown; Vercel emits a huge base64 one.
+        // 渲染後的 markdown 看不到；Vercel 會產生一大段 base64。
         if is_link_reference_definition(line) {
             i += 1;
             continue;
         }
 
-        // Block-level raw HTML (`<a href=…>`, `<picture>`, `</div>`).
+        // 區塊層級的原始 HTML（`<a href=…>`、`<picture>`、`</div>`）。
         if is_html_block(line) {
             i += 1;
             continue;
@@ -87,7 +87,7 @@ pub fn render(body: &str, width: usize) -> Vec<Line<'static>> {
 
         let trimmed = line.trim_start();
 
-        // Heading
+        // 標題
         if let Some(rest) = trimmed.strip_prefix("### ") {
             out.push(Line::styled(
                 rest.to_string(),
@@ -119,7 +119,7 @@ pub fn render(body: &str, width: usize) -> Vec<Line<'static>> {
             continue;
         }
 
-        // Blockquote
+        // 引言區塊
         if let Some(rest) = trimmed.strip_prefix("> ") {
             out.push(Line::from(vec![
                 Span::styled("│ ", Style::default().fg(Color::DarkGray)),
@@ -129,7 +129,7 @@ pub fn render(body: &str, width: usize) -> Vec<Line<'static>> {
             continue;
         }
 
-        // Horizontal rule
+        // 水平線
         if trimmed.starts_with("---") || trimmed.starts_with("___") || trimmed.starts_with("***") {
             let rest = trimmed.trim_matches(|c| c == '-' || c == '_' || c == '*');
             if rest.trim().is_empty() {
@@ -139,7 +139,7 @@ pub fn render(body: &str, width: usize) -> Vec<Line<'static>> {
             }
         }
 
-        // Unordered list
+        // 無序列表
         if let Some(rest) = trimmed
             .strip_prefix("- ")
             .or_else(|| trimmed.strip_prefix("* "))
@@ -156,7 +156,7 @@ pub fn render(body: &str, width: usize) -> Vec<Line<'static>> {
             continue;
         }
 
-        // Ordered list (`1. `, `23. `)
+        // 有序列表（`1. `、`23. `）
         if let Some((prefix, rest)) = split_ordered_list(trimmed) {
             let indent = line.len() - trimmed.len();
             let mut spans: Vec<Span<'static>> = Vec::new();
@@ -173,7 +173,7 @@ pub fn render(body: &str, width: usize) -> Vec<Line<'static>> {
             continue;
         }
 
-        // Plain line with inline scanning
+        // 一般文字行，做行內掃描
         let spans = scan_inline(line);
         out.push(if spans.is_empty() {
             Line::raw(String::new())
@@ -185,26 +185,26 @@ pub fn render(body: &str, width: usize) -> Vec<Line<'static>> {
     out
 }
 
-/// Section divider, clamped so it never wraps in a narrow preview.
-/// Grey — dividers inside rendered markdown stay neutral.
+/// 區段分隔線，寬度會被限制住，在窄預覽視窗裡也不會換行。
+/// 用灰色——渲染出的 markdown 內部分隔線維持中性色調。
 pub(super) fn rule_line(width: usize) -> Line<'static> {
     rule_line_colored(width, Color::DarkGray)
 }
 
-/// [`rule_line`] in a caller-chosen colour, for dividers that separate
-/// preview sections rather than markdown content.
+/// 顏色可由呼叫端指定的 [`rule_line`]，用於分隔預覽區段，
+/// 而非 markdown 內容本身的分隔線。
 pub(super) fn rule_line_colored(width: usize, color: Color) -> Line<'static> {
     let n = RULE_WIDTH.min(width);
     Line::styled("─".repeat(n), Style::default().fg(color))
 }
 
-/// `[label]: url` — invisible in rendered markdown.
+/// `[label]: url`——渲染後的 markdown 看不到。
 ///
-/// A link destination is ASCII and contains no bare whitespace (CommonMark).
-/// The ASCII half matters as much as the whitespace half: CJK prose such as
-/// `[註]: 這是一段中文說明` has no spaces either, and dropping it would delete
-/// real content. A definition carrying a quoted title is not recognised —
-/// showing one is harmless, deleting prose is not.
+/// 連結目的地依 CommonMark 規範必須是 ASCII 且不含空白字元。
+/// ASCII 這個條件和空白字元一樣重要：像「`[註]: 這是一段中文說明`」
+/// 這種中日韓文字同樣不含空白，若拿掉判斷會刪掉真正的內容。
+/// 帶引號標題的定義不會被辨識出來——多顯示一行無傷大雅，
+/// 誤刪文字內容才是問題。
 fn is_link_reference_definition(s: &str) -> bool {
     let t = s.trim();
     let Some(rest) = t.strip_prefix('[') else {
@@ -217,10 +217,10 @@ fn is_link_reference_definition(s: &str) -> bool {
     !dest.is_empty() && dest.is_ascii() && !dest.contains(char::is_whitespace)
 }
 
-/// A line that is raw HTML rather than prose.
+/// 判斷一行是原始 HTML 而非一般文字。
 ///
-/// `<` alone is not enough: `<= 3 表示 ... > 0` is ordinary text. Requiring an
-/// ASCII letter or `/` right after `<` is the cheap test that keeps prose.
+/// 光看 `<` 不夠：`<= 3 表示 ... > 0` 只是普通文字。
+/// 要求 `<` 後面緊接 ASCII 字母或 `/`，是能保留一般文字的低成本判斷法。
 fn is_html_block(s: &str) -> bool {
     let t = s.trim();
     let mut chars = t.chars();
@@ -264,7 +264,7 @@ fn split_cells(row: &str) -> Vec<String> {
     cells
 }
 
-/// Gap between columns.
+/// 欄與欄之間的間距。
 const COL_GAP: usize = 2;
 
 fn render_table(out: &mut Vec<Line<'static>>, rows: &[Vec<String>], width: usize) {
@@ -273,10 +273,9 @@ fn render_table(out: &mut Vec<Line<'static>>, rows: &[Vec<String>], width: usize
         return;
     }
 
-    // Cells become spans first: column widths must be measured on what is
-    // actually drawn, not on the source markdown. A cell holding
-    // `[name](https://…)` is a few characters wide once rendered, not a
-    // hundred.
+    // 先把儲存格轉成 span：欄寬要以實際畫出來的內容為準來量測，
+    // 而不是原始 markdown 文字。像 `[name](https://…)` 這種儲存格，
+    // 渲染後只有幾個字元寬，不是上百字元。
     let cells: Vec<Vec<Vec<Span<'static>>>> = rows
         .iter()
         .map(|row| {
@@ -304,7 +303,7 @@ fn render_table(out: &mut Vec<Line<'static>>, rows: &[Vec<String>], width: usize
 
     for (ri, row) in cells.iter().enumerate() {
         let bold = ri == 0;
-        // Wrap every cell first, then emit one output line per wrapped row.
+        // 先把每個儲存格換行處理好，再依換行後的每一列各輸出一行。
         let wrapped: Vec<Vec<Vec<Span<'static>>>> = row
             .iter()
             .zip(&widths)
@@ -315,8 +314,8 @@ fn render_table(out: &mut Vec<Line<'static>>, rows: &[Vec<String>], width: usize
         for r in 0..height {
             let mut spans: Vec<Span<'static>> = Vec::new();
             for (c, (cell, &col_width)) in wrapped.iter().zip(&widths).enumerate() {
-                // A cell with fewer wrapped rows than its neighbours is not a
-                // special case — it just contributes no spans on this row.
+                // 換行後列數比鄰居少的儲存格不是特例——
+                // 它只是在這一列不貢獻任何 span 而已。
                 let part: &[Span<'static>] = cell.get(r).map_or(&[], Vec::as_slice);
                 let used = spans_width(part);
                 spans.extend(part.iter().map(|s| {
@@ -348,11 +347,11 @@ fn spans_width(spans: &[Span<'_>]) -> usize {
     spans.iter().map(Span::width).sum()
 }
 
-/// Drop leading/trailing blanks left behind by removed markup.
+/// 去除因刪除標記語法而殘留下來的前後空白。
 ///
-/// `split_cells` trims the source text, but dropping an image from
-/// `![Ready](…) [Ready](…)` re-introduces a leading space, which would shift
-/// that column one cell right of its header.
+/// `split_cells` 會裁掉原始文字的空白，但從 `![Ready](…) [Ready](…)`
+/// 中拿掉圖片後又會多出一個開頭空白，導致該欄整個相對表頭
+/// 往右偏移一格。
 fn trim_spans(mut spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
     while let Some(first) = spans.first() {
         let trimmed = first.content.trim_start().to_string();
@@ -376,18 +375,17 @@ fn trim_spans(mut spans: Vec<Span<'static>>) -> Vec<Span<'static>> {
     spans
 }
 
-/// Distribute `width` across columns by equal shares with give-back.
+/// 以「均分＋歸還多餘額度」的方式把 `width` 分配到各欄。
 ///
-/// Proportional-to-natural-width would be wrong: the column that blew the
-/// budget (a bare URL, say) would claim most of the space and squeeze the
-/// short, information-dense ones into two characters. Here every column that
-/// fits inside an equal share takes only what it needs and returns the rest,
-/// which is then re-divided among the columns still over budget.
+/// 按自然寬度比例分配是錯的：超支的那一欄（例如一段裸網址）
+/// 會佔走大部分空間，把資訊密度高的短欄擠到只剩兩個字元。
+/// 這裡的做法是：只要某欄在均分額度內就夠用，它就只拿自己需要的，
+/// 剩下的額度歸還，再重新分給還超支的欄位。
 fn fit_columns(natural: &[usize], width: usize) -> Vec<usize> {
     let cols = natural.len();
     let gaps = cols.saturating_sub(1) * COL_GAP;
     let avail = width.saturating_sub(gaps);
-    // Overwhelmingly the common case: it already fits, so touch nothing.
+    // 絕大多數情況：本來就放得下，什麼都不用動。
     if cols == 0 || natural.iter().sum::<usize>() <= avail {
         return natural.to_vec();
     }
@@ -397,11 +395,11 @@ fn fit_columns(natural: &[usize], width: usize) -> Vec<usize> {
     let mut remaining = avail;
     let mut unsettled = cols;
 
-    // Each pass settles at least one column, so this terminates.
+    // 每一輪至少會確定一欄，所以一定會結束。
     while unsettled > 0 {
         let share = remaining / unsettled;
         let Some(idx) = (0..cols).find(|&c| !settled[c] && natural[c] <= share) else {
-            // Nobody fits their share any more — split what is left evenly.
+            // 沒有誰的均分額度還夠用了——把剩下的平均分掉。
             for c in 0..cols {
                 if !settled[c] {
                     out[c] = share.max(1);
@@ -417,10 +415,10 @@ fn fit_columns(natural: &[usize], width: usize) -> Vec<usize> {
     out
 }
 
-/// Wrap one cell's spans to `width`, breaking mid-word.
+/// 把一個儲存格的 span 依 `width` 換行，允許在字詞中間強制斷行。
 ///
-/// Hard breaks are right here even though prose wants word breaks: cells hold
-/// short phrases and URLs, and a URL has no spaces to break at.
+/// 一般文字希望在詞與詞之間斷行，但這裡用強制斷行是對的：
+/// 儲存格裡放的是短句和網址，而網址根本沒有空白可以斷。
 fn wrap_cell(spans: &[Span<'static>], width: usize) -> Vec<Vec<Span<'static>>> {
     if width == 0 {
         return vec![Vec::new()];
@@ -435,7 +433,7 @@ fn wrap_cell(spans: &[Span<'static>], width: usize) -> Vec<Vec<Span<'static>>> {
             let room = width - used;
             let (head, tail) = split_at_width(rest, room);
             if head.is_empty() {
-                // Nothing fits in the remainder of this row — start a new one.
+                // 這一列剩下的空間已經放不下任何東西——開始新的一列。
                 rows.push(std::mem::take(&mut row));
                 used = 0;
                 continue;
@@ -459,7 +457,7 @@ fn str_width(s: &str) -> usize {
     Span::raw(s).width()
 }
 
-/// Split `s` at the last char boundary that keeps its width within `max`.
+/// 在保持寬度不超過 `max` 的前提下，找到最後一個字元邊界切開 `s`。
 fn split_at_width(s: &str, max: usize) -> (&str, &str) {
     let mut w = 0usize;
     for (i, c) in s.char_indices() {
@@ -472,7 +470,7 @@ fn split_at_width(s: &str, max: usize) -> (&str, &str) {
     (s, "")
 }
 
-/// `1. rest` or `23. rest` → (prefix_with_dot, rest). None if not ordered list.
+/// `1. rest` 或 `23. rest` → (含句點的前綴, rest)。不是有序列表則回傳 None。
 fn split_ordered_list(s: &str) -> Option<(&str, &str)> {
     let dot_pos = s.find('.')?;
     let (num, after) = s.split_at(dot_pos);
@@ -483,9 +481,9 @@ fn split_ordered_list(s: &str) -> Option<(&str, &str)> {
     Some((&s[..=dot_pos], rest))
 }
 
-/// Split a line into styled spans, handling `**bold**`, `` `code` ``,
-/// `[text](url)`, `![alt](url)` and HTML entities.
-/// Non-matching text becomes a plain span. Unmatched markers stay as literal.
+/// 把一行文字拆成帶樣式的 span，處理 `**bold**`、`` `code` ``、
+/// `[text](url)`、`![alt](url)` 以及 HTML 實體。
+/// 沒對上的文字變成一般 span。沒對上的標記符號原樣保留。
 fn scan_inline(text: &str) -> Vec<Span<'static>> {
     let mut spans: Vec<Span<'static>> = Vec::new();
     let mut buf = String::new();
@@ -493,15 +491,15 @@ fn scan_inline(text: &str) -> Vec<Span<'static>> {
     let mut i = 0;
 
     while i < bytes.len() {
-        // ![alt](url) — checked before `[`, otherwise the `!` lands in buf and
-        // the image degrades into a link showing its alt text.
+        // ![alt](url) ——要先於 `[` 判斷，否則 `!` 會落進 buf，
+        // 圖片就退化成顯示 alt 文字的連結。
         if bytes[i] == b'!' && bytes.get(i + 1) == Some(&b'[') {
             if let Some((_, end)) = parse_link(text, i + 1) {
                 i = end;
                 continue;
             }
         }
-        // [text](url) — the URL is unusable in a TUI, so only the label shows.
+        // [text](url) ——網址在 TUI 裡沒用，所以只顯示標籤文字。
         if bytes[i] == b'[' {
             if let Some((label, end)) = parse_link(text, i) {
                 if !buf.is_empty() {
@@ -517,7 +515,7 @@ fn scan_inline(text: &str) -> Vec<Span<'static>> {
                 continue;
             }
         }
-        // HTML entities — more common than raw tags in bot comments.
+        // HTML 實體——在 bot 留言裡比原始標籤更常見。
         if bytes[i] == b'&' {
             if let Some((decoded, end)) = parse_entity(text, i) {
                 buf.push(decoded);
@@ -553,7 +551,7 @@ fn scan_inline(text: &str) -> Vec<Span<'static>> {
                 continue;
             }
         }
-        // Copy one UTF-8 scalar (not one byte) into buf to stay valid
+        // 一次複製一個 UTF-8 scalar（不是一個 byte）到 buf，維持字串合法性
         let ch_len = utf8_char_len(bytes[i]);
         buf.push_str(&text[i..i + ch_len]);
         i += ch_len;
@@ -567,7 +565,7 @@ fn scan_inline(text: &str) -> Vec<Span<'static>> {
 fn utf8_char_len(b: u8) -> usize {
     match b {
         0..=0x7F => 1,    // ASCII
-        0x80..=0xBF => 1, // invalid continuation — advance safely
+        0x80..=0xBF => 1, // 不合法的接續位元組——安全地往前推進
         0xC0..=0xDF => 2,
         0xE0..=0xEF => 3,
         _ => 4,
@@ -578,8 +576,8 @@ fn find_close(text: &str, from: usize, marker: &str) -> Option<usize> {
     text[from..].find(marker).map(|p| from + p)
 }
 
-/// Parse `[label](dest)` starting at the `[` in `open`.
-/// Returns the label and the byte index just past the closing `)`.
+/// 從 `open` 所在的 `[` 開始解析 `[label](dest)`。
+/// 回傳標籤文字，以及緊接在結尾 `)` 之後的 byte 索引。
 fn parse_link(text: &str, open: usize) -> Option<(String, usize)> {
     let rest = text.get(open + 1..)?;
     let close = rest.find(']')?;
@@ -591,8 +589,8 @@ fn parse_link(text: &str, open: usize) -> Option<(String, usize)> {
     Some((label, open + 1 + close + 2 + paren + 1))
 }
 
-/// Decode the handful of entities GitHub actually emits.
-/// Returns the character and the byte index just past the `;`.
+/// 解碼 GitHub 實際會用到的少數幾種 HTML 實體。
+/// 回傳解碼後的字元，以及緊接在 `;` 之後的 byte 索引。
 fn parse_entity(text: &str, at: usize) -> Option<(char, usize)> {
     const ENTITIES: [(&str, char); 6] = [
         ("&nbsp;", ' '),
@@ -613,8 +611,8 @@ fn parse_entity(text: &str, at: usize) -> Option<(char, usize)> {
 mod tests {
     use super::*;
 
-    /// Wide enough that nothing wraps — tests that care about width call
-    /// `super::render` directly. Shadows the glob-imported `render`.
+    /// 寬度夠大，內容不會換行——需要測試寬度的測試會直接呼叫
+    /// `super::render`。這裡會遮蔽掉透過 glob import 進來的 `render`。
     fn render(body: &str) -> Vec<Line<'static>> {
         super::render(body, 80)
     }
@@ -640,12 +638,12 @@ mod tests {
     fn render_list_nested_indent() {
         let lines = render("- a\n  - b");
         assert_eq!(lines.len(), 2);
-        // first line: bullet + "a"
+        // 第一行：項目符號 + "a"
         assert!(lines[0]
             .spans
             .iter()
             .any(|s| s.content.as_ref().contains("•")));
-        // nested line: leading spaces span
+        // 巢狀行：開頭空白的 span
         assert!(lines[1]
             .spans
             .iter()
@@ -655,13 +653,13 @@ mod tests {
     #[test]
     fn render_table_basic() {
         let lines = render("| A | B |\n|---|---|\n| 1 | 2 |");
-        assert_eq!(lines.len(), 3); // header, separator, row
-                                    // header first span bold
+        assert_eq!(lines.len(), 3); // 表頭、分隔線、內文列
+                                    // 表頭第一個 span 要是粗體
         assert!(lines[0].spans[0]
             .style
             .add_modifier
             .contains(Modifier::BOLD));
-        // separator line is all ─
+        // 分隔線整行都是 ─
         assert!(lines[1]
             .spans
             .iter()
@@ -691,7 +689,7 @@ mod tests {
 |---|---|
 | a\|b | 1 |"#,
         );
-        // row has `a|b` in first cell (not split)
+        // 內文列第一欄要是 `a|b`（沒有被拆開）
         let row = &lines[2];
         assert!(row.spans.iter().any(|s| s.content.as_ref() == "a|b"));
     }
@@ -699,9 +697,9 @@ mod tests {
     #[test]
     fn render_table_no_separator_is_plain() {
         let lines = render("| a | b |\njust text");
-        // No separator → both lines plain, not table
+        // 沒有分隔線 → 兩行都當作一般文字，不是表格
         assert_eq!(lines.len(), 2);
-        // First line should contain literal `|`
+        // 第一行應該要保留原本的 `|` 字元
         assert!(lines[0]
             .spans
             .iter()
@@ -711,7 +709,7 @@ mod tests {
     #[test]
     fn render_code_fence() {
         let lines = render("```\nlet x = 1;\nlet y = 2;\n```");
-        // rule + 2 code lines + rule = 4
+        // 分隔線 + 2 行程式碼 + 分隔線 = 4
         assert_eq!(lines.len(), 4);
         assert_eq!(lines[1].style.fg, Some(Color::Gray));
         assert_eq!(lines[2].style.fg, Some(Color::Gray));
@@ -722,19 +720,19 @@ mod tests {
         let lines = render("**bold** and `code`");
         assert_eq!(lines.len(), 1);
         let spans = &lines[0].spans;
-        // Find bold span
+        // 找出粗體 span
         let bold = spans
             .iter()
             .find(|s| s.style.add_modifier.contains(Modifier::BOLD));
         assert!(bold.is_some(), "should have a bold span");
         assert_eq!(bold.unwrap().content.as_ref(), "bold");
-        // Find code span (dark bg)
+        // 找出 code span（深色背景）
         let code = spans.iter().find(|s| s.style.bg == Some(Color::DarkGray));
         assert!(code.is_some(), "should have a code span");
         assert_eq!(code.unwrap().content.as_ref(), "code");
     }
 
-    // ── PR/bot comment noise ──
+    // ── PR／bot 留言的雜訊 ──
 
     #[test]
     fn drops_link_reference_definition() {
@@ -744,7 +742,7 @@ mod tests {
 
     #[test]
     fn keeps_bracketed_prose_with_spaces_after_colon() {
-        // A link destination cannot contain bare whitespace, so this is prose.
+        // 連結目的地不能包含空白字元，所以這是一般文字。
         let lines = render("[註]: 這是一段中文說明");
         assert_eq!(lines.len(), 1);
         assert!(lines[0]
@@ -775,7 +773,7 @@ mod tests {
 
     #[test]
     fn keeps_prose_that_merely_starts_with_angle_bracket() {
-        // `<` followed by a non-letter is arithmetic, not a tag.
+        // `<` 後面接非字母字元是算式，不是標籤。
         let lines = render("<= 3 表示可讀 > 0");
         assert_eq!(lines.len(), 1);
         assert!(lines[0]
@@ -808,7 +806,7 @@ mod tests {
 
     #[test]
     fn image_is_dropped_including_alt_text() {
-        // The `!` must be consumed with the image, not left behind.
+        // `!` 必須跟圖片一起被吃掉，不能留下來。
         let lines = render("x ![Ready](https://vercel.com/static/ready.svg) y");
         let text: String = lines[0]
             .spans
@@ -818,7 +816,7 @@ mod tests {
         assert_eq!(text, "x  y");
     }
 
-    // ── table layout ──
+    // ── 表格排版 ──
 
     #[test]
     fn table_cell_parses_inline_markup() {
@@ -851,8 +849,8 @@ mod tests {
 
     #[test]
     fn narrow_table_keeps_short_columns_intact() {
-        // Give-back allocation: the long column absorbs the squeeze, the short
-        // ones still get their natural width.
+        // 歸還多餘額度的分配方式：長欄吸收被壓縮的部分，
+        // 短欄仍然能拿到它們的自然寬度。
         let natural = vec![4, 60, 6];
         let widths = fit_columns(&natural, 40);
         assert_eq!(widths[0], 4);
@@ -871,8 +869,8 @@ mod tests {
     fn long_cell_wraps_instead_of_truncating() {
         let body = "| k | v |\n|---|---|\n| a | 這是一段很長的中文說明不應該被截斷 |";
         let lines = super::render(body, 30);
-        // The cell wraps, so join across rows and drop the padding before
-        // checking that nothing was cut.
+        // 儲存格會換行，所以先把各列文字接起來、去掉補的空白，
+        // 再檢查內容有沒有被截斷。
         let text: String = lines
             .iter()
             .flat_map(|l| l.spans.iter().map(|s| s.content.to_string()))
@@ -888,8 +886,8 @@ mod tests {
 
     #[test]
     fn dropped_image_does_not_shift_its_column() {
-        // Vercel writes `![Ready](icon.svg) [Ready](url)` in status cells;
-        // removing the image must not leave the label indented one cell.
+        // Vercel 在狀態欄裡會寫 `![Ready](icon.svg) [Ready](url)`；
+        // 拿掉圖片後不能讓標籤文字多縮一格。
         let lines = render("| a | b |\n|---|---|\n| x | ![i](u.svg) Ready |");
         let row = &lines[2];
         assert!(
@@ -904,8 +902,8 @@ mod tests {
         assert_eq!(lines[0].width(), 10);
     }
 
-    /// The comment shape that motivated all of the above: a Vercel deployment
-    /// bot post, at the real preview width of a 80-column terminal.
+    /// 促成以上所有測試的留言型態：一則 Vercel 部署 bot 貼文，
+    /// 用 80 欄終端機實際預覽時的寬度來測試。
     #[test]
     fn vercel_comment_renders_without_noise() {
         let body = concat!(
@@ -924,7 +922,7 @@ mod tests {
             r#"<picture><source media="(prefers-color-scheme: dark)" srcset="x.svg"></picture></a>"#,
             "\n",
         );
-        let width = 46; // 80-column terminal → 60% preview minus padding
+        let width = 46; // 80 欄終端機 → 60% 預覽寬度扣掉留白
         let lines = super::render(body, width);
         let text: String = lines
             .iter()
@@ -936,12 +934,12 @@ mod tests {
         assert!(!text.contains("<picture"), "raw HTML leaked: {text:?}");
         assert!(!text.contains("href="), "raw HTML leaked: {text:?}");
         assert!(!text.contains("https://"), "bare URL leaked: {text:?}");
-        // Labels survive.
+        // 標籤文字要保留下來。
         assert!(text.contains("scanoo-web"), "got: {text:?}");
         assert!(text.contains("Vercel for GitHub"), "got: {text:?}");
 
-        // Only table rows must fit the width: prose is wrapped by `Paragraph`
-        // (word-aware), while a wrapped table row would lose its alignment.
+        // 只有表格列一定要符合寬度限制：一般文字會交給 `Paragraph`
+        // 換行（會顧及字詞邊界），但表格列換行的話會破壞對齊。
         let table_row = lines
             .iter()
             .find(|l| l.spans.iter().any(|s| s.content.contains("scanoo-web")))

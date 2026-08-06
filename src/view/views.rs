@@ -17,7 +17,7 @@ use crate::{
 #[derive(Debug, Default)]
 pub enum View<'a> {
     #[default]
-    Default, // dummy variant to make #[default] work
+    Default, // 為了讓 #[default] 能運作的假 variant
     List(Box<ListView<'a>>),
     Detail(Box<DetailView<'a>>),
     UserCommand(Box<UserCommandView<'a>>),
@@ -60,8 +60,8 @@ impl<'a> View<'a> {
         }
     }
 
-    /// Stringified identity for marquee reset. Changes when the user navigates
-    /// to a different selection and the marquee should start from frame 0.
+    /// 用於重置 marquee 的字串化識別值。當使用者切換到不同的選取項目、
+    /// marquee 應該從第 0 個 frame 重新開始時，這個值就會改變。
     pub fn marquee_id(&self) -> Option<std::sync::Arc<str>> {
         match self {
             View::List(view) => Some(view.as_list_state().selected_commit_hash().as_arc()),
@@ -71,8 +71,8 @@ impl<'a> View<'a> {
         }
     }
 
-    /// Whether the last render marked a selected row as overflowing — i.e.
-    /// the marquee ticker should keep running.
+    /// 上一次渲染是否把選取列標記為溢出 — 也就是說
+    /// marquee 跑馬燈是否要繼續執行。
     pub fn marquee_needed(&self) -> bool {
         match self {
             View::List(view) => view.as_list_state().selected_row_overflows.get(),
@@ -309,8 +309,8 @@ impl<'a> View<'a> {
                 View::DeleteTag(mut v) => return v.take_list_state().expect("missing state"),
                 View::DeleteRef(mut v) => return v.take_list_state().expect("missing state"),
                 View::UserCommand(mut v) => return v.take_list_state().expect("missing state"),
-                // Help/GitHub are overlay views; unwind to the wrapped before_view.
-                // take_before_view leaves View::Default behind, harmless since `v` drops next.
+                // Help/GitHub 是覆蓋層視圖；要展開回內部包著的 before_view。
+                // take_before_view 會留下 View::Default，但無妨，因為 `v` 接著就會被 drop。
                 View::Help(mut v) => v.take_before_view(),
                 View::GitHub(mut v) => v.take_before_view(),
                 View::Default => unreachable!("no View::Default at runtime"),
@@ -362,8 +362,8 @@ impl From<&CommitListState<'_>> for ListRefreshViewContext {
     fn from(list_state: &CommitListState<'_>) -> Self {
         let commit_hash = list_state.selected_commit_hash().clone();
         let (selected, offset, height) = list_state.current_list_status();
-        // If the selected commit is the top one and there is no offset, it means the list is already scrolled to the top.
-        // In this case, we set scroll_to_top to true to indicate that the view should be scrolled to the top after refresh.
+        // 如果選取的 commit 是最上面那個且沒有 offset，代表清單已經捲到最上面了。
+        // 這種情況下把 scroll_to_top 設為 true，表示重新整理後畫面應該捲回最上面。
         let scroll_to_top = selected == 0 && offset == 0;
         ListRefreshViewContext {
             commit_hash,

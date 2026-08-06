@@ -64,19 +64,6 @@ pub enum EdgeType {
     LeftBottom,  // ╰
 }
 
-impl EdgeType {
-    pub fn is_vertically_related(&self) -> bool {
-        matches!(self, EdgeType::Vertical | EdgeType::Up | EdgeType::Down)
-    }
-
-    pub fn has_downward_continuation(&self) -> bool {
-        matches!(
-            self,
-            EdgeType::Vertical | EdgeType::Down | EdgeType::RightTop | EdgeType::LeftTop
-        )
-    }
-}
-
 pub fn calc_graph(
     repository: &Repository,
     head_hint: Option<&CommitHash>,
@@ -167,14 +154,14 @@ fn calc_commit_positions(
     head_hint: Option<&CommitHash>,
     reserve_head_col: bool,
 ) -> CommitPosMap {
-    // Reserve pos_x = HEAD_RESERVED_COL for HEAD until HEAD is placed (keeps
-    // uncommitted row + HEAD circle on the leftmost line). Only applies when
-    // the caller opts in via `reserve_head_col` (HEAD has a branch/tag).
+    // 在 HEAD 被放置之前，保留 pos_x = HEAD_RESERVED_COL 給 HEAD
+    //（讓 uncommitted row 與 HEAD 圓圈保持在最左邊那條線上）。只有在呼叫端
+    // 透過 `reserve_head_col` 選擇加入時才會套用（代表 HEAD 有 branch/tag）。
     const HEAD_RESERVED_COL: usize = 0;
 
     let mut commit_pos_map: CommitPosMap = FxHashMap::default();
     let mut commit_line_state: Vec<Option<CommitHash>> = Vec::new();
-    // Reverse index: hash → pos_x for O(1) lookup instead of linear scan
+    // 反向索引：hash → pos_x，用來做 O(1) 查詢，避免線性掃描
     let mut hash_to_pos: FxHashMap<CommitHash, usize> = FxHashMap::default();
     let mut head_col_pending =
         reserve_head_col && head_hint.is_some_and(|h| commits.iter().any(|c| c.commit_hash == *h));
@@ -406,7 +393,7 @@ fn calc_edges(
             max_pos_x = pos_x;
         }
 
-        // draw down edge if has parent but parent not in the graph (when max_count is set)
+        // 若有 parent 但該 parent 不在 graph 中（設定 max_count 時會發生此情況），畫出 down edge
         if !commit.parent_commit_hashes.is_empty()
             && !commit_pos_map.contains_key(&commit.parent_commit_hashes[0])
         {
@@ -476,7 +463,7 @@ fn calc_edges(
                 }
 
                 if overlap {
-                    // detour
+                    // 繞道
                     edges[pos_y].push(WrappedEdge::new(EdgeType::Right, pos_x, pos_x, hash));
                     for x in (pos_x + 1)..new_pos_x {
                         edges[pos_y].push(WrappedEdge::new(EdgeType::Horizontal, x, pos_x, hash));
@@ -608,7 +595,7 @@ impl GraphDataSource for FilteredRelations {
     }
 }
 
-/// Walk up ancestors to find the nearest visible parent.
+/// 往上追溯 ancestors，找出最近的 visible parent。
 fn find_nearest_visible_parent(
     start: &CommitHash,
     repository: &Repository,
@@ -642,7 +629,7 @@ pub fn calc_graph_filtered(
         .filter(|c| visible_hashes.contains(&c.commit_hash))
         .collect();
 
-    // Build rewritten parent/children maps
+    // 建立改寫後的 parent/children maps
     let mut parents_map: FxHashMap<CommitHash, Vec<CommitHash>> = FxHashMap::default();
     let mut children_map: FxHashMap<CommitHash, Vec<CommitHash>> = FxHashMap::default();
 
@@ -674,7 +661,7 @@ pub fn calc_graph_filtered(
     };
 
     let effective_head = head_hint.filter(|h| visible_hashes.contains(*h));
-    // If the anchor HEAD isn't visible in this filtered view, don't reserve col 0 for it.
+    // 若 anchor HEAD 在這個 filtered view 中不可見，就不為它保留 col 0。
     let effective_reserve = reserve_head_col && effective_head.is_some();
     let commit_pos_map =
         calc_commit_positions(&commits, &source, effective_head, effective_reserve);
@@ -724,7 +711,7 @@ mod tests {
     fn invariant_removes_vertical_at_head_pos_x() {
         let head = head_hash();
         let pos = pos_map_for_head(1, 2);
-        // Row 2 has a pass-through Vertical at HEAD's column — the pierce source.
+        // Row 2 在 HEAD 所在欄位上有一條穿透的 Vertical —— 這就是穿刺的源頭。
         let mut edges: Vec<Vec<Edge>> = vec![
             vec![Edge::new(EdgeType::Vertical, 0, 0)],
             vec![Edge::new(EdgeType::Vertical, 0, 0)],
@@ -742,7 +729,7 @@ mod tests {
                 .any(|e| e.pos_x == 1 && e.edge_type == EdgeType::Vertical),
             "Vertical at head_pos_x on head row must be removed"
         );
-        // Non-HEAD Vertical at col 0 untouched.
+        // col 0 上非 HEAD 的 Vertical 不受影響。
         assert!(edges[2]
             .iter()
             .any(|e| e.pos_x == 0 && e.edge_type == EdgeType::Vertical));
@@ -769,8 +756,8 @@ mod tests {
 
     #[test]
     fn anchor_not_called_leaves_no_stray_vertical_above_head() {
-        // Regression test: without anchor (clean working tree), HEAD's column
-        // must NOT get extra Verticals on rows above HEAD.
+        // 迴歸測試：沒有 anchor 時（乾淨的 working tree），HEAD 那一欄
+        // 在 HEAD 上方的 rows 不能多出額外的 Vertical。
         let head = head_hash();
         let pos = pos_map_for_head(1, 3);
         let mut edges: Vec<Vec<Edge>> = vec![
@@ -815,7 +802,7 @@ mod tests {
             .any(|e| e.pos_x == 1 && e.edge_type == EdgeType::Up));
     }
 
-    // --- calc_edges tests ---
+    // --- calc_edges 測試 ---
 
     fn make_commit(hash: &str, parents: &[&str]) -> Commit {
         Commit {
@@ -874,7 +861,7 @@ mod tests {
     /// 同 col first-parent → 直線 Vertical（原有行為）
     #[test]
     fn edges_same_col_first_parent_draws_vertical() {
-        // A (y=0, col=1) ← B (y=1, col=1), first parent
+        // A (y=0, col=1) ← B (y=1, col=1)，是 first parent
         let a = make_commit("a", &["b"]);
         let b = make_commit("b", &[]);
         let commits = vec![&a, &b];
@@ -898,12 +885,12 @@ mod tests {
     /// 同 col merge 且中間有其他 commit → 應 detour 繞道，不穿透
     #[test]
     fn edges_same_col_merge_with_intermediate_detours() {
-        // Topology (模擬 scanoo-web 的 bug)：
+        // 拓樸結構 (模擬 scanoo-web 的 bug)：
         //   y=0: M (merge, col=1) parents=[E, P]  first-parent=E
         //   y=1: E (col=0)                        M 的 first-parent（相鄰，branch 不生中間 Vertical）
-        //   y=2: X (col=1) parents=[Y]            unrelated commit on same col
-        //   y=3: Y (col=1) parents=[]             unrelated commit on same col
-        //   y=4: P (col=1) parents=[]             merge second-parent
+        //   y=2: X (col=1) parents=[Y]            同 col 上不相關的 commit
+        //   y=3: Y (col=1) parents=[]             同 col 上不相關的 commit
+        //   y=4: P (col=1) parents=[]             merge 的 second-parent
         //
         // P→M 是 merge（non-first-parent），同 col 1，中間有 X, Y 在 col 1
         // 應該 detour 到 col≥2，不在 col 1 rows 2-3 畫穿透 Vertical
@@ -947,8 +934,8 @@ mod tests {
     #[test]
     fn edges_same_col_merge_adjacent_draws_up_down() {
         // y=0: M (merge, col=1) parents=[E, P]  first-parent=E
-        // y=1: P (col=1)                       merge second-parent
-        // y=2: E (col=0)                       merge first-parent
+        // y=1: P (col=1)                       merge 的 second-parent
+        // y=2: E (col=0)                       merge 的 first-parent
         let m = make_commit("M", &["E", "P"]);
         let p = make_commit("P", &[]);
         let e = make_commit("E", &[]);
@@ -971,7 +958,7 @@ mod tests {
         );
     }
 
-    // --- calc_commit_positions: HEAD col reservation ---
+    // --- calc_commit_positions：HEAD col 保留 ---
 
     /// HEAD 無 branch/tag (reserve=false)：第一個 leaf 從 col 0 開始，不再被擠。
     #[test]
@@ -1012,8 +999,8 @@ mod tests {
         );
         assert_eq!(map[&CommitHash::from("b")].0, 2);
         assert_eq!(map[&CommitHash::from("head")].0, 0, "HEAD takes col 0");
-        // After HEAD placed, head_col_pending=false → c can scan from col 0.
-        // Cols 0,1,2 are occupied by head,a,b → c goes col 3.
+        // HEAD 放置後，head_col_pending=false → c 可以從 col 0 開始掃描。
+        // Col 0,1,2 已被 head,a,b 佔用 → c 落在 col 3。
         assert_eq!(map[&CommitHash::from("c")].0, 3);
     }
 
@@ -1022,7 +1009,7 @@ mod tests {
     fn positions_merged_head_follows_child_col_regression() {
         // child (y=0) parents=[head, other]
         // head (y=1) — HEAD，被 child first-parent 指到
-        // other (y=2) — child second-parent
+        // other (y=2) — child 的 second-parent
         let child = make_commit("child", &["head", "other"]);
         let head = make_commit("head", &[]);
         let other = make_commit("other", &[]);

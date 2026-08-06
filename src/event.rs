@@ -19,7 +19,7 @@ use serde::{
 
 use crate::view::RefreshViewContext;
 
-/// Tick event interval driving UI animations (marquee, etc.).
+/// 驅動 UI 動畫（跑馬燈等）的 tick 事件間隔。
 pub const TICK_INTERVAL: Duration = Duration::from_millis(100);
 
 /// watchdog 的輪詢間隔。要夠短，SIGTERM 才不會等太久才生效。
@@ -282,7 +282,7 @@ impl Sender {
         let _ = self.tx.send(event);
     }
 
-    /// Send an event after a delay, on a background thread.
+    /// 在背景 thread 上，延遲一段時間後送出事件。
     pub fn send_after(&self, event: AppEvent, delay: std::time::Duration) {
         let tx = self.clone();
         std::thread::spawn(move || {
@@ -632,9 +632,9 @@ pub fn start_git_watcher(tx: Sender, repo_root: &Path) -> Arc<AtomicBool> {
     pending_refresh
 }
 
-/// Fast-path first: cheap string checks on the raw event path before any
-/// syscalls. Only canonicalize when we need to compare against `git_dir`
-/// (which may be a symlink on macOS for worktrees/submodules).
+/// 先走快速路徑：在任何 syscall 之前，先對原始 event path 做便宜的字串檢查。
+/// 只有在需要跟 `git_dir` 比較時才 canonicalize
+/// （在 macOS 上，worktree／submodule 的 `git_dir` 可能是 symlink）。
 fn is_relevant_event(
     e: &notify_debouncer_mini::DebouncedEvent,
     git_dir: &Path,
@@ -649,7 +649,7 @@ fn is_relevant_event(
     if e.path.extension() == Some(OsStr::new("lock")) {
         return false;
     }
-    // macOS AppleDouble (._foo) produced by tar/cp on HFS+.
+    // macOS 在 HFS+ 上用 tar/cp 產生的 AppleDouble 檔案（._foo）。
     if e.path
         .file_name()
         .and_then(|n| n.to_str())
@@ -660,19 +660,19 @@ fn is_relevant_event(
     if path_has_ignored_component(&e.path, repo_root, ignored) {
         return false;
     }
-    // Canonicalize only the survivors to stabilize comparison against git_dir
-    // across macOS symlinks (e.g. /tmp → /private/tmp).
+    // 只對留下來的路徑做 canonicalize，讓跟 git_dir 的比較在 macOS 的
+    // symlink（例如 /tmp → /private/tmp）之下也能穩定。
     let path = e.path.canonicalize().unwrap_or_else(|_| e.path.clone());
     if path.starts_with(git_dir) {
         return true;
     }
-    // After canonicalization the path may differ; re-check ignored components.
+    // canonicalize 之後路徑可能改變，要重新檢查是否含被忽略的路徑片段。
     !path_has_ignored_component(&path, repo_root, ignored)
 }
 
-/// Collect plain directory/file names from a .gitignore. Glob patterns, paths,
-/// and negation entries are intentionally skipped — this is a noise-filter hint,
-/// not a gitignore parser. Final correctness is delegated to `git status`.
+/// 從 .gitignore 收集純目錄／檔案名稱。Glob 模式、路徑、
+/// 否定條目一律故意跳過 —— 這只是雜訊過濾的提示，
+/// 不是完整的 gitignore 解析器。最終正確性交給 `git status` 判斷。
 fn read_gitignore_name_hints(path: &Path) -> FxHashSet<String> {
     let Ok(content) = std::fs::read_to_string(path) else {
         return FxHashSet::default();
@@ -701,7 +701,7 @@ fn path_has_ignored_component(path: &Path, repo_root: &Path, ignored: &FxHashSet
     })
 }
 
-// The event triggered by user's key input
+// 由使用者按鍵輸入觸發的事件
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum UserEvent {
     ForceQuit,
@@ -982,7 +982,7 @@ mod tests {
     fn test_user_event_with_count_new_zero_count() {
         let event = UserEventWithCount::new(UserEvent::NavigateDown, 0);
         assert_eq!(event.event, UserEvent::NavigateDown);
-        assert_eq!(event.count, 1); // zero should be converted to 1
+        assert_eq!(event.count, 1); // 0 應該被轉成 1
     }
 
     #[test]

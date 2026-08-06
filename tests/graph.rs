@@ -657,7 +657,7 @@ fn merge_005() -> TestResult {
 
 #[test]
 fn stash_001() -> TestResult {
-    // Test case for multiple stashes, the most recent commit is normal commit
+    // 測試案例：有多個 stash，最近一筆 commit 是普通 commit
     let dir = tempfile::tempdir()?;
     let repo_path = dir.path();
 
@@ -703,7 +703,7 @@ fn stash_001() -> TestResult {
 
 #[test]
 fn stash_002() -> TestResult {
-    // Test case for multiple stashes, the most recent commit is stash
+    // 測試案例：有多個 stash，最近一筆 commit 是 stash
     let dir = tempfile::tempdir()?;
     let repo_path = dir.path();
 
@@ -746,7 +746,7 @@ fn stash_002() -> TestResult {
 
 #[test]
 fn stash_003() -> TestResult {
-    // Test case for unreachable stash
+    // 測試案例：無法從任何分支到達的 stash
     let dir = tempfile::tempdir()?;
     let repo_path = dir.path();
 
@@ -782,7 +782,7 @@ fn stash_003() -> TestResult {
 
 #[test]
 fn stash_004() -> TestResult {
-    // Test case for multiple stashes for the same commit
+    // 測試案例：同一個 commit 上有多個 stash
     let dir = tempfile::tempdir()?;
     let repo_path = dir.path();
 
@@ -900,7 +900,7 @@ fn orphan_002() -> TestResult {
 
 #[test]
 fn head_001() -> TestResult {
-    // Test case for detached HEAD
+    // 測試案例：detached HEAD
     let dir = tempfile::tempdir()?;
     let repo_path = dir.path();
 
@@ -1022,14 +1022,14 @@ fn complex_001() -> TestResult {
     Ok(())
 }
 
-/// Test case for the HEAD column-reservation branch of `calc_commit_positions`
-/// (`reserve_head_col`). This needs a purpose-built repo: the existing 19 repos
-/// above all end with HEAD *being* the newest commit, which makes the reserved
-/// column collapse onto column 0 either way (see calc.rs — `head_col_pending`
-/// is cleared the moment HEAD's row is processed, so if HEAD is `pos_y == 0`
-/// there's nothing left to reserve for). This repo instead leaves HEAD on a
-/// childless branch tip that is *not* the newest commit, and with a named ref
-/// (`head_has_named_ref` must be true) so the reservation actually engages.
+/// 測試 `calc_commit_positions` 的 HEAD 欄位保留分支（`reserve_head_col`）。
+/// 這需要一個專門設計的 repo：上面既有的 19 個 repo 全都以 HEAD *就是*
+/// 最新 commit 收尾，這會讓保留欄無論如何都收斂回第 0 欄（見
+/// calc.rs——`head_col_pending` 在 HEAD 那一列處理完的當下就會被清掉，
+/// 所以如果 HEAD 的 `pos_y == 0`，就沒有東西需要保留了）。這個 repo
+/// 則是刻意讓 HEAD 停在一個沒有子節點、且*不是*最新 commit 的分支
+/// 尖端，並帶有具名 ref（`head_has_named_ref` 必須為 true），讓保留
+/// 機制真正啟動。
 #[test]
 fn reserve_col_001() -> TestResult {
     let dir = tempfile::tempdir()?;
@@ -1156,11 +1156,11 @@ struct GenerateGraphOption {
     output_name: &'static str,
     sort: git::SortCommit,
     max_count: Option<usize>,
-    // Whether to pass the repo's actual HEAD to `calc_graph` and reserve a
-    // column for it (`reserve_head_col`). When false (the default, used by
-    // every case above except `reserve_col_001`), HEAD is treated as unknown
-    // (`None`) — exactly matching the PNG-era snapshot generation, which
-    // always called `calc_graph(&repository, None, false)` unconditionally.
+    // 是否要把 repo 實際的 HEAD 傳給 `calc_graph` 並為它保留一欄
+    // （`reserve_head_col`）。為 false 時（預設值，上面除了 `reserve_col_001`
+    // 之外的每個案例都用這個），HEAD 會被視為未知（`None`）——這跟
+    // PNG 時代的 snapshot 產生方式完全一致，當年一律無條件呼叫
+    // `calc_graph(&repository, None, false)`。
     reserve_head_col: bool,
 }
 
@@ -1184,7 +1184,7 @@ impl GenerateGraphOption {
         self
     }
 
-    /// Every snapshot this case owns: one per cell width.
+    /// 這個案例擁有的每一份 snapshot：每種欄寬各一份。
     fn keys(&self) -> impl Iterator<Item = SnapshotKey> {
         let name = self.output_name;
         WIDTHS
@@ -1193,20 +1193,19 @@ impl GenerateGraphOption {
     }
 }
 
-/// One case's graph, built once (a `git::Repository::load` + `calc_graph`)
-/// and rendered against both cell widths and all three styles. Rebuilding
-/// per width/style just to change which characters get printed would
-/// multiply the number of git subprocess spawns across the whole suite for
-/// zero benefit — the graph topology doesn't depend on width or style at
-/// all, only `build_text_cells`'s folding (width) and `GlyphSet::resolve`
-/// (style) do.
+/// 單一案例的 graph，只建構一次（一次 `git::Repository::load` +
+/// `calc_graph`），再拿去對兩種欄寬與三種風格分別渲染。若為了換字元就
+/// 依 width/style 各自重建一次，會讓整個測試套件的 git 子行程數量成倍
+/// 增加，卻毫無好處——graph 的拓撲結構完全不依賴 width 或 style，只有
+/// `build_text_cells` 的折疊（width）與 `GlyphSet::resolve`（style）才會
+/// 受影響。
 struct GraphSnapshotSource {
     subjects: Vec<String>,
     double_rows: Vec<Vec<graph::TextCell>>,
     single_rows: Vec<Vec<graph::TextCell>>,
-    /// Kept so the cross-width invariants can work out, per column, whether
-    /// `Double` was allowed to merge it. Deriving that from the rendered
-    /// cells would just restate the implementation.
+    /// 保留下來是為了讓跨欄寬的不變性檢查能夠逐欄判斷 `Double` 當初是
+    /// 否被允許合併它。若從渲染後的 cell 反推，只會是把實作邏輯重講
+    /// 一遍而已。
     edges: Vec<Vec<graph::Edge>>,
     colors: Vec<ratatui::style::Color>,
 }
@@ -1226,9 +1225,9 @@ fn build_graph_snapshot_source(
 ) -> GraphSnapshotSource {
     let repository = git::Repository::load(repo_path, option.sort, option.max_count).unwrap();
 
-    // Only compute a real HEAD hint for `reserve_head_col` cases. Everyone
-    // else passes `None`, matching what the PNG-era generator always did —
-    // see the field doc-comment on `GenerateGraphOption::reserve_head_col`.
+    // 只有 `reserve_head_col` 案例才會算出真正的 HEAD hint，其餘案例一律
+    // 傳 `None`，跟 PNG 時代產生器當年的做法一致——見
+    // `GenerateGraphOption::reserve_head_col` 欄位上的 doc comment。
     let head_hint: Option<git::CommitHash> = if option.reserve_head_col {
         let hash = GitRepository::new(repo_path).rev_parse_head();
         Some(git::CommitHash::from(hash.as_str()))
@@ -1263,9 +1262,9 @@ fn build_graph_snapshot_source(
     }
 }
 
-/// Render exactly as the text-mode graph column does, via
-/// `graph::build_text_graph` and `GlyphSet::resolve`, one line per commit:
-/// `<graph glyphs>  <subject>`. No hash/date — see #16 plan for why.
+/// 完全比照文字模式 graph 欄位的畫法渲染，透過 `graph::build_text_graph`
+/// 與 `GlyphSet::resolve`，每個 commit 一行：`<graph glyphs>  <subject>`。
+/// 不含 hash/date——原因見 #16 plan。
 fn render_text_graph_styled(
     source: &GraphSnapshotSource,
     glyphs: graph::GlyphSet,
@@ -1282,10 +1281,10 @@ fn render_text_graph_styled(
     out
 }
 
-/// Whether an edge that loses its half-cell disappears without a trace.
-/// Spelled out literally rather than derived from `graph`, so a wrong entry
-/// in `halves` and a wrong entry here can't cancel out -- same reasoning as
-/// `ANGULAR_SUBST` and `halves_match_the_original_edge_type_table`.
+/// 一條邊失去它的半格後，是否會不留痕跡地消失。
+/// 這裡刻意寫死列舉，而不是從 `graph` 推導出來，這樣 `halves` 裡的
+/// 錯誤項目跟這裡的錯誤項目才不會互相抵消——跟 `ANGULAR_SUBST` 與
+/// `halves_match_the_original_edge_type_table` 的道理一樣。
 fn leaves_no_trace(edge_type: graph::EdgeType) -> bool {
     match edge_type {
         graph::EdgeType::Vertical
@@ -1312,14 +1311,14 @@ fn is_junction(glyph: graph::Glyph) -> bool {
     )
 }
 
-/// Recomputes `Column::can_merge`'s two reasons from the raw edges,
-/// independently of the renderer. Kept separate rather than reduced to one
-/// bool because the colour half of the invariant below only holds under the
-/// first of them.
+/// 獨立於 renderer 之外，從原始的 edges 重新算出 `Column::can_merge`
+/// 的兩個判斷依據。刻意保持兩個各自獨立的值，不縮減成單一 bool，
+/// 是因為下面不變性檢查裡顏色的那一半，只在第一個依據成立時才站得
+/// 住腳。
 ///
-/// A column with fewer than two edges has no pair to disagree, so it counts
-/// as uniform -- merging it is a no-op either way, and saying yes puts it
-/// through the equality check rather than skipping it.
+/// 少於兩條邊的欄位沒有東西可以互相牴觸，所以一律算作 uniform——
+/// 合併它反正是個 no-op，判定為 true 只是讓它走一趟相等性檢查，
+/// 而不是直接跳過。
 fn column_merge_reasons(source: &GraphSnapshotSource, row: usize, col: usize) -> (bool, usize) {
     let in_col: Vec<_> = source.edges[row]
         .iter()
@@ -1334,34 +1333,30 @@ fn column_merge_reasons(source: &GraphSnapshotSource, row: usize, col: usize) ->
     (uniform, traceless)
 }
 
-/// What has to hold between the two widths, checked on every case.
+/// 兩種欄寬之間必須成立的關係，每個案例都會檢查。
 ///
-/// 1. **Where `Double` merged, `Single` drew the same glyph.** The one
-///    exception is a column whose only direction is rightward: `Double`
-///    leaves the symbol blank and puts the `─` in the connector, while
-///    `Single` has just the one cell to draw it in.
-/// 2. **Where it didn't merge, `Double` drew no junction at all** -- the
-///    cell holds one edge's own glyph, never a combination.
+/// 1. **只要 `Double` 合併了，`Single` 就要畫出一樣的 glyph。** 唯一
+///    的例外是方向只往右的欄位：`Double` 會把 symbol 留空、把 `─`
+///    畫在 connector 裡，而 `Single` 只有一格可以畫。
+/// 2. **只要沒合併，`Double` 就完全不畫任何交會符號**——那一格只會
+///    是單一條邊自己的 glyph，絕不會是組合出來的。
 ///
-/// The colour is only compared for columns that are entirely one colour.
-/// `Double` takes every colour from the winner-takes-all pass (`place`, last
-/// writer wins on a tie) while `Single` takes it from `Column::symbol_color`
-/// (first writer wins), so a column merged under the *traceless* rule can
-/// legitimately disagree: two equal-rank edges of different colours resolve
-/// opposite ways. Where the whole column is one colour there is nothing for
-/// the two tie-breaks to disagree about.
+/// 顏色只在整欄都是同一個顏色時才比較。`Double` 的顏色是從贏者全拿
+/// 的那一輪（`place`，同分時後寫入者勝出）取得，`Single` 則是從
+/// `Column::symbol_color`（先寫入者勝出）取得，所以在 *traceless*
+/// 規則下合併的欄位，兩邊顏色是可能合理地不一致的：兩條同等級但
+/// 顏色不同的邊，會依相反的方向決出勝負。只有整欄都是同一顏色時，
+/// 這兩種決勝規則之間才沒有分歧的空間。
 ///
-/// Together these pin the merge rule in both directions: a junction in the
-/// symbol half implies the column was mergeable, and a mergeable column
-/// implies the symbol half agrees with `Single`. Writing the rule backwards,
-/// dropping it, or widening it to "merge whenever there are edges" all fail
-/// here. (The superset relation this replaced did not: it held just as well
-/// with the merge pass deleted entirely.)
+/// 這兩條規則合在一起，把合併規則從雙向都釘死了：symbol 那半格出現
+/// 交會符號，代表這一欄本來就可合併；一欄可合併，也代表 symbol 那半
+/// 格會跟 `Single` 一致。不管是把規則反過來寫、乾脆拿掉，還是放寬成
+/// 「只要有邊就合併」，在這裡都會測試失敗。（這裡取代掉的舊超集關係
+/// 就辦不到這點：就算把合併那段邏輯整段刪掉，那條舊關係一樣會通過。）
 ///
-/// Compares `TextCell` rather than rendered characters, so no `GlyphSet` is
-/// involved. Which junction character a union resolves to is pinned by
-/// `graph/text.rs`'s unit tests, exhaustive over all 16 direction
-/// combinations.
+/// 這裡比較的是 `TextCell`，不是渲染後的字元，所以完全不涉及
+/// `GlyphSet`。一個聯集最終會解析成哪個交會字元，是由 `graph/text.rs`
+/// 的單元測試釘住的，那些測試窮舉了全部 16 種方向組合。
 fn assert_cross_width_invariants(option: &GenerateGraphOption, source: &GraphSnapshotSource) {
     let name = option.output_name;
     for (row, (double_row, single_row)) in source
@@ -1411,9 +1406,9 @@ fn assert_cross_width_invariants(option: &GenerateGraphOption, source: &GraphSna
     }
 }
 
-/// Identifies one snapshot: a case rendered at one cell width. Both widths
-/// are checked in for every case, so the width is part of a snapshot's
-/// identity rather than a property of the case.
+/// 用來辨識單一份 snapshot：某個案例在某種欄寬下的渲染結果。每個案例
+/// 兩種欄寬都會檢查，所以欄寬是 snapshot 身分的一部分，而不是案例
+/// 本身的屬性。
 #[derive(Clone, Copy)]
 struct SnapshotKey {
     name: &'static str,
@@ -1421,7 +1416,7 @@ struct SnapshotKey {
 }
 
 impl SnapshotKey {
-    /// Every width's suffix is spelled once, here.
+    /// 每種欄寬的檔名後綴都只在這裡寫一次。
     fn width_suffix(self) -> &'static str {
         match self.width {
             graph::CellWidthType::Double => "",
@@ -1472,25 +1467,25 @@ fn create_output_dirs(path: &str) {
 
 fn copy_git_dir(path: &Path, name: &str) {
     let dst_path = format!("{OUTPUT_DIR}/{name}");
-    // dircpy overwrite doesn't seem to work as expected, so delete explicitly
+    // dircpy 的覆蓋行為似乎不如預期，所以在這裡明確刪除
     if Path::new(&dst_path).is_dir() {
         std::fs::remove_dir_all(&dst_path).unwrap();
     }
     dircpy::CopyBuilder::new(path, dst_path).run().unwrap();
 }
 
-/// Angular's four corners map 1:1 to rounded's. Ascii additionally folds all
-/// four corners onto `+` and switches the line-drawing characters. These are
-/// literal tables, not derived from `GlyphSet::resolve`/`from_style` —
-/// deriving them would make the invariant below a tautology (a wrong table
-/// entry and a wrong dispatch could cancel out and still pass).
+/// Angular 的四個轉角跟 rounded 是一對一對應。Ascii 則額外把四個轉角
+/// 全部折疊成 `+`，並把畫線字元也換掉。這些是寫死的對照表，不是從
+/// `GlyphSet::resolve`/`from_style` 推導出來的——用推導的話會讓下面
+/// 的不變性檢查變成套套邏輯（對照表寫錯跟 dispatch 寫錯可能剛好互相
+/// 抵消，還是會測試通過）。
 ///
-/// Safe to apply as a whole-string replace: every subject across all 41
-/// golden snapshots (125 distinct subjects) is verified pure ASCII, and
-/// every source character here is non-ASCII, so this can never mangle a
-/// subject. If a future fixture adds a subject containing one of these
-/// characters, this substitution would silently corrupt it — re-verify the
-/// all-ASCII-subjects premise if that ever happens.
+/// 可以放心整段字串替換：全部 41 份 golden snapshot 裡的每個 subject
+/// （125 個不重複的 subject）都已驗證是純 ASCII，而這裡的每個來源
+/// 字元都是非 ASCII，所以這個替換絕不會誤傷 subject。如果未來的
+/// fixture 新增了一個 subject 剛好含有這些字元之一，這個替換就會悄悄
+/// 把它弄壞——真的發生的話，要重新驗證「subject 全是 ASCII」這個前提
+/// 是否還成立。
 const ANGULAR_SUBST: &[(char, char)] = &[('╭', '┌'), ('╮', '┐'), ('╰', '└'), ('╯', '┘')];
 const ASCII_SUBST: &[(char, char)] = &[
     ('●', '*'),
@@ -1523,10 +1518,10 @@ fn substitute(input: &str, table: &[(char, char)]) -> String {
 fn assert_text_graphs(options: &[GenerateGraphOption]) {
     if std::env::var_os("UPDATE_SNAPSHOTS").is_some() {
         update_text_snapshots(options);
-        // Fail on purpose: an update run isn't a verification run, and a
-        // green run here would let UPDATE_SNAPSHOTS=1 slip into a normal
-        // `cargo test` invocation (e.g. left set in a shell) and be mistaken
-        // for a real pass. Re-run without the env var to actually verify.
+        // 故意讓它失敗：更新模式的執行不算是驗證，如果這裡也回綠燈，
+        // UPDATE_SNAPSHOTS=1 就有可能不小心殘留在 shell 裡，混進正常的
+        // `cargo test` 執行，被誤判為真的測試通過。要拿掉這個環境變數
+        // 重新執行一次，才是真正的驗證。
         panic!(
             "UPDATE_SNAPSHOTS was set: wrote/updated {} snapshot(s) under {SNAPSHOT_DIR}. \
              This run intentionally fails so it can't be mistaken for a real pass — \
@@ -1540,10 +1535,9 @@ fn assert_text_graphs(options: &[GenerateGraphOption]) {
         for key in option.keys() {
             match compare_text_snapshot(key) {
                 Ok(()) => {
-                    // Only check style invariants once the rounded golden itself
-                    // matches -- otherwise a single real regression shows up as
-                    // three redundant failures for the same case, burying the
-                    // actual cause.
+                    // 只有在 rounded golden 本身先比對成功後，才檢查風格的
+                    // 不變性——不然一個真正的 regression 會同時炸出三個
+                    // 重複的失敗，反而把真正的原因埋掉。
                     for (suffix, table) in [("_angular", ANGULAR_SUBST), ("_ascii", ASCII_SUBST)] {
                         if let Err(e) = compare_style_invariant(key, suffix, table) {
                             errors.push(e);
@@ -1594,9 +1588,9 @@ fn compare_text_snapshot(key: SnapshotKey) -> Result<(), String> {
     ))
 }
 
-/// Checks that `{name}{suffix}.txt` (generated by `generate_and_output_text_graphs`,
-/// not a golden file) equals the rounded golden with `table` applied. Only
-/// called after `compare_text_snapshot` already passed for this case.
+/// 檢查 `{name}{suffix}.txt`（由 `generate_and_output_text_graphs` 產生，
+/// 不是 golden 檔）是否等於套用了 `table` 之後的 rounded golden。只有
+/// 在這個案例的 `compare_text_snapshot` 已經先通過之後才會呼叫。
 fn compare_style_invariant(
     key: SnapshotKey,
     suffix: &str,

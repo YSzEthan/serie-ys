@@ -96,7 +96,7 @@ struct Config {
     #[garde(skip)]
     #[nested]
     color: ColorTheme,
-    // The user customed keybinds, please ref `assets/default-keybind.toml`
+    // 使用者自訂的按鍵綁定，格式請參考 `assets/default-keybind.toml`
     #[garde(skip)]
     keybind: Option<KeyBind>,
 }

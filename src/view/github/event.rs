@@ -12,8 +12,8 @@ use super::{GitHubFocus, GitHubTab, GitHubView, LoadState, TaskListPanel};
 impl<'a> GitHubView<'a> {
     pub fn handle_event(&mut self, event_with_count: UserEventWithCount, key: KeyEvent) {
         let count = event_with_count.count;
-        // In modal-ish focus (List/Preview), Right/Left double as Confirm/Cancel.
-        // Prompt takes raw key input; CheckboxEdit uses Left/Right to toggle.
+        // 在偏 modal 的 focus（List/Preview）中，右/左鍵兼作 Confirm/Cancel。
+        // Prompt 接收原始按鍵輸入；CheckboxEdit 用左/右鍵切換。
         let event = match self.focus {
             GitHubFocus::List | GitHubFocus::Preview => modal_yesno_aliases(event_with_count.event),
             GitHubFocus::Prompt | GitHubFocus::CheckboxEdit => event_with_count.event,
@@ -390,10 +390,10 @@ impl<'a> GitHubView<'a> {
         match event {
             UserEvent::Cancel | UserEvent::Close => {
                 if self.search_input.value().is_empty() {
-                    // Empty query → close view
+                    // 查詢字串是空的 → 關閉 view
                     self.tx.send(AppEvent::CloseGitHub);
                 } else {
-                    // Clear query → back to unfiltered list
+                    // 清空查詢字串 → 回到未篩選的列表
                     self.search_input.reset();
                     self.filtered_issue_indices.clear();
                     self.filtered_pr_indices.clear();
@@ -416,7 +416,7 @@ impl<'a> GitHubView<'a> {
                 }
             }
             UserEvent::NavigateDown | UserEvent::SelectDown => {
-                // Move list selection without leaving prompt
+                // 移動列表選取，但不離開 prompt
                 let max = self.current_list_len().saturating_sub(1);
                 for _ in 0..count {
                     if self.selected_index < max {
@@ -434,7 +434,7 @@ impl<'a> GitHubView<'a> {
                 self.adjust_scroll();
             }
             UserEvent::RefList => {
-                // Tab: switch Issues ⇄ PRs (keep query)
+                // Tab 鍵：切換 Issues ⇄ PRs（保留查詢字串）
                 self.active_tab = match self.active_tab {
                     GitHubTab::Issues => GitHubTab::PullRequests,
                     GitHubTab::PullRequests => GitHubTab::Issues,
@@ -444,7 +444,7 @@ impl<'a> GitHubView<'a> {
                 self.preview_offset = 0;
             }
             _ => {
-                // Forward key to tui-input; only rebuild if value actually changed
+                // 把按鍵轉發給 tui-input；只有值真的變了才重建
                 let before = self.search_input.value().to_string();
                 self.search_input.handle_event(&Event::Key(key));
                 if self.search_input.value() != before {
@@ -562,7 +562,7 @@ impl<'a> GitHubView<'a> {
             .map(|(idx, _)| idx)
             .collect();
 
-        // Clamp selected_index
+        // 限制 selected_index 的範圍
         let max = self.current_list_len().saturating_sub(1);
         if self.selected_index > max {
             self.selected_index = max;

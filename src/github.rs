@@ -19,7 +19,7 @@ pub struct GhPage<T> {
     pub next_cursor: Option<String>,
 }
 
-// ── Item Kind ──
+// ── 項目種類 ──
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum GhItemKind {
@@ -222,7 +222,7 @@ fn parse_issues_graphql(json: &str) -> Result<GhPage<GhIssue>, String> {
     })
 }
 
-// ── GraphQL response wrapper types ──
+// ── GraphQL 回應包裝型別 ──
 
 #[derive(Deserialize, Default)]
 #[serde(rename_all = "camelCase")]
@@ -357,7 +357,7 @@ fn parse_prs_graphql(json: &str) -> Result<GhPage<GhPullRequest>, String> {
     })
 }
 
-// ── GraphQL PR response wrapper types ──
+// ── GraphQL PR 回應包裝型別 ──
 
 #[derive(Deserialize)]
 struct GqlPrsResp {
@@ -425,7 +425,7 @@ impl GqlPrNode {
     }
 }
 
-// ── Timeline (comments + commits, interleaved in GitHub's own order) ──
+// ── Timeline（留言與 commit，依 GitHub 原生順序交錯排列）──
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 #[serde(tag = "__typename")]
@@ -440,10 +440,9 @@ pub enum GhTimelineItem {
     PullRequestCommit {
         commit: GhCommit,
     },
-    /// `itemTypes` should only ever produce the two variants above, but
-    /// betting the whole page's deserialization on GitHub never adding a
-    /// third is not worth it — an unrecognized `__typename` would otherwise
-    /// fail every node instead of just this one.
+    /// `itemTypes` 理論上只會產生上面兩種 variant，但把整頁的反序列化都賭在
+    /// GitHub 永遠不會新增第三種上並不值得 —— 否則一個未知的 `__typename` 會讓
+    /// 每個 node 都失敗，而不只是這一個。
     #[serde(other)]
     Unknown,
 }
@@ -463,9 +462,9 @@ pub struct GhStatusCheckRollup {
     pub state: String,
 }
 
-/// Whether a PR can currently merge. `UNKNOWN` (GitHub's lazily-computed
-/// third state, e.g. still checking, or the PR is already merged/closed) and
-/// "not a PR at all" both fold into `None` — both mean "don't show a marker".
+/// PR 目前是否可以合併。`UNKNOWN`（GitHub 惰性計算出的第三種狀態，
+/// 例如仍在檢查中，或該 PR 已經合併／關閉）與「根本不是 PR」
+/// 兩種情況都會併入 `None` —— 都代表「不要顯示標記」。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Mergeable {
     Mergeable,
@@ -500,20 +499,19 @@ pub fn get_timeline(
         GhItemKind::Issue => "issue",
         GhItemKind::PullRequest => "pullRequest",
     };
-    // Issues have no commits — asking for PULL_REQUEST_COMMIT there is a
-    // GraphQL validation error, not an empty result.
+    // issue 沒有 commit —— 對它要求 PULL_REQUEST_COMMIT 會是 GraphQL
+    // 驗證錯誤，而不是回傳空結果。
     let item_types = match kind {
         GhItemKind::Issue => "ISSUE_COMMENT",
         GhItemKind::PullRequest => "ISSUE_COMMENT, PULL_REQUEST_COMMIT",
     };
-    // Issues have no `mergeable` field either — same validation-error trap.
+    // issue 也沒有 `mergeable` 欄位 —— 同樣會踩到驗證錯誤的陷阱。
     let mergeable_field = match kind {
         GhItemKind::Issue => "",
         GhItemKind::PullRequest => "mergeable",
     };
-    // 100 (the connection max) rather than 50: commits only take one visual
-    // line while comments often take many, so mixing them into one page
-    // halves how far a page actually gets you.
+    // 用 100（connection 上限）而非 50：commit 只佔一行視覺高度，
+    // 而留言常常佔好幾行，混在同一頁會讓一頁實際能看到的內容打對折。
     let query = format!(
         r#"query($owner:String!,$name:String!,$number:Int!,$after:String){{
             repository(owner:$owner,name:$name){{
@@ -605,7 +603,7 @@ struct GqlTimelineConn {
     nodes: Vec<GhTimelineItem>,
 }
 
-// ── Checkbox / Task List ──
+// ── Checkbox／工作清單 ──
 
 #[derive(Debug, Clone)]
 pub struct CheckboxItem {
@@ -720,7 +718,7 @@ pub fn is_merge_conflict_error(msg: &str) -> bool {
     lower.contains("conflict") || lower.contains("not mergeable")
 }
 
-// ── Issue／PR state toggle ──
+// ── Issue／PR 狀態切換 ──
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum StateAction {
@@ -797,7 +795,7 @@ pub fn set_item_state(
     Ok(())
 }
 
-// ── PR merge ──
+// ── PR 合併 ──
 
 #[derive(Debug, Clone, Copy)]
 pub enum MergeMethod {
@@ -834,7 +832,7 @@ pub fn merge_pr(path: &Path, number: u64, method: &str, delete_branch: bool) -> 
     Ok(())
 }
 
-// ── PR draft toggle ──
+// ── PR draft 切換 ──
 
 #[derive(Debug, Clone, Copy)]
 pub enum PrDraftAction {
@@ -1241,9 +1239,9 @@ mod tests {
         )
     }
 
-    /// `MERGEABLE` / `CONFLICTING` map to a marker; `UNKNOWN` (still
-    /// computing, or the PR is merged/closed) and a missing field (Issues
-    /// don't have this at all) both fold into `None` — no marker shown.
+    /// `MERGEABLE` / `CONFLICTING` 會對應到一個標記；`UNKNOWN`（仍在計算中，
+    /// 或該 PR 已合併／關閉）與缺少該欄位（issue 根本沒有這個欄位）
+    /// 兩種情況都會併入 `None` —— 不顯示標記。
     #[test]
     fn parse_timeline_mergeable_states() {
         let json = timeline_json(Some("MERGEABLE"));
@@ -1263,9 +1261,8 @@ mod tests {
         assert_eq!(page.mergeable, None);
     }
 
-    /// `itemTypes` should only ever produce the two known variants, but this
-    /// pins down the fallback: an unrecognized `__typename` must not fail
-    /// deserialization of the whole page.
+    /// `itemTypes` 理論上只會產生兩種已知的 variant，但這個測試釘住了
+    /// 退回機制：未知的 `__typename` 不得讓整頁的反序列化失敗。
     #[test]
     fn parse_timeline_unknown_typename_does_not_fail_the_page() {
         let json = r#"{

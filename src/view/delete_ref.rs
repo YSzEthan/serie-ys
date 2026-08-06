@@ -110,7 +110,7 @@ impl<'a> DeleteRefView<'a> {
         let force_delete = self.force_delete;
         let tx = self.tx.clone();
 
-        // Build refresh context before closing
+        // 在關閉前先建好 refresh context
         let list_context = self
             .commit_list_state
             .as_ref()
@@ -149,7 +149,7 @@ impl<'a> DeleteRefView<'a> {
         self.tx.send(AppEvent::CloseDeleteRef);
 
         thread::spawn(move || {
-            // Track if local deletion succeeded (for UI update even if remote fails)
+            // 記錄本機刪除是否成功（即使 remote 失敗也要能更新 UI）
             let mut local_deleted = false;
 
             let result = match ref_type {
@@ -205,7 +205,7 @@ impl<'a> DeleteRefView<'a> {
                     }));
                 }
                 Err(e) => {
-                    // If local deletion succeeded, still refresh UI
+                    // 如果本機刪除成功，仍然要 refresh UI
                     if local_deleted {
                         tx.send(AppEvent::Refresh(RefreshViewContext::List {
                             list_context: list_context.clone(),

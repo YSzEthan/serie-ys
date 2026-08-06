@@ -178,20 +178,20 @@ impl<'a> DetailView<'a> {
             .as_mut()
             .expect("commit_list_state already taken");
 
-        // Set inline detail height so CommitList renders the gap
+        // 設定 inline detail 高度，讓 CommitList 渲染出空隙
         commit_list_state.set_inline_detail_height(detail_height);
 
-        // Render CommitList using the full area — it handles the gap internally
+        // 用完整區域渲染 CommitList — 內部會自行處理空隙
         let commit_list = CommitList::new(self.ctx.clone(), 0);
         f.render_stateful_widget(commit_list, area, commit_list_state);
 
-        // Calculate the graph+marker width for inline detail positioning
+        // 計算 graph+marker 的寬度，用於 inline detail 定位
         let graph_marker_width = calc_graph_marker_width(commit_list_state, &self.ctx);
 
-        // Get the content area (below header)
+        // 取得內容區域（表頭以下）
         let content_area = Rect::new(
             area.left(),
-            area.top() + 1, // skip header row
+            area.top() + 1, // 跳過表頭列
             area.width,
             area.height.saturating_sub(1),
         );
@@ -199,7 +199,7 @@ impl<'a> DetailView<'a> {
         if let Some(detail_rect) =
             commit_list_state.inline_detail_rect(content_area, graph_marker_width)
         {
-            // Clear the detail area text content
+            // 清除 detail 區域的文字內容
             f.render_widget(Clear, detail_rect);
 
             match &self.content {
@@ -225,7 +225,7 @@ impl<'a> DetailView<'a> {
     }
 }
 
-/// Calculate the combined width of Graph + Marker columns.
+/// 計算 Graph + Marker 欄位的合計寬度。
 fn calc_graph_marker_width(state: &CommitListState<'_>, ctx: &AppContext) -> u16 {
     let mut width: u16 = 0;
     for col in &ctx.ui_config.list.columns {

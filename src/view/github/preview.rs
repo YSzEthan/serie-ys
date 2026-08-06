@@ -30,7 +30,7 @@ pub(super) fn build_preview_content(
 
     let mut lines = Vec::new();
 
-    // Header: #number title  (#N hyperlink overlay)
+    // Header：#number title（#N 超連結疊加）
     if !item.url.is_empty() {
         overlay = Some(PreviewOverlay {
             url: item.url.to_string(),
@@ -114,18 +114,17 @@ pub(super) fn append_comment_lines(
     }
 }
 
-/// OSC 8 hyperlink drawn over the preview's header line (`#N`) — the only
-/// preview row an overlay is ever attached to; see `render_preview`.
+/// 畫在 preview header 那一列（`#N`）上的 OSC 8 超連結——這是唯一會被
+/// 附加疊加層的 preview 列；參見 `render_preview`。
 #[derive(Debug, Clone)]
 pub(super) struct PreviewOverlay {
     pub(super) url: String,
     pub(super) label: String,
 }
 
-/// Everything `build_preview_content` reads, borrowed from the selected
-/// issue/PR and its timeline entry, plus the width the result is wrapped
-/// against. `cache_key` reads the same struct, so it cannot silently miss a
-/// field that content-building depends on.
+/// `build_preview_content` 讀取的所有東西，借用自選取的 issue/PR 與其
+/// timeline entry，再加上結果要折行的寬度。`cache_key` 讀的是同一個
+/// struct，所以不會悄悄漏掉內容建置所依賴的欄位。
 pub(super) struct PreviewInput<'v> {
     pub(super) tab: GitHubTab,
     pub(super) number: u64,
@@ -138,10 +137,9 @@ pub(super) struct PreviewInput<'v> {
 
 impl PreviewInput<'_> {
     fn cache_key(&self) -> PreviewKey {
-        // Count alone is not enough: "loaded but empty" and "still loading"
-        // both have zero items yet render differently. Exhaustive on purpose —
-        // a new `TimelineLoad` variant must not silently fold into Pending and
-        // freeze the preview.
+        // 光靠數量不夠：「已載入但是空的」跟「還在載入中」都是零筆項目，
+        // 但渲染結果不同。刻意寫成窮舉——新加的 `TimelineLoad` 變體不能
+        // 悄悄被歸進 Pending，讓 preview 卡住不動。
         let stage = match self.entry.map(|e| &e.state) {
             None | Some(TimelineLoad::NotRequested | TimelineLoad::Loading) => {
                 TimelineStage::Pending
@@ -164,8 +162,7 @@ impl PreviewInput<'_> {
     }
 }
 
-/// Borrowed fields of the selected issue/PR, common to both plus whichever
-/// extra bits are specific to the tab it came from.
+/// 選取的 issue/PR 借用欄位，兩者共通的部分，加上依所屬分頁而異的額外欄位。
 #[derive(Clone, Copy)]
 pub(super) struct SelectedItem<'v> {
     pub(super) title: &'v str,
@@ -189,17 +186,16 @@ pub(super) enum SelectedItemExtra<'v> {
     },
 }
 
-/// Everything the preview content depends on. Equal key ⇒ identical output, so
-/// the cache can be reused. A content key rather than a dirty flag: there are
-/// ~20 sites that reset `preview_offset`, and relying on each to also mark the
-/// cache stale would eventually miss one.
+/// preview 內容依賴的所有東西。key 相等 ⇒ 輸出必然相同，因此可以重用 cache。
+/// 用內容 key 而非 dirty flag：有將近 20 個地方會重置 `preview_offset`，
+/// 依賴每一處都同步標記 cache 過期，遲早會漏掉一個。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct PreviewKey {
     tab: GitHubTab,
     number: u64,
     stage: TimelineStage,
     item_count: usize,
-    /// Drives the footer between "(loading more…)" and "(more comments — …)".
+    /// 決定 footer 要顯示「(loading more…)」還是「(more comments — …)」。
     has_more: bool,
     loading_more: bool,
     mergeable: Option<Mergeable>,
@@ -215,33 +211,29 @@ struct CachedPreview {
     key: PreviewKey,
     lines: Vec<Line<'static>>,
     overlay: Option<PreviewOverlay>,
-    /// Line count *after* wrapping — what `preview_offset` is measured in.
+    /// 折行*之後*的行數——`preview_offset` 就是以這個為單位量測。
     visual_len: usize,
 }
 
 #[derive(Debug, Default)]
 pub(super) struct PreviewCache {
     cached: Option<CachedPreview>,
-    /// Rebuild counter, test-only. `build_preview_content` is pure, so two
-    /// calls with an unchanged `PreviewInput` produce identical output
-    /// whether the second one actually reused the cache or quietly rebuilt
-    /// it — comparing output alone can't tell "reused" apart from "rebuilt
-    /// to the same result". This is the only way to observe the difference
-    /// from outside `get_or_build`.
+    /// 重建計數器，僅供測試用。`build_preview_content` 是 pure function，
+    /// 所以用同一個未變的 `PreviewInput` 呼叫兩次，不管第二次是真的重用了
+    /// cache 還是悄悄重建，輸出都一樣——光比對輸出沒辦法分辨「重用」跟
+    /// 「重建出相同結果」。這是從 `get_or_build` 外部觀察兩者差異的唯一方法。
     #[cfg(test)]
     build_count: usize,
 }
 
 impl PreviewCache {
-    /// Rebuild the preview only when its inputs changed, returning the
-    /// wrapped line count either way. `render_preview` runs at the marquee
-    /// tick rate (10 Hz) whenever the selected row overflows, and both
-    /// `markdown::render` and `line_count` walk the entire body plus every
-    /// comment — so recomputing per frame burns CPU while idle.
+    /// 只在輸入改變時才重建 preview，不論哪種情況都回傳折行後的行數。
+    /// 只要選取列有溢出，`render_preview` 就會以跑馬燈的更新頻率
+    /// （10 Hz）執行，而 `markdown::render` 跟 `line_count` 都會走訪整個
+    /// body 加上每則留言——所以閒置時每一 frame 都重算會白白燒 CPU。
     ///
-    /// Wrapping is left to `Paragraph` rather than reusing
-    /// `commit_detail::wrap_line_spans`: that one breaks mid-word, which
-    /// would mangle the English prose common in PR bodies.
+    /// 折行交給 `Paragraph` 處理，不重用 `commit_detail::wrap_line_spans`：
+    /// 那個函式會在字中間斷行，會把 PR body 裡常見的英文散文弄得亂七八糟。
     pub(super) fn get_or_build(&mut self, input: &PreviewInput) -> usize {
         let key = input.cache_key();
         if let Some(c) = self.cached.as_ref().filter(|c| c.key == key) {
@@ -274,14 +266,14 @@ impl PreviewCache {
     }
 }
 
-/// Re-borrow cached lines instead of cloning them: `Paragraph` needs an owned
-/// `Text`, but the spans can point at the cache's strings, so only the `Vec`s
-/// are allocated per frame — no string copies.
+/// 重新借用已快取的行，而不是複製它們：`Paragraph` 需要一個 owned 的
+/// `Text`，但 span 可以直接指向 cache 裡的字串，所以每個 frame 只需配置
+/// `Vec`——不用複製字串。
 pub(super) fn borrow_lines<'a>(lines: &'a [Line<'static>]) -> Vec<Line<'a>> {
     lines
         .iter()
-        // Struct literal, not `Line::from(..)` plus assignments: a field added
-        // upstream then fails to compile instead of being silently dropped.
+        // 用 struct literal，不是 `Line::from(..)` 加賦值：上游多加一個欄位
+        // 時會編譯失敗，而不是被悄悄漏掉。
         .map(|l| Line {
             spans: l
                 .spans
@@ -398,7 +390,7 @@ mod tests {
         let first_len = cache.get_or_build(&input);
         assert_eq!(cache.build_count, 1);
 
-        // Why build_count and not just comparing output: see its field doc.
+        // 為什麼用 build_count 而不是直接比對輸出：見該欄位的文件註解。
         let second_len = cache.get_or_build(&input);
         assert_eq!(
             cache.build_count, 1,

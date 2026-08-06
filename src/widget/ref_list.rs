@@ -297,12 +297,12 @@ fn sort_tag_tree_nodes(nodes: &mut [RefTreeNode]) {
         let a_version = parse_semantic_version_tag(&a.name);
         let b_version = parse_semantic_version_tag(&b.name);
         match (a_version, b_version) {
-            // Both semver: sort by version descending (newest first)
+            // 兩者皆為 semver：依版本號遞減排序（新的在前）
             (Some(av), Some(bv)) => bv.cmp(&av),
-            // Semver tags come before non-semver tags
+            // semver tag 排在非 semver tag 前面
             (Some(_), None) => std::cmp::Ordering::Less,
             (None, Some(_)) => std::cmp::Ordering::Greater,
-            // Both non-semver: sort by name descending (Z-A, consistent with semver)
+            // 兩者皆非 semver：依名稱遞減排序（Z-A，與 semver 排序方向一致）
             (None, None) => b.name.cmp(&a.name),
         }
     });

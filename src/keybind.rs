@@ -45,7 +45,7 @@ impl KeyBind {
             .filter(|(_, ue)| **ue == user_event)
             .map(|(ke, _)| *ke)
             .collect();
-        key_events.sort_by(|a, b| a.partial_cmp(b).unwrap()); // At least when used for key bindings, it doesn't seem to be a problem...
+        key_events.sort_by(|a, b| a.partial_cmp(b).unwrap()); // 至少用在按鍵綁定上看起來沒問題……
         key_events.into_iter().map(key_event_to_string).collect()
     }
 
@@ -118,7 +118,7 @@ fn extract_modifiers(raw: &str) -> (&str, KeyModifiers) {
                 modifiers.insert(KeyModifiers::SHIFT);
                 current = &rest[6..];
             }
-            _ => break, // break out of the loop if no known prefix is detected
+            _ => break, // 沒有偵測到已知前綴時就跳出迴圈
         };
     }
 
@@ -163,11 +163,10 @@ fn parse_key_code_with_modifiers(
         "hyphen" => KeyCode::Char('-'),
         "minus" => KeyCode::Char('-'),
         "tab" => KeyCode::Tab,
-        // `chars().count()`, not `len()`: the latter is the UTF-8 byte
-        // length, so every non-ASCII key (Bopomofo `ㄅ` is 3 bytes, Cyrillic
-        // `й` is 2) fell through to the error arm and made the whole config
-        // fail to load. Terminals deliver those as an ordinary
-        // `KeyCode::Char`, so there was never a reason to reject them.
+        // 用 `chars().count()`，不是 `len()`：後者是 UTF-8 位元組長度，導致每個
+        // 非 ASCII 按鍵（注音 `ㄅ` 是 3 bytes、西里爾字母 `й` 是 2 bytes）都會
+        // 落到錯誤分支，使整份設定檔載入失敗。終端機本來就是把這些字元當成
+        // 一般的 `KeyCode::Char` 送出，從來就沒有理由要拒絕它們。
         c if c.chars().count() == 1 => {
             let mut c = c.chars().next().unwrap();
             if modifiers.contains(KeyModifiers::SHIFT) {
@@ -337,12 +336,11 @@ mod tests {
         assert_eq!(actual, expected);
     }
 
-    /// Non-ASCII keys used to blow up the whole config at startup, because
-    /// the single-char arm tested `str::len()` (UTF-8 bytes) instead of the
-    /// character count. Bopomofo is the motivating case: a Zhuyin IME that
-    /// can't do IMKit marked text injects `ㄜ` straight into the terminal
-    /// instead of `k`, so binding the Bopomofo key is the only way to drive
-    /// the app without switching input mode first.
+    /// 非 ASCII 按鍵過去會在啟動時炸掉整份設定檔，因為單字元那條分支測的是
+    /// `str::len()`（UTF-8 位元組數）而不是字元數。注音是促成這項修正的
+    /// 案例：不支援 IMKit 組字區的注音輸入法會直接把 `ㄜ` 而不是 `k` 送進
+    /// 終端機，所以要在不先切換輸入模式的情況下操作這個 app，唯一辦法就是
+    /// 綁定注音鍵。
     #[test]
     fn parse_key_event_accepts_non_ascii_chars() {
         for raw in ["ㄜ", "й", "é"] {
@@ -358,7 +356,7 @@ mod tests {
             Ok(KeyEvent::new(KeyCode::Char('ㄜ'), KeyModifiers::ALT)),
         );
 
-        // Still rejects genuine multi-character garbage.
+        // 真正的多字元亂碼仍然會被拒絕。
         assert!(parse_key_event("ㄜㄨ").is_err());
     }
 

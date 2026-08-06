@@ -151,18 +151,17 @@ fn parse_rgba_color(s: &str) -> Option<GraphColor> {
     let g = u8::from_str_radix(&s[2..4], 16).ok()?;
     let b = u8::from_str_radix(&s[4..6], 16).ok()?;
     if l == 8 {
-        // Alpha is still hex-validated so malformed `#RRGGBBZZ` keeps being
-        // rejected, but the value itself is discarded -- GraphColor is
-        // RGB-only since the PNG renderer (its only alpha-aware consumer)
-        // was removed.
+        // alpha 仍會做十六進位驗證，所以格式錯誤的 `#RRGGBBZZ` 照樣會被拒絕，
+        // 但值本身會被丟棄 —— 自從唯一會用到 alpha 的 PNG 渲染器被移除後，
+        // GraphColor 就只剩 RGB。
         u8::from_str_radix(&s[6..8], 16).ok()?;
     }
     Some(GraphColor::from_rgb(r, g, b))
 }
 
-/// Convert ANSI color names to `Color::Rgb(r,g,b)` so callers can compare or
-/// combine them with colors that are already in RGB form (e.g. the selected
-/// row background applied over graph cells in `commit_list.rs`).
+/// 把 ANSI 色彩名稱轉成 `Color::Rgb(r,g,b)`，讓呼叫端可以拿去跟已經是 RGB
+/// 形式的顏色比較或合併（例如 `commit_list.rs` 裡套用在 graph 儲存格上的
+/// 選取列背景色）。
 pub fn ratatui_color_to_rgb(color: RatatuiColor) -> RatatuiColor {
     match color {
         RatatuiColor::Rgb(r, g, b) => RatatuiColor::Rgb(r, g, b),
@@ -189,7 +188,7 @@ mod tests {
     #[rstest]
     #[case("#ff0000", Some(GraphColor { r: 255, g: 0, b: 0 }))]
     #[case("#AABBCCDD", Some(GraphColor { r: 170, g: 187, b: 204 }))]
-    #[case("#AABBCCZZ", None)] // alpha byte is still hex-validated, just discarded
+    #[case("#AABBCCZZ", None)] // alpha byte 仍會做十六進位驗證，只是值被丟棄
     #[case("#ff000", None)]
     #[case("#fff", None)]
     #[case("000000", None)]
