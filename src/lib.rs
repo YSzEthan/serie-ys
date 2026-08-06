@@ -24,7 +24,14 @@ use serde::Deserialize;
 
 /// ysgit - 在你的終端機中呈現豐富的 git commit 圖，宛如魔法 📚
 #[derive(Parser)]
-#[command(name = "ysgit", version)]
+// `disable_help_flag`／`disable_version_flag`：關掉 clap 自動產生的英文 -h／-V，
+// 改用下面手動定義的欄位取代，讓說明文字可以換成中文。
+#[command(
+    name = "ysgit",
+    version,
+    disable_help_flag = true,
+    disable_version_flag = true
+)]
 struct Args {
     /// git 倉庫路徑 [default: current directory]
     // `hide_default_value`：上面的 doc comment 已經用文字寫出預設值了，
@@ -51,6 +58,14 @@ struct Args {
     /// 初始選取的 commit [default: latest]
     #[arg(short, long, value_name = "TYPE")]
     initial_selection: Option<InitialSelection>,
+
+    /// 顯示說明
+    #[arg(short = 'h', long, action = clap::ArgAction::Help)]
+    help: Option<bool>,
+
+    /// 顯示版本
+    #[arg(short = 'V', long, action = clap::ArgAction::Version)]
+    version: Option<bool>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
