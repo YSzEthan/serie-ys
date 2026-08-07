@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.1.0](https://github.com/YSzEthan/serie-ys/compare/v2.0.0...v2.1.0) (2026-08-07)
+
+
+### Features
+
+* merge 進 main 後自動算版號、寫 CHANGELOG、掛 tag 並發版 ([#37](https://github.com/YSzEthan/serie-ys/pull/37))
+
+
+### Bug Fixes
+
+* release CI 的 Cargo.lock 同步改直接改欄位，不呼叫 cargo metadata ([#38](https://github.com/YSzEthan/serie-ys/pull/38))
+
 ## [2.0.0](https://github.com/YSzEthan/serie-ys/compare/v1.9.0...v2.0.0) (2026-08-07)
 
 
