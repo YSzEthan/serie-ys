@@ -22,10 +22,18 @@ pub(super) struct TimelineEntry {
     pub(super) items: Vec<GhTimelineItem>,
     pub(super) next_cursor: Option<String>,
     pub(super) loading_more: bool,
+    /// 背景重抓（按 r 刷新）進行中。刻意獨立於 `state`——`build_timeline`
+    /// 對 `NotRequested`/`Loading` 完全無視 `items`，若拿 `state` 表示
+    /// 「重抓中」，畫面會塌成 loading 提示，違背刷新無感的目的。
+    pub(super) refreshing: bool,
     /// 對 Issue 是 `None`，對 GitHub 還沒算完的 PR（`UNKNOWN`）也是
     /// `None`——兩者都代表「沒有標記」。每一頁都帶著自己的副本，所以後面
     /// 的頁面只是冪等地覆蓋掉這個值。
     pub(super) mergeable: Option<Mergeable>,
+    /// 每次有新一頁資料落地（不管是首頁替換還是續接）就 +1。`PreviewKey`
+    /// 靠這個欄位偵測「commit 數／mergeable 都沒變，但內容變了」——CI 狀態
+    /// 從 PENDING 換成 SUCCESS 正是這種情況，其他既有欄位偵測不到。
+    pub(super) rev: u64,
 }
 
 /// 把 `TimelineEntry` 可能處於的每種狀態——pending、failed、loaded（空或

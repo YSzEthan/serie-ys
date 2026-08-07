@@ -242,7 +242,9 @@ impl<'a> GitHubView<'a> {
     /// 選取列或 timeline 快取——背景自動 refresh 拿到同樣的資料時，
     /// 不該把使用者正在看的位置甩掉。游標仍然要換新：這批資料雖然跟畫面上
     /// 的一樣，但可能是從一個游標已經往前推進的請求抓回來的，沿用舊游標
-    /// 會讓「載入更多」拿過期游標重複抓同一頁。
+    /// 會讓「載入更多」拿過期游標重複抓同一頁。選取項目的 timeline（含
+    /// commit CI 狀態）會就地重新請求，新內容落地前畫面不變——見
+    /// `refresh_selected_timeline`。
     pub fn update_data(
         &mut self,
         issues: Vec<GhIssue>,
@@ -253,6 +255,7 @@ impl<'a> GitHubView<'a> {
         if self.issues == issues && self.pull_requests == pull_requests {
             self.issues_next_cursor = issues_next_cursor;
             self.prs_next_cursor = prs_next_cursor;
+            self.refresh_selected_timeline();
             self.finish_loading();
             return;
         }
@@ -377,6 +380,36 @@ impl<'a> GitHubView<'a> {
         }
     }
 
+    /// 只重抓目前選取項目的 timeline（含 commit CI 狀態），供 `update_data`
+    /// 在清單沒變時呼叫。`state` 全程停在 `Loaded`（除非還沒載入過），
+    /// `items` 保持原樣直到新資料落地才在 `append_timeline_items` 原地
+    /// 替換——沒有 remove/clear，不會有中繼的空畫面，捲動位置也不受影響。
+    fn refresh_selected_timeline(&mut self) {
+        let Some((number, kind)) = self.selected_number_and_kind() else {
+            return;
+        };
+        let entry = self.timeline.entry((kind, number)).or_default();
+        // 已經有載入更多／上一次刷新在飛就不重複發
+        if entry.loading_more || entry.refreshing {
+            return;
+        }
+        // 窮舉寫法（比照 preview.rs 的 cache_key）：新增的 TimelineLoad
+        // 變體不能悄悄落進某個分支，逼著這裡明確決定它該怎麼處理。
+        match entry.state {
+            // 已經有首次載入在飛，不重複發
+            TimelineLoad::Loading => return,
+            // 還沒載入過：畫面本來就沒東西，照首次載入的樣子顯示 loading 提示
+            TimelineLoad::NotRequested => entry.state = TimelineLoad::Loading,
+            // 已有內容（Loaded 或 Error）：畫面留著舊內容，state 刻意不動
+            TimelineLoad::Loaded | TimelineLoad::Error(_) => entry.refreshing = true,
+        }
+        self.tx.send(AppEvent::LoadGitHubTimeline {
+            number,
+            kind,
+            after: None,
+        });
+    }
+
     fn maybe_load_more_timeline(&mut self) {
         let visible = self.preview_height;
         let near_bottom = self
@@ -393,7 +426,10 @@ impl<'a> GitHubView<'a> {
         let Some(entry) = self.timeline.get_mut(&(kind, number)) else {
             return;
         };
-        if entry.state != TimelineLoad::Loaded || entry.loading_more || entry.next_cursor.is_none()
+        if entry.state != TimelineLoad::Loaded
+            || entry.loading_more
+            || entry.refreshing
+            || entry.next_cursor.is_none()
         {
             return;
         }
@@ -406,18 +442,45 @@ impl<'a> GitHubView<'a> {
         });
     }
 
-    pub fn append_timeline_items(&mut self, number: u64, kind: GhItemKind, page: GhTimelinePage) {
+    /// `after` 由回應自己帶回請求時的值，用來判斷這是不是第一頁——不是靠
+    /// `entry.loading_more` 猜，避免刷新請求跟「載入更多」請求交錯時，
+    /// 先落地的那個被誤判成另一種而清錯或漏清內容。
+    pub fn append_timeline_items(
+        &mut self,
+        number: u64,
+        kind: GhItemKind,
+        after: Option<String>,
+        page: GhTimelinePage,
+    ) {
         let entry = self.timeline.entry((kind, number)).or_default();
+        if after.is_none() {
+            entry.items.clear();
+        }
         entry.items.extend(page.items);
         entry.next_cursor = page.next_cursor;
         entry.mergeable = page.mergeable;
         entry.state = TimelineLoad::Loaded;
         entry.loading_more = false;
+        entry.refreshing = false;
+        entry.rev = entry.rev.wrapping_add(1);
     }
 
     pub fn set_timeline_error(&mut self, number: u64, kind: GhItemKind, error: String) {
         let entry = self.timeline.entry((kind, number)).or_default();
-        entry.state = TimelineLoad::Error(error);
+        // 已經有內容（背景刷新或載入更多失敗）就不要把畫面換成錯誤提示——
+        // `build_timeline` 的 Error 分支不看 `items`，整條 timeline 會被
+        // 蓋掉，剛好推翻 `refreshing` 存在的理由（重抓中畫面不能塌）。只有
+        // 首次載入失敗（`state` 還不是 `Loaded`）才沒有內容可保留，需要
+        // 整頁報錯。
+        if entry.state != TimelineLoad::Loaded {
+            entry.state = TimelineLoad::Error(error);
+        }
+        // 兩個旗標都要清：漏了 refreshing，這個項目從此按 r 永遠被
+        // refresh_selected_timeline 的 guard 擋掉；漏了 loading_more，
+        // maybe_load_more_timeline 會誤判成一直有請求在飛，永遠不再觸發
+        // 真正的載入更多。
+        entry.refreshing = false;
+        entry.loading_more = false;
     }
 
     fn current_has_next_cursor(&self) -> bool {
@@ -802,6 +865,15 @@ mod tests {
     }
 
     fn view_with_body(body: String) -> GitHubView<'static> {
+        view_with_body_and_rx(body).0
+    }
+
+    /// 跟 `view_with_body` 一樣，但保留 `rx`——要斷言「送出了什麼事件」的
+    /// 測試才需要，`view_with_body` 內部把它丟掉是因為多數測試只在乎渲染
+    /// 結果，用不到。
+    fn view_with_body_and_rx(
+        body: String,
+    ) -> (GitHubView<'static>, std::sync::mpsc::Receiver<AppEvent>) {
         let pr = GhPullRequest {
             number: 1,
             title: "t".to_string(),
@@ -820,14 +892,32 @@ mod tests {
             linked_issues: Vec::new(),
         };
 
-        let (tx, _rx) = Sender::channel_for_test();
+        let (tx, rx) = Sender::channel_for_test();
         let data = GitHubData {
             pull_requests: vec![pr],
             ..Default::default()
         };
         let mut view = GitHubView::new(View::Default, data, tx);
         view.active_tab = GitHubTab::PullRequests;
-        view
+        (view, rx)
+    }
+
+    /// 已載入一頁、CI 狀態是 PENDING 的 PR#1——多數刷新測試的共同起點。
+    fn load_pending_commit(view: &mut GitHubView<'_>) {
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            timeline_page(vec![timeline_commit("aaaaaaa", "PENDING")], None),
+        );
+    }
+
+    /// 模擬按 r 刷新，但清單內容沒變——走 `update_data` 的 early-return
+    /// 分支，`refresh_selected_timeline` 才會被觸發。
+    fn refresh_with_unchanged_data(view: &mut GitHubView<'_>) {
+        let issues = view.issues.clone();
+        let pull_requests = view.pull_requests.clone();
+        view.update_data(issues, pull_requests, None, None);
     }
 
     fn render_to_string(view: &mut GitHubView<'_>) -> String {
@@ -897,7 +987,12 @@ mod tests {
 
         // 零則留言，但*已載入*——項目數量仍是 0，所以只有 stage 能區分
         // 這跟 pending 狀態的差別。
-        view.append_timeline_items(1, GhItemKind::PullRequest, timeline_page(Vec::new(), None));
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            timeline_page(Vec::new(), None),
+        );
         let screen = render_to_string(&mut view);
 
         assert!(
@@ -929,12 +1024,261 @@ mod tests {
         }
     }
 
+    /// 按 r 刷新（清單沒變，走 `update_data` early-return 分支）要對已載入
+    /// 的選取項目送出一個新的 `LoadGitHubTimeline` 首頁請求。
+    #[test]
+    fn refresh_selected_timeline_requests_a_fresh_first_page() {
+        let (mut view, rx) = view_with_body_and_rx("body".to_string());
+        load_pending_commit(&mut view);
+
+        refresh_with_unchanged_data(&mut view);
+
+        let events: Vec<AppEvent> = rx.try_iter().collect();
+        assert!(
+            events.iter().any(|e| matches!(
+                e,
+                AppEvent::LoadGitHubTimeline {
+                    number: 1,
+                    kind: GhItemKind::PullRequest,
+                    after: None,
+                }
+            )),
+            "got: {events:?}"
+        );
+    }
+
+    /// 刷新請求送出後、回應還沒回來前，畫面必須維持原本的內容——不能塌成
+    /// 「(loading comments…)」，這正是這次改動存在的理由（相對於 remove
+    /// entry 的做法會讓 render.rs 的捲動 clamp 把捲動位置永久夾死）。
+    #[test]
+    fn refresh_selected_timeline_keeps_old_content_visible_while_in_flight() {
+        let (mut view, _rx) = view_with_body_and_rx("body".to_string());
+        load_pending_commit(&mut view);
+
+        refresh_with_unchanged_data(&mut view);
+
+        let screen = render_to_string(&mut view);
+        assert!(screen.contains("aaaaaaa"), "got:\n{screen}");
+        assert!(!screen.contains("loading comments"), "got:\n{screen}");
+    }
+
+    #[test]
+    fn refresh_selected_timeline_skips_when_load_more_in_flight() {
+        let (mut view, rx) = view_with_body_and_rx("body".to_string());
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            timeline_page(
+                vec![timeline_commit("aaaaaaa", "PENDING")],
+                Some("cursor".to_string()),
+            ),
+        );
+        view.timeline
+            .get_mut(&(GhItemKind::PullRequest, 1))
+            .unwrap()
+            .loading_more = true;
+
+        refresh_with_unchanged_data(&mut view);
+
+        assert!(rx.try_iter().next().is_none());
+    }
+
+    #[test]
+    fn refresh_selected_timeline_skips_when_refresh_already_in_flight() {
+        let (mut view, rx) = view_with_body_and_rx("body".to_string());
+        load_pending_commit(&mut view);
+        view.timeline
+            .get_mut(&(GhItemKind::PullRequest, 1))
+            .unwrap()
+            .refreshing = true;
+
+        refresh_with_unchanged_data(&mut view);
+
+        assert!(rx.try_iter().next().is_none());
+    }
+
+    /// 逼出定稿設計的那個 bug 的迴歸測試：一個「載入更多」請求跟一個刷新
+    /// 請求同時在飛，回應交錯抵達時不能遺失或重複 commit——`after` 是不是
+    /// `None` 才是「這是不是第一頁」的準則，不能靠 `loading_more` 猜。
+    #[test]
+    fn interleaved_refresh_and_load_more_responses_do_not_corrupt_items() {
+        let (mut view, _rx) = view_with_body_and_rx("body".to_string());
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            timeline_page(
+                vec![timeline_commit("aaaaaaa", "PENDING")],
+                Some("cursor-a".to_string()),
+            ),
+        );
+        // 模擬「載入更多」已經發出請求
+        view.timeline
+            .get_mut(&(GhItemKind::PullRequest, 1))
+            .unwrap()
+            .loading_more = true;
+
+        // 刷新的回應先落地（after: None ⇒ 完整第一頁，整批替換）
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            timeline_page(
+                vec![timeline_commit("aaaaaaa", "SUCCESS")],
+                Some("cursor-a".to_string()),
+            ),
+        );
+        assert_eq!(
+            view.timeline[&(GhItemKind::PullRequest, 1)].items.len(),
+            1,
+            "刷新回應必須整批替換，不能疊加在舊內容後面"
+        );
+
+        // 載入更多的回應後落地（after: Some(cursor-a) ⇒ 續接在剛才那批之後）
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            Some("cursor-a".to_string()),
+            timeline_page(vec![timeline_commit("bbbbbbb", "PENDING")], None),
+        );
+        assert_eq!(
+            view.timeline[&(GhItemKind::PullRequest, 1)].items.len(),
+            2,
+            "load more 回應必須續接在刷新後的內容上，不能遺失也不能重複"
+        );
+    }
+
+    #[test]
+    fn append_timeline_items_replaces_on_first_page_and_extends_on_continuation() {
+        let (mut view, _rx) = view_with_body_and_rx("body".to_string());
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            timeline_page(vec![timeline_comment("a", "one")], None),
+        );
+        assert_eq!(view.timeline[&(GhItemKind::PullRequest, 1)].rev, 1);
+
+        // after: None ⇒ 替換，不是疊加
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            timeline_page(vec![timeline_comment("b", "two")], None),
+        );
+        let entry = &view.timeline[&(GhItemKind::PullRequest, 1)];
+        assert_eq!(entry.items.len(), 1);
+        assert_eq!(entry.rev, 2);
+
+        // after: Some(..) ⇒ 續接
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            Some("cursor".to_string()),
+            timeline_page(vec![timeline_comment("c", "three")], None),
+        );
+        let entry = &view.timeline[&(GhItemKind::PullRequest, 1)];
+        assert_eq!(entry.items.len(), 2);
+        assert_eq!(entry.rev, 3);
+    }
+
+    /// `item_count`／`mergeable` 都沒變，只有 CI 狀態換了——沒有 `rev`
+    /// 欄位，`PreviewKey` 會判定「跟上次一樣」，直接命中舊 cache，畫面
+    /// 紋風不動。這裡刻意走 `render_to_string`（進到
+    /// `PreviewCache::get_or_build`），不能直接呼叫 pure function
+    /// `build_preview_content`，否則沒有 `rev` 這條測試也會綠。
+    #[test]
+    fn preview_cache_invalidates_when_ci_status_changes_with_same_item_count() {
+        let mut view = view_with_body("body".to_string());
+        load_pending_commit(&mut view);
+        let screen = render_to_string(&mut view);
+        assert!(screen.contains('●'), "got:\n{screen}");
+
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            timeline_page(vec![timeline_commit("aaaaaaa", "SUCCESS")], None),
+        );
+        let screen = render_to_string(&mut view);
+        assert!(screen.contains('✓'), "got:\n{screen}");
+        assert!(!screen.contains('●'), "got:\n{screen}");
+    }
+
+    /// 背景刷新失敗不該把已顯示的內容換成錯誤訊息——`build_timeline` 的
+    /// `Error` 分支不看 `items`，這正是 `refreshing` 獨立於 `state` 想避免
+    /// 的那種畫面塌陷，只是換成從失敗路徑發生。首次載入失敗（沒有內容可
+    /// 保留）不受這條規則影響，另外測。
+    #[test]
+    fn refresh_failure_does_not_clear_already_loaded_content() {
+        let mut view = view_with_body("body".to_string());
+        load_pending_commit(&mut view);
+
+        view.set_timeline_error(1, GhItemKind::PullRequest, "boom".to_string());
+
+        let screen = render_to_string(&mut view);
+        assert!(screen.contains("aaaaaaa"), "got:\n{screen}");
+        assert!(!screen.contains("comments failed"), "got:\n{screen}");
+    }
+
+    /// 首次載入（還沒有任何內容）失敗時，沒有東西可保留，必須整頁報錯。
+    #[test]
+    fn first_load_failure_shows_the_error_notice() {
+        let mut view = view_with_body("body".to_string());
+
+        view.set_timeline_error(1, GhItemKind::PullRequest, "boom".to_string());
+
+        let screen = render_to_string(&mut view);
+        assert!(screen.contains("comments failed"), "got:\n{screen}");
+    }
+
+    /// `set_timeline_error` 這個修正的迴歸測試：漏了重置 `refreshing`，
+    /// 一次刷新失敗會讓這個項目從此按 r 永遠被 guard 擋掉。
+    #[test]
+    fn refresh_after_previous_failure_is_not_blocked() {
+        let (mut view, rx) = view_with_body_and_rx("body".to_string());
+        load_pending_commit(&mut view);
+        view.set_timeline_error(1, GhItemKind::PullRequest, "boom".to_string());
+
+        refresh_with_unchanged_data(&mut view);
+
+        let events: Vec<AppEvent> = rx.try_iter().collect();
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, AppEvent::LoadGitHubTimeline { .. })),
+            "got: {events:?}"
+        );
+    }
+
+    /// 乙版（原地替換）存在的頭號理由：甲版（remove entry）會被
+    /// `render.rs` 的捲動 clamp 永久夾死，這條測試直接釘住不會發生。
+    #[test]
+    fn update_data_early_return_does_not_reset_scroll_position() {
+        let mut view = view_with_long_body();
+        render_to_string(&mut view);
+        view.preview_offset = view.last_preview_len / 2;
+        // 先 render 一次讓 clamp 穩定下來，才抓真正的基準值——不然基準值
+        // 本身可能還沒被 clamp 過，第二次 render 才第一次夾，會誤判成
+        // 這次改動造成的位移。
+        render_to_string(&mut view);
+        let offset_before = view.preview_offset;
+        assert!(offset_before > 0, "測試前提：捲動位置真的有移動過");
+
+        refresh_with_unchanged_data(&mut view);
+        render_to_string(&mut view);
+
+        assert_eq!(view.preview_offset, offset_before);
+    }
+
     #[test]
     fn dividers_are_colour_coded_by_section() {
         let mut view = view_with_body("body".to_string());
         view.append_timeline_items(
             1,
             GhItemKind::PullRequest,
+            None,
             timeline_page(
                 vec![
                     timeline_commit("aaaaaaa", "SUCCESS"),
@@ -980,6 +1324,7 @@ mod tests {
         view.append_timeline_items(
             1,
             GhItemKind::PullRequest,
+            None,
             timeline_page(
                 vec![timeline_comment("bob", "hi")],
                 Some("cursor".to_string()),
@@ -1038,6 +1383,7 @@ mod tests {
         view.append_timeline_items(
             1,
             GhItemKind::Issue,
+            None,
             timeline_page(vec![timeline_comment("carol", "issue comment")], None),
         );
 
@@ -1050,7 +1396,12 @@ mod tests {
     #[test]
     fn empty_timeline_still_draws_the_body_divider() {
         let mut view = view_with_body("body".to_string());
-        view.append_timeline_items(1, GhItemKind::PullRequest, timeline_page(Vec::new(), None));
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            timeline_page(Vec::new(), None),
+        );
 
         let (lines, _) = build_preview_content(&view.preview_input(40));
         let has_body_divider = lines.iter().any(|l| {
@@ -1072,6 +1423,7 @@ mod tests {
         view.append_timeline_items(
             1,
             GhItemKind::PullRequest,
+            None,
             timeline_page(vec![GhTimelineItem::Unknown, GhTimelineItem::Unknown], None),
         );
 
@@ -1105,6 +1457,7 @@ mod tests {
         view.append_timeline_items(
             1,
             GhItemKind::PullRequest,
+            None,
             GhTimelinePage {
                 mergeable: Some(Mergeable::Conflicting),
                 ..timeline_page(Vec::new(), None)
@@ -1122,6 +1475,7 @@ mod tests {
         view.append_timeline_items(
             1,
             GhItemKind::PullRequest,
+            None,
             timeline_page(
                 vec![
                     timeline_commit("aaaaaaa", "SUCCESS"),

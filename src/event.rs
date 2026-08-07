@@ -86,6 +86,9 @@ pub enum AppEvent {
     GitHubTimelineLoaded {
         number: u64,
         kind: crate::github::GhItemKind,
+        /// 原樣帶回請求時的 `after`——回應自己知道是不是第一頁，不用靠
+        /// entry 上的旗標猜，避免刷新跟「載入更多」交錯時猜錯。
+        after: Option<String>,
         page: crate::github::GhTimelinePage,
     },
     GitHubTimelineFailed {

@@ -155,6 +155,7 @@ impl PreviewInput<'_> {
             has_more: self.entry.is_some_and(|e| e.next_cursor.is_some()),
             loading_more: self.entry.is_some_and(|e| e.loading_more),
             mergeable: self.entry.and_then(|e| e.mergeable),
+            rev: self.entry.map_or(0, |e| e.rev),
             expand_commits: self.expand_commits,
             body_rev: self.body_rev,
             width: self.width,
@@ -199,6 +200,9 @@ struct PreviewKey {
     has_more: bool,
     loading_more: bool,
     mergeable: Option<Mergeable>,
+    /// entry.rev——item_count/mergeable 在 CI 狀態變化前後可能完全不變，
+    /// 沒有這個欄位，原地替換後的新內容會被舊 cache 蓋住，畫面不動。
+    rev: u64,
     expand_commits: bool,
     body_rev: u64,
     width: u16,
