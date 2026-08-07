@@ -1,3 +1,4 @@
+use std::path::Path;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -20,7 +21,7 @@ use crate::{
     git::{Commit, CommitHash, FileChange, Head, Ref, RefType, Repository},
     github::{
         is_merge_conflict_error, merge_pr, set_item_state, set_pr_draft, GhItemKind, MergeMethod,
-        PrDraftAction, StateAction,
+        PrDraftAction, StateAction, StateFilter,
     },
     graph::{Graph, GraphStyle},
     keybind::KeyBind,
@@ -88,23 +89,76 @@ pub struct AppContext {
     pub compact: Option<CompactType>,
 }
 
+/// `q` 雙擊退出的判定結果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum QuitDecision {
+    /// 這是視窗內的第一次按下，只顯示提示。
+    First,
+    /// 上一次按下還在視窗內，這次要真的退出。
+    Second,
+}
+
+/// 按鍵處理過程中會累積、之後又清空的狀態——數字前綴與 `q` 雙擊退出計時。
+/// 獨立於 `App`，不吃 `Repository`/`EventController`，可以直接 `new` 出來
+/// 測純轉移邏輯，不用假裝建一個完整的 `App`。
 #[derive(Debug, Default)]
-struct AppStatus {
+struct KeyState {
     numeric_prefix: String,
-    view_area: Rect,
     last_quit_press: Option<Instant>,
+}
+
+impl KeyState {
+    /// `c` 是數字、且不是「前綴目前是空的」情況下的前導零，就接到前綴後面。
+    /// 擋掉前導零是既有規則——`0` 自己會被當成「沒有前綴」而非數字 0。
+    fn push_digit(&mut self, c: char) {
+        if c.is_ascii_digit() && (c != '0' || !self.numeric_prefix.is_empty()) {
+            self.numeric_prefix.push(c);
+        }
+    }
+
+    /// 取出目前的數字前綴並清空——單一動作完成「讀取＋歸零」，呼叫端不用
+    /// 再自己補一次 `.clear()`。
+    fn take_count(&mut self) -> String {
+        std::mem::take(&mut self.numeric_prefix)
+    }
+
+    fn clear_count(&mut self) {
+        self.numeric_prefix.clear();
+    }
+
+    /// 距離上一次按下 `q` 是否還在雙擊視窗內。`now` 由呼叫端傳入而非內部
+    /// 呼叫 `Instant::now()`，狀態轉移才能脫離真實時鐘單獨測試。
+    fn register_quit_press(&mut self, now: Instant) -> QuitDecision {
+        if self
+            .last_quit_press
+            .is_some_and(|t| now.duration_since(t) < Duration::from_millis(500))
+        {
+            self.last_quit_press = None;
+            QuitDecision::Second
+        } else {
+            self.last_quit_press = Some(now);
+            QuitDecision::First
+        }
+    }
+
+    fn reset_quit_press(&mut self) {
+        self.last_quit_press = None;
+    }
 }
 
 #[derive(Debug)]
 pub struct App<'a> {
     repository: &'a Repository,
     view: View<'a>,
-    app_status: AppStatus,
+    key_state: KeyState,
+    /// 上一次 `render()` 算出的 view 區域，唯一寫入點是 `update_state`
+    /// （由 `render` 呼叫）。
+    view_area: Rect,
     status_line_state: StatusLineState,
     pending_message: Option<String>,
-    github_cache: Option<GitHubCache>,
-    github_loading: bool,
-    pending_github_state: Option<String>,
+    /// `None` 代表資料現在活在開著的 `GitHubView` 裡；兩者不會同時各存一份。
+    github_data: Option<crate::github::GitHubData>,
+    github_load: GitHubLoad,
     ctx: Rc<AppContext>,
     ec: &'a EventController,
     marquee_frame: u64,
@@ -112,13 +166,47 @@ pub struct App<'a> {
     last_marquee_id: Option<std::sync::Arc<str>>,
 }
 
-#[derive(Debug)]
-struct GitHubCache {
-    issues: Vec<crate::github::GhIssue>,
-    pull_requests: Vec<crate::github::GhPullRequest>,
-    state_filter: String,
-    issues_next_cursor: Option<String>,
-    prs_next_cursor: Option<String>,
+/// GitHub 資料的排程狀態機。`(loading=false, pending=Some(_))`
+/// 這種非法組合曾經可達（Bug A）—— 用 enum 讓它在型別層直接不存在。
+///
+/// 跟 `GitHubView::LoadState`（`view/github/mod.rs`）是兩台刻意分開的狀態
+/// 機：這個回答「有沒有請求在飛／有沒有排隊的重抓」，是排程狀態；
+/// `LoadState` 回答「畫面上要顯示 spinner 還是錯誤字」，是呈現狀態。
+/// 合併等於把 presentation 揉進 `App`，不要做。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum GitHubLoad {
+    Idle,
+    Loading,
+    /// 載入中使用者又切了 filter：這次載入（不論成功或失敗）結束後都要
+    /// 改抓這個。
+    LoadingThenRefetch(StateFilter),
+}
+
+impl GitHubLoad {
+    /// 要求以 `filter` 重新整理。`true` 代表呼叫端現在就該 spawn 一次載入；
+    /// `false` 代表已有一次載入在飛，這次要求記到它結束後處理。
+    fn on_refresh_requested(&mut self, filter: StateFilter) -> bool {
+        match self {
+            GitHubLoad::Idle => {
+                *self = GitHubLoad::Loading;
+                true
+            }
+            GitHubLoad::Loading | GitHubLoad::LoadingThenRefetch(_) => {
+                *self = GitHubLoad::LoadingThenRefetch(filter);
+                false
+            }
+        }
+    }
+
+    /// 一次載入結束——不論成功或失敗都呼叫這個方法，這就是 Bug A 的修法：
+    /// 失敗路徑當年沒有消費 `pending`，資料留在一個永遠不會被重抓的狀態。
+    /// 回傳 `Some(f)` 代表要立刻改抓 `f`；`None` 代表閒置下來。
+    fn on_load_settled(&mut self) -> Option<StateFilter> {
+        match std::mem::replace(self, GitHubLoad::Idle) {
+            GitHubLoad::LoadingThenRefetch(filter) => Some(filter),
+            GitHubLoad::Idle | GitHubLoad::Loading => None,
+        }
+    }
 }
 
 impl<'a> App<'a> {
@@ -207,12 +295,12 @@ impl<'a> App<'a> {
         let mut app = Self {
             repository,
             view,
-            app_status: AppStatus::default(),
+            key_state: KeyState::default(),
+            view_area: Rect::default(),
             status_line_state,
             pending_message: None,
-            github_cache: None,
-            github_loading: false,
-            pending_github_state: None,
+            github_data: None,
+            github_load: GitHubLoad::Idle,
             ctx,
             ec,
             marquee_frame: 0,
@@ -266,103 +354,7 @@ impl App<'_> {
                     continue;
                 }
                 AppEvent::Key(key) => {
-                    // 處理 pending overlay——Esc 會把它藏起來
-                    if self.pending_message.is_some() {
-                        if let Some(UserEvent::Cancel) = self.ctx.keybind.get(&key) {
-                            self.pending_message = None;
-                            self.ec.send(AppEvent::NotifyInfo(
-                                "Operation continues in background".into(),
-                            ));
-                            continue;
-                        }
-                        // pending 期間擋掉其他按鍵
-                        continue;
-                    }
-
-                    // Picker 會攔截輸入；ForceQuit（Ctrl-C）例外放行，讓
-                    // 使用者在 picker 中仍能離開程式。
-                    if !matches!(self.ctx.keybind.get(&key), Some(UserEvent::ForceQuit))
-                        && self.status_line_state.handle_intercepting_key(key)
-                    {
-                        continue;
-                    }
-
-                    if self.status_line_state.dismiss_notification() {
-                        continue;
-                    }
-
-                    let user_event = self.ctx.keybind.get(&key);
-
-                    if let Some(UserEvent::Cancel) = user_event {
-                        if !self.app_status.numeric_prefix.is_empty() {
-                            // 清掉數字前綴並取消這個事件
-                            self.app_status.numeric_prefix.clear();
-                            continue;
-                        }
-                    }
-
-                    match user_event {
-                        Some(UserEvent::ForceQuit) => {
-                            self.ec.send(AppEvent::Quit);
-                        }
-                        Some(UserEvent::Quit) => {
-                            if self.is_input_mode() {
-                                self.view.handle_event(
-                                    UserEventWithCount::from_event(UserEvent::Unknown),
-                                    key,
-                                );
-                            } else if self
-                                .app_status
-                                .last_quit_press
-                                .is_some_and(|t| t.elapsed() < Duration::from_millis(500))
-                            {
-                                self.ec.send(AppEvent::Quit);
-                                self.app_status.last_quit_press = None;
-                                continue;
-                            } else {
-                                self.app_status.last_quit_press = Some(Instant::now());
-                                self.status_line_state
-                                    .set_notification_info("Press q again to quit".into());
-                                self.ec.sender().send_after(
-                                    AppEvent::ClearStatusLine,
-                                    Duration::from_millis(600),
-                                );
-                            }
-                            self.app_status.numeric_prefix.clear();
-                        }
-                        Some(ue) => {
-                            self.app_status.last_quit_press = None;
-                            let event_with_count =
-                                process_numeric_prefix(&self.app_status.numeric_prefix, *ue, key);
-                            if let Some(app_event) = global_app_event(
-                                event_with_count.event,
-                                self.view.is_browsing_view(),
-                                self.is_input_mode(),
-                            ) {
-                                self.app_status.numeric_prefix.clear();
-                                self.ec.send(app_event);
-                                continue;
-                            }
-                            self.view.handle_event(event_with_count, key);
-                            self.app_status.numeric_prefix.clear();
-                        }
-                        None => {
-                            self.app_status.last_quit_press = None;
-                            if self.is_input_mode() || matches!(self.view, View::Detail(_)) {
-                                self.app_status.numeric_prefix.clear();
-                                self.view.handle_event(
-                                    UserEventWithCount::from_event(UserEvent::Unknown),
-                                    key,
-                                );
-                            } else if let KeyCode::Char(c) = key.code {
-                                if c.is_ascii_digit()
-                                    && (c != '0' || !self.app_status.numeric_prefix.is_empty())
-                                {
-                                    self.app_status.numeric_prefix.push(c);
-                                }
-                            }
-                        }
-                    }
+                    self.handle_key(key);
                 }
                 AppEvent::Resize(w, h) => {
                     let _ = (w, h);
@@ -422,41 +414,26 @@ impl App<'_> {
                     self.close_github();
                 }
                 AppEvent::RefreshGitHub { state } => {
-                    self.refresh_github(&state);
+                    self.refresh_github(state);
                 }
-                AppEvent::GitHubDataLoaded {
-                    issues,
-                    pull_requests,
-                    warnings,
-                    issues_cursor,
-                    prs_cursor,
-                } => {
-                    self.on_github_data_loaded(
-                        issues,
-                        pull_requests,
-                        warnings,
-                        issues_cursor,
-                        prs_cursor,
-                    );
+                AppEvent::GitHubDataLoaded { data, warnings } => {
+                    self.on_github_data_loaded(data, warnings);
                 }
                 AppEvent::LoadMoreGitHub { kind, generation } => {
                     self.load_more_github(kind, generation);
                 }
+                // LoadMoreGitHub 只在 view 開著時送出（view/github/event.rs），
+                // 所以這裡直接丟棄「view 關著」的情況——不像 GitHubDataLoaded
+                // 那樣在 view 關閉後仍要保留。分頁游標是靠 generation 驗證
+                // 新舊的增量更新，view 關掉後 generation 就沒有意義，丟棄才
+                // 安全（代價只是重開後捲到底要重抓一頁）。
                 AppEvent::GitHubMoreIssuesLoaded {
                     items,
                     next_cursor,
                     generation,
                 } => {
-                    let accepted = if let View::GitHub(ref mut view) = self.view {
-                        view.append_issues(items.clone(), next_cursor.clone(), generation)
-                    } else {
-                        false
-                    };
-                    if accepted {
-                        if let Some(ref mut cache) = self.github_cache {
-                            cache.issues.extend(items);
-                            cache.issues_next_cursor = next_cursor;
-                        }
+                    if let View::GitHub(ref mut view) = self.view {
+                        view.append_issues(items, next_cursor, generation);
                     }
                 }
                 AppEvent::GitHubMorePrsLoaded {
@@ -464,16 +441,8 @@ impl App<'_> {
                     next_cursor,
                     generation,
                 } => {
-                    let accepted = if let View::GitHub(ref mut view) = self.view {
-                        view.append_pull_requests(items.clone(), next_cursor.clone(), generation)
-                    } else {
-                        false
-                    };
-                    if accepted {
-                        if let Some(ref mut cache) = self.github_cache {
-                            cache.pull_requests.extend(items);
-                            cache.prs_next_cursor = next_cursor;
-                        }
+                    if let View::GitHub(ref mut view) = self.view {
+                        view.append_pull_requests(items, next_cursor, generation);
                     }
                 }
                 AppEvent::LoadGitHubTimeline {
@@ -503,10 +472,7 @@ impl App<'_> {
                     }
                 }
                 AppEvent::GitHubLoadFailed { error } => {
-                    self.github_loading = false;
-                    if let View::GitHub(ref mut view) = self.view {
-                        view.set_error(error);
-                    }
+                    self.on_github_load_failed(error);
                 }
                 AppEvent::BatchToggleCheckboxes {
                     number,
@@ -633,17 +599,16 @@ impl App<'_> {
                 AppEvent::PrDraftToggled { number, is_draft } => {
                     if let View::GitHub(ref mut view) = self.view {
                         view.set_pr_draft_flag(number, is_draft);
-                    }
-                    if let Some(cache) = self.github_cache.as_mut() {
-                        if let Some(pr) =
-                            cache.pull_requests.iter_mut().find(|p| p.number == number)
+                    } else if let Some(ref mut data) = self.github_data {
+                        if let Some(pr) = data.pull_requests.iter_mut().find(|p| p.number == number)
                         {
                             pr.is_draft = is_draft;
                         }
                     }
                 }
                 AppEvent::DeleteBranchRequested { name, force } => {
-                    self.spawn_delete_branch(name, force);
+                    let list_context = self.current_list_refresh_context();
+                    spawn_delete_branch(self.repository.path(), self.ec, name, force, list_context);
                 }
                 AppEvent::MergePrRequested {
                     number,
@@ -651,7 +616,14 @@ impl App<'_> {
                     method,
                     delete_branch,
                 } => {
-                    self.spawn_merge_pr(number, state, method, delete_branch);
+                    spawn_merge_pr(
+                        self.repository.path(),
+                        self.ec,
+                        number,
+                        state,
+                        method,
+                        delete_branch,
+                    );
                 }
                 AppEvent::ToggleItemStateRequested {
                     number,
@@ -659,14 +631,27 @@ impl App<'_> {
                     action,
                     filter_state,
                 } => {
-                    self.spawn_toggle_state(number, kind, action, filter_state);
+                    spawn_toggle_state(
+                        self.repository.path(),
+                        self.ec,
+                        number,
+                        kind,
+                        action,
+                        filter_state,
+                    );
                 }
                 AppEvent::TogglePrDraftRequested {
                     number,
                     action,
                     filter_state,
                 } => {
-                    self.spawn_toggle_pr_draft(number, action, filter_state);
+                    spawn_toggle_pr_draft(
+                        self.repository.path(),
+                        self.ec,
+                        number,
+                        action,
+                        filter_state,
+                    );
                 }
                 AppEvent::GitHubJumpToIssue { number } => {
                     if let View::GitHub(ref mut view) = self.view {
@@ -676,6 +661,89 @@ impl App<'_> {
                             )));
                         }
                     }
+                }
+            }
+        }
+    }
+
+    fn handle_key(&mut self, key: KeyEvent) {
+        // 處理 pending overlay——Esc 會把它藏起來
+        if self.pending_message.is_some() {
+            if let Some(UserEvent::Cancel) = self.ctx.keybind.get(&key) {
+                self.pending_message = None;
+                self.ec.send(AppEvent::NotifyInfo(
+                    "Operation continues in background".into(),
+                ));
+                return;
+            }
+            // pending 期間擋掉其他按鍵
+            return;
+        }
+
+        // Picker 會攔截輸入；ForceQuit（Ctrl-C）例外放行，讓
+        // 使用者在 picker 中仍能離開程式。
+        if !matches!(self.ctx.keybind.get(&key), Some(UserEvent::ForceQuit))
+            && self.status_line_state.handle_intercepting_key(key)
+        {
+            return;
+        }
+
+        if self.status_line_state.dismiss_notification() {
+            return;
+        }
+
+        let user_event = self.ctx.keybind.get(&key);
+
+        if let Some(UserEvent::Cancel) = user_event {
+            // 清掉數字前綴並取消這個事件
+            if !self.key_state.take_count().is_empty() {
+                return;
+            }
+        }
+
+        match user_event {
+            Some(UserEvent::ForceQuit) => {
+                self.ec.send(AppEvent::Quit);
+            }
+            Some(UserEvent::Quit) => {
+                if self.is_input_mode() {
+                    self.view
+                        .handle_event(UserEventWithCount::from_event(UserEvent::Unknown), key);
+                } else if self.key_state.register_quit_press(Instant::now()) == QuitDecision::Second
+                {
+                    self.ec.send(AppEvent::Quit);
+                    return;
+                } else {
+                    self.status_line_state
+                        .set_notification_info("Press q again to quit".into());
+                    self.ec
+                        .sender()
+                        .send_after(AppEvent::ClearStatusLine, Duration::from_millis(600));
+                }
+                self.key_state.clear_count();
+            }
+            Some(ue) => {
+                self.key_state.reset_quit_press();
+                let prefix = self.key_state.take_count();
+                let event_with_count = process_numeric_prefix(&prefix, *ue, key);
+                if let Some(app_event) = global_app_event(
+                    event_with_count.event,
+                    self.view.is_browsing_view(),
+                    self.is_input_mode(),
+                ) {
+                    self.ec.send(app_event);
+                    return;
+                }
+                self.view.handle_event(event_with_count, key);
+            }
+            None => {
+                self.key_state.reset_quit_press();
+                if self.is_input_mode() || matches!(self.view, View::Detail(_)) {
+                    self.key_state.clear_count();
+                    self.view
+                        .handle_event(UserEventWithCount::from_event(UserEvent::Unknown), key);
+                } else if let KeyCode::Char(c) = key.code {
+                    self.key_state.push_digit(c);
                 }
             }
         }
@@ -698,7 +766,7 @@ impl App<'_> {
             f,
             status_line_area,
             &self.view,
-            &self.app_status.numeric_prefix,
+            &self.key_state.numeric_prefix,
         );
 
         if let Some(message) = &self.pending_message {
@@ -727,136 +795,11 @@ impl<'a> App<'a> {
 
 impl App<'_> {
     fn update_state(&mut self, view_area: Rect) {
-        self.app_status.view_area = view_area;
+        self.view_area = view_area;
     }
 
     fn is_input_mode(&self) -> bool {
         self.status_line_state.is_input_mode_variant() || matches!(self.view, View::CreateTag(_))
-    }
-
-    fn spawn_merge_pr(&self, number: u64, state: String, method: MergeMethod, delete_branch: bool) {
-        let repo_path = self.repository.path().to_path_buf();
-        let tx = self.ec.sender();
-        self.ec.send(AppEvent::ShowPendingOverlay {
-            message: format!("Merging PR #{number}..."),
-        });
-        std::thread::spawn(move || {
-            let result = merge_pr(&repo_path, number, method.as_flag(), delete_branch);
-            tx.send(AppEvent::HidePendingOverlay);
-            match result {
-                Ok(()) => {
-                    tx.send(AppEvent::NotifySuccess(format!(
-                        "PR #{number} merged ({})",
-                        method.display()
-                    )));
-                    tx.send(AppEvent::RefreshGitHub { state });
-                }
-                Err(e) => {
-                    if is_merge_conflict_error(&e) {
-                        tx.send(AppEvent::NotifyWarn(format!(
-                            "PR #{number} has conflicts — resolve before merging"
-                        )));
-                    } else {
-                        tx.send(AppEvent::NotifyError(e));
-                    }
-                }
-            }
-        });
-    }
-
-    fn spawn_toggle_pr_draft(&self, number: u64, action: PrDraftAction, filter_state: String) {
-        let repo_path = self.repository.path().to_path_buf();
-        let tx = self.ec.sender();
-        self.ec.send(AppEvent::ShowPendingOverlay {
-            message: action.pending(number),
-        });
-        std::thread::spawn(move || {
-            let result = set_pr_draft(&repo_path, number, action);
-            tx.send(AppEvent::HidePendingOverlay);
-            match result {
-                Ok(()) => {
-                    tx.send(AppEvent::NotifySuccess(action.success(number)));
-                    tx.send(AppEvent::PrDraftToggled {
-                        number,
-                        is_draft: action.result_is_draft(),
-                    });
-                    tx.send(AppEvent::RefreshGitHub {
-                        state: filter_state,
-                    });
-                }
-                Err(e) => {
-                    tx.send(AppEvent::NotifyError(e));
-                }
-            }
-        });
-    }
-
-    fn spawn_toggle_state(
-        &self,
-        number: u64,
-        kind: GhItemKind,
-        action: StateAction,
-        filter_state: String,
-    ) {
-        let repo_path = self.repository.path().to_path_buf();
-        let tx = self.ec.sender();
-        self.ec.send(AppEvent::ShowPendingOverlay {
-            message: action.pending(kind, number),
-        });
-        std::thread::spawn(move || {
-            let result = set_item_state(&repo_path, kind, number, action);
-            tx.send(AppEvent::HidePendingOverlay);
-            match result {
-                Ok(()) => {
-                    tx.send(AppEvent::NotifySuccess(action.success(kind, number)));
-                    tx.send(AppEvent::RefreshGitHub {
-                        state: filter_state,
-                    });
-                }
-                Err(e) => {
-                    tx.send(AppEvent::NotifyError(e));
-                }
-            }
-        });
-    }
-
-    fn spawn_delete_branch(&self, name: String, force: bool) {
-        use crate::git::{delete_branch, delete_branch_force};
-
-        let repo_path = self.repository.path().to_path_buf();
-        let tx = self.ec.sender();
-        let list_context = self.current_list_refresh_context();
-
-        let pending = if force {
-            format!("Force deleting branch '{name}'...")
-        } else {
-            format!("Deleting branch '{name}'...")
-        };
-        self.ec
-            .send(AppEvent::ShowPendingOverlay { message: pending });
-
-        std::thread::spawn(move || {
-            let result = if force {
-                delete_branch_force(&repo_path, &name)
-            } else {
-                delete_branch(&repo_path, &name)
-            };
-            tx.send(AppEvent::HidePendingOverlay);
-            match result {
-                Ok(()) => {
-                    tx.send(AppEvent::NotifySuccess(format!("Branch '{name}' deleted")));
-                    tx.send(AppEvent::Refresh(RefreshViewContext::List { list_context }));
-                }
-                Err(e) => {
-                    let hint = if !force && e.contains("not fully merged") {
-                        format!("{e}  (press d → f to force delete)")
-                    } else {
-                        e
-                    };
-                    tx.send(AppEvent::NotifyError(hint));
-                }
-            }
-        });
     }
 
     fn current_list_refresh_context(&self) -> crate::view::ListRefreshViewContext {
@@ -966,7 +909,7 @@ impl App<'_> {
             &commit,
             &refs,
             user_command_number,
-            self.app_status.view_area,
+            self.view_area,
             &self.ctx,
         );
         match result {
@@ -1010,7 +953,7 @@ impl App<'_> {
             &commit,
             &refs,
             user_command_number,
-            self.app_status.view_area,
+            self.view_area,
             &self.ctx,
         );
         match result {
@@ -1040,7 +983,7 @@ impl App<'_> {
             &commit,
             &refs,
             user_command_number,
-            self.app_status.view_area,
+            self.view_area,
             &self.ctx,
         ) {
             Ok(params) => {
@@ -1246,110 +1189,76 @@ impl App<'_> {
     }
 
     fn open_github(&mut self) {
-        let (issues, prs, issues_cursor, prs_cursor, state_filter) =
-            if let Some(ref cache) = self.github_cache {
-                (
-                    cache.issues.clone(),
-                    cache.pull_requests.clone(),
-                    cache.issues_next_cursor.clone(),
-                    cache.prs_next_cursor.clone(),
-                    cache.state_filter.clone(),
-                )
-            } else {
-                self.refresh_github("open");
-                (Vec::new(), Vec::new(), None, None, "open".to_string())
-            };
-
-        let before_view = std::mem::take(&mut self.view);
-        self.view = View::of_github(
-            before_view,
-            issues,
-            prs,
-            issues_cursor,
-            prs_cursor,
-            &state_filter,
-            self.ec.sender(),
-        );
-    }
-
-    fn on_github_data_loaded(
-        &mut self,
-        issues: Vec<crate::github::GhIssue>,
-        pull_requests: Vec<crate::github::GhPullRequest>,
-        warnings: Vec<String>,
-        issues_cursor: Option<String>,
-        prs_cursor: Option<String>,
-    ) {
-        self.github_loading = false;
-
-        // 有 pending filter 變更（載入中使用者又切換了 filter）→ 丟棄這批資料，重新 fetch
-        if let Some(pending) = self.pending_github_state.take() {
-            self.refresh_github(&pending);
-            return;
-        }
-
-        // 檢查是否與快取相同
-        let changed = match &self.github_cache {
-            Some(cache) => cache.issues != issues || cache.pull_requests != pull_requests,
-            None => true,
+        let data = match self.github_data.take() {
+            Some(data) => data,
+            None => {
+                self.refresh_github(StateFilter::Open);
+                crate::github::GitHubData::default()
+            }
         };
 
-        // 更新快取（body 已含在 list data 中，不需要 detail cache）
-        if let Some(ref mut cache) = self.github_cache {
-            cache.issues = issues.clone();
-            cache.pull_requests = pull_requests.clone();
-            cache.issues_next_cursor = issues_cursor.clone();
-            cache.prs_next_cursor = prs_cursor.clone();
-        } else {
-            self.github_cache = Some(GitHubCache {
-                issues: issues.clone(),
-                pull_requests: pull_requests.clone(),
-                state_filter: "open".to_string(),
-                issues_next_cursor: issues_cursor.clone(),
-                prs_next_cursor: prs_cursor.clone(),
-            });
+        let before_view = std::mem::take(&mut self.view);
+        self.view = View::of_github(before_view, data, self.ec.sender());
+    }
+
+    fn on_github_data_loaded(&mut self, data: crate::github::GitHubData, warnings: Vec<String>) {
+        // 載入中使用者又切換了 filter → 丟棄這批資料，改抓新的
+        if let Some(refetch) = self.github_load.on_load_settled() {
+            self.refresh_github(refetch);
+            return;
         }
 
         if let View::GitHub(ref mut view) = self.view {
-            // 已在 GitHub 視圖：有變更才就地更新；無變更也要收尾 Loading 指示器
-            if changed {
-                view.update_data(issues, pull_requests, issues_cursor, prs_cursor);
-            } else {
-                view.finish_loading();
-            }
+            // 已在 GitHub 視圖：資料只有 view 這一份，直接寫進去；
+            // 有沒有變更、要不要重置捲動位置由 view 自己決定
+            view.update_data(
+                data.issues,
+                data.pull_requests,
+                data.issues_next_cursor,
+                data.prs_next_cursor,
+            );
             if !warnings.is_empty() {
                 view.set_flash(warnings.join("; "), false);
             }
+        } else {
+            // view 關著：整批快照直接覆蓋。這是背景操作（spawn_toggle_state
+            // 等）觸發的 refresh，即使 view 已經關閉也要保留，重開時才看
+            // 得到最新資料——跟下面 GitHubMore*Loaded「view 關著就丟棄」
+            // 是刻意的不對稱，不是漏改的不一致，理由見那裡的註解。
+            self.github_data = Some(data);
         }
     }
 
-    fn refresh_github(&mut self, state: &str) {
-        if self.github_loading {
-            if let Some(ref mut cache) = self.github_cache {
-                cache.state_filter = state.to_string();
-            }
-            self.pending_github_state = Some(state.to_string());
+    /// 載入失敗與載入成功共用同一套「結束後有沒有排隊的 refetch」判斷——
+    /// 失敗路徑漏接這段曾經是 Bug A。有排隊的 refetch 時不顯示這次的錯誤，
+    /// 因為新的載入馬上就會蓋過它。
+    fn on_github_load_failed(&mut self, error: String) {
+        if let Some(refetch) = self.github_load.on_load_settled() {
+            self.refresh_github(refetch);
             return;
         }
-        self.pending_github_state = None;
-        self.github_loading = true;
+        if let View::GitHub(ref mut view) = self.view {
+            view.set_error(error);
+        }
+    }
 
-        if let Some(ref mut cache) = self.github_cache {
-            cache.state_filter = state.to_string();
+    fn refresh_github(&mut self, filter: StateFilter) {
+        if !self.github_load.on_refresh_requested(filter) {
+            return;
         }
 
         let repo_path = self.repository.path().to_path_buf();
         let tx = self.ec.sender();
-        let state = state.to_string();
 
         std::thread::spawn(move || {
-            let issues_result = crate::github::list_issues(&repo_path, &state, None);
-            let prs_result = crate::github::list_pull_requests(&repo_path, &state, None);
+            let state = filter.as_str();
+            let issues_result = crate::github::list_issues(&repo_path, state, None);
+            let prs_result = crate::github::list_pull_requests(&repo_path, state, None);
 
             let mut any_ok = false;
             let mut warnings = Vec::new();
 
-            let (issues, issues_cursor) = match issues_result {
+            let (issues, issues_next_cursor) = match issues_result {
                 Ok(page) => {
                     any_ok = true;
                     (page.items, page.next_cursor)
@@ -1359,7 +1268,7 @@ impl App<'_> {
                     (Vec::new(), None)
                 }
             };
-            let (pull_requests, prs_cursor) = match prs_result {
+            let (pull_requests, prs_next_cursor) = match prs_result {
                 Ok(page) => {
                     any_ok = true;
                     (page.items, page.next_cursor)
@@ -1372,11 +1281,14 @@ impl App<'_> {
 
             if any_ok {
                 tx.send(AppEvent::GitHubDataLoaded {
-                    issues,
-                    pull_requests,
+                    data: crate::github::GitHubData {
+                        issues,
+                        pull_requests,
+                        state_filter: filter,
+                        issues_next_cursor,
+                        prs_next_cursor,
+                    },
                     warnings,
-                    issues_cursor,
-                    prs_cursor,
                 });
             } else {
                 tx.send(AppEvent::GitHubLoadFailed {
@@ -1386,22 +1298,23 @@ impl App<'_> {
         });
     }
 
+    /// `LoadMoreGitHub` 只在 view 開著時送出（見 view/github/event.rs），
+    /// 所以這裡固定從 view 讀，不是從 `github_data`——view 開著時
+    /// `github_data` 是 `None`，讀那邊會讓「載入更多」永久失效。
     fn load_more_github(&mut self, kind: GhItemKind, generation: u64) {
-        let Some(ref cache) = self.github_cache else {
+        let View::GitHub(ref view) = self.view else {
             return;
         };
-        let state = cache.state_filter.clone();
-        let cursor = match kind {
-            GhItemKind::Issue => cache.issues_next_cursor.clone(),
-            GhItemKind::PullRequest => cache.prs_next_cursor.clone(),
+        let state = view.state_filter();
+        let Some(cursor) = view.next_cursor(kind) else {
+            return;
         };
-        let Some(cursor) = cursor else { return };
         let repo_path = self.repository.path().to_path_buf();
         let tx = self.ec.sender();
 
         std::thread::spawn(move || match kind {
             GhItemKind::Issue => {
-                match crate::github::list_issues(&repo_path, &state, Some(&cursor)) {
+                match crate::github::list_issues(&repo_path, state.as_str(), Some(&cursor)) {
                     Ok(page) => tx.send(AppEvent::GitHubMoreIssuesLoaded {
                         items: page.items,
                         next_cursor: page.next_cursor,
@@ -1414,7 +1327,7 @@ impl App<'_> {
                 }
             }
             GhItemKind::PullRequest => {
-                match crate::github::list_pull_requests(&repo_path, &state, Some(&cursor)) {
+                match crate::github::list_pull_requests(&repo_path, state.as_str(), Some(&cursor)) {
                     Ok(page) => tx.send(AppEvent::GitHubMorePrsLoaded {
                         items: page.items,
                         next_cursor: page.next_cursor,
@@ -1446,6 +1359,7 @@ impl App<'_> {
 
     fn close_github(&mut self) {
         if let View::GitHub(ref mut view) = self.view {
+            self.github_data = Some(view.take_data());
             self.view = view.take_before_view();
             self.view.request_graph_clear();
         }
@@ -1496,20 +1410,19 @@ impl App<'_> {
     }
 
     fn on_checkbox_toggled(&mut self, number: u64, kind: GhItemKind, new_body: &str) {
-        // 更新 list item 的 body 欄位，preview 直接從 body 渲染（零 API）
+        // 更新 list item 的 body 欄位，preview 直接從 body 渲染（零 API）。
+        // 寫進資料目前唯一的擁有者：view 開著寫 view，關著寫 github_data。
         if let View::GitHub(ref mut view) = self.view {
             view.update_body_for_item(number, kind, new_body.to_string());
-        }
-        // 同步更新 cache 的 list data
-        if let Some(ref mut cache) = self.github_cache {
+        } else if let Some(ref mut data) = self.github_data {
             match kind {
                 GhItemKind::Issue => {
-                    if let Some(issue) = cache.issues.iter_mut().find(|i| i.number == number) {
+                    if let Some(issue) = data.issues.iter_mut().find(|i| i.number == number) {
                         issue.body = new_body.to_string();
                     }
                 }
                 GhItemKind::PullRequest => {
-                    if let Some(pr) = cache.pull_requests.iter_mut().find(|p| p.number == number) {
+                    if let Some(pr) = data.pull_requests.iter_mut().find(|p| p.number == number) {
                         pr.body = new_body.to_string();
                     }
                 }
@@ -1523,7 +1436,7 @@ impl App<'_> {
         } else if let View::UserCommand(ref mut view) = self.view {
             view.select_older_commit(
                 self.repository,
-                self.app_status.view_area,
+                self.view_area,
                 build_external_command_parameters_and_exec_command,
             );
         }
@@ -1535,7 +1448,7 @@ impl App<'_> {
         } else if let View::UserCommand(ref mut view) = self.view {
             view.select_newer_commit(
                 self.repository,
-                self.app_status.view_area,
+                self.view_area,
                 build_external_command_parameters_and_exec_command,
             );
         }
@@ -1547,7 +1460,7 @@ impl App<'_> {
         } else if let View::UserCommand(ref mut view) = self.view {
             view.select_parent_commit(
                 self.repository,
-                self.app_status.view_area,
+                self.view_area,
                 build_external_command_parameters_and_exec_command,
             );
         }
@@ -1614,7 +1527,9 @@ impl App<'_> {
     }
 
     fn fetch_all(&self) {
-        self.spawn_git_task(
+        spawn_git_task(
+            self.repository.path(),
+            self.ec,
             &["fetch", "--all"],
             "Fetching...".into(),
             "Fetch completed".into(),
@@ -1623,61 +1538,207 @@ impl App<'_> {
     }
 
     fn checkout_commit(&self, target: String) {
-        self.spawn_git_task(
+        spawn_git_task(
+            self.repository.path(),
+            self.ec,
             &["checkout", &target],
             format!("Checking out '{target}'..."),
             format!("Checked out '{target}'"),
             "Checkout failed",
         );
     }
+}
 
-    fn spawn_git_task(
-        &self,
-        args: &[&str],
-        pending_msg: String,
-        success_msg: String,
-        error_prefix: &str,
-    ) {
-        let repo_path = self.repository.path().to_path_buf();
-        let tx = self.ec.sender();
-        let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-        let error_prefix = error_prefix.to_string();
-        // 預先 set pending flag，讓 git watcher 在 debounce 視窗內偵測到的 fs 事件
-        // 被吞掉；主動 refresh 走完後，watcher 不會重複觸發 slow-path。
-        self.ec.mark_pending_refresh();
-
-        tx.send(AppEvent::ShowPendingOverlay {
-            message: pending_msg,
-        });
-
-        std::thread::spawn(move || {
-            let output = std::process::Command::new("git")
-                .args(&args)
-                .current_dir(&repo_path)
-                .output();
-
-            tx.send(AppEvent::HidePendingOverlay);
-            match output {
-                Ok(o) if o.status.success() => {
-                    let detail = String::from_utf8_lossy(&o.stderr).trim().to_string();
-                    let msg = if detail.is_empty() {
-                        success_msg
-                    } else {
-                        detail
-                    };
-                    tx.send(AppEvent::NotifySuccess(msg));
-                    tx.send(AppEvent::AutoRefresh);
-                }
-                Ok(o) => {
-                    let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
-                    tx.send(AppEvent::NotifyError(format!("{error_prefix}: {stderr}")));
-                }
-                Err(e) => {
-                    tx.send(AppEvent::NotifyError(format!("{error_prefix}: {e}")));
+fn spawn_merge_pr(
+    repo: &Path,
+    ec: &EventController,
+    number: u64,
+    state: StateFilter,
+    method: MergeMethod,
+    delete_branch: bool,
+) {
+    let repo_path = repo.to_path_buf();
+    let tx = ec.sender();
+    ec.send(AppEvent::ShowPendingOverlay {
+        message: format!("Merging PR #{number}..."),
+    });
+    std::thread::spawn(move || {
+        let result = merge_pr(&repo_path, number, method.as_flag(), delete_branch);
+        tx.send(AppEvent::HidePendingOverlay);
+        match result {
+            Ok(()) => {
+                tx.send(AppEvent::NotifySuccess(format!(
+                    "PR #{number} merged ({})",
+                    method.display()
+                )));
+                tx.send(AppEvent::RefreshGitHub { state });
+            }
+            Err(e) => {
+                if is_merge_conflict_error(&e) {
+                    tx.send(AppEvent::NotifyWarn(format!(
+                        "PR #{number} has conflicts — resolve before merging"
+                    )));
+                } else {
+                    tx.send(AppEvent::NotifyError(e));
                 }
             }
-        });
-    }
+        }
+    });
+}
+
+fn spawn_toggle_pr_draft(
+    repo: &Path,
+    ec: &EventController,
+    number: u64,
+    action: PrDraftAction,
+    filter_state: StateFilter,
+) {
+    let repo_path = repo.to_path_buf();
+    let tx = ec.sender();
+    ec.send(AppEvent::ShowPendingOverlay {
+        message: action.pending(number),
+    });
+    std::thread::spawn(move || {
+        let result = set_pr_draft(&repo_path, number, action);
+        tx.send(AppEvent::HidePendingOverlay);
+        match result {
+            Ok(()) => {
+                tx.send(AppEvent::NotifySuccess(action.success(number)));
+                tx.send(AppEvent::PrDraftToggled {
+                    number,
+                    is_draft: action.result_is_draft(),
+                });
+                tx.send(AppEvent::RefreshGitHub {
+                    state: filter_state,
+                });
+            }
+            Err(e) => {
+                tx.send(AppEvent::NotifyError(e));
+            }
+        }
+    });
+}
+
+fn spawn_toggle_state(
+    repo: &Path,
+    ec: &EventController,
+    number: u64,
+    kind: GhItemKind,
+    action: StateAction,
+    filter_state: StateFilter,
+) {
+    let repo_path = repo.to_path_buf();
+    let tx = ec.sender();
+    ec.send(AppEvent::ShowPendingOverlay {
+        message: action.pending(kind, number),
+    });
+    std::thread::spawn(move || {
+        let result = set_item_state(&repo_path, kind, number, action);
+        tx.send(AppEvent::HidePendingOverlay);
+        match result {
+            Ok(()) => {
+                tx.send(AppEvent::NotifySuccess(action.success(kind, number)));
+                tx.send(AppEvent::RefreshGitHub {
+                    state: filter_state,
+                });
+            }
+            Err(e) => {
+                tx.send(AppEvent::NotifyError(e));
+            }
+        }
+    });
+}
+
+fn spawn_delete_branch(
+    repo: &Path,
+    ec: &EventController,
+    name: String,
+    force: bool,
+    list_context: crate::view::ListRefreshViewContext,
+) {
+    use crate::git::{delete_branch, delete_branch_force};
+
+    let repo_path = repo.to_path_buf();
+    let tx = ec.sender();
+
+    let pending = if force {
+        format!("Force deleting branch '{name}'...")
+    } else {
+        format!("Deleting branch '{name}'...")
+    };
+    ec.send(AppEvent::ShowPendingOverlay { message: pending });
+
+    std::thread::spawn(move || {
+        let result = if force {
+            delete_branch_force(&repo_path, &name)
+        } else {
+            delete_branch(&repo_path, &name)
+        };
+        tx.send(AppEvent::HidePendingOverlay);
+        match result {
+            Ok(()) => {
+                tx.send(AppEvent::NotifySuccess(format!("Branch '{name}' deleted")));
+                tx.send(AppEvent::Refresh(RefreshViewContext::List { list_context }));
+            }
+            Err(e) => {
+                let hint = if !force && e.contains("not fully merged") {
+                    format!("{e}  (press d → f to force delete)")
+                } else {
+                    e
+                };
+                tx.send(AppEvent::NotifyError(hint));
+            }
+        }
+    });
+}
+
+fn spawn_git_task(
+    repo: &Path,
+    ec: &EventController,
+    args: &[&str],
+    pending_msg: String,
+    success_msg: String,
+    error_prefix: &str,
+) {
+    let repo_path = repo.to_path_buf();
+    let tx = ec.sender();
+    let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+    let error_prefix = error_prefix.to_string();
+    // 預先 set pending flag，讓 git watcher 在 debounce 視窗內偵測到的 fs 事件
+    // 被吞掉；主動 refresh 走完後，watcher 不會重複觸發 slow-path。
+    ec.mark_pending_refresh();
+
+    tx.send(AppEvent::ShowPendingOverlay {
+        message: pending_msg,
+    });
+
+    std::thread::spawn(move || {
+        let output = std::process::Command::new("git")
+            .args(&args)
+            .current_dir(&repo_path)
+            .output();
+
+        tx.send(AppEvent::HidePendingOverlay);
+        match output {
+            Ok(o) if o.status.success() => {
+                let detail = String::from_utf8_lossy(&o.stderr).trim().to_string();
+                let msg = if detail.is_empty() {
+                    success_msg
+                } else {
+                    detail
+                };
+                tx.send(AppEvent::NotifySuccess(msg));
+                tx.send(AppEvent::AutoRefresh);
+            }
+            Ok(o) => {
+                let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
+                tx.send(AppEvent::NotifyError(format!("{error_prefix}: {stderr}")));
+            }
+            Err(e) => {
+                tx.send(AppEvent::NotifyError(format!("{error_prefix}: {e}")));
+            }
+        }
+    });
 }
 
 fn selected_commit_details(
@@ -1890,5 +1951,140 @@ mod tests {
     #[case("https://github.com/o/r/issues/not-a-number", "[open]")]
     fn short_link_label_extracts_issue_pr_number(#[case] url: &str, #[case] expected: &str) {
         assert_eq!(short_link_label(url), expected);
+    }
+
+    // ---- GitHubLoad -----------------------------------------------------
+
+    #[test]
+    fn github_load_first_request_starts_loading_immediately() {
+        let mut load = GitHubLoad::Idle;
+        assert!(load.on_refresh_requested(StateFilter::Open));
+        assert_eq!(load, GitHubLoad::Loading);
+    }
+
+    #[test]
+    fn github_load_request_while_loading_queues_instead_of_spawning() {
+        let mut load = GitHubLoad::Loading;
+        assert!(!load.on_refresh_requested(StateFilter::Closed));
+        assert_eq!(load, GitHubLoad::LoadingThenRefetch(StateFilter::Closed));
+    }
+
+    /// 載入中連續切了兩次 filter，只留最後一次要抓的——不是排隊兩次。
+    #[test]
+    fn github_load_second_switch_while_loading_overwrites_the_queued_filter() {
+        let mut load = GitHubLoad::Loading;
+        load.on_refresh_requested(StateFilter::Closed);
+        load.on_refresh_requested(StateFilter::All);
+        assert_eq!(load, GitHubLoad::LoadingThenRefetch(StateFilter::All));
+    }
+
+    #[test]
+    fn github_load_settles_to_idle_when_nothing_queued() {
+        let mut load = GitHubLoad::Loading;
+        assert_eq!(load.on_load_settled(), None);
+        assert_eq!(load, GitHubLoad::Idle);
+    }
+
+    /// Bug A 的回歸測試：失敗結束也要能消費排隊的 refetch，不是只有成功
+    /// 路徑才處理——失敗與成功呼叫的是同一個方法，天生對稱。
+    #[test]
+    fn github_load_settled_after_failure_still_returns_the_queued_refetch() {
+        let mut load = GitHubLoad::LoadingThenRefetch(StateFilter::Closed);
+        assert_eq!(load.on_load_settled(), Some(StateFilter::Closed));
+        assert_eq!(load, GitHubLoad::Idle);
+    }
+
+    /// 消費完 pending 之後，緊接著呼叫 `on_refresh_requested` 必須真的能
+    /// 再 spawn 一次（狀態已經回到 `Idle`），否則 refetch 只會被記錄卻永遠
+    /// 不會真的發生。
+    #[test]
+    fn github_load_refetch_after_settle_actually_spawns() {
+        let mut load = GitHubLoad::LoadingThenRefetch(StateFilter::Closed);
+        let refetch = load.on_load_settled().expect("queued filter");
+        assert!(load.on_refresh_requested(refetch));
+        assert_eq!(load, GitHubLoad::Loading);
+    }
+
+    // ---- KeyState ---------------------------------------------------------
+
+    #[test]
+    fn key_state_push_digit_accumulates() {
+        let mut ks = KeyState::default();
+        ks.push_digit('5');
+        assert_eq!(ks.numeric_prefix, "5");
+        ks.push_digit('4');
+        assert_eq!(ks.numeric_prefix, "54");
+    }
+
+    /// 前導零是既有規則：`0` 自己不算前綴，只有已經有前綴時才能接上。
+    #[test]
+    fn key_state_push_digit_rejects_leading_zero() {
+        let mut ks = KeyState::default();
+        ks.push_digit('0');
+        assert_eq!(ks.numeric_prefix, "");
+
+        ks.push_digit('1');
+        ks.push_digit('0');
+        assert_eq!(ks.numeric_prefix, "10");
+    }
+
+    #[test]
+    fn key_state_push_digit_rejects_non_digit() {
+        let mut ks = KeyState::default();
+        ks.push_digit('a');
+        assert_eq!(ks.numeric_prefix, "");
+    }
+
+    #[test]
+    fn key_state_take_count_reads_and_clears_in_one_step() {
+        let mut ks = KeyState::default();
+        ks.push_digit('4');
+        ks.push_digit('2');
+        assert_eq!(ks.take_count(), "42");
+        assert_eq!(ks.numeric_prefix, "");
+    }
+
+    #[test]
+    fn key_state_clear_count_empties_the_prefix() {
+        let mut ks = KeyState::default();
+        ks.push_digit('9');
+        ks.clear_count();
+        assert_eq!(ks.numeric_prefix, "");
+    }
+
+    #[test]
+    fn key_state_first_quit_press_only_arms_the_window() {
+        let mut ks = KeyState::default();
+        let t0 = Instant::now();
+        assert_eq!(ks.register_quit_press(t0), QuitDecision::First);
+    }
+
+    #[test]
+    fn key_state_second_quit_press_within_window_confirms_quit() {
+        let mut ks = KeyState::default();
+        let t0 = Instant::now();
+        ks.register_quit_press(t0);
+        let decision = ks.register_quit_press(t0 + Duration::from_millis(100));
+        assert_eq!(decision, QuitDecision::Second);
+    }
+
+    /// 超過視窗就當作重新開始一輪，不是「累積更久的雙擊」。
+    #[test]
+    fn key_state_quit_press_after_window_restarts_as_first() {
+        let mut ks = KeyState::default();
+        let t0 = Instant::now();
+        ks.register_quit_press(t0);
+        let decision = ks.register_quit_press(t0 + Duration::from_millis(700));
+        assert_eq!(decision, QuitDecision::First);
+    }
+
+    #[test]
+    fn key_state_reset_quit_press_breaks_the_double_press_window() {
+        let mut ks = KeyState::default();
+        let t0 = Instant::now();
+        ks.register_quit_press(t0);
+        ks.reset_quit_press();
+        let decision = ks.register_quit_press(t0 + Duration::from_millis(100));
+        assert_eq!(decision, QuitDecision::First, "reset 之後視窗不該還算數");
     }
 }

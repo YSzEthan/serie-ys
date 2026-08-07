@@ -53,6 +53,34 @@ impl GhItemKind {
     }
 }
 
+// ── 查詢狀態篩選 ──
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum StateFilter {
+    #[default]
+    Open,
+    Closed,
+    All,
+}
+
+impl StateFilter {
+    pub fn next(self) -> Self {
+        match self {
+            StateFilter::Open => StateFilter::Closed,
+            StateFilter::Closed => StateFilter::All,
+            StateFilter::All => StateFilter::Open,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            StateFilter::Open => "open",
+            StateFilter::Closed => "closed",
+            StateFilter::All => "all",
+        }
+    }
+}
+
 // ── 列表項目 ──
 
 #[derive(Debug, Clone, PartialEq, Deserialize)]
@@ -117,6 +145,18 @@ pub struct GhPullRequest {
     pub updated_at: String,
     #[serde(default, rename = "closingIssuesReferences")]
     pub linked_issues: Vec<GhRelatedIssue>,
+}
+
+/// GitHub issue／PR 列表的完整快照，`App` 與 `GitHubView` 之間交接資料用的
+/// 唯一封包。同一時刻只有一個擁有者——view 開著時資料活在 `GitHubView`
+/// 自己的欄位裡，關閉時 take 出來裝進這個結構體暫存，兩邊不會同時各存一份。
+#[derive(Debug, Default)]
+pub struct GitHubData {
+    pub issues: Vec<GhIssue>,
+    pub pull_requests: Vec<GhPullRequest>,
+    pub state_filter: StateFilter,
+    pub issues_next_cursor: Option<String>,
+    pub prs_next_cursor: Option<String>,
 }
 
 // ── CLI 包裝 ──
@@ -952,6 +992,23 @@ mod tests {
             StateAction::Close.pending(GhItemKind::Issue, 12),
             "Closing issue #12..."
         );
+    }
+
+    /// `next()` 三段循環要回得到起點，否則 UI 上的 filter 快捷鍵會卡住或跳號。
+    #[test]
+    fn state_filter_next_cycles_through_all_three_states() {
+        assert_eq!(StateFilter::Open.next(), StateFilter::Closed);
+        assert_eq!(StateFilter::Closed.next(), StateFilter::All);
+        assert_eq!(StateFilter::All.next(), StateFilter::Open);
+    }
+
+    /// `as_str()` 是 gh CLI argv 的唯一輸出端——`StateFilter` 全程留在型別裡，
+    /// 只在真正呼叫 `gh` 的邊界才轉成字串，不會有轉回來的 round-trip。
+    #[test]
+    fn state_filter_as_str_matches_gh_cli_argv() {
+        assert_eq!(StateFilter::Open.as_str(), "open");
+        assert_eq!(StateFilter::Closed.as_str(), "closed");
+        assert_eq!(StateFilter::All.as_str(), "all");
     }
 
     #[test]

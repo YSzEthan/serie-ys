@@ -58,14 +58,11 @@ pub enum AppEvent {
     OpenGitHub,
     CloseGitHub,
     RefreshGitHub {
-        state: String,
+        state: crate::github::StateFilter,
     },
     GitHubDataLoaded {
-        issues: Vec<crate::github::GhIssue>,
-        pull_requests: Vec<crate::github::GhPullRequest>,
+        data: crate::github::GitHubData,
         warnings: Vec<String>,
-        issues_cursor: Option<String>,
-        prs_cursor: Option<String>,
     },
     LoadMoreGitHub {
         kind: crate::github::GhItemKind,
@@ -164,18 +161,18 @@ pub enum AppEvent {
     OpenMergePrMethodPicker {
         number: u64,
         head_ref: String,
-        state: String,
+        state: crate::github::StateFilter,
     },
     OpenToggleStatePrompt {
         number: u64,
         kind: crate::github::GhItemKind,
         action: crate::github::StateAction,
-        filter_state: String,
+        filter_state: crate::github::StateFilter,
     },
     OpenTogglePrDraftPrompt {
         number: u64,
         action: crate::github::PrDraftAction,
-        filter_state: String,
+        filter_state: crate::github::StateFilter,
     },
     /// draft 切換成功後就地更新列表，補上 RefreshGitHub 完成前的空窗。
     PrDraftToggled {
@@ -191,7 +188,7 @@ pub enum AppEvent {
     },
     MergePrRequested {
         number: u64,
-        state: String,
+        state: crate::github::StateFilter,
         method: crate::github::MergeMethod,
         delete_branch: bool,
     },
@@ -199,12 +196,12 @@ pub enum AppEvent {
         number: u64,
         kind: crate::github::GhItemKind,
         action: crate::github::StateAction,
-        filter_state: String,
+        filter_state: crate::github::StateFilter,
     },
     TogglePrDraftRequested {
         number: u64,
         action: crate::github::PrDraftAction,
-        filter_state: String,
+        filter_state: crate::github::StateFilter,
     },
 }
 

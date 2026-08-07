@@ -228,13 +228,13 @@ impl<'a> GitHubView<'a> {
                 self.load_state = LoadState::Loading;
                 self.bump_generation();
                 self.tx.send(AppEvent::RefreshGitHub {
-                    state: self.state_filter.as_str().to_string(),
+                    state: self.state_filter,
                 });
             }
             UserEvent::Refresh => {
                 self.load_state = LoadState::Loading;
                 self.tx.send(AppEvent::RefreshGitHub {
-                    state: self.state_filter.as_str().to_string(),
+                    state: self.state_filter,
                 });
             }
             UserEvent::ShortCopy => {
@@ -293,7 +293,7 @@ impl<'a> GitHubView<'a> {
         self.tx.send(AppEvent::OpenMergePrMethodPicker {
             number: pr.number,
             head_ref: pr.head_ref_name.clone(),
-            state: self.state_filter.as_str().to_string(),
+            state: self.state_filter,
         });
     }
 
@@ -313,7 +313,7 @@ impl<'a> GitHubView<'a> {
         self.tx.send(AppEvent::OpenTogglePrDraftPrompt {
             number: pr.number,
             action,
-            filter_state: self.state_filter.as_str().to_string(),
+            filter_state: self.state_filter,
         });
     }
 
@@ -332,7 +332,7 @@ impl<'a> GitHubView<'a> {
             number,
             kind,
             action,
-            filter_state: self.state_filter.as_str().to_string(),
+            filter_state: self.state_filter,
         });
     }
 

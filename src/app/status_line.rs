@@ -12,7 +12,7 @@ use ratatui::{
 use crate::{
     config::CursorType,
     event::{AppEvent, CheckoutPickKind, RefCopyKind, RelatedItem, Sender, UserEvent},
-    github::{GhItemKind, MergeMethod, PrDraftAction, StateAction},
+    github::{GhItemKind, MergeMethod, PrDraftAction, StateAction, StateFilter},
     view::View,
 };
 
@@ -136,19 +136,19 @@ enum StatusLine {
     MergePrPrompt {
         number: u64,
         head_ref: String,
-        state: String,
+        state: StateFilter,
         stage: MergePrStage,
     },
     ToggleStatePrompt {
         number: u64,
         kind: GhItemKind,
         action: StateAction,
-        filter_state: String,
+        filter_state: StateFilter,
     },
     TogglePrDraftPrompt {
         number: u64,
         action: PrDraftAction,
-        filter_state: String,
+        filter_state: StateFilter,
     },
     RelatedPicker {
         items: Vec<RelatedItem>,
@@ -211,7 +211,12 @@ impl StatusLineState {
         self.line = StatusLine::DeleteBranchConfirm { name };
     }
 
-    pub(super) fn open_merge_pr_prompt(&mut self, number: u64, head_ref: String, state: String) {
+    pub(super) fn open_merge_pr_prompt(
+        &mut self,
+        number: u64,
+        head_ref: String,
+        state: StateFilter,
+    ) {
         self.line = StatusLine::MergePrPrompt {
             number,
             head_ref,
@@ -225,7 +230,7 @@ impl StatusLineState {
         number: u64,
         kind: GhItemKind,
         action: StateAction,
-        filter_state: String,
+        filter_state: StateFilter,
     ) {
         self.line = StatusLine::ToggleStatePrompt {
             number,
@@ -239,7 +244,7 @@ impl StatusLineState {
         &mut self,
         number: u64,
         action: PrDraftAction,
-        filter_state: String,
+        filter_state: StateFilter,
     ) {
         self.line = StatusLine::TogglePrDraftPrompt {
             number,
@@ -499,13 +504,13 @@ impl StatusLineState {
         let StatusLine::MergePrPrompt {
             number,
             ref head_ref,
-            ref state,
+            state,
             stage,
         } = self.line
         else {
             return;
         };
-        let (number, head_ref, state) = (number, head_ref.clone(), state.clone());
+        let head_ref = head_ref.clone();
 
         // 每個 stage 先消化自己的答案鍵（優先於全域 cancel，因為 cancel 預設含 'n'，
         // 會與 AskDeleteBranch 的「no」撞鍵），回傳「下一個 stage」；
@@ -1038,7 +1043,7 @@ mod tests {
         StatusLine::MergePrPrompt {
             number: 42,
             head_ref: "feature/x".into(),
-            state: "OPEN".into(),
+            state: StateFilter::Open,
             stage: MergePrStage::PickMethod,
         }
     }
@@ -1104,7 +1109,7 @@ mod tests {
             number: 7,
             kind: GhItemKind::Issue,
             action: StateAction::Close,
-            filter_state: "open".into(),
+            filter_state: StateFilter::Open,
         };
 
         state.handle_yes_no_prompt_key(char_key('y'));
@@ -1127,7 +1132,7 @@ mod tests {
         state.line = StatusLine::TogglePrDraftPrompt {
             number: 9,
             action: PrDraftAction::MarkReady,
-            filter_state: "open".into(),
+            filter_state: StateFilter::Open,
         };
 
         state.handle_yes_no_prompt_key(key(KeyCode::Enter));
@@ -1150,7 +1155,7 @@ mod tests {
             number: 7,
             kind: GhItemKind::Issue,
             action: StateAction::Close,
-            filter_state: "open".into(),
+            filter_state: StateFilter::Open,
         };
 
         state.handle_yes_no_prompt_key(char_key('n'));
@@ -1231,7 +1236,7 @@ mod tests {
                     number: 0,
                     kind: GhItemKind::Issue,
                     action: StateAction::Close,
-                    filter_state: String::new(),
+                    filter_state: StateFilter::Open,
                 },
                 true,
                 false,
@@ -1241,7 +1246,7 @@ mod tests {
                 StatusLine::TogglePrDraftPrompt {
                     number: 0,
                     action: PrDraftAction::MarkReady,
-                    filter_state: String::new(),
+                    filter_state: StateFilter::Open,
                 },
                 true,
                 false,

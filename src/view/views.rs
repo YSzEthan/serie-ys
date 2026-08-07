@@ -263,24 +263,8 @@ impl<'a> View<'a> {
         View::Help(Box::new(HelpView::new(before, ctx, tx)))
     }
 
-    pub fn of_github(
-        before: View<'a>,
-        issues: Vec<crate::github::GhIssue>,
-        pull_requests: Vec<crate::github::GhPullRequest>,
-        issues_next_cursor: Option<String>,
-        prs_next_cursor: Option<String>,
-        state_filter: &str,
-        tx: Sender,
-    ) -> Self {
-        View::GitHub(Box::new(GitHubView::new(
-            before,
-            issues,
-            pull_requests,
-            issues_next_cursor,
-            prs_next_cursor,
-            state_filter,
-            tx,
-        )))
+    pub fn of_github(before: View<'a>, data: crate::github::GitHubData, tx: Sender) -> Self {
+        View::GitHub(Box::new(GitHubView::new(before, data, tx)))
     }
 
     pub fn refresh(&mut self) {

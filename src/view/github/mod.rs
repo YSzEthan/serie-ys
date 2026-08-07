@@ -12,8 +12,8 @@ use tui_input::Input;
 use crate::{
     event::{AppEvent, Sender, UserEvent},
     github::{
-        CheckboxItem, GhIssue, GhItemKind, GhPullRequest, GhTimelinePage, PrDraftAction,
-        StateAction,
+        CheckboxItem, GhIssue, GhItemKind, GhPullRequest, GhTimelinePage, GitHubData,
+        PrDraftAction, StateAction, StateFilter,
     },
     view::View,
 };
@@ -45,39 +45,6 @@ impl Section {
 
     fn divider(self, width: usize) -> Line<'static> {
         super::markdown::rule_line_colored(width, self.color())
-    }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum StateFilter {
-    Open,
-    Closed,
-    All,
-}
-
-impl StateFilter {
-    fn next(self) -> Self {
-        match self {
-            StateFilter::Open => StateFilter::Closed,
-            StateFilter::Closed => StateFilter::All,
-            StateFilter::All => StateFilter::Open,
-        }
-    }
-
-    fn as_str(&self) -> &'static str {
-        match self {
-            StateFilter::Open => "open",
-            StateFilter::Closed => "closed",
-            StateFilter::All => "all",
-        }
-    }
-
-    fn from_arg(s: &str) -> Self {
-        match s {
-            "closed" => Self::Closed,
-            "all" => Self::All,
-            _ => Self::Open,
-        }
     }
 }
 
@@ -178,27 +145,18 @@ pub struct GitHubView<'a> {
 }
 
 impl<'a> GitHubView<'a> {
-    pub fn new(
-        before: View<'a>,
-        issues: Vec<GhIssue>,
-        pull_requests: Vec<GhPullRequest>,
-        issues_next_cursor: Option<String>,
-        prs_next_cursor: Option<String>,
-        state_filter: &str,
-        tx: Sender,
-    ) -> GitHubView<'a> {
-        let load_state = if issues.is_empty() && pull_requests.is_empty() {
+    pub fn new(before: View<'a>, data: GitHubData, tx: Sender) -> GitHubView<'a> {
+        let load_state = if data.issues.is_empty() && data.pull_requests.is_empty() {
             LoadState::Loading
         } else {
             LoadState::Idle
         };
-        let state_filter = StateFilter::from_arg(state_filter);
         GitHubView {
             before,
             focus: GitHubFocus::List,
             active_tab: GitHubTab::Issues,
-            issues,
-            pull_requests,
+            issues: data.issues,
+            pull_requests: data.pull_requests,
             selected_index: 0,
             offset: 0,
             height: 0,
@@ -206,13 +164,13 @@ impl<'a> GitHubView<'a> {
             search_input: Input::default(),
             filtered_issue_indices: Vec::new(),
             filtered_pr_indices: Vec::new(),
-            state_filter,
+            state_filter: data.state_filter,
             task_panel: None,
             load_state,
             flash_message: None,
             selected_row_overflows: Cell::new(false),
-            issues_next_cursor,
-            prs_next_cursor,
+            issues_next_cursor: data.issues_next_cursor,
+            prs_next_cursor: data.prs_next_cursor,
             loading_more: false,
             request_generation: 0,
             pending_jump: None,
@@ -247,6 +205,29 @@ impl<'a> GitHubView<'a> {
         std::mem::take(&mut self.before)
     }
 
+    /// 交出目前持有的資料快照，供 `App` 在關閉 view 時暫存。比照
+    /// [`Self::take_before_view`]：view 即將被丟棄，直接 take 沒有殘留成本。
+    pub fn take_data(&mut self) -> GitHubData {
+        GitHubData {
+            issues: std::mem::take(&mut self.issues),
+            pull_requests: std::mem::take(&mut self.pull_requests),
+            state_filter: self.state_filter,
+            issues_next_cursor: self.issues_next_cursor.take(),
+            prs_next_cursor: self.prs_next_cursor.take(),
+        }
+    }
+
+    pub fn state_filter(&self) -> StateFilter {
+        self.state_filter
+    }
+
+    pub fn next_cursor(&self, kind: GhItemKind) -> Option<String> {
+        match kind {
+            GhItemKind::Issue => self.issues_next_cursor.clone(),
+            GhItemKind::PullRequest => self.prs_next_cursor.clone(),
+        }
+    }
+
     pub fn set_flash(&mut self, msg: String, is_error: bool) {
         self.flash_message = Some((msg, is_error));
     }
@@ -257,6 +238,11 @@ impl<'a> GitHubView<'a> {
         }
     }
 
+    /// 資料跟目前持有的一模一樣時只收尾 Loading 指示器，不重置捲動位置、
+    /// 選取列或 timeline 快取——背景自動 refresh 拿到同樣的資料時，
+    /// 不該把使用者正在看的位置甩掉。游標仍然要換新：這批資料雖然跟畫面上
+    /// 的一樣，但可能是從一個游標已經往前推進的請求抓回來的，沿用舊游標
+    /// 會讓「載入更多」拿過期游標重複抓同一頁。
     pub fn update_data(
         &mut self,
         issues: Vec<GhIssue>,
@@ -264,6 +250,12 @@ impl<'a> GitHubView<'a> {
         issues_next_cursor: Option<String>,
         prs_next_cursor: Option<String>,
     ) {
+        if self.issues == issues && self.pull_requests == pull_requests {
+            self.issues_next_cursor = issues_next_cursor;
+            self.prs_next_cursor = prs_next_cursor;
+            self.finish_loading();
+            return;
+        }
         self.load_state = LoadState::Idle;
         self.issues = issues;
         self.pull_requests = pull_requests;
@@ -281,23 +273,23 @@ impl<'a> GitHubView<'a> {
         self.request_timeline_for_selected();
     }
 
-    /// Refresh 完成但資料無變更時（`update_data` 不會被呼叫）用來清掉 Loading 指示器。
-    pub fn finish_loading(&mut self) {
+    fn finish_loading(&mut self) {
         if matches!(self.load_state, LoadState::Loading) {
             self.load_state = LoadState::Idle;
         }
     }
 
-    /// 這一頁被接受時（generation 相符且狀態已更新）回傳 `true`。呼叫端
-    /// 用這個值來判斷要不要同步更新 cache，讓 view 與 cache 保持一致。
+    /// generation 不符（view 關閉重開、或又切換了 filter）就直接丟棄這頁——
+    /// 分頁游標是靠 generation 驗證新舊的增量更新，跟 `update_data` 的整批
+    /// 快照替換不是同一種東西，見 `App::on_github_data_loaded` 的註解。
     pub fn append_issues(
         &mut self,
         items: Vec<GhIssue>,
         next_cursor: Option<String>,
         generation: u64,
-    ) -> bool {
+    ) {
         if generation != self.request_generation {
-            return false;
+            return;
         }
         self.issues.extend(items);
         self.issues_next_cursor = next_cursor;
@@ -305,7 +297,6 @@ impl<'a> GitHubView<'a> {
         if self.pending_jump.is_some() {
             self.try_resolve_jump();
         }
-        true
     }
 
     pub fn append_pull_requests(
@@ -313,9 +304,9 @@ impl<'a> GitHubView<'a> {
         items: Vec<GhPullRequest>,
         next_cursor: Option<String>,
         generation: u64,
-    ) -> bool {
+    ) {
         if generation != self.request_generation {
-            return false;
+            return;
         }
         self.pull_requests.extend(items);
         self.prs_next_cursor = next_cursor;
@@ -323,7 +314,6 @@ impl<'a> GitHubView<'a> {
         if self.pending_jump.is_some() {
             self.try_resolve_jump();
         }
-        true
     }
 
     fn bump_generation(&mut self) {
@@ -737,6 +727,65 @@ mod tests {
     const TERM_H: u16 = 20;
     const LAST_MARKER: &str = "尾端標記";
 
+    /// `App` 在 view 開／關之間交接資料靠的就是這個 round-trip：
+    /// 建構子放進去什麼，`take_data` 就該原封不動交還什麼。
+    #[test]
+    fn take_data_round_trips_everything_the_view_was_constructed_with() {
+        let issue = GhIssue {
+            number: 7,
+            title: "t".to_string(),
+            state: "OPEN".to_string(),
+            labels: Vec::new(),
+            author: GhAuthor {
+                login: "alice".to_string(),
+            },
+            created_at: String::new(),
+            body: "b".to_string(),
+            url: String::new(),
+            closed_at: None,
+            updated_at: String::new(),
+            parent: None,
+            sub_issues: Vec::new(),
+        };
+        let data = GitHubData {
+            issues: vec![issue],
+            pull_requests: Vec::new(),
+            state_filter: StateFilter::Closed,
+            issues_next_cursor: Some("cursor-a".to_string()),
+            prs_next_cursor: None,
+        };
+        let (tx, _rx) = Sender::channel_for_test();
+        let mut view = GitHubView::new(View::Default, data, tx);
+
+        let taken = view.take_data();
+
+        assert_eq!(taken.issues.len(), 1);
+        assert_eq!(taken.issues[0].number, 7);
+        assert!(taken.pull_requests.is_empty());
+        assert_eq!(taken.state_filter, StateFilter::Closed);
+        assert_eq!(taken.issues_next_cursor.as_deref(), Some("cursor-a"));
+        assert_eq!(taken.prs_next_cursor, None);
+    }
+
+    /// 資料跟目前持有的一模一樣時（背景 auto-refresh 的常態），游標仍然要
+    /// 換新——沿用舊游標會讓「載入更多」拿過期游標重複抓同一頁。
+    #[test]
+    fn update_data_refreshes_cursor_even_when_items_are_unchanged() {
+        let data = GitHubData {
+            issues_next_cursor: Some("cursor-a".to_string()),
+            ..Default::default()
+        };
+        let (tx, _rx) = Sender::channel_for_test();
+        let mut view = GitHubView::new(View::Default, data, tx);
+
+        view.update_data(Vec::new(), Vec::new(), Some("cursor-b".to_string()), None);
+
+        assert_eq!(
+            view.next_cursor(GhItemKind::Issue).as_deref(),
+            Some("cursor-b")
+        );
+    }
+
     /// 每一行原始內容在 preview 寬度下都會折行好幾次的長 body——這正是
     /// 舊版「先切片再折行」程式碼會出錯的情況。
     fn long_body() -> String {
@@ -772,7 +821,11 @@ mod tests {
         };
 
         let (tx, _rx) = Sender::channel_for_test();
-        let mut view = GitHubView::new(View::Default, Vec::new(), vec![pr], None, None, "open", tx);
+        let data = GitHubData {
+            pull_requests: vec![pr],
+            ..Default::default()
+        };
+        let mut view = GitHubView::new(View::Default, data, tx);
         view.active_tab = GitHubTab::PullRequests;
         view
     }
@@ -967,15 +1020,11 @@ mod tests {
         };
 
         let (tx, _rx) = Sender::channel_for_test();
-        let mut view = GitHubView::new(
-            View::Default,
-            vec![issue],
-            Vec::new(),
-            None,
-            None,
-            "open",
-            tx,
-        );
+        let data = GitHubData {
+            issues: vec![issue],
+            ..Default::default()
+        };
+        let mut view = GitHubView::new(View::Default, data, tx);
         view.active_tab = GitHubTab::Issues;
         view
     }
