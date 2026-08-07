@@ -243,6 +243,22 @@ def build_changelog_block(
     return "\n".join(lines)
 
 
+def extract_changelog_section(version: str) -> str:
+    """回傳 CHANGELOG.md 裡 `## [version]` 那個區塊的內容（含標題，到下一個
+    `## [` 前為止）。供 release.yml 的 upload job 取出當次版本的區塊當
+    GitHub Release 的說明文字，不用另外傳遞任何中間產物——`prepare` job
+    已經 commit 過的 CHANGELOG.md 就是唯一真相。
+    """
+    text = CHANGELOG.read_text()
+    marker = f"## [{version}]"
+    start = text.find(marker)
+    if start == -1:
+        raise SystemExit(f"CHANGELOG.md 找不到 {marker} 這個區塊")
+    next_marker = text.find("\n## [", start + len(marker))
+    end = next_marker if next_marker != -1 else len(text)
+    return text[start:end].rstrip("\n")
+
+
 def detect_repo() -> str:
     env = os.environ.get("GITHUB_REPOSITORY")
     if env:
@@ -264,12 +280,25 @@ def emit_github_output(name: str, value: str) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--from", dest="base", required=True, help="上一個版本的 tag，例如 v1.9.0")
+    parser.add_argument("--from", dest="base", help="上一個版本的 tag，例如 v1.9.0")
     parser.add_argument(
         "--dry-run", action="store_true", help="只印出計算結果，不寫入 Cargo.toml / CHANGELOG.md"
     )
     parser.add_argument("--repo", help="owner/repo，預設從 GITHUB_REPOSITORY 或 git remote 解析")
+    parser.add_argument(
+        "--print-section",
+        metavar="VERSION",
+        help="印出 CHANGELOG.md 裡指定版本（不含前導 v）的區塊，印完就結束，"
+        "不做本檔案其他任何事，也不需要 --from",
+    )
     args = parser.parse_args()
+
+    if args.print_section:
+        print(extract_changelog_section(args.print_section))
+        return 0
+
+    if not args.base:
+        parser.error("--from 是必填（除非搭配 --print-section）")
 
     repo = args.repo or detect_repo()
     commits = load_commits(args.base)
