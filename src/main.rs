@@ -1,3 +1,3 @@
-fn main() -> serie::Result<()> {
-    serie::run()
+fn main() -> ysgit::Result<()> {
+    ysgit::run()
 }

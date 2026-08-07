@@ -1,10 +1,10 @@
 [package]
-name = "serie"
+name = "ysgit"
 version = "2.2.0"
 description = "A rich git commit graph in your terminal, like magic"
-authors = ["Kyosuke Fujimoto <kyoro.f@gmail.com>"]
-homepage = "https://github.com/lusingander/serie"
-repository = "https://github.com/lusingander/serie"
+authors = ["YSEthan"]
+homepage = "https://github.com/YSzEthan/serie-ys"
+repository = "https://github.com/YSzEthan/serie-ys"
 readme = "README.md"
 license = "MIT"
 keywords = ["git", "cli", "tui", "terminal"]
