@@ -31,9 +31,9 @@ Serie（[`/zéːriə/`](docs/src/faq/index.md)）是一個 TUI 應用程式，�
 
 ### 為什麼？
 
-雖然有些使用者偏好透過 CLI 使用 Git，但他們在查看 commit 記錄時往往需要依賴 GUI 或功能豐富的 TUI。也有些人覺得 `git log --graph` 就已足夠。
+有些人平常用 CLI 操作 git，但要看 commit 記錄時還是得開 GUI 或功能齊全的 TUI。也有人覺得 `git log --graph` 就夠了。
 
-就我個人而言，即使加上額外選項，`git log --graph` 的輸出仍然難以閱讀。僅僅為了查看記錄就去學習複雜的工具，似乎太過繁瑣。
+我自己是覺得 `git log --graph` 就算加了選項還是很難讀。但為了看個記錄去學一套複雜的工具，又太麻煩。
 
 ### 目標
 
@@ -47,7 +47,7 @@ Serie（[`/zéːriə/`](docs/src/faq/index.md)）是一個 TUI 應用程式，�
 
 ## 文件
 
-如需詳細的使用方式、設定和進階功能，請參閱 [docs/](docs/src/SUMMARY.md)。
+完整的使用方式與設定說明在 [docs/](docs/src/SUMMARY.md)。
 
 ## 系統需求
 
@@ -133,8 +133,7 @@ Options:
 - `$XDG_CONFIG_HOME/serie/config.toml`
   - 若未設定 `$XDG_CONFIG_HOME`，則使用 `~/.config/`。
 
-若設定檔不存在，所有項目將使用預設值。
-若設定檔存在但部分項目未設定，未設定的項目將使用預設值。
+沒設到的項目一律用預設值，不管是整份設定檔不存在，還是檔案裡漏了某幾項。
 
 設定檔格式的詳細資訊請參閱[設定檔格式](docs/src/configurations/config-file-format.md)。
 
@@ -142,8 +141,7 @@ Options:
 
 ### 使用者自訂指令
 
-使用者自訂指令功能可讓你執行自訂的外部指令。
-你可以在專用視圖中顯示像 `git diff` 這樣的指令輸出，在背景執行像刪除分支這樣的指令，或透過暫停應用程式來執行 `vim` 等互動式指令。
+綁一個按鍵去跑你自己的外部指令。`git diff` 這種要看輸出的會開專用視圖顯示，刪 branch 這種不用看的在背景跑，`vim` 這種要搶終端機的則先把應用程式暫停。
 
 指令設定方式詳見[使用者自訂指令](docs/src/features/user-command.md)。
 
@@ -175,7 +173,7 @@ Refs 清單（`Tab`）—— 此 fork 可以在這裡刪除 branch 與 tag：
 
 ## 貢獻
 
-如需開始貢獻，請先閱讀 [CONTRIBUTING.md](CONTRIBUTING.md)。
+動手之前請先看過 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 未遵循這些指引的貢獻可能不會被接受。
 

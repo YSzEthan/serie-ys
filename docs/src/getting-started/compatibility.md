@@ -21,8 +21,4 @@ tmux、screen、Zellij 等都可以正常使用。早期版本把 commit 圖當�
 
 ## 不再相關的項目
 
-- **Sixel 圖形** —— 用不到。
-- **Inline Images Protocol (iTerm2)** —— 用不到。
-- **Terminal graphics protocol (kitty)** —— 用不到。
-
-終端機支不支援這些協議，對 commit 圖的顯示沒有任何影響。
+Sixel、iTerm2 的 Inline Images Protocol、kitty 的 terminal graphics protocol 通通用不到。終端機支不支援它們，對 commit 圖的顯示沒有任何影響。
