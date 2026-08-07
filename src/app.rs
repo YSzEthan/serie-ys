@@ -452,9 +452,14 @@ impl App<'_> {
                 } => {
                     self.load_github_timeline(number, kind, after);
                 }
-                AppEvent::GitHubTimelineLoaded { number, kind, page } => {
+                AppEvent::GitHubTimelineLoaded {
+                    number,
+                    kind,
+                    after,
+                    page,
+                } => {
                     if let View::GitHub(ref mut view) = self.view {
-                        view.append_timeline_items(number, kind, page);
+                        view.append_timeline_items(number, kind, after, page);
                     }
                 }
                 AppEvent::GitHubTimelineFailed {
@@ -1347,7 +1352,12 @@ impl App<'_> {
         let tx = self.ec.sender();
         std::thread::spawn(move || {
             match crate::github::get_timeline(&repo_path, number, kind, after.as_deref()) {
-                Ok(page) => tx.send(AppEvent::GitHubTimelineLoaded { number, kind, page }),
+                Ok(page) => tx.send(AppEvent::GitHubTimelineLoaded {
+                    number,
+                    kind,
+                    after,
+                    page,
+                }),
                 Err(e) => tx.send(AppEvent::GitHubTimelineFailed {
                     number,
                     kind,
