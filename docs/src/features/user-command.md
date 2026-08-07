@@ -1,6 +1,6 @@
 # 使用者自訂指令
 
-使用者自訂指令功能可讓你執行自訂的外部指令。共有三種型別：`inline`、`silent` 與 `suspend`。
+綁一個按鍵去跑你自己的外部指令。共有三種型別：`inline`、`silent` 與 `suspend`。
 
 - `inline`（預設）
   - 在 TUI 的專用視圖中顯示指令的輸出（stdout）。

@@ -24,15 +24,16 @@ Serie（[`/zéːriə/`](docs/src/faq/index.md)）是一個 TUI 應用程式，�
 - **Ref 刪除** — 在 refs 列表中刪除 branch（local/remote）或 tag
 - **篩選 (Filter)** — 按 `'` 篩選 commit 列表（`f` 是 fetch）
 - **緊湊模式 (Compact)** — `-c` 讓 commit 文字貼齊該列圖形實際延伸的位置，依終端機寬度自動判斷要不要開
-- **互動式目錄瀏覽器** — `-p` 用類似 ranger 的介面選擇要開啟的 git 儲存庫路徑
+- **互動式啟動精靈** — 在真人終端機下按 `-h` 不是印說明就結束，而是跳出選單讓你逐項調好再直接啟動（見下方[選項](#選項)）
+- **互動式目錄瀏覽器** — `-p` 用 ranger 式單欄介面挑 `[PATH]`，含 `.git` 的目錄會標記出來
 - **狀態列快捷鍵提示** — 狀態列顯示當前視圖可用的快捷鍵
 - **等待覆蓋層** — 長時間 git 操作（push/delete remote）時顯示等待提示
 
 ### 為什麼？
 
-雖然有些使用者偏好透過 CLI 使用 Git，但他們在查看 commit 記錄時往往需要依賴 GUI 或功能豐富的 TUI。也有些人覺得 `git log --graph` 就已足夠。
+有些人平常用 CLI 操作 git，但要看 commit 記錄時還是得開 GUI 或功能齊全的 TUI。也有人覺得 `git log --graph` 就夠了。
 
-就我個人而言，即使加上額外選項，`git log --graph` 的輸出仍然難以閱讀。僅僅為了查看記錄就去學習複雜的工具，似乎太過繁瑣。
+我自己是覺得 `git log --graph` 就算加了選項還是很難讀。但為了看個記錄去學一套複雜的工具，又太麻煩。
 
 ### 目標
 
@@ -46,7 +47,7 @@ Serie（[`/zéːriə/`](docs/src/faq/index.md)）是一個 TUI 應用程式，�
 
 ## 文件
 
-如需詳細的使用方式、設定和進階功能，請參閱 [docs/](docs/src/SUMMARY.md)。
+完整的使用方式與設定說明在 [docs/](docs/src/SUMMARY.md)。
 
 ## 系統需求
 
@@ -87,24 +88,31 @@ $ ysgit <你的 git 儲存庫>
 ### 選項
 
 ```
-ysgit - 在終端機中呈現豐富的 git commit 圖，如同魔法般 📚
+ysgit - 在你的終端機中呈現豐富的 git commit 圖，宛如魔法 📚
 
-用法：ysgit [OPTIONS] [PATH]
+Usage: ysgit [OPTIONS] [PATH]
 
-參數：
-  [PATH]  git 儲存庫路徑 [預設: 當前目錄]
+Arguments:
+  [PATH]  git 倉庫路徑 [default: current directory]
 
-選項：
-  -p, --path-browser              以互動式目錄瀏覽器選擇 [PATH]（類似 ranger；可搭配路徑引數指定起始目錄）
-  -n, --max-count <NUMBER>        渲染的最大 commit 數量
-  -o, --order <TYPE>              Commit 排序演算法 [預設: chrono] [可選值: chrono, topo]
-  -g, --graph-width <TYPE>        Commit 圖形的儲存格寬度 [預設: auto] [可選值: auto, double, single]
-  -c, --compact <TYPE>            緊湊模式：commit 文字貼齊該列圖形實際畫到的最右邊 [預設: auto] [可選值: auto, on, off]
-  -s, --graph-style <TYPE>        Commit 圖形的邊線風格 [預設: rounded] [可選值: rounded, angular, ascii]
-  -i, --initial-selection <TYPE>  初始選取的 commit [預設: latest] [可選值: latest, head]
+Options:
+  -p, --path-browser              以互動式目錄瀏覽器選擇 [PATH]（類似 ranger；可搭配上面的路徑引數指定起始目錄）
+  -n, --max-count <NUMBER>        要渲染的最大 commit 數量
+  -o, --order <TYPE>              Commit 排序演算法 [default: chrono] [possible values: chrono, topo]
+  -g, --graph-width <TYPE>        Commit 圖形格子寬度 [default: auto] [possible values: auto, double, single]
+  -c, --compact <TYPE>            緊湊模式：commit 文字貼齊該列 graph 實際畫到的最右邊，不保留固定留白 [default: auto] [possible values: auto, on, off]
+  -s, --graph-style <TYPE>        Commit 圖形邊線風格 [default: rounded] [possible values: rounded, angular, ascii]
+  -i, --initial-selection <TYPE>  初始選取的 commit [default: latest] [possible values: latest, head]
   -h, --help                      顯示說明
   -V, --version                   顯示版本
 ```
+
+> **`-h` 上面寫的「顯示說明」只是非 TTY（管線、CI）下的行為。** 在真人終端機直接執行
+> `ysgit -h`／`--help` 會跳出互動式啟動精靈：上下鍵（或 `k`／`j`）在選項間移動，左右鍵
+> （或 `h`／`l`）原地輪迴切換該選項的值，`Enter` 直接用選好的組合啟動，也可以先請它印出
+> 等效的指令字串。`Esc`／`Ctrl-C`／`Ctrl-D` 放棄，跟原本 `--help` 一樣 exit 0。
+>
+> 精靈裡的 `[PATH]` 那一列用的就是 `-p` 的目錄瀏覽器，兩者共用同一份實作。
 
 > 此 fork 的執行檔名為 `ysgit`（見 `Cargo.toml` 的 `[[bin]]`），不是上游的 `serie`。
 
@@ -125,8 +133,7 @@ ysgit - 在終端機中呈現豐富的 git commit 圖，如同魔法般 📚
 - `$XDG_CONFIG_HOME/serie/config.toml`
   - 若未設定 `$XDG_CONFIG_HOME`，則使用 `~/.config/`。
 
-若設定檔不存在，所有項目將使用預設值。
-若設定檔存在但部分項目未設定，未設定的項目將使用預設值。
+沒設到的項目一律用預設值，不管是整份設定檔不存在，還是檔案裡漏了某幾項。
 
 設定檔格式的詳細資訊請參閱[設定檔格式](docs/src/configurations/config-file-format.md)。
 
@@ -134,8 +141,7 @@ ysgit - 在終端機中呈現豐富的 git commit 圖，如同魔法般 📚
 
 ### 使用者自訂指令
 
-使用者自訂指令功能可讓你執行自訂的外部指令。
-你可以在專用視圖中顯示像 `git diff` 這樣的指令輸出，在背景執行像刪除分支這樣的指令，或透過暫停應用程式來執行 `vim` 等互動式指令。
+綁一個按鍵去跑你自己的外部指令。`git diff` 這種要看輸出的會開專用視圖顯示，刪 branch 這種不用看的在背景跑，`vim` 這種要搶終端機的則先把應用程式暫停。
 
 指令設定方式詳見[使用者自訂指令](docs/src/features/user-command.md)。
 
@@ -167,7 +173,7 @@ Refs 清單（`Tab`）—— 此 fork 可以在這裡刪除 branch 與 tag：
 
 ## 貢獻
 
-如需開始貢獻，請先閱讀 [CONTRIBUTING.md](CONTRIBUTING.md)。
+動手之前請先看過 [CONTRIBUTING.md](CONTRIBUTING.md)。
 
 未遵循這些指引的貢獻可能不會被接受。
 
