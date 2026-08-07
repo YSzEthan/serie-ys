@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.1](https://github.com/YSzEthan/serie-ys/compare/v2.2.0...v2.2.1) (2026-08-07)
+
+
+### Bug Fixes
+
+* GitHub Release 補上 CHANGELOG 區塊當說明文字 ([#42](https://github.com/YSzEthan/serie-ys/pull/42))
+
 ## [2.2.0](https://github.com/YSzEthan/serie-ys/compare/v2.1.0...v2.2.0) (2026-08-07)
 
 
