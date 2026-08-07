@@ -1,5 +1,53 @@
 # Changelog
 
+## [2.0.0](https://github.com/YSzEthan/serie-ys/compare/v1.9.0...v2.0.0) (2026-08-07)
+
+
+### ⚠ BREAKING CHANGES
+
+* 無對外相容性影響（CLI flag／設定檔 schema 都沒變）， 標記為 major 純粹是這次 GitHub 狀態管理架構重寫的版本里程碑判斷。
+
+### Features
+
+* --help/-V 說明文字改正體中文 ([b756d3c](https://github.com/YSzEthan/serie-ys/commit/b756d3c789ab5fbb6d0e08be17e569b0ab116dd5))
+* -h 在 TTY 下改成互動選單，新增 -p 目錄瀏覽器 ([09351ef](https://github.com/YSzEthan/serie-ys/commit/09351efd839abe2536dac816531d4151180e48c9))
+* double 改成只在不損失資訊時才合併同一欄的線 ([81d3590](https://github.com/YSzEthan/serie-ys/commit/81d359099387c4acf8a56a6eba9e4330089e4c5d))
+* graph 寬度拆成 double-l／double-f，double-f 不再吃掉連線 ([3fb92e8](https://github.com/YSzEthan/serie-ys/commit/3fb92e89d78dcc781b5f46f5eedce4b732416225))
+* single 寬度改用 box-drawing 接點字元，線不再互相吃掉 ([b8ea82b](https://github.com/YSzEthan/serie-ys/commit/b8ea82b27ed9834ee600034381421ac79eccbd6e)), closes [#29](https://github.com/YSzEthan/serie-ys/issues/29)
+* 修掉 GitHub filter 切換的兩份 bug，順手解決 [#27](https://github.com/YSzEthan/serie-ys/issues/27) ([39aaca9](https://github.com/YSzEthan/serie-ys/commit/39aaca97f3cc2a38eb361eb098035206a6f0c292))
+* 接上 GraphStyle，-s 旗標真正生效（graph 欄／marker 欄／inline detail 邊框） ([8b0f669](https://github.com/YSzEthan/serie-ys/commit/8b0f6691c84c261cd15d0231930e9ed4a680248e))
+* 新增緊湊模式（-c/--compact），commit 文字貼齊該列 graph 實際延伸的位置 ([7f8bf59](https://github.com/YSzEthan/serie-ys/commit/7f8bf5988843f032867173ac52d0a9e7e7a56dcc))
+
+
+### Bug Fixes
+
+* --help 的 graph_width 敘述停在圖片時代，[PATH] 預設值印兩次 ([ffd341a](https://github.com/YSzEthan/serie-ys/commit/ffd341ad887e85f07b4f2261f138ebfcd7636735))
+* exclude 排掉 /docs 讓打包出來的 crate 測試編不過 ([0afb292](https://github.com/YSzEthan/serie-ys/commit/0afb292cea491421c24e7906d0f2dfd8a773db5c))
+* filter/search 輸入框打不出 g 與 ?，被 app 層攔去開 GitHub 與說明頁 ([a0aa105](https://github.com/YSzEthan/serie-ys/commit/a0aa105ac2a25e9d1b4df602231eda2f66703e53))
+* keybind 解析用 byte 長度判斷單一字元，非 ASCII 鍵全被拒絕 ([1ed251e](https://github.com/YSzEthan/serie-ys/commit/1ed251e9810b6d8d384110b5b6d74434a70cc2bd))
+* MSRV (1.88.0) clippy 在 tests/graph.rs 卡 uninlined_format_args ([50515d5](https://github.com/YSzEthan/serie-ys/commit/50515d5b7488da9b8f5de00bbe984892369dae3a))
+* spacer row 不再幫 ╰／╯ 多畫一條線，全 repo 註解改正體中文 ([60bc38b](https://github.com/YSzEthan/serie-ys/commit/60bc38b8e76263031df96cf2fa10736d7ed3bb39))
+* ui.list.columns 預設順序在文件與 schema 都寫錯，補上釘住文件範例的測試 ([9eba061](https://github.com/YSzEthan/serie-ys/commit/9eba06190a27de3c4cec687da7c0f1845bdb1b2b))
+* 窄終端不再拒絕啟動，改為降級或截斷（[#21](https://github.com/YSzEthan/serie-ys/issues/21)） ([daa49a8](https://github.com/YSzEthan/serie-ys/commit/daa49a8279f51e1edc82692f562bb02a396b560f))
+
+
+### Refactors
+
+* /simplify 收尾 —— 修正折疊不變式錯誤註解，補長度斷言，消掉一次 tuple round-trip ([9957957](https://github.com/YSzEthan/serie-ys/commit/99579572ed4f506711308b3444394a03a03da0b3))
+* /simplify 收尾 —— 清掉 [#19](https://github.com/YSzEthan/serie-ys/issues/19) 三個 commit 留下的死欄位與重複結構 ([a7c2717](https://github.com/YSzEthan/serie-ys/commit/a7c2717447f02415de48bccab77fbbf61277a4fb))
+* GlyphSet 欄位型別從 char 改成 &'static str ([8c9facc](https://github.com/YSzEthan/serie-ys/commit/8c9facce80122cdb4d17882cbb3833702869d2dc))
+* PreviewCache 收成自帶失效判斷的獨立型別 ([0ceb888](https://github.com/YSzEthan/serie-ys/commit/0ceb88880b9a773250105f8b838d2f858e24faec)), closes [#24](https://github.com/YSzEthan/serie-ys/issues/24)
+* TextCell 改存語義 Glyph，引入 GlyphSet ([c8179f0](https://github.com/YSzEthan/serie-ys/commit/c8179f0ddb458d3c25eecce50f2c4685bb3165f3)), closes [#19](https://github.com/YSzEthan/serie-ys/issues/19)
+* 刪除 GraphColorSet 的死顏色欄位與 alpha 支援 ([95bbcf3](https://github.com/YSzEthan/serie-ys/commit/95bbcf37e4a626de8e89a889eb3ff5fd2e705108))
+* 刪除 PNG 圖片渲染實作，只保留文字繪圖路徑 ([c8abdf3](https://github.com/YSzEthan/serie-ys/commit/c8abdf3145abd1653903ae307d41835e604b9468)), closes [#18](https://github.com/YSzEthan/serie-ys/issues/18)
+* 合併 GraphStyle 兩份定義，加 Ascii 與 ANGULAR/ASCII 兩張 GlyphSet ([62d7018](https://github.com/YSzEthan/serie-ys/commit/62d701804ff25f30fce29ddfbd5a9c8a4a456d21))
+* 從 App 抽出 StatusLineState，狀態機獨立成 src/app/status_line.rs ([f340a9d](https://github.com/YSzEthan/serie-ys/commit/f340a9d22ea17fab31cbc8441aee80f8cb0edb06)), closes [#26](https://github.com/YSzEthan/serie-ys/issues/26)
+* 把「一個 graph 欄佔幾格」收斂成單一真相 ([dcd9413](https://github.com/YSzEthan/serie-ys/commit/dcd94133f79187b4c24591b36a7ec3106f2722a7))
+* 拆分 view/github.rs（純搬家） ([2542694](https://github.com/YSzEthan/serie-ys/commit/25426947e644f86db59f60db18737090db4f81a3)), closes [#23](https://github.com/YSzEthan/serie-ys/issues/23)
+* 拆分 widget/commit_list.rs（純搬家） ([3e5ea1f](https://github.com/YSzEthan/serie-ys/commit/3e5ea1f97075b4289efa2a0cd2d505d1b1ec5832)), closes [#25](https://github.com/YSzEthan/serie-ys/issues/25)
+* 拆掉 GraphImageManager，欄位收進 CommitListState ([d44b86d](https://github.com/YSzEthan/serie-ys/commit/d44b86d2f5a438e69ae55fc406c8827b24de81c0))
+* 移除圖片協議選擇入口，固定為文字模式 ([acaede1](https://github.com/YSzEthan/serie-ys/commit/acaede1f2dd77a6a9059b4af5588421034612dca)), closes [#17](https://github.com/YSzEthan/serie-ys/issues/17)
+
 ## [1.9.0](https://github.com/YSzEthan/serie-ys/compare/v1.8.0...v1.9.0) (2026-07-31)
 
 
