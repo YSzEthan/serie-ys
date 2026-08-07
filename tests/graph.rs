@@ -1581,7 +1581,7 @@ fn compare_text_snapshot(key: SnapshotKey) -> Result<(), String> {
         return Ok(());
     }
     Err(snapshot_diff_message(
-        &format!("text graph differs for {}", snapshot_file),
+        &format!("text graph differs for {snapshot_file}"),
         &actual_file,
         &expected,
         &actual,
