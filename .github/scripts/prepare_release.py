@@ -21,6 +21,7 @@ from pathlib import Path
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 CARGO_TOML = REPO_ROOT / "Cargo.toml"
+CARGO_LOCK = REPO_ROOT / "Cargo.lock"
 CHANGELOG = REPO_ROOT / "CHANGELOG.md"
 
 # commit type -> (CHANGELOG section 標題, bump 等級)。等級為 None 代表該
@@ -148,23 +149,58 @@ def bump_version(current: str, level: str) -> str:
     return f"{major}.{minor}.{patch + 1}"
 
 
-def find_package_version(lines: list[str]) -> tuple[int, str]:
-    """回傳 [package] 區塊下 version 欄位所在的 (行號, 版本字串)。
+def find_package_info(lines: list[str]) -> tuple[int, str, str]:
+    """回傳 Cargo.toml [package] 區塊的 (version 所在行號, name, version)。
 
-    讀（算 old_version）與寫（改版號）共用同一份掃描邏輯與同一個行號，
-    避免兩份各自維護的 [package] 掃描器互相漂移。
+    name 動態讀出來，不硬編 package 名稱——同一份 name 接著用來在
+    Cargo.lock 裡定位對應的 [[package]] 區塊。
     """
     in_package = False
+    name: str | None = None
+    version_idx: int | None = None
+    version: str | None = None
     for i, line in enumerate(lines):
         stripped = line.strip()
         if stripped.startswith("["):
             in_package = stripped == "[package]"
             continue
-        if in_package:
+        if not in_package:
+            continue
+        m = re.match(r'name\s*=\s*"([^"]+)"', stripped)
+        if m:
+            name = m.group(1)
+            continue
+        m = re.match(r'version\s*=\s*"([^"]+)"', stripped)
+        if m:
+            version_idx, version = i, m.group(1)
+    if name is None or version_idx is None:
+        raise SystemExit("找不到 [package] 區塊下的 name/version 欄位")
+    return version_idx, name, version
+
+
+def find_lock_version(lines: list[str], package_name: str) -> tuple[int, str]:
+    """回傳 Cargo.lock 裡 package_name 的 [[package]] 區塊中 version 欄位的
+    (行號, 版本字串)。
+
+    直接文字取代，不呼叫 `cargo`——CI runner 是全新環境，沒有本機 registry
+    cache，`cargo metadata --offline` 連 index 都讀不到會直接失敗；而這裡
+    要做的只是把本 package 自己的 version 欄位同步成新版號，純本地文字操作，
+    不需要真的做依賴解析。
+    """
+    in_block = False
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped == "[[package]]":
+            in_block = False
+            continue
+        if stripped == f'name = "{package_name}"':
+            in_block = True
+            continue
+        if in_block:
             m = re.match(r'version\s*=\s*"([^"]+)"', stripped)
             if m:
                 return i, m.group(1)
-    raise SystemExit("找不到 [package] 區塊下的 version 欄位")
+    raise SystemExit(f"Cargo.lock 找不到 {package_name} 的 version 欄位")
 
 
 def entry_link(repo: str, commit: Commit, pr_map: dict[str, int]) -> str:
@@ -244,7 +280,7 @@ def main() -> int:
         return 0
 
     cargo_lines = CARGO_TOML.read_text().splitlines(keepends=True)
-    version_idx, old_version = find_package_version(cargo_lines)
+    version_idx, package_name, old_version = find_package_info(cargo_lines)
     new_version = bump_version(old_version, bump)
     pr_map = build_pr_map(args.base)
     today = date.today().isoformat()
@@ -262,6 +298,11 @@ def main() -> int:
         r'"[^"]+"', f'"{new_version}"', cargo_lines[version_idx], count=1
     )
     CARGO_TOML.write_text("".join(cargo_lines))
+
+    lock_lines = CARGO_LOCK.read_text().splitlines(keepends=True)
+    lock_idx, _ = find_lock_version(lock_lines, package_name)
+    lock_lines[lock_idx] = re.sub(r'"[^"]+"', f'"{new_version}"', lock_lines[lock_idx], count=1)
+    CARGO_LOCK.write_text("".join(lock_lines))
 
     header = "# Changelog\n\n"
     text = CHANGELOG.read_text()
