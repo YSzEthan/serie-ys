@@ -18,10 +18,13 @@ Serie（[`/zéːriə/`](docs/src/faq/index.md)）是一個 TUI 應用程式，�
 
 以下功能為此 fork 新增，原版 serie 不包含：
 
+- **GitHub Issue/PR 瀏覽器** — 按 `g` 開啟，瀏覽與篩選 issue／PR、切換 checkbox、三階段確認 merge PR、開關 issue/PR 狀態、複製連結或在瀏覽器開啟
 - **Tag 管理** — 按 `t` 建立 tag，`Ctrl-t` 刪除 tag，支援推送到 remote
 - **Remote refs 切換** — 按 `o` 顯示/隱藏 remote-only 的 commit，使用 BFS filtered graph 重新計算佈局
 - **Ref 刪除** — 在 refs 列表中刪除 branch（local/remote）或 tag
 - **篩選 (Filter)** — 按 `'` 篩選 commit 列表（`f` 是 fetch）
+- **緊湊模式 (Compact)** — `-c` 讓 commit 文字貼齊該列圖形實際延伸的位置，依終端機寬度自動判斷要不要開
+- **互動式目錄瀏覽器** — `-p` 用類似 ranger 的介面選擇要開啟的 git 儲存庫路徑
 - **狀態列快捷鍵提示** — 狀態列顯示當前視圖可用的快捷鍵
 - **等待覆蓋層** — 長時間 git 操作（push/delete remote）時顯示等待提示
 

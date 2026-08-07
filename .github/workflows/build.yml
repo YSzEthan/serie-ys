@@ -2,8 +2,8 @@ name: Build
 
 on:
   push:
-    branches-ignore:
-      - 'release-please--**'
+    branches:
+      - main
   pull_request:
     branches:
       - main
