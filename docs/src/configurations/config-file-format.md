@@ -6,6 +6,7 @@
 [core.option]
 order = "chrono"
 graph_width = "auto"
+compact = "auto"
 graph_style = "rounded"
 initial_selection = "latest"
 
@@ -123,6 +124,20 @@ Commit 排序演算法。
   - `auto`
   - `double`
   - `single`
+
+命令列參數指定的值優先。
+
+### `core.option.compact`
+
+緊湊模式：commit 的說明文字貼齊該列 graph 實際畫到的最右邊，不保留固定
+留白，marker 欄也一併拿掉。
+
+- 型別：`string`（enum）
+- 預設值：`auto`
+- 可選值：
+  - `auto`：依終端機寬度決定
+  - `on`
+  - `off`
 
 命令列參數指定的值優先。
 

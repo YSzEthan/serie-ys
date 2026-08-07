@@ -225,8 +225,14 @@ impl<'a> DetailView<'a> {
     }
 }
 
-/// 計算 Graph + Marker 欄位的合計寬度。
+/// 計算 Graph + Marker 欄位的合計寬度，當作 inline detail 面板的左緣。
+/// 緊湊模式下 Graph／Marker 不保留固定寬度，面板要貼齊選取列自己的
+/// `text_x`，不是整張圖的全域寬度 —— 否則會留下這個功能原本要消滅的
+/// 那片空白。
 fn calc_graph_marker_width(state: &CommitListState<'_>, ctx: &AppContext) -> u16 {
+    if state.is_compact() {
+        return state.selected_row_text_x();
+    }
     let mut width: u16 = 0;
     for col in &ctx.ui_config.list.columns {
         match col {

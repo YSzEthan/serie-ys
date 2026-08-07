@@ -92,9 +92,11 @@ ysgit - 在終端機中呈現豐富的 git commit 圖，如同魔法般 📚
   [PATH]  git 儲存庫路徑 [預設: 當前目錄]
 
 選項：
+  -p, --path-browser              以互動式目錄瀏覽器選擇 [PATH]（類似 ranger；可搭配路徑引數指定起始目錄）
   -n, --max-count <NUMBER>        渲染的最大 commit 數量
   -o, --order <TYPE>              Commit 排序演算法 [預設: chrono] [可選值: chrono, topo]
   -g, --graph-width <TYPE>        Commit 圖形的儲存格寬度 [預設: auto] [可選值: auto, double, single]
+  -c, --compact <TYPE>            緊湊模式：commit 文字貼齊該列圖形實際畫到的最右邊 [預設: auto] [可選值: auto, on, off]
   -s, --graph-style <TYPE>        Commit 圖形的邊線風格 [預設: rounded] [可選值: rounded, angular, ascii]
   -i, --initial-selection <TYPE>  初始選取的 commit [預設: latest] [可選值: latest, head]
   -h, --help                      顯示說明

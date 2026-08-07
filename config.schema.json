@@ -31,6 +31,16 @@
               ],
               "default": "auto"
             },
+            "compact": {
+              "type": "string",
+              "description": "Whether the subject text hugs each row's own graph edge instead of reserving a fixed width. The value specified in the command line argument takes precedence.",
+              "enum": [
+                "auto",
+                "on",
+                "off"
+              ],
+              "default": "auto"
+            },
             "graph_style": {
               "type": "string",
               "description": "The commit graph edge style. The value specified in the command line argument takes precedence.",

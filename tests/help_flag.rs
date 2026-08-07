@@ -36,6 +36,7 @@ fn help_output_lists_every_flag_including_the_new_path_browser() {
         "-n, --max-count",
         "-o, --order",
         "-g, --graph-width",
+        "-c, --compact",
         "-s, --graph-style",
         "-i, --initial-selection",
         "-h, --help",

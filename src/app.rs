@@ -22,13 +22,14 @@ use crate::{
         is_merge_conflict_error, merge_pr, set_item_state, set_pr_draft, GhItemKind, MergeMethod,
         PrDraftAction, StateAction,
     },
-    graph::{CellWidthType, Graph, GraphStyle},
+    graph::{Graph, GraphStyle},
     keybind::KeyBind,
     view::{dispatch_delete_branch, RefreshViewContext, RefsOrigin, View},
     widget::{
         commit_list::{CommitInfo, CommitListState, RawCommitIdx},
         pending_overlay::PendingOverlay,
     },
+    CompactType, GraphWidthType,
 };
 
 use status_line::StatusLineState;
@@ -79,6 +80,12 @@ pub struct AppContext {
     /// 不同於 `core_config.option.graph_style`，那是設定檔的原始值，
     /// 不會反映 `-s` 的覆寫）。
     pub graph_style: GraphStyle,
+    /// 已合併 CLI／設定檔的寬度偏好。跟 `graph_style` 不同，這裡存的不是
+    /// 最終寬度，而是偏好本身（`Auto` 需要 `area.width` 才能解出最終寬度，
+    /// 那是每幀才知道的資訊，見 `widget::commit_list::layout::decide`）。
+    pub graph_width: Option<GraphWidthType>,
+    /// 已合併 CLI／設定檔的緊湊模式偏好，理由跟 `graph_width` 一樣。
+    pub compact: Option<CompactType>,
 }
 
 #[derive(Debug, Default)]
@@ -122,7 +129,6 @@ impl<'a> App<'a> {
         filtered_graph: Option<Rc<Graph>>,
         remote_only_commits: FxHashSet<CommitHash>,
         graph_color_set: &'a GraphColorSet,
-        cell_width_type: CellWidthType,
         initial_selection: InitialSelection,
         ctx: Rc<AppContext>,
         ec: &'a EventController,
@@ -179,7 +185,6 @@ impl<'a> App<'a> {
             Rc::clone(graph),
             graph_colors,
             head_commit_hash,
-            cell_width_type,
             head,
             ref_name_to_commit_index_map,
             ctx.core_config.search.ignore_case,

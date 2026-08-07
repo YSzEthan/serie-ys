@@ -888,6 +888,8 @@ mod tests {
             ui_config: UiConfig::default(),
             color_theme: ColorTheme::default(),
             graph_style: GraphStyle::default(),
+            graph_width: None,
+            compact: None,
         })
     }
 

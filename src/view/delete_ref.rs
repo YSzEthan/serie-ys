@@ -223,7 +223,7 @@ impl<'a> DeleteRefView<'a> {
             return;
         };
 
-        let graph_width = list_state.graph_area_cell_width() + 1;
+        let graph_width = list_state.panel_left_edge();
         let refs_width =
             (area.width.saturating_sub(graph_width)).min(self.ctx.ui_config.refs.width);
 

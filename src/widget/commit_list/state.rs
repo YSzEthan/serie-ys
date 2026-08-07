@@ -24,6 +24,15 @@ pub struct CommitListState<'a> {
     graph_colors: Vec<Color>,
     pub(super) head_commit_hash: Option<CommitHash>,
     cell_width_type: CellWidthType,
+    /// 緊湊模式：commit 文字貼齊該列 graph 實際畫到的最右邊，marker 欄與
+    /// graph 右側留白都拿掉。跟 `cell_width_type` 一樣，每幀由
+    /// `CommitList::render` 依 `area.width` 重新決定（見
+    /// `super::layout::decide`），不是建構時凍結的值。
+    compact: bool,
+    /// 選取列的 graph 文字結束在第幾格（緊湊模式下 detail／refs／delete_ref
+    /// 面板拿這個當左緣，取代非緊湊模式的 `graph_area_cell_width()`）。
+    /// 跟 `cell_width_type`／`compact` 一樣每幀更新，非緊湊模式下不使用。
+    selected_text_x: u16,
     pub(super) head: Head,
 
     // Filtered graph（remote-only commits 被隱藏時使用）
@@ -73,13 +82,11 @@ pub struct CommitListState<'a> {
 }
 
 impl<'a> CommitListState<'a> {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         commits: Vec<CommitInfo<'a>>,
         graph: Rc<Graph>,
         graph_colors: Vec<Color>,
         head_commit_hash: Option<CommitHash>,
-        cell_width_type: CellWidthType,
         head: Head,
         ref_name_to_commit_index_map: FxHashMap<String, RawCommitIdx>,
         default_ignore_case: bool,
@@ -109,7 +116,12 @@ impl<'a> CommitListState<'a> {
             graph,
             graph_colors,
             head_commit_hash,
-            cell_width_type,
+            // 佔位值：`CommitList::render` 在第一次繪製時就會透過
+            // `set_layout` 依實際 `area.width` 覆寫，這裡的值只是讓 struct
+            // 在那之前保持合法狀態。
+            cell_width_type: CellWidthType::Double,
+            compact: false,
+            selected_text_x: 0,
             head,
             filtered,
             filtered_graph_colors,
@@ -145,12 +157,58 @@ impl<'a> CommitListState<'a> {
         (self.filtered, self.remote_only_commits)
     }
 
-    /// `current_graph()` 的寬度，不一定是 `self.graph` -- 走的是跟
-    /// `current_graph()` 本身一樣的 filtered/`show_remote_refs` fallback，
-    /// 所以永遠對得上實際被渲染的那個 graph。
+    /// `current_graph()` 本身的寬度，不含右側留白。不一定是 `self.graph`
+    /// -- 走的是跟 `current_graph()` 本身一樣的 filtered/`show_remote_refs`
+    /// fallback，所以永遠對得上實際被渲染的那個 graph。
+    pub(super) fn graph_cell_width(&self) -> u16 {
+        crate::graph::graph_cell_width(self.current_graph(), self.cell_width_type)
+    }
+
+    /// `graph_cell_width()` 加上右側留白（非緊湊模式下的版面才有這一格）。
     pub fn graph_area_cell_width(&self) -> u16 {
-        crate::graph::graph_cell_width(self.current_graph(), self.cell_width_type) + 1
-        // 右側留白
+        self.graph_cell_width() + 1
+    }
+
+    pub(super) fn current_cell_count(&self) -> usize {
+        self.current_graph().cell_count()
+    }
+
+    /// 每幀由 `CommitList::render` 呼叫，寫入依 `area.width` 重新決定的
+    /// 寬度／緊湊設定。要在 `build_visible_rows`（它內部呼叫的
+    /// `text_cells_for_hash`／`is_compact` 都讀這兩個欄位）之前呼叫。
+    pub(super) fn set_layout(&mut self, cell_width_type: CellWidthType, compact: bool) {
+        self.cell_width_type = cell_width_type;
+        self.compact = compact;
+    }
+
+    /// 每幀由 `CommitList::render` 在 `build_visible_rows` 算出選取列的
+    /// `text_x` 之後呼叫。
+    pub(super) fn set_selected_text_x(&mut self, x: u16) {
+        self.selected_text_x = x;
+    }
+
+    /// commit list 本身的左緣寬度：非緊湊模式假設 Marker 欄固定存在
+    /// （`graph_area_cell_width() + 1`），緊湊模式沒有固定寬度，改用
+    /// 選取列自己的 text_x。refs／delete_ref 的側欄面板定位用這個。
+    /// detail.rs 的 inline detail 面板因為非緊湊分支要逐一檢查
+    /// `ui_config.list.columns`（Marker 可能根本沒配置），走自己的
+    /// `calc_graph_marker_width`，不能共用這個。
+    pub fn panel_left_edge(&self) -> u16 {
+        if self.compact {
+            self.selected_text_x
+        } else {
+            self.graph_area_cell_width() + 1
+        }
+    }
+
+    pub fn is_compact(&self) -> bool {
+        self.compact
+    }
+
+    /// 緊湊模式下 detail／refs／delete_ref 面板拿這個當左緣，取代非緊湊
+    /// 模式的 `graph_area_cell_width()`。
+    pub fn selected_row_text_x(&self) -> u16 {
+        self.selected_text_x
     }
 
     pub fn name_cell_width(&self) -> u16 {

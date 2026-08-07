@@ -6,7 +6,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style, Stylize},
     text::{Line, Span},
-    widgets::{List, ListItem, Paragraph, StatefulWidget, Widget},
+    widgets::{Paragraph, StatefulWidget, Widget},
 };
 use rustc_hash::FxHashMap;
 
@@ -14,10 +14,11 @@ use crate::{
     app::AppContext,
     color::{ratatui_color_to_rgb, ColorTheme},
     config::UserListColumnType,
-    git::{Commit, CommitHash, Head, Ref},
+    git::{CommitHash, Head, Ref},
     graph::{Glyph, GlyphSet, TextCell},
 };
 
+use super::layout;
 use super::search::SearchMatchPosition;
 use super::state::CommitListState;
 use super::{CommitInfo, FilteredIdx, RawCommitIdx};
@@ -59,20 +60,50 @@ impl<'a> StatefulWidget for CommitList<'a> {
         } else {
             self.ctx.ui_config.list.name_width
         };
-        let constraints = calc_cell_widths(
-            area.width,
+        let columns = &self.ctx.ui_config.list.columns;
+
+        // 寬度／緊湊每幀從 `content_area.width` 決定（不是啟動時凍結）——
+        // 兩者跟著 resize、refs 側欄開合自動反應，`-c auto` 也完全不用付
+        // `terminal::size()` 的 I/O 成本。決定完先寫回 state，
+        // `build_visible_rows` 內部的 `text_cells_for_hash` 才會用到
+        // 正確的寬度。
+        let (cell_width_type, compact) = layout::decide(
+            columns,
+            state.current_cell_count(),
+            content_area.width,
+            self.ctx.graph_width,
+            self.ctx.compact,
             self.ctx.ui_config.list.subject_min_width,
-            state.graph_area_cell_width(),
             name_width,
             self.ctx.ui_config.list.date_width,
-            &self.ctx.ui_config.list.columns,
+        );
+        state.set_layout(cell_width_type, compact);
+
+        // 六個欄位共用同一份列表 —— `text_cells_for_hash` 不會被重複呼叫，
+        // 緊湊模式的 `text_x` 也只有一份算法，不會有 graph 跟 subject
+        // 各算各的漂移風險。
+        let rows = self.build_visible_rows(state);
+        let selected_text_x = rows
+            .iter()
+            .find(|r| r.is_selected)
+            .map(|r| r.text_x)
+            .unwrap_or(0);
+
+        let constraints = layout::calc_cell_widths(
+            area.width,
+            self.ctx.ui_config.list.subject_min_width,
+            state.graph_cell_width(),
+            name_width,
+            self.ctx.ui_config.list.date_width,
+            columns,
+            compact,
         );
 
         let header_chunks = Layout::horizontal(constraints.clone()).split(header_area);
         let header_style = Style::default()
             .fg(Color::White)
             .add_modifier(Modifier::BOLD);
-        for (i, col) in self.ctx.ui_config.list.columns.iter().enumerate() {
+        for (i, col) in columns.iter().enumerate() {
             let title = match col {
                 UserListColumnType::Graph => "Graph",
                 UserListColumnType::Marker => "",
@@ -92,26 +123,98 @@ impl<'a> StatefulWidget for CommitList<'a> {
 
         let content_chunks = Layout::horizontal(constraints).split(content_area);
 
-        for (i, col) in self.ctx.ui_config.list.columns.iter().enumerate() {
+        for (i, col) in columns.iter().enumerate() {
             match col {
                 UserListColumnType::Graph => {
-                    self.render_graph(buf, content_chunks[i], state);
+                    self.render_graph(buf, content_chunks[i], state, &rows);
                 }
                 UserListColumnType::Marker => {
-                    self.render_marker(buf, content_chunks[i], state);
+                    self.render_marker(buf, content_chunks[i], state, &rows);
                 }
                 UserListColumnType::Subject => {
-                    self.render_subject(buf, content_chunks[i], state);
+                    if compact {
+                        // Graph 自己的欄位寬度是 0（見
+                        // `layout::calc_cell_widths`），跟 Subject 共用這塊
+                        // Rect —— 每列的文字才能貼齊「這一列自己」的 graph
+                        // 終點，而不是全域最深的那一欄。
+                        self.render_graph(buf, content_chunks[i], state, &rows);
+                    }
+                    self.render_subject(buf, content_chunks[i], state, &rows);
                 }
                 UserListColumnType::Name => {
-                    self.render_name(buf, content_chunks[i], state);
+                    self.render_name(buf, content_chunks[i], state, &rows);
                 }
                 UserListColumnType::Hash => {
-                    self.render_hash(buf, content_chunks[i], state);
+                    self.render_hash(buf, content_chunks[i], state, &rows);
                 }
                 UserListColumnType::Date => {
-                    self.render_date(buf, content_chunks[i], state);
+                    self.render_date(buf, content_chunks[i], state, &rows);
                 }
+            }
+        }
+
+        // `rows` 借了 `state.commits`，`&rows` 的最後一次使用在上面那個
+        // for 迴圈 —— 這裡才能重新可變借用 `state` 寫回選取列的 `text_x`。
+        state.set_selected_text_x(selected_text_x);
+    }
+}
+
+/// 一幀之內、一列的所有版面事實。`text_cells_for_hash` 是隨需計算的，
+/// 由六個 render_* 各自呼叫就會變成一列算好幾次 —— 而且緊湊模式下大家
+/// 都要用同一個 `text_x`，各算各的遲早漂移。所以在 `build_visible_rows`
+/// 算一次，之後每個 render_* 都只是讀。
+struct VisibleRow<'b> {
+    /// 相對 `content_area.top()` 的列位移（已經算進 inline detail 的 gap）。
+    y: u16,
+    is_selected: bool,
+    /// 相對 `area.left()`：這一列圖形實際延伸到第幾格。非緊湊模式恆為 0；
+    /// 緊湊模式下用來決定文字從哪裡開始（`draw_row_line`）以及
+    /// `render_graph` 在 compact 分支要接手畫多寬。
+    text_x: u16,
+    content: RowContent<'b>,
+    graph: RowGraph,
+}
+
+enum RowContent<'b> {
+    Virtual,
+    Commit {
+        raw: RawCommitIdx,
+        info: &'b CommitInfo<'b>,
+    },
+}
+
+enum RowGraph {
+    /// virtual row：只有一顆 dot，畫在 HEAD 欄位（fallback 次序見
+    /// `build_visible_rows`）。
+    Dot(usize),
+    Cells {
+        cells: Vec<TextCell>,
+        is_head: bool,
+        /// 排在 HEAD 前面、virtual row 又可見時，HEAD 欄位上合成的向上
+        /// 連接線（原本 `render_graph` 的 `head_line_col` 那段邏輯）。
+        synthetic_connector: Option<usize>,
+    },
+}
+
+impl RowGraph {
+    /// 這一列圖形實際延伸到第幾格（不含）—— 緊湊模式下 `text_x` 的來源。
+    /// 用 `cells` 本身最後一個非 Blank 格是不夠的：合成的連接線畫在
+    /// Blank 格上，藏在 `cells` 的內容之外，兩者要取 max。
+    fn extent(&self) -> u16 {
+        match self {
+            RowGraph::Dot(col) => *col as u16 + 1,
+            RowGraph::Cells {
+                cells,
+                synthetic_connector,
+                ..
+            } => {
+                let cells_end = cells
+                    .iter()
+                    .rposition(|c| c.glyph != Glyph::Blank)
+                    .map(|i| i as u16 + 1)
+                    .unwrap_or(0);
+                let connector_end = synthetic_connector.map(|c| c as u16 + 1).unwrap_or(0);
+                cells_end.max(connector_end)
             }
         }
     }
@@ -131,7 +234,7 @@ impl CommitList<'_> {
             state.selected -= diff;
             state.offset += diff;
         }
-        // 可見列的 text cell 是由 render_graph 透過 rendering_commit_info_iter()
+        // 可見列的 text cell 是由 build_visible_rows 透過 rendering_commit_info_iter()
         // 隨需計算的，這也是「哪些列可見」的唯一真相來源 —— 不需要另外的
         // preload pass。
     }
@@ -141,46 +244,43 @@ impl CommitList<'_> {
         GlyphSet::from_style(self.ctx.graph_style)
     }
 
-    fn render_graph(&self, buf: &mut Buffer, area: Rect, state: &CommitListState<'_>) {
-        if area.is_empty() {
-            return;
-        }
+    /// 六個欄位共用的一次性列表計算：virtual row（若可見）+ 每個可見
+    /// commit，含 gap（inline detail 間隔列）造成的垂直位移、緊湊模式的
+    /// `text_x`。呼叫前 `state.set_layout` 必須已經跑過，否則
+    /// `text_cells_for_hash`／`is_compact` 用到的還是上一幀的值。
+    fn build_visible_rows<'b>(&'b self, state: &'b CommitListState<'_>) -> Vec<VisibleRow<'b>> {
+        let compact = state.is_compact();
         let gap = state.inline_detail_height;
         let head_hash = state.head_commit_hash.as_ref();
-        let selected_bg = ratatui_color_to_rgb(self.ctx.color_theme.list_selected_bg);
-
         let head_col = head_hash.and_then(|h| self.graph_text_head_col(state, h));
         let virtual_row_visible = state.has_virtual_row() && state.offset == 0;
+        let head_line_col = head_col.filter(|_| virtual_row_visible);
+
+        let mut rows = Vec::new();
 
         if virtual_row_visible {
-            let y = area.top();
             // ◯ fallback 次序：HEAD column → 第一個可見 commit 的 dot column → 0
-            let col = head_col.unwrap_or_else(|| {
+            let dot_col = head_col.unwrap_or_else(|| {
                 state
                     .first_visible_commit_hash()
                     .and_then(|h| self.graph_text_head_col(state, h))
                     .unwrap_or(0)
             });
-            self.put_text_cell(buf, area, y, col, Glyph::HeadDot, VIRTUAL_ROW_COLOR);
-            if state.selected == 0 {
-                apply_row_bg(buf, area, y, selected_bg);
-            }
+            let graph = RowGraph::Dot(dot_col);
+            let text_x = if compact { graph.extent() } else { 0 };
+            rows.push(VisibleRow {
+                y: 0,
+                is_selected: state.selected == 0,
+                text_x,
+                content: RowContent::Virtual,
+                graph,
+            });
         }
 
-        let head_line_col = head_col.filter(|_| virtual_row_visible);
         let mut seen_head = false;
-        for (display_i, _, commit_info) in self.rendering_commit_info_iter(state) {
-            let y_offset = if gap > 0 && display_i > state.selected {
-                gap
-            } else {
-                0
-            };
-            let y = area.top() + display_i as u16 + y_offset;
-            if y >= area.bottom() {
-                continue;
-            }
-            let hash = &commit_info.commit.commit_hash;
-            // 這裡的 `None` 現在只代表一種情況：`hash` 不在
+        for (display_i, raw, info) in self.rendering_commit_info_iter(state) {
+            let hash = &info.commit.commit_hash;
+            // 這裡的 `None` 只代表一種情況：`hash` 不在
             // `current_graph().commit_pos_map` 裡 —— 也就是 graph 跟
             // commit list 不同步了。因為 text cell 是隨需計算的，已經沒有
             // 「還沒 preload」這種情況存在了。
@@ -188,49 +288,108 @@ impl CommitList<'_> {
                 continue;
             };
             let is_head = head_hash == Some(hash);
-            let is_selected = display_i == state.selected;
-            self.put_text_cells(buf, area, y, &cells, is_head);
+            let synthetic_connector = if !seen_head && !is_head {
+                head_line_col.filter(|&hc| cells.get(hc).is_some_and(|c| c.glyph == Glyph::Blank))
+            } else {
+                None
+            };
+            if is_head {
+                seen_head = true;
+            }
 
-            if !seen_head {
-                if is_head {
-                    seen_head = true;
-                } else if let Some(hc) = head_line_col {
-                    if cells.get(hc).is_some_and(|c| c.glyph == Glyph::Blank) {
-                        self.put_text_cell(buf, area, y, hc, Glyph::Vert, VIRTUAL_ROW_COLOR);
+            let graph = RowGraph::Cells {
+                cells,
+                is_head,
+                synthetic_connector,
+            };
+            let text_x = if compact { graph.extent() } else { 0 };
+            let y_offset = if gap > 0 && display_i > state.selected {
+                gap
+            } else {
+                0
+            };
+            rows.push(VisibleRow {
+                y: display_i as u16 + y_offset,
+                is_selected: display_i == state.selected,
+                text_x,
+                content: RowContent::Commit { raw, info },
+                graph,
+            });
+        }
+
+        rows
+    }
+
+    fn render_graph(
+        &self,
+        buf: &mut Buffer,
+        area: Rect,
+        state: &CommitListState<'_>,
+        rows: &[VisibleRow<'_>],
+    ) {
+        if area.is_empty() {
+            return;
+        }
+        let selected_bg = ratatui_color_to_rgb(self.ctx.color_theme.list_selected_bg);
+        for row in rows {
+            let y = area.top() + row.y;
+            if y >= area.bottom() {
+                continue;
+            }
+            match &row.graph {
+                RowGraph::Dot(col) => {
+                    self.put_text_cell(buf, area, y, *col, Glyph::HeadDot, VIRTUAL_ROW_COLOR);
+                }
+                RowGraph::Cells {
+                    cells,
+                    is_head,
+                    synthetic_connector,
+                } => {
+                    self.put_text_cells(buf, area, y, cells, *is_head);
+                    if let Some(hc) = synthetic_connector {
+                        self.put_text_cell(buf, area, y, *hc, Glyph::Vert, VIRTUAL_ROW_COLOR);
                     }
                 }
             }
-
-            if is_selected {
+            if row.is_selected {
                 apply_row_bg(buf, area, y, selected_bg);
             }
         }
+        self.draw_graph_spacer(buf, area, state);
+    }
 
-        // Spacer rows（inline detail 的間隔列）：在每個有效欄畫上 `│`。
-        if gap > 0 {
-            let spacer_hash = if state.is_virtual_row_selected() {
-                state.first_visible_commit_hash().cloned()
-            } else {
-                Some(
-                    state
-                        .commit(state.current_selected_raw())
-                        .commit
-                        .commit_hash
-                        .clone(),
-                )
-            };
-            if let Some(hash) = spacer_hash {
-                if let Some(cells) = state.text_cells_for_hash(&hash) {
-                    let gray = state.is_virtual_row_selected();
-                    for gap_row in 0..gap {
-                        let y = area.top() + state.selected as u16 + 1 + gap_row;
-                        if y >= area.bottom() {
-                            break;
-                        }
-                        self.put_text_spacer(buf, area, y, &cells, gray);
-                    }
-                }
+    /// Spacer rows（inline detail 的間隔列）：把選取列的線往下延伸接住。
+    /// gap 一定緊接在選取列後面，跟 `rows` 的內容無關，所以獨立算，不用
+    /// 塞進 `VisibleRow`。
+    fn draw_graph_spacer(&self, buf: &mut Buffer, area: Rect, state: &CommitListState<'_>) {
+        let gap = state.inline_detail_height;
+        if gap == 0 {
+            return;
+        }
+        let spacer_hash = if state.is_virtual_row_selected() {
+            state.first_visible_commit_hash().cloned()
+        } else {
+            Some(
+                state
+                    .commit(state.current_selected_raw())
+                    .commit
+                    .commit_hash
+                    .clone(),
+            )
+        };
+        let Some(hash) = spacer_hash else {
+            return;
+        };
+        let Some(cells) = state.text_cells_for_hash(&hash) else {
+            return;
+        };
+        let gray = state.is_virtual_row_selected();
+        for gap_row in 0..gap {
+            let y = area.top() + state.selected as u16 + 1 + gap_row;
+            if y >= area.bottom() {
+                break;
             }
+            self.put_text_spacer(buf, area, y, &cells, gray);
         }
     }
 
@@ -317,243 +476,290 @@ impl CommitList<'_> {
             .set_style(Style::default().fg(color));
     }
 
-    fn render_marker(&self, buf: &mut Buffer, area: Rect, state: &CommitListState<'_>) {
+    fn render_marker(
+        &self,
+        buf: &mut Buffer,
+        area: Rect,
+        state: &CommitListState<'_>,
+        rows: &[VisibleRow<'_>],
+    ) {
         if area.is_empty() {
             return;
         }
-        let gap = state.inline_detail_height;
         let vert = self.glyphs().vert;
-        let mut items: Vec<ListItem> = Vec::new();
-        if state.has_virtual_row() && state.offset == 0 {
-            let mut line = Line::from(vert.fg(Color::Gray));
-            if state.selected == 0 {
-                line = line
-                    .bg(ratatui_color_to_rgb(self.ctx.color_theme.list_selected_bg))
-                    .fg(Color::Gray);
+        let selected_bg = ratatui_color_to_rgb(self.ctx.color_theme.list_selected_bg);
+        for row in rows {
+            let y = area.top() + row.y;
+            if y >= area.bottom() {
+                continue;
             }
-            items.push(ListItem::new(line));
-            // 當 virtual row 被選中時，插入 marker 的間隔
-            if gap > 0 && state.selected == 0 {
-                for _ in 0..gap {
-                    items.push(ListItem::new(vert.fg(Color::Gray)));
-                }
+            let color = match &row.content {
+                RowContent::Virtual => VIRTUAL_ROW_COLOR,
+                RowContent::Commit { info, .. } => state.marker_color(info),
+            };
+            buf[(area.left(), y)]
+                .set_symbol(vert)
+                .set_style(Style::default().fg(color));
+            if row.is_selected {
+                apply_row_bg(buf, area, y, selected_bg);
             }
         }
-        self.rendering_commit_info_iter(state)
-            .for_each(|(display_i, _, commit_info)| {
-                let color = state.marker_color(commit_info);
-                let mut line = Line::from(vert.fg(color));
-                if display_i == state.selected {
-                    line = line.bg(ratatui_color_to_rgb(self.ctx.color_theme.list_selected_bg));
-                }
-                items.push(ListItem::new(line));
-                if gap > 0 && display_i == state.selected && !state.is_virtual_row_selected() {
-                    let sel_color = state.marker_color(state.commit(state.current_selected_raw()));
-                    for _ in 0..gap {
-                        items.push(ListItem::new(vert.fg(sel_color)));
-                    }
-                }
-            });
-        Widget::render(List::new(items), area, buf)
+        self.draw_marker_spacer(buf, area, state);
     }
 
-    fn insert_gap<'b>(
-        items: &mut Vec<ListItem<'b>>,
-        state: &CommitListState<'_>,
-        is_virtual: bool,
-        display_i: usize,
-    ) {
+    /// Marker 欄在 spacer rows（inline detail 間隔列）上也要延續同一條
+    /// `│`，顏色跟 `draw_graph_spacer` 一樣取自選取列。
+    fn draw_marker_spacer(&self, buf: &mut Buffer, area: Rect, state: &CommitListState<'_>) {
         let gap = state.inline_detail_height;
         if gap == 0 {
             return;
         }
-        let should_insert = if is_virtual {
-            state.is_virtual_row_selected()
+        let vert = self.glyphs().vert;
+        let color = if state.is_virtual_row_selected() {
+            VIRTUAL_ROW_COLOR
         } else {
-            display_i == state.selected && !state.is_virtual_row_selected()
+            state.marker_color(state.commit(state.current_selected_raw()))
         };
-        if should_insert {
-            for _ in 0..gap {
-                items.push(ListItem::new(Line::raw("")));
+        for gap_row in 0..gap {
+            let y = area.top() + state.selected as u16 + 1 + gap_row;
+            if y >= area.bottom() {
+                break;
             }
+            buf[(area.left(), y)]
+                .set_symbol(vert)
+                .set_style(Style::default().fg(color));
         }
     }
 
-    fn render_subject(&self, buf: &mut Buffer, area: Rect, state: &CommitListState<'_>) {
-        let max_width = (area.width as usize).saturating_sub(2);
-        if area.is_empty() || max_width == 0 {
+    fn render_subject(
+        &self,
+        buf: &mut Buffer,
+        area: Rect,
+        state: &CommitListState<'_>,
+        rows: &[VisibleRow<'_>],
+    ) {
+        if area.is_empty() {
             state.selected_row_overflows.set(false);
             return;
         }
-        let mut items: Vec<ListItem> = Vec::new();
         let mut any_selected_overflow = false;
         let marquee_frame = self.marquee_frame;
-        let selected = state.selected;
-        // Virtual row（虛擬列）
-        if state.has_virtual_row() && state.offset == 0 {
-            let count = state.working_changes().map_or(0, |wc| wc.file_count());
-            let text = format!("Uncommitted Changes ({count})");
-            let spans = vec![Span::styled(
-                text,
-                Style::default()
-                    .fg(VIRTUAL_ROW_COLOR)
-                    .add_modifier(Modifier::ITALIC),
-            )];
-            items.push(self.to_commit_list_item(0, spans, state));
-            Self::insert_gap(&mut items, state, true, 0);
-        }
-        self.rendering_commit_info_iter(state)
-            .for_each(|(display_i, raw, commit_info)| {
-                let mut spans = refs_spans(
-                    commit_info,
-                    &state.head,
-                    &state.search_match(raw).refs,
-                    &self.ctx.color_theme,
-                    state.show_remote_refs,
-                );
-                let ref_spans_width: usize = spans.iter().map(|s| s.width()).sum();
-                let avail = max_width.saturating_sub(ref_spans_width);
-                let commit = &commit_info.commit;
-                if avail > ELLIPSIS.len() {
-                    // byte-len 是視覺寬度的下界（ASCII 相等、非 ASCII byte 更多），
-                    // 用它先短路大多數「明顯放得下」的 row，省一次寬度計算。
-                    // 寬度基準必須跟 `scroll_window` 一致，理由見 `marquee::display_width`。
-                    let overflow = commit.subject.len() > avail
-                        && crate::widget::marquee::display_width(&commit.subject) > avail;
-                    let is_selected = display_i == selected;
-                    let search_pos = state.search_match(raw).subject.as_ref();
-                    let sub_spans = if is_selected && overflow {
-                        any_selected_overflow = true;
-                        marquee_subject_spans(
-                            &commit.subject,
-                            avail,
-                            marquee_frame,
-                            search_pos,
-                            &self.ctx.color_theme,
-                        )
-                    } else {
-                        let subject = if overflow {
-                            console::truncate_str(&commit.subject, avail, ELLIPSIS).to_string()
-                        } else {
-                            commit.subject.to_string()
-                        };
-                        if let Some(pos) = search_pos {
-                            highlighted_spans(
-                                subject.into(),
-                                pos.clone(),
-                                self.ctx.color_theme.list_subject_fg,
-                                Modifier::empty(),
+
+        for row in rows {
+            let sub_width = area.width.saturating_sub(row.text_x);
+            let max_width = (sub_width as usize).saturating_sub(2);
+            match &row.content {
+                RowContent::Virtual => {
+                    let count = state.working_changes().map_or(0, |wc| wc.file_count());
+                    let text = format!("Uncommitted Changes ({count})");
+                    let spans = vec![Span::styled(
+                        text,
+                        Style::default()
+                            .fg(VIRTUAL_ROW_COLOR)
+                            .add_modifier(Modifier::ITALIC),
+                    )];
+                    self.draw_row_line(buf, area, row, row.text_x, spans);
+                }
+                RowContent::Commit { raw, info } => {
+                    let mut spans = refs_spans(
+                        info,
+                        &state.head,
+                        &state.search_match(*raw).refs,
+                        &self.ctx.color_theme,
+                        state.show_remote_refs,
+                    );
+                    let ref_spans_width: usize = spans.iter().map(|s| s.width()).sum();
+                    let avail = max_width.saturating_sub(ref_spans_width);
+                    let commit = &info.commit;
+                    if avail > ELLIPSIS.len() {
+                        // byte-len 是視覺寬度的下界（ASCII 相等、非 ASCII byte 更多），
+                        // 用它先短路大多數「明顯放得下」的 row，省一次寬度計算。
+                        // 寬度基準必須跟 `scroll_window` 一致，理由見 `marquee::display_width`。
+                        let overflow = commit.subject.len() > avail
+                            && crate::widget::marquee::display_width(&commit.subject) > avail;
+                        let search_pos = state.search_match(*raw).subject.as_ref();
+                        let sub_spans = if row.is_selected && overflow {
+                            any_selected_overflow = true;
+                            marquee_subject_spans(
+                                &commit.subject,
+                                avail,
+                                marquee_frame,
+                                search_pos,
                                 &self.ctx.color_theme,
-                                overflow,
                             )
                         } else {
-                            vec![subject.fg(self.ctx.color_theme.list_subject_fg)]
-                        }
-                    };
-                    spans.extend(sub_spans);
+                            let subject = if overflow {
+                                console::truncate_str(&commit.subject, avail, ELLIPSIS).to_string()
+                            } else {
+                                commit.subject.to_string()
+                            };
+                            if let Some(pos) = search_pos {
+                                highlighted_spans(
+                                    subject.into(),
+                                    pos.clone(),
+                                    self.ctx.color_theme.list_subject_fg,
+                                    Modifier::empty(),
+                                    &self.ctx.color_theme,
+                                    overflow,
+                                )
+                            } else {
+                                vec![subject.fg(self.ctx.color_theme.list_subject_fg)]
+                            }
+                        };
+                        spans.extend(sub_spans);
+                    }
+                    self.draw_row_line(buf, area, row, row.text_x, spans);
                 }
-                items.push(self.to_commit_list_item(display_i, spans, state));
-                Self::insert_gap(&mut items, state, false, display_i);
-            });
+            }
+        }
         state.selected_row_overflows.set(any_selected_overflow);
-        Widget::render(List::new(items), area, buf);
     }
 
-    fn render_name(&self, buf: &mut Buffer, area: Rect, state: &CommitListState<'_>) {
+    fn render_name(
+        &self,
+        buf: &mut Buffer,
+        area: Rect,
+        state: &CommitListState<'_>,
+        rows: &[VisibleRow<'_>],
+    ) {
+        if area.is_empty() {
+            return;
+        }
+        // Name 是獨立欄，不跟 Graph 共用 Rect，`max_width` 不看
+        // `row.text_x`（那是給 Subject 用的，見 draw_row_line 的註解）。
         let max_width = (area.width as usize).saturating_sub(2);
-        if area.is_empty() || max_width == 0 {
-            return;
+        for row in rows {
+            let spans = match &row.content {
+                RowContent::Virtual => vec!["-".fg(VIRTUAL_ROW_COLOR)],
+                RowContent::Commit { raw, info } => {
+                    let commit = info.commit;
+                    let truncate = console::measure_text_width(&commit.author_name) > max_width;
+                    let name = if truncate {
+                        console::truncate_str(&commit.author_name, max_width, ELLIPSIS).to_string()
+                    } else {
+                        commit.author_name.to_string()
+                    };
+                    if let Some(pos) = state.search_match(*raw).author_name.clone() {
+                        highlighted_spans(
+                            name.into(),
+                            pos,
+                            self.ctx.color_theme.list_name_fg,
+                            Modifier::empty(),
+                            &self.ctx.color_theme,
+                            truncate,
+                        )
+                    } else {
+                        vec![name.fg(self.ctx.color_theme.list_name_fg)]
+                    }
+                }
+            };
+            self.draw_row_line(buf, area, row, 0, spans);
         }
-        let mut items: Vec<ListItem> = Vec::new();
-        if state.has_virtual_row() && state.offset == 0 {
-            items.push(self.to_commit_list_item(0, vec!["-".fg(VIRTUAL_ROW_COLOR)], state));
-            Self::insert_gap(&mut items, state, true, 0);
-        }
-        self.rendering_commit_iter(state)
-            .for_each(|(display_i, raw, commit)| {
-                let truncate = console::measure_text_width(&commit.author_name) > max_width;
-                let name = if truncate {
-                    console::truncate_str(&commit.author_name, max_width, ELLIPSIS).to_string()
-                } else {
-                    commit.author_name.to_string()
-                };
-                let spans = if let Some(pos) = state.search_match(raw).author_name.clone() {
-                    highlighted_spans(
-                        name.into(),
-                        pos,
-                        self.ctx.color_theme.list_name_fg,
-                        Modifier::empty(),
-                        &self.ctx.color_theme,
-                        truncate,
-                    )
-                } else {
-                    vec![name.fg(self.ctx.color_theme.list_name_fg)]
-                };
-                items.push(self.to_commit_list_item(display_i, spans, state));
-                Self::insert_gap(&mut items, state, false, display_i);
-            });
-        Widget::render(List::new(items), area, buf);
     }
 
-    fn render_hash(&self, buf: &mut Buffer, area: Rect, state: &CommitListState<'_>) {
+    fn render_hash(
+        &self,
+        buf: &mut Buffer,
+        area: Rect,
+        state: &CommitListState<'_>,
+        rows: &[VisibleRow<'_>],
+    ) {
         if area.is_empty() {
             return;
         }
-        let mut items: Vec<ListItem> = Vec::new();
-        if state.has_virtual_row() && state.offset == 0 {
-            items.push(self.to_commit_list_item(0, vec!["-".fg(VIRTUAL_ROW_COLOR)], state));
-            Self::insert_gap(&mut items, state, true, 0);
+        for row in rows {
+            let spans = match &row.content {
+                RowContent::Virtual => vec!["-".fg(VIRTUAL_ROW_COLOR)],
+                RowContent::Commit { raw, info } => {
+                    let hash = info.commit.commit_hash.as_short_hash();
+                    if let Some(pos) = state.search_match(*raw).commit_hash.clone() {
+                        highlighted_spans(
+                            hash.into(),
+                            pos,
+                            self.ctx.color_theme.list_hash_fg,
+                            Modifier::empty(),
+                            &self.ctx.color_theme,
+                            false,
+                        )
+                    } else {
+                        vec![hash.fg(self.ctx.color_theme.list_hash_fg)]
+                    }
+                }
+            };
+            self.draw_row_line(buf, area, row, 0, spans);
         }
-        self.rendering_commit_iter(state)
-            .for_each(|(display_i, raw, commit)| {
-                let hash = commit.commit_hash.as_short_hash();
-                let spans = if let Some(pos) = state.search_match(raw).commit_hash.clone() {
-                    highlighted_spans(
-                        hash.into(),
-                        pos,
-                        self.ctx.color_theme.list_hash_fg,
-                        Modifier::empty(),
-                        &self.ctx.color_theme,
-                        false,
-                    )
-                } else {
-                    vec![hash.fg(self.ctx.color_theme.list_hash_fg)]
-                };
-                items.push(self.to_commit_list_item(display_i, spans, state));
-                Self::insert_gap(&mut items, state, false, display_i);
-            });
-        Widget::render(List::new(items), area, buf);
     }
 
-    fn render_date(&self, buf: &mut Buffer, area: Rect, state: &CommitListState<'_>) {
+    fn render_date(
+        &self,
+        buf: &mut Buffer,
+        area: Rect,
+        _state: &CommitListState<'_>,
+        rows: &[VisibleRow<'_>],
+    ) {
         if area.is_empty() {
             return;
         }
-        let mut items: Vec<ListItem> = Vec::new();
-        if state.has_virtual_row() && state.offset == 0 {
-            items.push(self.to_commit_list_item(0, vec!["-".fg(VIRTUAL_ROW_COLOR)], state));
-            Self::insert_gap(&mut items, state, true, 0);
+        for row in rows {
+            let spans = match &row.content {
+                RowContent::Virtual => vec!["-".fg(VIRTUAL_ROW_COLOR)],
+                RowContent::Commit { info, .. } => {
+                    let date = &info.commit.author_date;
+                    let date_str = if self.ctx.ui_config.list.date_local {
+                        let local = date.with_timezone(&chrono::Local);
+                        local
+                            .format(&self.ctx.ui_config.list.date_format)
+                            .to_string()
+                    } else {
+                        date.format(&self.ctx.ui_config.list.date_format)
+                            .to_string()
+                    };
+                    vec![date_str.fg(self.ctx.color_theme.list_date_fg)]
+                }
+            };
+            self.draw_row_line(buf, area, row, 0, spans);
         }
-        self.rendering_commit_iter(state)
-            .for_each(|(display_i, _raw, commit)| {
-                let date = &commit.author_date;
-                let date_str = if self.ctx.ui_config.list.date_local {
-                    let local = date.with_timezone(&chrono::Local);
-                    local
-                        .format(&self.ctx.ui_config.list.date_format)
-                        .to_string()
-                } else {
-                    date.format(&self.ctx.ui_config.list.date_format)
-                        .to_string()
-                };
-                items.push(self.to_commit_list_item(
-                    display_i,
-                    vec![date_str.fg(self.ctx.color_theme.list_date_fg)],
-                    state,
-                ));
-                Self::insert_gap(&mut items, state, false, display_i);
-            });
-        Widget::render(List::new(items), area, buf);
+    }
+
+    /// Subject／Name／Hash／Date 共用：把一列 spans 畫進「起點 =
+    /// `area.left() + row.text_x`」的子 Rect。非緊湊模式 `text_x` 恆為
+    /// 0，子 Rect 就是整塊 `area`，跟過去用 `List` 逐項渲染逐格等價
+    /// ——`List`／`ListItem` 的 style 都是 all-`None` 的 patch，沒設
+    /// `highlight_style`／`highlight_spacing`，本來就等於直接畫。
+    /// 緊湊模式下 graph 跟 subject 共用同一塊 Rect，兩個 writer 的範圍
+    /// 由呼叫端傳進來的 `text_x` 保證不重疊，不用依賴繪製順序。`text_x`
+    /// 是獨立參數而不是直接讀 `row.text_x`：Date／Name／Hash 有自己獨立
+    /// 的欄位 Rect，跟 Graph 共用的只有 Subject，這幾欄永遠傳 0——用
+    /// `row.text_x`（那是「這一列 graph 延伸到哪」）當它們的偏移量會把
+    /// 這些欄位的內容跟著 graph 深度往右推，在自己的 Rect 裡留下一段沒
+    /// 畫到 bg 的空隙。
+    fn draw_row_line(
+        &self,
+        buf: &mut Buffer,
+        area: Rect,
+        row: &VisibleRow<'_>,
+        text_x: u16,
+        spans: Vec<Span<'_>>,
+    ) {
+        let y = area.top() + row.y;
+        if y >= area.bottom() {
+            return;
+        }
+        let x = area.left() + text_x;
+        if x >= area.right() {
+            return;
+        }
+        let mut spans = spans;
+        spans.insert(0, Span::raw(" "));
+        spans.push(Span::raw(" "));
+        let mut line = Line::from(spans);
+        if row.is_selected {
+            line = line
+                .bg(ratatui_color_to_rgb(self.ctx.color_theme.list_selected_bg))
+                .fg(self.ctx.color_theme.list_selected_fg);
+        }
+        let sub = Rect::new(x, y, area.right() - x, 1);
+        Widget::render(line, sub, buf);
     }
 
     /// 回傳 (display_idx, raw_idx, &CommitInfo) 的 iterator
@@ -573,32 +779,6 @@ impl CommitList<'_> {
             let raw = state.filtered_to_raw(filtered)?;
             Some((display_idx, raw, state.commit(raw)))
         })
-    }
-
-    fn rendering_commit_iter<'b>(
-        &'b self,
-        state: &'b CommitListState<'_>,
-    ) -> impl Iterator<Item = (usize, RawCommitIdx, &'b Commit)> {
-        self.rendering_commit_info_iter(state)
-            .map(|(display_i, raw, commit_info)| (display_i, raw, commit_info.commit))
-    }
-
-    fn to_commit_list_item<'a, 'b>(
-        &'b self,
-        i: usize,
-        spans: Vec<Span<'a>>,
-        state: &'b CommitListState<'_>,
-    ) -> ListItem<'a> {
-        let mut spans = spans;
-        spans.insert(0, Span::raw(" "));
-        spans.push(Span::raw(" "));
-        let mut line = Line::from(spans);
-        if i == state.selected {
-            line = line
-                .bg(ratatui_color_to_rgb(self.ctx.color_theme.list_selected_bg))
-                .fg(self.ctx.color_theme.list_selected_fg);
-        }
-        ListItem::new(line)
     }
 }
 
@@ -820,92 +1000,11 @@ fn highlighted_spans(
     hm.into_spans()
 }
 
-fn calc_cell_widths(
-    area_width: u16,
-    subject_min_width: u16,
-    graph_width: u16,
-    name_width: u16,
-    date_width: u16,
-    columns: &[UserListColumnType],
-) -> Vec<Constraint> {
-    let pad = 2;
-    let (
-        mut graph_cell_width,
-        mut marker_cell_width,
-        mut name_cell_width,
-        mut hash_cell_width,
-        mut date_cell_width,
-    ) = (0, 0, 0, 0, 0);
-
-    for col in columns {
-        match col {
-            UserListColumnType::Graph => {
-                graph_cell_width = graph_width;
-            }
-            UserListColumnType::Marker => {
-                marker_cell_width = 1;
-            }
-            UserListColumnType::Name => {
-                name_cell_width = name_width + pad;
-            }
-            UserListColumnType::Hash => {
-                hash_cell_width = 7 + pad;
-            }
-            UserListColumnType::Date => {
-                date_cell_width = date_width + pad;
-            }
-            UserListColumnType::Subject => {}
-        }
-    }
-
-    let mut total_width = graph_cell_width
-        + marker_cell_width
-        + hash_cell_width
-        + name_cell_width
-        + date_cell_width
-        + subject_min_width;
-
-    if total_width > area_width {
-        total_width = total_width.saturating_sub(name_cell_width);
-        name_cell_width = 0;
-    }
-    if total_width > area_width {
-        total_width = total_width.saturating_sub(date_cell_width);
-        date_cell_width = 0;
-    }
-    if total_width > area_width {
-        hash_cell_width = 0;
-    }
-
-    let mut constraints = Vec::new();
-    for col in columns {
-        match col {
-            UserListColumnType::Graph => {
-                constraints.push(Constraint::Length(graph_cell_width));
-            }
-            UserListColumnType::Marker => {
-                constraints.push(Constraint::Length(marker_cell_width));
-            }
-            UserListColumnType::Subject => {
-                constraints.push(Constraint::Min(0));
-            }
-            UserListColumnType::Name => {
-                constraints.push(Constraint::Length(name_cell_width));
-            }
-            UserListColumnType::Hash => {
-                constraints.push(Constraint::Length(hash_cell_width));
-            }
-            UserListColumnType::Date => {
-                constraints.push(Constraint::Length(date_cell_width));
-            }
-        }
-    }
-    constraints
-}
-
 #[cfg(test)]
 mod tests {
+    use super::layout::calc_cell_widths;
     use super::*;
+    use crate::{git::Commit, CompactType, GraphWidthType};
 
     // ---- render_graph_text --------------------------------------------
     //
@@ -932,13 +1031,20 @@ mod tests {
         // ratatui_color_to_rgb(ColorTheme::default().list_selected_bg) == DarkGray
         const SELECTED_BG: Color = Color::Rgb(80, 80, 80);
 
-        fn test_ctx_styled(graph_style: GraphStyle) -> Rc<AppContext> {
+        /// `graph_width` 明確指定（不是 `Auto`）：這些是逐格斷言的低階渲染
+        /// 測試，寬度必須由測試自己決定，不能讓 `layout::decide` 依
+        /// `TERM_W`／`cell_count` 現算 —— 不然要 `Single` 的兩個測試會被
+        /// 悄悄決回 `Double`。`compact` 固定 `Off`：這批測試都是緊湊模式
+        /// 重構前就存在的基準，不該被緊湊邏輯影響。
+        fn test_ctx_styled(graph_style: GraphStyle, graph_width: GraphWidthType) -> Rc<AppContext> {
             Rc::new(AppContext {
                 keybind: KeyBind::new(None),
                 core_config: CoreConfig::default(),
                 ui_config: UiConfig::default(),
                 color_theme: ColorTheme::default(),
                 graph_style,
+                graph_width: Some(graph_width),
+                compact: Some(CompactType::Off),
             })
         }
 
@@ -1108,7 +1214,6 @@ mod tests {
             /// 讓渲染走它這條路。這是 `render_graph` 的 filtered 分支唯一
             /// 會被跑到的路徑 —— 沒有它，那個分支的測試涵蓋率就是零。
             filtered: bool,
-            cell_width_type: CellWidthType,
         }
 
         impl Default for Opts {
@@ -1118,7 +1223,6 @@ mod tests {
                     working_changes: false,
                     inline_detail_height: 0,
                     filtered: false,
-                    cell_width_type: CellWidthType::Double,
                 }
             }
         }
@@ -1147,7 +1251,6 @@ mod tests {
                 Rc::new(graph),
                 graph_colors,
                 head_hash,
-                opts.cell_width_type,
                 Head::None,
                 FxHashMap::default(),
                 false,
@@ -1165,15 +1268,16 @@ mod tests {
         }
 
         fn render_commit_list(state: &mut CommitListState<'_>, height: u16) -> Buffer {
-            render_commit_list_styled(state, height, GraphStyle::Rounded)
+            render_commit_list_styled(state, height, GraphStyle::Rounded, GraphWidthType::Double)
         }
 
         fn render_commit_list_styled(
             state: &mut CommitListState<'_>,
             height: u16,
             graph_style: GraphStyle,
+            graph_width: GraphWidthType,
         ) -> Buffer {
-            let ctx = test_ctx_styled(graph_style);
+            let ctx = test_ctx_styled(graph_style, graph_width);
             assert!(
                 matches!(
                     ctx.ui_config.list.columns.first(),
@@ -1181,6 +1285,29 @@ mod tests {
                 ),
                 "fixture assumes Graph is the first column"
             );
+            let area = Rect::new(0, 0, TERM_W, height);
+            let mut buf = Buffer::empty(area);
+            CommitList::new(ctx, 0).render(area, &mut buf, state);
+            buf
+        }
+
+        /// 跟 `render_commit_list_styled` 一樣，但強制 `-c on`（`ctx.compact`）
+        /// ——這些測試要的是「緊湊模式本身對不對」，不是「auto 會不會選到
+        /// 緊湊」（那是 `layout::decide` 自己的測試範圍）。
+        fn render_commit_list_compact(
+            state: &mut CommitListState<'_>,
+            height: u16,
+            graph_width: GraphWidthType,
+        ) -> Buffer {
+            let ctx = Rc::new(AppContext {
+                keybind: KeyBind::new(None),
+                core_config: CoreConfig::default(),
+                ui_config: UiConfig::default(),
+                color_theme: ColorTheme::default(),
+                graph_style: GraphStyle::Rounded,
+                graph_width: Some(graph_width),
+                compact: Some(CompactType::On),
+            });
             let area = Rect::new(0, 0, TERM_W, height);
             let mut buf = Buffer::empty(area);
             CommitList::new(ctx, 0).render(area, &mut buf, state);
@@ -1202,6 +1329,14 @@ mod tests {
         ) -> Vec<String> {
             rows.map(|y| (0..width).map(|x| buf[(x, y)].symbol()).collect())
                 .collect()
+        }
+
+        /// 整列（graph 到 Commit hash 全部欄位）dump 成一個字串，右側補齊
+        /// trailing space 一起保留（不 trim）—— 這是緊湊模式重構的等價性
+        /// 安全網：只要這個字串一個字元不動，整個版面（marker 位置、
+        /// Description/Date/Author/Commit 的 x 座標）就沒有變。
+        fn full_row(buf: &Buffer, y: u16) -> String {
+            (0..TERM_W).map(|x| buf[(x, y)].symbol()).collect()
         }
 
         #[test]
@@ -1231,6 +1366,37 @@ mod tests {
             assert_ne!(buf[(0, 2)].bg, SELECTED_BG);
         }
 
+        /// 緊湊模式重構（`VisibleRow` 統一六欄、`List` 換成逐列 `Line`）的
+        /// 等價性安全網：釘住*今天*完整版面（header + 3 個 commit 列）逐字元
+        /// 不動。之後每一步重構都拿這個當驗收，一格都不能變。
+        #[test]
+        fn full_layout_snapshot_is_stable_before_compact_mode() {
+            let commits = text_graph_commits();
+            let mut state = build_state(&commits, text_graph(&commits), Opts::default());
+            let buf = render_commit_list(&mut state, 10);
+
+            assert_eq!(
+                full_row(&buf, 0),
+                " Graph   Description                                 Date        Author Commit  ",
+                "header row"
+            );
+            assert_eq!(
+                full_row(&buf, 1),
+                "│ ◯ ── │ first                                       1970-01-01  alice  aaaaaaa ",
+                "c0 row"
+            );
+            assert_eq!(
+                full_row(&buf, 2),
+                "● ──╭─ │ second                                      1970-01-01  alice  bbbbbbb ",
+                "c1 row"
+            );
+            assert_eq!(
+                full_row(&buf, 3),
+                "│   ●  │ third                                       1970-01-01  alice  ccccccc ",
+                "c2 row"
+            );
+        }
+
         #[test]
         fn render_graph_single_width_folds_cells_and_sizes_column_correctly() {
             // #21：這個 bug 是 `graph_area_cell_width()` 跟 `build_text_cells`
@@ -1238,15 +1404,13 @@ mod tests {
             // 測試抓不到這個問題 —— 它們只看得到 cell 的內容，看不到 widget
             // 實際配置的欄寬。這裡是唯一能觀察到欄寬的地方。
             let commits = text_graph_commits();
-            let mut state = build_state(
-                &commits,
-                text_graph(&commits),
-                Opts {
-                    cell_width_type: CellWidthType::Single,
-                    ..Default::default()
-                },
+            let mut state = build_state(&commits, text_graph(&commits), Opts::default());
+            let buf = render_commit_list_styled(
+                &mut state,
+                10,
+                GraphStyle::Rounded,
+                GraphWidthType::Single,
             );
-            let buf = render_commit_list(&mut state, 10);
 
             assert_eq!(
                 graph_rows_width(&buf, 1..=3, 3),
@@ -1265,15 +1429,13 @@ mod tests {
         #[test]
         fn render_graph_single_width_draws_junctions_where_edges_collide() {
             let commits = text_graph_commits();
-            let mut state = build_state(
-                &commits,
-                text_graph_colliding(&commits),
-                Opts {
-                    cell_width_type: CellWidthType::Single,
-                    ..Default::default()
-                },
+            let mut state = build_state(&commits, text_graph_colliding(&commits), Opts::default());
+            let buf = render_commit_list_styled(
+                &mut state,
+                10,
+                GraphStyle::Rounded,
+                GraphWidthType::Single,
             );
-            let buf = render_commit_list(&mut state, 10);
 
             assert_eq!(
                 graph_rows_width(&buf, 1..=3, 3),
@@ -1325,7 +1487,12 @@ mod tests {
             // 涵蓋。
             let commits = text_graph_commits();
             let mut state = build_state(&commits, text_graph(&commits), Opts::default());
-            let buf = render_commit_list_styled(&mut state, 10, GraphStyle::Ascii);
+            let buf = render_commit_list_styled(
+                &mut state,
+                10,
+                GraphStyle::Ascii,
+                GraphWidthType::Double,
+            );
 
             assert_eq!(
                 graph_rows(&buf, 1..=3),
@@ -1593,7 +1760,6 @@ mod tests {
                 Rc::new(primary),
                 Vec::new(),
                 None,
-                CellWidthType::Double,
                 Head::None,
                 FxHashMap::default(),
                 false,
@@ -1603,6 +1769,7 @@ mod tests {
                 FxHashSet::default(),
                 None,
             );
+            state.set_layout(CellWidthType::Double, false);
             state.set_show_remote_refs(false);
             assert_eq!(
                 state.graph_area_cell_width(),
@@ -1610,13 +1777,226 @@ mod tests {
                 "must use the filtered graph's width (3), not the primary's (13)"
             );
         }
+
+        // ---- 緊湊模式 --------------------------------------------------
+
+        /// `text_graph` 三列的深度只差 1 格（3 vs 2），差異弱到連方向接反
+        /// 都測不出來。這個 fixture 刻意拉開：c0/c2 只有一顆 dot（深度 1），
+        /// c1 前面接了一條橫跨 4 欄的線（深度 5 = cell_count），足以證明
+        /// 「每列各自貼齊」不是「整欄一起左移」的巧合。
+        fn staggered_depth_graph(commits: &[Commit]) -> Graph {
+            Graph {
+                commit_hashes: commits.iter().map(|c| c.commit_hash.clone()).collect(),
+                commit_pos_map: commits
+                    .iter()
+                    .map(|c| c.commit_hash.clone())
+                    .zip([(0, 0), (4, 1), (0, 2)])
+                    .collect(),
+                edges: vec![
+                    vec![],
+                    vec![
+                        Edge::new(EdgeType::Horizontal, 0, 0),
+                        Edge::new(EdgeType::Horizontal, 1, 1),
+                        Edge::new(EdgeType::Horizontal, 2, 2),
+                        Edge::new(EdgeType::Horizontal, 3, 3),
+                    ],
+                    vec![],
+                ],
+                max_pos_x: 4,
+            }
+        }
+
+        #[test]
+        fn compact_row_text_starts_after_that_rows_last_glyph() {
+            let commits = text_graph_commits();
+            let mut state = build_state(&commits, staggered_depth_graph(&commits), Opts::default());
+            let buf = render_commit_list_compact(&mut state, 10, GraphWidthType::Single);
+
+            // c0/c2：只有一顆 dot 在欄 0，text_x=1，前導空白在 x=1，
+            // subject 的第一個字在 x=2。
+            assert_eq!(
+                buf[(2, 1)].symbol(),
+                "f",
+                "first 的 f，貼在 c0 自己的 dot 後面"
+            );
+            assert_eq!(
+                buf[(2, 3)].symbol(),
+                "t",
+                "third 的 t，貼在 c2 自己的 dot 後面"
+            );
+            // c1：橫線一路接到 dot（欄 4），cell_count=5，深度打滿，
+            // text_x=5，跟非緊湊模式的位置一樣。
+            assert_eq!(
+                buf[(6, 2)].symbol(),
+                "s",
+                "second 的 s，這一列深度打滿，位置沒被緊湊模式改變"
+            );
+        }
+
+        #[test]
+        fn compact_falls_back_when_subject_does_not_follow_graph() {
+            // Subject 排在 Graph 前面：compact_possible 回 false，緊湊
+            // 模式整個不生效，版面要跟非緊湊逐格一樣。
+            let commits = text_graph_commits();
+            let mut state = build_state(&commits, staggered_depth_graph(&commits), Opts::default());
+            let mut ui_config = UiConfig::default();
+            ui_config.list.columns = vec![UserListColumnType::Subject, UserListColumnType::Graph];
+            let ctx = Rc::new(AppContext {
+                keybind: KeyBind::new(None),
+                core_config: CoreConfig::default(),
+                ui_config,
+                color_theme: ColorTheme::default(),
+                graph_style: GraphStyle::Rounded,
+                graph_width: Some(GraphWidthType::Single),
+                compact: Some(CompactType::On),
+            });
+            let area = Rect::new(0, 0, TERM_W, 10);
+            let mut buf = Buffer::empty(area);
+            CommitList::new(ctx, 0).render(area, &mut buf, &mut state);
+
+            assert!(
+                !state.is_compact(),
+                "columns 排不出「Graph 緊接 Subject」，decide() 要直接關掉緊湊"
+            );
+        }
+
+        #[test]
+        fn compact_removes_the_marker_column() {
+            let commits = text_graph_commits();
+            let mut state = build_state(&commits, text_graph(&commits), Opts::default());
+            let buf = render_commit_list_compact(&mut state, 10, GraphWidthType::Double);
+
+            // 非緊湊模式下這一格是 marker 的 `│`（見
+            // render_graph_uses_ascii_style 的同一個位置）；緊湊模式下
+            // c0 這一列深度打滿（text_x=6），這格改成 subject 的第一個字。
+            assert_eq!(
+                buf[(7, 1)].symbol(),
+                "f",
+                "marker 不見了，x=7 變成 subject 的 f（first）"
+            );
+        }
+
+        #[test]
+        fn compact_virtual_row_text_follows_the_dot() {
+            let commits = text_graph_commits();
+            let mut state = build_state(
+                &commits,
+                text_graph(&commits),
+                Opts {
+                    working_changes: true,
+                    ..Default::default()
+                },
+            );
+            let buf = render_commit_list_compact(&mut state, 10, GraphWidthType::Double);
+
+            // virtual row 的 dot 畫在 cell index 2（見
+            // virtual_row_draws_gray_head_dot_at_top 對同一個 fixture 的
+            // 斷言），`RowGraph::Dot` 存的就是這個 cell index，text_x =
+            // 2+1 = 3；"Uncommitted..." 的 U 貼在 x=4。
+            assert_eq!(buf[(4, 1)].symbol(), "U");
+        }
+
+        #[test]
+        fn compact_spacer_rows_keep_their_vertical_lines() {
+            let commits = text_graph_commits();
+            let mut state = build_state(
+                &commits,
+                text_graph_colliding_same_line(&commits),
+                Opts {
+                    inline_detail_height: 1,
+                    ..Default::default()
+                },
+            );
+            let buf = render_commit_list_compact(&mut state, 10, GraphWidthType::Double);
+
+            // 跟 spacer_row_extends_only_vertical_columns 同一個 fixture／
+            // 斷言，只是加上緊湊模式 —— spacer 是獨立算的
+            // （draw_graph_spacer），不吃 VisibleRow 的 text_x，緊湊與否
+            // 不該讓它消失。
+            assert_eq!(buf[(2, 2)].symbol(), "│");
+        }
+
+        /// HEAD 不是第一列時，`render_graph` 會在排在它前面、`cells[hc]`
+        /// 是 Blank 的列上合成一條向上連接線（`hc` = HEAD 自己的 dot
+        /// 欄）。`text_x` 若只看 `cells` 本身最後一個非 Blank 格（不管
+        /// 這條合成線），會算出太小的值，讓 subject 的文字直接畫過去、
+        /// 蓋掉這條線 —— 這是 `RowGraph::extent()` 要 `max(cells_end,
+        /// connector_end)` 的原因。
+        fn head_not_first_graph(commits: &[Commit]) -> Graph {
+            Graph {
+                commit_hashes: commits.iter().map(|c| c.commit_hash.clone()).collect(),
+                commit_pos_map: commits
+                    .iter()
+                    .map(|c| c.commit_hash.clone())
+                    .zip([(0, 0), (3, 1), (0, 2)])
+                    .collect(),
+                edges: vec![vec![], vec![], vec![]],
+                max_pos_x: 3,
+            }
+        }
+
+        #[test]
+        fn compact_text_does_not_cover_the_synthesized_head_connector() {
+            let commits = text_graph_commits();
+            let mut state = build_state(
+                &commits,
+                head_not_first_graph(&commits),
+                Opts {
+                    head_hash: Some(1), // c1 是 HEAD，排在 c0 後面（顯示上 c0 在它上面）
+                    working_changes: true,
+                    ..Default::default()
+                },
+            );
+            let buf = render_commit_list_compact(&mut state, 10, GraphWidthType::Double);
+
+            // c0（row0，y=2）自己只有一顆 dot 在欄 0；HEAD（c1，pos_x=3）
+            // 的 dot 欄是 double-width 的 cell index 6。c0 那一列在欄 6
+            // 是 Blank，所以會合成一條灰色 │。若 text_x 沒把它算進去，
+            // 這格會被 subject 的文字蓋掉。
+            assert_eq!(
+                buf[(6, 2)].symbol(),
+                "│",
+                "HEAD 上方那條合成連接線沒被緊湊模式的文字蓋掉"
+            );
+            assert_eq!(buf[(6, 2)].fg, Color::Gray, "VIRTUAL_ROW_COLOR");
+        }
+
+        #[test]
+        fn compact_selected_row_keeps_graph_colors_under_the_selection_bg() {
+            let commits = text_graph_commits();
+
+            let mut reference = build_state(&commits, text_graph(&commits), Opts::default());
+            reference.selected = 2; // c2：唯一在 text_graph 裡有非零深度差的列
+            let reference_buf = render_commit_list(&mut reference, 10);
+            let expected_dot_fg = reference_buf[(4, 3)].fg;
+
+            let mut state = build_state(&commits, text_graph(&commits), Opts::default());
+            state.selected = 2;
+            let buf = render_commit_list_compact(&mut state, 10, GraphWidthType::Double);
+
+            assert_eq!(
+                buf[(4, 3)].fg,
+                expected_dot_fg,
+                "graph 的分支色不會被 subject 那個 Line 的 fg patch 蓋掉 —— \
+                 兩個 writer 的 Rect 由 text_x 保證不重疊，不是靠繪製順序撐著"
+            );
+            for x in 0..TERM_W {
+                assert_eq!(
+                    buf[(x, 3)].bg,
+                    SELECTED_BG,
+                    "選取列整列 bg 都要覆蓋到，x={x}"
+                );
+            }
+        }
     }
 
     #[test]
     fn test_calc_cell_widths_all_columns() {
         let area_width = 80;
         let subject_min_width = 20;
-        let graph_width = 6;
+        // calc_cell_widths 現在自己加右側留白（見 layout::required_width），
+        // 輸入是不含 padding 的 graph_cell_width，5 + 1 = 原本斷言的 6。
+        let graph_width = 5;
         let name_width = 10;
         let date_width = 15;
         let columns = vec![
@@ -1635,6 +2015,7 @@ mod tests {
             name_width,
             date_width,
             &columns,
+            false,
         );
 
         let expected = vec![
@@ -1652,7 +2033,9 @@ mod tests {
     fn test_calc_cell_width_all_columns_small_area_remove_name_date_hash() {
         let area_width = 30;
         let subject_min_width = 20;
-        let graph_width = 6;
+        // calc_cell_widths 現在自己加右側留白（見 layout::required_width），
+        // 輸入是不含 padding 的 graph_cell_width，5 + 1 = 原本斷言的 6。
+        let graph_width = 5;
         let name_width = 10;
         let date_width = 15;
         let columns = vec![
@@ -1671,6 +2054,7 @@ mod tests {
             name_width,
             date_width,
             &columns,
+            false,
         );
 
         // Graph + Marker + Subject + Hash = 6 + 1 + 20 + 9 = 36 > 30
@@ -1690,7 +2074,9 @@ mod tests {
     fn test_calc_cell_width_all_columns_small_area_remove_name_date() {
         let area_width = 40;
         let subject_min_width = 20;
-        let graph_width = 6;
+        // calc_cell_widths 現在自己加右側留白（見 layout::required_width），
+        // 輸入是不含 padding 的 graph_cell_width，5 + 1 = 原本斷言的 6。
+        let graph_width = 5;
         let name_width = 10;
         let date_width = 15;
         let columns = vec![
@@ -1709,6 +2095,7 @@ mod tests {
             name_width,
             date_width,
             &columns,
+            false,
         );
 
         // Graph + Marker + Subject + Hash = 6 + 1 + 20 + 9 = 36
@@ -1729,7 +2116,9 @@ mod tests {
     fn test_calc_cell_width_all_columns_small_area_remove_name() {
         let area_width = 60;
         let subject_min_width = 20;
-        let graph_width = 6;
+        // calc_cell_widths 現在自己加右側留白（見 layout::required_width），
+        // 輸入是不含 padding 的 graph_cell_width，5 + 1 = 原本斷言的 6。
+        let graph_width = 5;
         let name_width = 10;
         let date_width = 15;
         let columns = vec![
@@ -1748,6 +2137,7 @@ mod tests {
             name_width,
             date_width,
             &columns,
+            false,
         );
 
         // Graph + Marker + Subject + Date + Hash = 6 + 1 + 20 + 17 + 9 = 53 <= 60
@@ -1768,7 +2158,9 @@ mod tests {
     fn test_calc_cell_width_columns_order() {
         let area_width = 80;
         let subject_min_width = 20;
-        let graph_width = 6;
+        // calc_cell_widths 現在自己加右側留白（見 layout::required_width），
+        // 輸入是不含 padding 的 graph_cell_width，5 + 1 = 原本斷言的 6。
+        let graph_width = 5;
         let name_width = 10;
         let date_width = 15;
         let columns = vec![
@@ -1785,6 +2177,7 @@ mod tests {
             name_width,
             date_width,
             &columns,
+            false,
         );
 
         let expected = vec![

@@ -12,7 +12,7 @@ use umbra::optional;
 use crate::{
     color::{ColorTheme, OptionalColorTheme},
     keybind::KeyBind,
-    CommitOrderType, GraphStyle, GraphWidthType, InitialSelection, Result,
+    CommitOrderType, CompactType, GraphStyle, GraphWidthType, InitialSelection, Result,
 };
 
 const XDG_CONFIG_HOME_ENV_NAME: &str = "XDG_CONFIG_HOME";
@@ -123,6 +123,7 @@ pub struct CoreConfig {
 pub struct CoreOptionConfig {
     pub order: Option<CommitOrderType>,
     pub graph_width: Option<GraphWidthType>,
+    pub compact: Option<CompactType>,
     pub graph_style: Option<GraphStyle>,
     pub initial_selection: Option<InitialSelection>,
 }
@@ -415,6 +416,7 @@ mod tests {
                 option: CoreOptionConfig {
                     order: None,
                     graph_width: None,
+                    compact: None,
                     graph_style: None,
                     initial_selection: None,
                 },
@@ -533,6 +535,7 @@ mod tests {
                 option: CoreOptionConfig {
                     order: Some(CommitOrderType::Topo),
                     graph_width: Some(GraphWidthType::Single),
+                    compact: None,
                     graph_style: Some(GraphStyle::Angular),
                     initial_selection: Some(InitialSelection::Head),
                 },
@@ -638,6 +641,7 @@ mod tests {
                 option: CoreOptionConfig {
                     order: None,
                     graph_width: None,
+                    compact: None,
                     graph_style: None,
                     initial_selection: None,
                 },
@@ -775,7 +779,7 @@ mod tests {
 
         let parsed: OptionalConfig = toml::from_str(example).unwrap();
         let mut actual = Config::from(parsed);
-        // `core.option` 的四個欄位與 `keybind` 是 Option，「未設定」與「設定成
+        // `core.option` 的五個欄位與 `keybind` 是 Option，「未設定」與「設定成
         // 預設值」在型別上不同（命令列參數要能覆蓋，所以預設留到更後面才解析）。
         // 範例把它們明寫出來正是它的用途，比對前歸零，其餘欄位照比。
         actual.core.option = CoreOptionConfig::default();
@@ -805,6 +809,37 @@ mod tests {
             .collect();
 
         let mut accepted: Vec<String> = GraphWidthType::value_variants()
+            .iter()
+            .flat_map(|variant| {
+                variant
+                    .to_possible_value()
+                    .expect("每個變體都該有對應的命令列值")
+                    .get_name_and_aliases()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+
+        declared.sort();
+        accepted.sort();
+        assert_eq!(declared, accepted);
+    }
+
+    #[test]
+    fn compact_schema_enum_matches_every_accepted_cli_value() {
+        use clap::ValueEnum;
+
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../config.schema.json")).unwrap();
+        let mut declared: Vec<String> = schema["properties"]["core"]["properties"]["option"]
+            ["properties"]["compact"]["enum"]
+            .as_array()
+            .expect("config.schema.json 裡的 compact 沒有 enum")
+            .iter()
+            .map(|v| v.as_str().expect("enum 值不是字串").to_string())
+            .collect();
+
+        let mut accepted: Vec<String> = CompactType::value_variants()
             .iter()
             .flat_map(|variant| {
                 variant

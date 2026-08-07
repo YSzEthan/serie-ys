@@ -5,7 +5,6 @@ mod github;
 pub mod graph;
 
 mod app;
-mod check;
 mod emoji;
 mod event;
 mod external;
@@ -56,6 +55,10 @@ struct Args {
     #[arg(short, long, value_name = "TYPE")]
     graph_width: Option<GraphWidthType>,
 
+    /// 緊湊模式：commit 文字貼齊該列 graph 實際畫到的最右邊，不保留固定留白 [default: auto]
+    #[arg(short = 'c', long, value_name = "TYPE")]
+    compact: Option<CompactType>,
+
     /// Commit 圖形邊線風格 [default: rounded]
     #[arg(short = 's', long, value_name = "TYPE")]
     graph_style: Option<GraphStyle>,
@@ -96,6 +99,14 @@ pub enum GraphWidthType {
     Auto,
     Double,
     Single,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CompactType {
+    Auto,
+    On,
+    Off,
 }
 
 pub use graph::GraphStyle;
@@ -297,6 +308,7 @@ pub fn run() -> Result<()> {
     let max_count = args.max_count;
     let order = args.order.or(core_config.option.order).into();
     let graph_width = args.graph_width.or(core_config.option.graph_width);
+    let compact = args.compact.or(core_config.option.compact);
     let graph_style = args
         .graph_style
         .or(core_config.option.graph_style)
@@ -324,6 +336,8 @@ pub fn run() -> Result<()> {
         ui_config,
         color_theme,
         graph_style,
+        graph_width,
+        compact,
     });
 
     let mut ec = event::EventController::init();
@@ -344,7 +358,6 @@ pub fn run() -> Result<()> {
         resolve_head_commit_hash(&repository).as_ref(),
         head_has_named_ref(&repository),
     ));
-    let mut cell_width_type = check::decide_cell_width_type(&graph, graph_width)?;
     let (mut filtered_graph, mut remote_only_commits) = build_graph_artifacts(&repository, &graph);
 
     let ret = loop {
@@ -363,7 +376,6 @@ pub fn run() -> Result<()> {
             filtered_graph,
             remote_only_commits,
             &graph_color_set,
-            cell_width_type,
             initial_selection,
             ctx.clone(),
             &ec,
@@ -413,7 +425,6 @@ pub fn run() -> Result<()> {
                         resolve_head_commit_hash(&repository).as_ref(),
                         head_has_named_ref(&repository),
                     ));
-                    cell_width_type = check::decide_cell_width_type(&graph, graph_width)?;
                     (filtered_graph, remote_only_commits) =
                         build_graph_artifacts(&repository, &graph);
 

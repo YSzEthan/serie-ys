@@ -14,7 +14,8 @@ use ratatui::{
 use tui_input::backend::crossterm::EventHandler;
 
 use crate::{
-    color::ColorTheme, Args, CommitOrderType, GraphStyle, GraphWidthType, InitialSelection,
+    color::ColorTheme, Args, CommitOrderType, CompactType, GraphStyle, GraphWidthType,
+    InitialSelection,
 };
 
 /// -h 在 TTY 下的入口。回傳 `None` = 使用者放棄（等同原本 `--help` 印完離開，
@@ -105,6 +106,14 @@ fn graph_width_desc(v: GraphWidthType) -> &'static str {
     }
 }
 
+fn compact_desc(v: CompactType) -> &'static str {
+    match v {
+        CompactType::Auto => "自動",
+        CompactType::On => "開啟",
+        CompactType::Off => "關閉",
+    }
+}
+
 fn graph_style_desc(v: GraphStyle) -> &'static str {
     match v {
         GraphStyle::Rounded => "圓角",
@@ -167,6 +176,7 @@ fn resolve_desc<T: Copy>(
 enum FieldKind {
     Order,
     GraphWidth,
+    Compact,
     GraphStyle,
     InitialSelection,
 }
@@ -176,6 +186,7 @@ impl FieldKind {
         match self {
             FieldKind::Order => "-o, --order",
             FieldKind::GraphWidth => "-g, --graph-width",
+            FieldKind::Compact => "-c, --compact",
             FieldKind::GraphStyle => "-s, --graph-style",
             FieldKind::InitialSelection => "-i, --initial-selection",
         }
@@ -185,6 +196,7 @@ impl FieldKind {
         match self {
             FieldKind::Order => "Commit 排序演算法",
             FieldKind::GraphWidth => "Commit 圖形格子寬度",
+            FieldKind::Compact => "緊湊模式",
             FieldKind::GraphStyle => "Commit 圖形邊線風格",
             FieldKind::InitialSelection => "初始選取的 commit",
         }
@@ -197,6 +209,7 @@ impl FieldKind {
             FieldKind::GraphWidth => {
                 cycle_value(&mut draft.graph_width, GraphWidthType::Auto, delta)
             }
+            FieldKind::Compact => cycle_value(&mut draft.compact, CompactType::Auto, delta),
             FieldKind::GraphStyle => {
                 cycle_value(&mut draft.graph_style, GraphStyle::Rounded, delta)
             }
@@ -214,6 +227,7 @@ impl FieldKind {
             FieldKind::GraphWidth => {
                 resolve_desc(draft.graph_width, GraphWidthType::Auto, graph_width_desc)
             }
+            FieldKind::Compact => resolve_desc(draft.compact, CompactType::Auto, compact_desc),
             FieldKind::GraphStyle => {
                 resolve_desc(draft.graph_style, GraphStyle::Rounded, graph_style_desc)
             }
@@ -260,6 +274,11 @@ fn build_top_rows() -> Vec<TopRow> {
             action: TopRowAction::Field(FieldKind::GraphWidth),
             flags: FieldKind::GraphWidth.flags(),
             help: FieldKind::GraphWidth.help(),
+        },
+        TopRow {
+            action: TopRowAction::Field(FieldKind::Compact),
+            flags: FieldKind::Compact.flags(),
+            help: FieldKind::Compact.help(),
         },
         TopRow {
             action: TopRowAction::Field(FieldKind::GraphStyle),
@@ -599,6 +618,9 @@ pub(crate) fn format_equivalent_command(args: &Args) -> String {
     if let Some(v) = args.graph_width {
         parts.push(format!("-g {}", variant_name(&v)));
     }
+    if let Some(v) = args.compact {
+        parts.push(format!("-c {}", variant_name(&v)));
+    }
     if let Some(v) = args.graph_style {
         parts.push(format!("-s {}", variant_name(&v)));
     }
@@ -615,13 +637,13 @@ pub(crate) fn format_equivalent_command(args: &Args) -> String {
 mod tests {
     use super::*;
 
-    // Row 索引固定：0=PATH 1=MaxCount 2=Order 3=GraphWidth 4=GraphStyle
-    // 5=InitialSelection 6=Launch(靜默) 7=Launch(印字串)。用按幾次 Down
-    // 移動來定位。
+    // Row 索引固定：0=PATH 1=MaxCount 2=Order 3=GraphWidth 4=Compact
+    // 5=GraphStyle 6=InitialSelection 7=Launch(靜默) 8=Launch(印字串)。
+    // 用按幾次 Down 移動來定位。
     const ROW_ORDER: usize = 2;
-    const ROW_GRAPH_STYLE: usize = 4;
+    const ROW_GRAPH_STYLE: usize = 5;
     const ROW_MAX_COUNT: usize = 1;
-    const ROW_LAUNCH: usize = 6;
+    const ROW_LAUNCH: usize = 7;
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
