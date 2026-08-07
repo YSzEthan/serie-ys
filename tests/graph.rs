@@ -1,7 +1,7 @@
 use std::{path::Path, process::Command};
 
 use chrono::{DateTime, Days, NaiveDate, TimeZone, Utc};
-use serie::{color, config, git, graph};
+use ysgit::{color, config, git, graph};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 

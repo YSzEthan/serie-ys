@@ -7,8 +7,8 @@
 use std::path::Path;
 use std::process::{Command, Output};
 
-use serie::git::{Ref, Repository, SortCommit};
 use tempfile::TempDir;
+use ysgit::git::{Ref, Repository, SortCommit};
 
 fn git(path: &Path, args: &[&str]) -> Output {
     let out = Command::new("git")

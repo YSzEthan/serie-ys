@@ -2064,39 +2064,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "serie"
-version = "2.2.0"
-dependencies = [
- "ansi-to-tui",
- "arboard",
- "base64 0.22.1",
- "chrono",
- "clap",
- "console",
- "dircpy",
- "emojis",
- "fuzzy-matcher",
- "garde",
- "laurier",
- "notify",
- "notify-debouncer-mini",
- "ratatui",
- "rstest",
- "rustc-hash",
- "semver",
- "serde",
- "serde_json",
- "signal-hook",
- "smart-default",
- "tempfile",
- "toml",
- "tui-input",
- "tui-tree-widget",
- "umbra",
- "unicode-width",
-]
-
-[[package]]
 name = "sha2"
 version = "0.10.9"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3150,6 +3117,39 @@ name = "x11rb-protocol"
 version = "0.13.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "ec107c4503ea0b4a98ef47356329af139c0a4f7750e621cf2973cd3385ebcb3d"
+
+[[package]]
+name = "ysgit"
+version = "2.2.0"
+dependencies = [
+ "ansi-to-tui",
+ "arboard",
+ "base64 0.22.1",
+ "chrono",
+ "clap",
+ "console",
+ "dircpy",
+ "emojis",
+ "fuzzy-matcher",
+ "garde",
+ "laurier",
+ "notify",
+ "notify-debouncer-mini",
+ "ratatui",
+ "rstest",
+ "rustc-hash",
+ "semver",
+ "serde",
+ "serde_json",
+ "signal-hook",
+ "smart-default",
+ "tempfile",
+ "toml",
+ "tui-input",
+ "tui-tree-widget",
+ "umbra",
+ "unicode-width",
+]
 
 [[package]]
 name = "zmij"
