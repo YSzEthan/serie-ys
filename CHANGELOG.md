@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.2.0](https://github.com/YSzEthan/serie-ys/compare/v2.1.0...v2.2.0) (2026-08-07)
+
+
+### Features
+
+* GitHub 視圖按 r 一併刷新 commit CI 狀態 (#39) ([#40](https://github.com/YSzEthan/serie-ys/pull/40))
+
 ## [2.1.0](https://github.com/YSzEthan/serie-ys/compare/v2.0.0...v2.1.0) (2026-08-07)
 
 
