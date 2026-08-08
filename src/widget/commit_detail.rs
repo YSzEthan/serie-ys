@@ -14,17 +14,21 @@ use unicode_width::UnicodeWidthChar;
 use crate::{
     app::AppContext,
     color::ColorTheme,
-    git::{Commit, FileChange, Ref, WorkingChanges},
+    git::{Commit, CommitHash, DiffTarget, FileChange, Ref, WorkingChanges},
     graph::GlyphSet,
 };
 
 const ICON_FILE: &str = "\u{f0214} ";
 const ICON_FOLDER: &str = "\u{f0770} ";
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+/// 游標與檔案樹視窗上/下緣保持的邊距列數。
+const FILE_TREE_SCROLLOFF: usize = 2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum DetailPane {
-    Left,
-    Right,
+    #[default]
+    Info,
+    Files,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -35,52 +39,124 @@ enum LineMode {
     Measure,
 }
 
+/// 檔案樹的一列。`file` 為 `None` 代表目錄／區段標題／空行，游標不會停在上面。
+#[derive(Debug, Clone)]
+pub struct TreeRow {
+    pub line: Line<'static>,
+    pub file: Option<DiffTarget>,
+}
+
 #[derive(Debug, Default)]
 pub struct CommitDetailState {
     left_offset: usize,
+    /// Files pane：檔案樹視窗的頂端 row index。唯一驅動來源是游標 + scrolloff，
+    /// 沒有獨立捲動檔案樹的按鍵。
     right_offset: usize,
-    active_pane: Option<DetailPane>,
+    active_pane: DetailPane,
+    file_cursor: Option<usize>,
+    /// 上一幀 render 量到的檔案樹可視高度，`move_file_cursor`／`resync_files_window`
+    /// 算 scrolloff 要用。
+    files_window_height: usize,
     /// 上次 render 時 subject 是否超過 marquee 可用寬度。App tick 迴圈讀這個
     /// 決定要不要繼續推進 marquee_frame。
     subject_overflows: std::cell::Cell<bool>,
 }
 
 impl CommitDetailState {
-    pub fn scroll_down(&mut self) {
-        match self.active_pane() {
-            DetailPane::Left => self.left_offset = self.left_offset.saturating_add(1),
-            DetailPane::Right => self.right_offset = self.right_offset.saturating_add(1),
-        }
-    }
-
-    pub fn scroll_up(&mut self) {
-        match self.active_pane() {
-            DetailPane::Left => self.left_offset = self.left_offset.saturating_sub(1),
-            DetailPane::Right => self.right_offset = self.right_offset.saturating_sub(1),
-        }
-    }
-
-    pub fn select_first(&mut self) {
-        self.left_offset = 0;
-        self.right_offset = 0;
-    }
-
-    fn clamp_offsets(&mut self, left_len: usize, right_len: usize, inner_height: usize) {
-        self.left_offset = self.left_offset.min(left_len.saturating_sub(inner_height));
-        self.right_offset = self
-            .right_offset
-            .min(right_len.saturating_sub(inner_height));
-    }
-
     pub fn active_pane(&self) -> DetailPane {
-        self.active_pane.unwrap_or(DetailPane::Left)
+        self.active_pane
     }
 
     pub fn toggle_pane(&mut self) {
-        self.active_pane = Some(match self.active_pane() {
-            DetailPane::Left => DetailPane::Right,
-            DetailPane::Right => DetailPane::Left,
-        });
+        self.active_pane = match self.active_pane {
+            DetailPane::Info => DetailPane::Files,
+            DetailPane::Files => DetailPane::Info,
+        };
+    }
+
+    pub fn scroll_info_down(&mut self) {
+        self.left_offset = self.left_offset.saturating_add(1);
+    }
+
+    pub fn scroll_info_up(&mut self) {
+        self.left_offset = self.left_offset.saturating_sub(1);
+    }
+
+    pub fn file_cursor(&self) -> Option<usize> {
+        self.file_cursor
+    }
+
+    pub fn selected_file<'r>(&self, rows: &'r [TreeRow]) -> Option<&'r DiffTarget> {
+        self.file_cursor
+            .and_then(|i| rows.get(i))
+            .and_then(|r| r.file.as_ref())
+    }
+
+    /// 內容切換（換 commit、切到 Working Changes）時呼叫：左側捲動歸零、
+    /// 游標移到第一個檔案列（沒有檔案就是 `None`）。
+    pub fn reset(&mut self, rows: &[TreeRow]) {
+        self.left_offset = 0;
+        self.right_offset = 0;
+        self.file_cursor = rows.iter().position(|r| r.file.is_some());
+    }
+
+    /// 游標移到下一個檔案列（跳過目錄／標題／空行）。回傳 true 代表游標真的
+    /// 移動了，呼叫端據此決定要不要重新載入 diff。
+    pub fn move_file_cursor_down(&mut self, rows: &[TreeRow]) -> bool {
+        self.move_file_cursor(rows, 1)
+    }
+
+    pub fn move_file_cursor_up(&mut self, rows: &[TreeRow]) -> bool {
+        self.move_file_cursor(rows, -1)
+    }
+
+    fn move_file_cursor(&mut self, rows: &[TreeRow], dir: isize) -> bool {
+        let Some(start) = self.file_cursor else {
+            return false;
+        };
+        let mut i = start as isize;
+        loop {
+            i += dir;
+            if i < 0 || i as usize >= rows.len() {
+                return false;
+            }
+            if rows[i as usize].file.is_some() {
+                self.file_cursor = Some(i as usize);
+                self.right_offset = scrolled_offset(
+                    i as usize,
+                    self.files_window_height,
+                    rows.len(),
+                    self.right_offset,
+                );
+                return true;
+            }
+        }
+    }
+
+    fn set_files_window_height(&mut self, h: usize) {
+        self.files_window_height = h;
+    }
+
+    fn files_window_top(&self) -> usize {
+        self.right_offset
+    }
+
+    /// render 時的安全網：終端機縮放讓視窗高度變化時，重新套用 scrolloff
+    /// 確保游標仍在可視範圍內。與游標移動共用同一個 `scrolled_offset`，
+    /// 不分裂成兩處各自實作。
+    fn resync_files_window(&mut self, rows_len: usize) {
+        if let Some(cursor) = self.file_cursor {
+            self.right_offset = scrolled_offset(
+                cursor,
+                self.files_window_height,
+                rows_len,
+                self.right_offset,
+            );
+        }
+    }
+
+    fn clamp_left_offset(&mut self, left_len: usize, inner_height: usize) {
+        self.left_offset = self.left_offset.min(left_len.saturating_sub(inner_height));
     }
 
     pub fn subject_overflows(&self) -> bool {
@@ -88,9 +164,40 @@ impl CommitDetailState {
     }
 }
 
+/// 標準 vim 風格 scrolloff：游標與視窗上/下緣保持 `FILE_TREE_SCROLLOFF` 列邊距，
+/// 但清單頭/尾不強制留邊（沒有更多內容可留，標準 clamp）。這是檔案樹視窗位置
+/// 的唯一計算點——游標移動與 resize 後的安全網都呼叫這個。
+fn scrolled_offset(
+    cursor: usize,
+    window_height: usize,
+    rows_len: usize,
+    prev_offset: usize,
+) -> usize {
+    if window_height == 0 {
+        return 0;
+    }
+    let max_offset = rows_len.saturating_sub(window_height);
+    if max_offset == 0 {
+        return 0;
+    }
+
+    let scrolloff = FILE_TREE_SCROLLOFF.min(window_height.saturating_sub(1) / 2);
+    let min_offset_for_cursor = cursor.saturating_sub(window_height - 1 - scrolloff);
+    let max_offset_for_cursor = cursor.saturating_sub(scrolloff).min(max_offset);
+
+    let mut offset = prev_offset.min(max_offset);
+    if offset > max_offset_for_cursor {
+        offset = max_offset_for_cursor;
+    }
+    if offset < min_offset_for_cursor {
+        offset = min_offset_for_cursor.min(max_offset);
+    }
+    offset
+}
+
 pub struct CommitDetail<'a> {
     commit: &'a Commit,
-    changes: &'a Vec<FileChange>,
+    rows: &'a [TreeRow],
     refs: &'a Vec<Ref>,
     ctx: Rc<AppContext>,
     marquee_frame: u64,
@@ -99,14 +206,14 @@ pub struct CommitDetail<'a> {
 impl<'a> CommitDetail<'a> {
     pub fn new(
         commit: &'a Commit,
-        changes: &'a Vec<FileChange>,
+        rows: &'a [TreeRow],
         refs: &'a Vec<Ref>,
         ctx: Rc<AppContext>,
         marquee_frame: u64,
     ) -> Self {
         Self {
             commit,
-            changes,
+            rows,
             refs,
             ctx,
             marquee_frame,
@@ -125,60 +232,46 @@ impl StatefulWidget for CommitDetail<'_> {
         ])
         .areas(area);
 
-        let active = state.active_pane();
-        let left_active = active == DetailPane::Left;
-        let right_active = active == DetailPane::Right;
+        let left_active = state.active_pane() == DetailPane::Info;
 
         let available = left_area.width.saturating_sub(2) as usize;
-        let right_available = right_area.width.saturating_sub(2) as usize;
         // 寬度基準必須跟下面的 `scroll_window` 一致，理由見 `marquee::display_width`。
         state
             .subject_overflows
             .set(crate::widget::marquee::display_width(&self.commit.subject) > available);
         let left_lines = self.info_lines(LineMode::Render(available));
-        let right_lines: Vec<Line> = self
-            .changes_lines()
-            .into_iter()
-            .flat_map(|l| wrap_line_spans(l, right_available))
-            .collect();
 
         let glyphs = GlyphSet::from_style(self.ctx.graph_style);
         let block = detail_block(self.ctx.color_theme.divider_fg, glyphs);
         let inner_h = block.inner(area).height as usize;
-        state.clamp_offsets(left_lines.len(), right_lines.len(), inner_h);
+
+        state.clamp_left_offset(left_lines.len(), inner_h);
+        state.set_files_window_height(inner_h);
+        state.resync_files_window(self.rows.len());
 
         let left_lines: Vec<Line> = left_lines.into_iter().skip(state.left_offset).collect();
-        let right_lines: Vec<Line> = right_lines.into_iter().skip(state.right_offset).collect();
         let left_lines = if left_active {
             left_lines
         } else {
             dim_lines(left_lines)
         };
-        let right_lines = if right_active {
-            right_lines
-        } else {
-            dim_lines(right_lines)
-        };
 
         let left_paragraph = Paragraph::new(left_lines)
             .style(Style::default().fg(self.ctx.color_theme.fg))
-            .block(block.clone());
+            .block(block);
         left_paragraph.render(left_area, buf);
 
         // 渲染垂直分隔線
         render_vertical_divider(divider_area, buf, self.ctx.color_theme.divider_fg, glyphs);
 
-        let right_paragraph = Paragraph::new(right_lines)
-            .style(Style::default().fg(self.ctx.color_theme.fg))
-            .block(block);
-        right_paragraph.render(right_area, buf);
+        render_file_tree_pane(self.rows, right_area, buf, state, &self.ctx);
     }
 }
 
 impl CommitDetail<'_> {
     pub fn content_height(&self) -> u16 {
         let left = self.info_lines(LineMode::Measure).len();
-        let right = self.changes_lines().len();
+        let right = self.rows.len();
         (left.max(right) + 2) as u16 // +2 為上／下邊框
     }
 
@@ -363,10 +456,49 @@ impl CommitDetail<'_> {
                 .add_modifier(Modifier::BOLD),
         )
     }
+}
 
-    fn changes_lines(&self) -> Vec<Line<'_>> {
-        build_tree_lines(self.changes, &self.ctx.color_theme)
-    }
+/// 檔案樹右側 pane 的共用渲染邏輯：截斷＋補白、選取列 highlight、捲動視窗、
+/// 非 focus 時 dim。`CommitDetail` 與 `WorkingChangesDetail` 共用同一份，
+/// 避免同樣的邏輯抄兩次。`right_available`／`right_active`／`block` 都能從
+/// `area`／`state`／`ctx` 推導，不需要呼叫端各自算好再傳進來。
+fn render_file_tree_pane(
+    rows: &[TreeRow],
+    area: Rect,
+    buf: &mut Buffer,
+    state: &CommitDetailState,
+    ctx: &AppContext,
+) {
+    let right_available = area.width.saturating_sub(2) as usize;
+    let right_active = state.active_pane() == DetailPane::Files;
+    let glyphs = GlyphSet::from_style(ctx.graph_style);
+    let block = detail_block(ctx.color_theme.divider_fg, glyphs);
+
+    // 先 skip 視窗外的 row 再截斷／highlight，畫面外的列不用白做一次
+    // clone＋補白。
+    let right_lines: Vec<Line> = rows
+        .iter()
+        .enumerate()
+        .skip(state.files_window_top())
+        .map(|(i, row)| {
+            let line = truncate_line_to_width(row.line.clone(), right_available);
+            if right_active && Some(i) == state.file_cursor() {
+                highlight_line(line, ctx.color_theme.list_selected_bg)
+            } else {
+                line
+            }
+        })
+        .collect();
+    let right_lines = if right_active {
+        right_lines
+    } else {
+        dim_lines(right_lines)
+    };
+
+    let right_paragraph = Paragraph::new(right_lines)
+        .style(Style::default().fg(ctx.color_theme.fg))
+        .block(block);
+    right_paragraph.render(area, buf);
 }
 
 fn dim_color(color: Color) -> Color {
@@ -454,14 +586,23 @@ fn has_refs(refs: &[Ref]) -> bool {
 }
 
 pub struct WorkingChangesDetail<'a> {
-    working_changes: &'a WorkingChanges,
+    staged_count: usize,
+    unstaged_count: usize,
+    rows: &'a [TreeRow],
     ctx: Rc<AppContext>,
 }
 
 impl<'a> WorkingChangesDetail<'a> {
-    pub fn new(working_changes: &'a WorkingChanges, ctx: Rc<AppContext>) -> Self {
+    pub fn new(
+        staged_count: usize,
+        unstaged_count: usize,
+        rows: &'a [TreeRow],
+        ctx: Rc<AppContext>,
+    ) -> Self {
         Self {
-            working_changes,
+            staged_count,
+            unstaged_count,
+            rows,
             ctx,
         }
     }
@@ -478,55 +619,41 @@ impl StatefulWidget for WorkingChangesDetail<'_> {
         ])
         .areas(area);
 
-        let active = state.active_pane();
-        let left_active = active == DetailPane::Left;
-        let right_active = active == DetailPane::Right;
+        let left_active = state.active_pane() == DetailPane::Info;
 
-        let right_available = right_area.width.saturating_sub(2) as usize;
         let left_lines = self.info_lines();
-        let right_lines: Vec<Line> = self
-            .file_lines()
-            .into_iter()
-            .flat_map(|l| wrap_line_spans(l, right_available))
-            .collect();
 
         let glyphs = GlyphSet::from_style(self.ctx.graph_style);
         let block = detail_block(self.ctx.color_theme.divider_fg, glyphs);
         let inner_h = block.inner(area).height as usize;
-        state.clamp_offsets(left_lines.len(), right_lines.len(), inner_h);
+
+        state.clamp_left_offset(left_lines.len(), inner_h);
+        state.set_files_window_height(inner_h);
+        state.resync_files_window(self.rows.len());
 
         let left_lines: Vec<Line> = left_lines.into_iter().skip(state.left_offset).collect();
-        let right_lines: Vec<Line> = right_lines.into_iter().skip(state.right_offset).collect();
         let left_lines = if left_active {
             left_lines
         } else {
             dim_lines(left_lines)
         };
-        let right_lines = if right_active {
-            right_lines
-        } else {
-            dim_lines(right_lines)
-        };
 
         let left_paragraph = Paragraph::new(left_lines)
             .style(Style::default().fg(self.ctx.color_theme.fg))
-            .block(block.clone());
+            .block(block);
         left_paragraph.render(left_area, buf);
 
         // 渲染垂直分隔線
         render_vertical_divider(divider_area, buf, self.ctx.color_theme.divider_fg, glyphs);
 
-        let right_paragraph = Paragraph::new(right_lines)
-            .style(Style::default().fg(self.ctx.color_theme.fg))
-            .block(block);
-        right_paragraph.render(right_area, buf);
+        render_file_tree_pane(self.rows, right_area, buf, state, &self.ctx);
     }
 }
 
 impl WorkingChangesDetail<'_> {
     pub fn content_height(&self) -> u16 {
         let left = self.info_lines().len();
-        let right = self.file_lines().len();
+        let right = self.rows.len();
         (left.max(right) + 2) as u16 // +2 為上／下邊框
     }
 
@@ -539,51 +666,18 @@ impl WorkingChangesDetail<'_> {
         );
         lines.push(Line::raw(""));
 
-        if !self.working_changes.staged.is_empty() {
+        if self.staged_count > 0 {
             lines.push(
-                Line::from(format!(
-                    "Staged Changes ({})",
-                    self.working_changes.staged.len()
-                ))
-                .style(Style::default().fg(self.ctx.color_theme.fg).bold()),
+                Line::from(format!("Staged Changes ({})", self.staged_count))
+                    .style(Style::default().fg(self.ctx.color_theme.fg).bold()),
             );
         }
 
-        if !self.working_changes.unstaged.is_empty() {
+        if self.unstaged_count > 0 {
             lines.push(
-                Line::from(format!(
-                    "Unstaged Changes ({})",
-                    self.working_changes.unstaged.len()
-                ))
-                .style(Style::default().fg(self.ctx.color_theme.fg).bold()),
+                Line::from(format!("Unstaged Changes ({})", self.unstaged_count))
+                    .style(Style::default().fg(self.ctx.color_theme.fg).bold()),
             );
-        }
-
-        lines
-    }
-
-    fn file_lines(&self) -> Vec<Line<'_>> {
-        let mut lines: Vec<Line> = Vec::new();
-
-        if !self.working_changes.staged.is_empty() {
-            lines.push(
-                Line::from("Staged:").style(Style::default().fg(self.ctx.color_theme.fg).bold()),
-            );
-            lines.extend(build_tree_lines(
-                &self.working_changes.staged,
-                &self.ctx.color_theme,
-            ));
-            lines.push(Line::raw(""));
-        }
-
-        if !self.working_changes.unstaged.is_empty() {
-            lines.push(
-                Line::from("Unstaged:").style(Style::default().fg(self.ctx.color_theme.fg).bold()),
-            );
-            lines.extend(build_tree_lines(
-                &self.working_changes.unstaged,
-                &self.ctx.color_theme,
-            ));
         }
 
         lines
@@ -673,8 +767,9 @@ fn flatten_tree_to_lines(
     nodes: Vec<FileTreeNode<'_>>,
     depth: usize,
     color_theme: &ColorTheme,
-) -> Vec<Line<'static>> {
-    let mut lines = Vec::new();
+    to_target: &dyn Fn(&FileChange) -> DiffTarget,
+) -> Vec<TreeRow> {
+    let mut rows = Vec::new();
     let indent = "  ".repeat(depth);
 
     for node in nodes {
@@ -684,6 +779,7 @@ fn flatten_tree_to_lines(
                 FileChange::Add { .. } => color_theme.detail_file_change_add_fg,
                 FileChange::Modify { .. } => color_theme.detail_file_change_modify_fg,
                 FileChange::Delete { .. } => color_theme.detail_file_change_delete_fg,
+                FileChange::Untracked { .. } => color_theme.detail_file_change_add_fg,
             };
 
             let mut spans: Vec<Span> = vec![
@@ -706,30 +802,101 @@ fn flatten_tree_to_lines(
                 spans.push("）".into());
             }
 
-            lines.push(Line::from(spans));
+            rows.push(TreeRow {
+                line: Line::from(spans),
+                file: Some(to_target(change)),
+            });
         } else {
             // 目錄節點
-            lines.push(Line::from(vec![
-                indent.clone().into(),
-                Span::styled(
-                    ICON_FOLDER,
-                    Style::default().fg(ratatui::style::Color::Gray),
-                ),
-                node.name.into(),
-            ]));
-            lines.extend(flatten_tree_to_lines(node.children, depth + 1, color_theme));
+            rows.push(TreeRow {
+                line: Line::from(vec![
+                    indent.clone().into(),
+                    Span::styled(
+                        ICON_FOLDER,
+                        Style::default().fg(ratatui::style::Color::Gray),
+                    ),
+                    node.name.into(),
+                ]),
+                file: None,
+            });
+            rows.extend(flatten_tree_to_lines(
+                node.children,
+                depth + 1,
+                color_theme,
+                to_target,
+            ));
         }
     }
 
-    lines
+    rows
 }
 
-fn build_tree_lines<'a>(
-    changes: &'a [FileChange],
-    color_theme: &'a ColorTheme,
-) -> Vec<Line<'static>> {
+fn build_tree_lines(
+    changes: &[FileChange],
+    color_theme: &ColorTheme,
+    to_target: &dyn Fn(&FileChange) -> DiffTarget,
+) -> Vec<TreeRow> {
     let tree = build_file_tree(changes);
-    flatten_tree_to_lines(tree, 0, color_theme)
+    flatten_tree_to_lines(tree, 0, color_theme, to_target)
+}
+
+/// commit 的檔案樹 rows，每一列都指向同一個 commit hash 的單檔 diff。
+pub fn build_commit_tree_rows(
+    changes: &[FileChange],
+    hash: &CommitHash,
+    color_theme: &ColorTheme,
+) -> Vec<TreeRow> {
+    build_tree_lines(changes, color_theme, &|change| DiffTarget::Commit {
+        hash: hash.clone(),
+        path: change.path().to_string(),
+    })
+}
+
+/// Working Changes 的檔案樹 rows：staged／unstaged 分兩段各自的標題列，
+/// unstaged 段裡的 untracked 檔案另外路由到 `DiffTarget::Untracked`。
+pub fn build_working_changes_tree_rows(
+    working_changes: &WorkingChanges,
+    color_theme: &ColorTheme,
+) -> Vec<TreeRow> {
+    let mut rows = Vec::new();
+
+    if !working_changes.staged.is_empty() {
+        rows.push(section_header_row("Staged:", color_theme));
+        rows.extend(build_tree_lines(
+            &working_changes.staged,
+            color_theme,
+            &|change| DiffTarget::Staged {
+                path: change.path().to_string(),
+            },
+        ));
+        rows.push(TreeRow {
+            line: Line::raw(""),
+            file: None,
+        });
+    }
+
+    if !working_changes.unstaged.is_empty() {
+        rows.push(section_header_row("Unstaged:", color_theme));
+        rows.extend(build_tree_lines(
+            &working_changes.unstaged,
+            color_theme,
+            &|change| match change {
+                FileChange::Untracked { path, .. } => DiffTarget::Untracked { path: path.clone() },
+                _ => DiffTarget::Unstaged {
+                    path: change.path().to_string(),
+                },
+            },
+        ));
+    }
+
+    rows
+}
+
+fn section_header_row(text: &str, color_theme: &ColorTheme) -> TreeRow {
+    TreeRow {
+        line: Line::from(text.to_string()).style(Style::default().fg(color_theme.fg).bold()),
+        file: None,
+    }
 }
 
 fn wrap_to_width(text: &str, width: usize) -> Vec<String> {
@@ -825,6 +992,69 @@ fn wrap_line_spans<'a>(line: Line<'a>, width: usize) -> Vec<Line<'a>> {
     result
 }
 
+/// 把一行截到 `width` 格寬，超出時補上省略號；不足 `width` 時補空白到剛好
+/// `width` —— 這樣選取列的 highlight 背景才能鋪滿整列，而不只是蓋在文字底下
+/// （`Line.style` 只會 patch 到既有文字，不會鋪滿整個 row）。
+fn truncate_line_to_width(line: Line<'static>, width: usize) -> Line<'static> {
+    if width == 0 {
+        return Line::from(Vec::<Span<'static>>::new());
+    }
+    let line_style = line.style;
+    let total_w: usize = line.spans.iter().map(span_width).sum();
+
+    if total_w <= width {
+        let mut spans = line.spans;
+        let pad = width - total_w;
+        if pad > 0 {
+            spans.push(Span::raw(" ".repeat(pad)));
+        }
+        let mut l = Line::from(spans);
+        l.style = line_style;
+        return l;
+    }
+
+    // 省略號佔 1 格，內容截到 width - 1；重用 `split_span_at_width` 處理
+    // CJK 雙寬與 combining mark。
+    let content_w = width.saturating_sub(1);
+    let mut spans: Vec<Span<'static>> = Vec::new();
+    let mut acc_w = 0usize;
+    for span in line.spans {
+        if acc_w >= content_w {
+            break;
+        }
+        let remaining = content_w - acc_w;
+        let sw = span_width(&span);
+        if sw <= remaining {
+            acc_w += sw;
+            spans.push(span);
+        } else {
+            let (head, _) = split_span_at_width(span, remaining);
+            acc_w += span_width(&head);
+            if !head.content.is_empty() {
+                spans.push(head);
+            }
+            break;
+        }
+    }
+    spans.push(Span::raw("…"));
+    acc_w += 1;
+    if acc_w < width {
+        spans.push(Span::raw(" ".repeat(width - acc_w)));
+    }
+    let mut l = Line::from(spans);
+    l.style = line_style;
+    l
+}
+
+/// 把 `bg` patch 到每個 span，搭配 `truncate_line_to_width` 補的空白 span
+/// 才能讓選取列的背景色鋪滿整列寬度。
+fn highlight_line(mut line: Line<'static>, bg: Color) -> Line<'static> {
+    for span in &mut line.spans {
+        span.style.bg = Some(bg);
+    }
+    line
+}
+
 #[cfg(test)]
 mod tests {
     use ratatui::{
@@ -832,7 +1062,10 @@ mod tests {
         text::{Line, Span},
     };
 
-    use super::{wrap_line_spans, wrap_to_width};
+    use super::{
+        build_commit_tree_rows, truncate_line_to_width, wrap_line_spans, wrap_to_width, FileChange,
+    };
+    use crate::{color::ColorTheme, git::CommitHash};
 
     #[test]
     fn wraps_ascii() {
@@ -933,5 +1166,81 @@ mod tests {
         let line = Line::from(Span::raw("anything"));
         let r = wrap_line_spans(line, 0);
         assert_eq!(r.len(), 1);
+    }
+
+    #[test]
+    fn truncate_pads_short_line_to_full_width() {
+        let line = Line::from(Span::raw("hi"));
+        let r = truncate_line_to_width(line, 10);
+        let w: usize = r.spans.iter().map(|s| s.content.chars().count()).sum();
+        assert_eq!(w, 10);
+    }
+
+    #[test]
+    fn truncate_long_line_ends_with_ellipsis_and_fills_width() {
+        let line = Line::from(Span::raw("this is a very long file name.rs"));
+        let r = truncate_line_to_width(line, 10);
+        let total: String = r.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(total.ends_with('…'));
+        let w: usize = r.spans.iter().map(|s| s.content.chars().count()).sum();
+        assert_eq!(w, 10);
+    }
+
+    #[test]
+    fn truncate_cjk_does_not_split_wide_char() {
+        let line = Line::from(Span::raw("中文中文中文中文"));
+        let r = truncate_line_to_width(line, 5);
+        let w: usize = r
+            .spans
+            .iter()
+            .map(|s| {
+                s.content
+                    .chars()
+                    .map(|c| unicode_width::UnicodeWidthChar::width(c).unwrap_or(0))
+                    .sum::<usize>()
+            })
+            .sum();
+        assert_eq!(w, 5);
+    }
+
+    #[test]
+    fn build_commit_tree_rows_directory_rows_have_no_file_target() {
+        let changes = vec![FileChange::Modify {
+            path: "src/app.rs".into(),
+            stats: None,
+        }];
+        let hash: CommitHash = "abc123".into();
+        let theme = ColorTheme::default();
+        let rows = build_commit_tree_rows(&changes, &hash, &theme);
+
+        assert!(rows.iter().any(|r| r.file.is_none())); // 目錄列
+        let file_row = rows.iter().find(|r| r.file.is_some()).unwrap();
+        match file_row.file.as_ref().unwrap() {
+            crate::git::DiffTarget::Commit { hash: h, path } => {
+                assert_eq!(h, &hash);
+                assert_eq!(path, "src/app.rs"); // 完整路徑，不是摺疊後的葉節點名
+            }
+            other => panic!("unexpected target: {other:?}"),
+        }
+    }
+
+    #[test]
+    fn build_working_changes_tree_rows_routes_untracked_separately() {
+        use crate::git::WorkingChanges;
+
+        let wc = WorkingChanges {
+            staged: vec![],
+            unstaged: vec![FileChange::Untracked {
+                path: "new_file.txt".into(),
+                stats: None,
+            }],
+        };
+        let theme = ColorTheme::default();
+        let rows = super::build_working_changes_tree_rows(&wc, &theme);
+        let file_row = rows.iter().find(|r| r.file.is_some()).unwrap();
+        match file_row.file.as_ref().unwrap() {
+            crate::git::DiffTarget::Untracked { path } => assert_eq!(path, "new_file.txt"),
+            other => panic!("unexpected target: {other:?}"),
+        }
     }
 }

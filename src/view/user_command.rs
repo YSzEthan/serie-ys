@@ -1,6 +1,5 @@
 use std::rc::Rc;
 
-use ansi_to_tui::IntoText as _;
 use ratatui::{
     crossterm::event::KeyEvent,
     layout::{Constraint, Layout, Rect},
@@ -12,10 +11,13 @@ use crate::{
     app::AppContext,
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
     git::{Commit, Ref, Repository},
-    view::{ListRefreshViewContext, RefreshViewContext, UserCommandRefreshViewContext},
+    view::{
+        ansi_output_to_lines, ListRefreshViewContext, RefreshViewContext,
+        UserCommandRefreshViewContext,
+    },
     widget::{
         commit_list::{CommitList, CommitListState},
-        commit_user_command::{CommitUserCommand, CommitUserCommandState},
+        output_pane::{OutputPane, OutputPaneState},
     },
 };
 
@@ -24,7 +26,7 @@ type ExecCommandFn = fn(&Commit, &[Ref], usize, Rect, &AppContext) -> Result<Str
 #[derive(Debug)]
 pub struct UserCommandView<'a> {
     commit_list_state: Option<CommitListState<'a>>,
-    commit_user_command_state: CommitUserCommandState,
+    output_pane_state: OutputPaneState,
 
     user_command_number: usize,
     user_command_output_lines: Vec<Line<'static>>,
@@ -49,7 +51,7 @@ impl<'a> UserCommandView<'a> {
 
         UserCommandView {
             commit_list_state: Some(commit_list_state),
-            commit_user_command_state: CommitUserCommandState::default(),
+            output_pane_state: OutputPaneState::default(),
             user_command_number,
             user_command_output_lines,
             ctx,
@@ -64,39 +66,39 @@ impl<'a> UserCommandView<'a> {
         match event {
             UserEvent::NavigateDown | UserEvent::SelectDown => {
                 for _ in 0..count {
-                    self.commit_user_command_state.scroll_down();
+                    self.output_pane_state.scroll_down();
                 }
             }
             UserEvent::NavigateUp | UserEvent::SelectUp => {
                 for _ in 0..count {
-                    self.commit_user_command_state.scroll_up();
+                    self.output_pane_state.scroll_up();
                 }
             }
             UserEvent::PageDown => {
                 for _ in 0..count {
-                    self.commit_user_command_state.scroll_page_down();
+                    self.output_pane_state.scroll_page_down();
                 }
             }
             UserEvent::PageUp => {
                 for _ in 0..count {
-                    self.commit_user_command_state.scroll_page_up();
+                    self.output_pane_state.scroll_page_up();
                 }
             }
             UserEvent::HalfPageDown => {
                 for _ in 0..count {
-                    self.commit_user_command_state.scroll_half_page_down();
+                    self.output_pane_state.scroll_half_page_down();
                 }
             }
             UserEvent::HalfPageUp => {
                 for _ in 0..count {
-                    self.commit_user_command_state.scroll_half_page_up();
+                    self.output_pane_state.scroll_half_page_up();
                 }
             }
             UserEvent::GoToTop => {
-                self.commit_user_command_state.select_first();
+                self.output_pane_state.select_first();
             }
             UserEvent::GoToBottom => {
-                self.commit_user_command_state.select_last();
+                self.output_pane_state.select_last();
             }
             UserEvent::GoToParent => {
                 self.tx.send(AppEvent::SelectParentCommit);
@@ -134,13 +136,8 @@ impl<'a> UserCommandView<'a> {
         let commit_list = CommitList::new(self.ctx.clone(), 0);
         f.render_stateful_widget(commit_list, list_area, self.as_mut_list_state());
 
-        let commit_user_command =
-            CommitUserCommand::new(&self.user_command_output_lines, self.ctx.clone());
-        f.render_stateful_widget(
-            commit_user_command,
-            user_command_area,
-            &mut self.commit_user_command_state,
-        );
+        let output_pane = OutputPane::new(&self.user_command_output_lines, self.ctx.clone());
+        f.render_stateful_widget(output_pane, user_command_area, &mut self.output_pane_state);
     }
 }
 
@@ -222,7 +219,7 @@ impl<'a> UserCommandView<'a> {
             vec![]
         });
 
-        self.commit_user_command_state.select_first();
+        self.output_pane_state.select_first();
     }
 
     pub fn refresh(&self) {
@@ -243,10 +240,5 @@ fn build_user_command_output_lines(
     command_output: String,
     ctx: Rc<AppContext>,
 ) -> Result<Vec<Line<'static>>, String> {
-    let tab_spaces = " ".repeat(ctx.core_config.user_command.tab_width as usize);
-    command_output
-        .replace('\t', &tab_spaces) // tab 無法正確渲染，所以要替換掉
-        .into_text()
-        .map(|t| t.into_iter().collect())
-        .map_err(|e| e.to_string())
+    ansi_output_to_lines(command_output, ctx.core_config.user_command.tab_width)
 }

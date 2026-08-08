@@ -141,19 +141,7 @@ pub struct CoreSearchConfig {
 #[derive(Debug, Clone, PartialEq, Eq, SmartDefault, Validate)]
 pub struct CoreUserCommandConfig {
     #[garde(dive)]
-    #[default(FxHashMap::from_iter([("1".into(), UserCommand {
-        name: "git diff".into(),
-        r#type: UserCommandType::Inline,
-        commands: vec![
-            "git".into(),
-            "--no-pager".into(),
-            "diff".into(),
-            "--color=always".into(),
-            "{{first_parent_hash}}".into(),
-            "{{target_hash}}".into(),
-        ],
-        refresh: false,
-    })]))]
+    #[default(FxHashMap::default())]
     pub commands: FxHashMap<String, UserCommand>,
     #[garde(range(min = 0))]
     #[default = 4]
@@ -272,6 +260,9 @@ pub struct UiConfig {
     pub detail: UiDetailConfig,
     #[garde(dive)]
     #[nested]
+    pub diff: UiDiffConfig,
+    #[garde(dive)]
+    #[nested]
     pub user_command: UiUserCommandConfig,
     #[garde(dive)]
     #[nested]
@@ -365,6 +356,17 @@ pub struct UiDetailConfig {
     pub date_local: bool,
 }
 
+/// Detail view 選檔案時，底部單一檔案 diff pane 的高度。tab 展開沿用
+/// `core.user_command.tab_width`——同一個程式裡不該有兩個「一個 tab 展開成
+/// 幾格」的答案。
+#[optional(derives = [Deserialize])]
+#[derive(Debug, Clone, PartialEq, Eq, SmartDefault, Validate)]
+pub struct UiDiffConfig {
+    #[garde(range(min = 1))]
+    #[default = 20]
+    pub height: u16,
+}
+
 #[optional(derives = [Deserialize])]
 #[derive(Debug, Clone, PartialEq, Eq, SmartDefault, Validate)]
 pub struct UiUserCommandConfig {
@@ -425,22 +427,7 @@ mod tests {
                     fuzzy: false,
                 },
                 user_command: CoreUserCommandConfig {
-                    commands: FxHashMap::from_iter([(
-                        "1".into(),
-                        UserCommand {
-                            name: "git diff".into(),
-                            r#type: UserCommandType::Inline,
-                            commands: vec![
-                                "git".into(),
-                                "--no-pager".into(),
-                                "diff".into(),
-                                "--color=always".into(),
-                                "{{first_parent_hash}}".into(),
-                                "{{target_hash}}".into(),
-                            ],
-                            refresh: false,
-                        },
-                    )]),
+                    commands: FxHashMap::default(),
                     tab_width: 4,
                 },
                 external: CoreExternalConfig {
@@ -471,6 +458,7 @@ mod tests {
                     date_format: "%Y-%m-%d %H:%M:%S %z".into(),
                     date_local: true,
                 },
+                diff: UiDiffConfig { height: 20 },
                 user_command: UiUserCommandConfig { height: 20 },
                 refs: UiRefsConfig { width: 26 },
             },
@@ -615,6 +603,7 @@ mod tests {
                     date_format: "%Y/%m/%d %H:%M:%S".into(),
                     date_local: false,
                 },
+                diff: UiDiffConfig { height: 20 },
                 user_command: UiUserCommandConfig { height: 30 },
                 refs: UiRefsConfig { width: 40 },
             },
@@ -650,22 +639,7 @@ mod tests {
                     fuzzy: false,
                 },
                 user_command: CoreUserCommandConfig {
-                    commands: FxHashMap::from_iter([(
-                        "1".into(),
-                        UserCommand {
-                            name: "git diff".into(),
-                            r#type: UserCommandType::Inline,
-                            commands: vec![
-                                "git".into(),
-                                "--no-pager".into(),
-                                "diff".into(),
-                                "--color=always".into(),
-                                "{{first_parent_hash}}".into(),
-                                "{{target_hash}}".into(),
-                            ],
-                            refresh: false,
-                        },
-                    )]),
+                    commands: FxHashMap::default(),
                     tab_width: 4,
                 },
                 external: CoreExternalConfig {
@@ -696,6 +670,7 @@ mod tests {
                     date_format: "%Y-%m-%d %H:%M:%S %z".into(),
                     date_local: true,
                 },
+                diff: UiDiffConfig { height: 20 },
                 user_command: UiUserCommandConfig { height: 20 },
                 refs: UiRefsConfig { width: 26 },
             },

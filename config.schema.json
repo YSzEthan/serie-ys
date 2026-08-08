@@ -283,6 +283,18 @@
           },
           "additionalProperties": false
         },
+        "diff": {
+          "type": "object",
+          "description": "Settings for the single-file diff pane in the commit detail view.",
+          "properties": {
+            "height": {
+              "type": "integer",
+              "description": "The height of the file diff area.",
+              "default": 20
+            }
+          },
+          "additionalProperties": false
+        },
         "user_command": {
           "type": "object",
           "description": "Settings for the user command view.",

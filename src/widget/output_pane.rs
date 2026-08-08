@@ -11,12 +11,12 @@ use ratatui::{
 use crate::app::AppContext;
 
 #[derive(Debug, Default)]
-pub struct CommitUserCommandState {
+pub struct OutputPaneState {
     height: usize,
     offset: usize,
 }
 
-impl CommitUserCommandState {
+impl OutputPaneState {
     pub fn scroll_down(&mut self) {
         self.offset = self.offset.saturating_add(1);
     }
@@ -50,59 +50,61 @@ impl CommitUserCommandState {
     }
 }
 
-pub struct CommitUserCommand<'a> {
+pub struct OutputPane<'a> {
     lines: &'a Vec<Line<'a>>,
     ctx: Rc<AppContext>,
+    title: Option<&'a str>,
 }
 
-impl<'a> CommitUserCommand<'a> {
+impl<'a> OutputPane<'a> {
     pub fn new(lines: &'a Vec<Line<'a>>, ctx: Rc<AppContext>) -> Self {
-        Self { lines, ctx }
+        Self {
+            lines,
+            ctx,
+            title: None,
+        }
+    }
+
+    pub fn title(mut self, title: &'a str) -> Self {
+        self.title = Some(title);
+        self
     }
 }
 
-impl StatefulWidget for CommitUserCommand<'_> {
-    type State = CommitUserCommandState;
+impl StatefulWidget for OutputPane<'_> {
+    type State = OutputPaneState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
-        let content_area_height = area.height as usize - 1; // 扣掉上方邊框
+        let content_area_height = (area.height as usize).saturating_sub(1); // 扣掉上方邊框
         self.update_state(state, self.lines.len(), content_area_height);
 
-        self.render_user_command_lines(area, buf, state);
+        self.render_output_lines(area, buf, state);
     }
 }
 
-impl CommitUserCommand<'_> {
-    fn render_user_command_lines(
-        &self,
-        area: Rect,
-        buf: &mut Buffer,
-        state: &mut CommitUserCommandState,
-    ) {
+impl OutputPane<'_> {
+    fn render_output_lines(&self, area: Rect, buf: &mut Buffer, state: &mut OutputPaneState) {
         let lines = self
             .lines
             .iter()
             .skip(state.offset)
-            .take(area.height as usize - 1)
+            .take((area.height as usize).saturating_sub(1))
             .cloned()
             .collect::<Vec<_>>();
+        let mut block = Block::default()
+            .borders(Borders::TOP)
+            .style(Style::default().fg(self.ctx.color_theme.divider_fg))
+            .padding(Padding::horizontal(2));
+        if let Some(title) = self.title {
+            block = block.title(title);
+        }
         let paragraph = Paragraph::new(lines)
             .style(Style::default().fg(self.ctx.color_theme.fg))
-            .block(
-                Block::default()
-                    .borders(Borders::TOP)
-                    .style(Style::default().fg(self.ctx.color_theme.divider_fg))
-                    .padding(Padding::horizontal(2)),
-            );
+            .block(block);
         paragraph.render(area, buf);
     }
 
-    fn update_state(
-        &self,
-        state: &mut CommitUserCommandState,
-        line_count: usize,
-        area_height: usize,
-    ) {
+    fn update_state(&self, state: &mut OutputPaneState, line_count: usize, area_height: usize) {
         state.height = area_height;
         state.offset = state.offset.min(line_count.saturating_sub(area_height));
     }

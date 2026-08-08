@@ -15,7 +15,6 @@ ignore_case = false
 fuzzy = false
 
 [core.user_command]
-commands_1 = { name = "git diff", commands = ["git", "--no-pager", "diff", "--color=always", "{{first_parent_hash}}", "{{target_hash}}"]}
 tab_width = 4
 
 [core.external]
@@ -36,6 +35,9 @@ name_width = 20
 height = 20
 date_format = "%Y-%m-%d %H:%M:%S %z"
 date_local = true
+
+[ui.diff]
+height = 20
 
 [ui.user_command]
 height = 20
@@ -318,6 +320,14 @@ Commit 詳情中的 author／committer date 是否以本地時區顯示。
 
 - 型別：`boolean`
 - 預設值：`true`
+
+### `ui.diff.height`
+
+Commit 詳情中，選取檔案後底部單一檔案 diff 區域的高度。詳情請參閱另一節
+[在 Detail view 中檢視檔案 diff](../features/file-diff.md)。
+
+- 型別：`u16`
+- 預設值：`20`
 
 ### `ui.user_command.height`
 
