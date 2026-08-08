@@ -17,9 +17,27 @@ use crate::{
     },
     widget::{
         commit_list::{CommitList, CommitListState},
+        h,
         output_pane::{OutputPane, OutputPaneState},
+        HintSpec,
     },
 };
+
+/// 狀態列提示。優先序＝截斷時從尾端開始丟。
+pub fn status_hints() -> Vec<HintSpec> {
+    vec![
+        h(&[UserEvent::NavigateDown, UserEvent::NavigateUp], "scroll"),
+        h(&[UserEvent::HalfPageDown], "half"),
+        h(&[UserEvent::PageDown], "page"),
+        h(&[UserEvent::GoToTop], "top"),
+        h(&[UserEvent::GoToBottom], "bottom"),
+        h(&[UserEvent::GoToParent], "parent"),
+        h(&[UserEvent::Confirm], "detail"),
+        h(&[UserEvent::Refresh], "refresh"),
+        h(&[UserEvent::HelpToggle], "help"),
+        h(&[UserEvent::Cancel], "close"),
+    ]
+}
 
 type ExecCommandFn = fn(&Commit, &[Ref], usize, Rect, &AppContext) -> Result<String, String>;
 

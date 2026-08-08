@@ -3,7 +3,7 @@ use std::rc::Rc;
 use ratatui::{
     crossterm::event::{KeyCode, KeyEvent},
     layout::Rect,
-    style::{Color, Modifier, Style, Stylize},
+    style::{Modifier, Style, Stylize},
     text::{Line, Span},
     widgets::{Block, Borders, Padding, Paragraph},
     Frame,
@@ -14,6 +14,7 @@ use crate::{
     event::{AppEvent, CheckoutPickKind, RefCopyKind, RelatedItem, Sender, UserEvent},
     github::{GhItemKind, MergeMethod, PrDraftAction, StateAction, StateFilter},
     view::View,
+    widget::{h, hint_line, hint_pairs, keybind_hint_line, truncate_line, HintSpec},
 };
 
 use super::AppContext;
@@ -29,67 +30,60 @@ fn picker_digit_index(key: KeyEvent) -> Option<usize> {
 }
 
 /// 單階段 y/n 確認的狀態列，與 [`StatusLineState::yes_no_answer`] 接受的鍵一致。
-fn confirm_line(prompt: String, hint_fg: Color) -> Line<'static> {
-    Line::from(vec![
-        prompt.into(),
-        "[y/Enter]".fg(hint_fg),
-        " confirm  ".into(),
-        "[n/Esc]".fg(hint_fg),
-        " cancel".into(),
-    ])
+/// `confirm_desc` 讓呼叫端換掉「confirm」這個字（例如合併 PR 用「execute」更貼切），
+/// 按鍵本身固定是 `UserEvent::Confirm`／`UserEvent::Cancel`。
+fn confirm_line(prompt: String, confirm_desc: &'static str, ctx: &AppContext) -> Line<'static> {
+    let hints = hint_pairs(
+        &ctx.keybind,
+        &[
+            h(&[UserEvent::Confirm], confirm_desc),
+            h(&[UserEvent::Cancel], "cancel"),
+        ],
+    );
+    let mut spans: Vec<Span<'static>> = vec![prompt.into()];
+    let hint_fg = ctx.color_theme.status_interactive_fg;
+    spans.extend(hint_line(&ctx.color_theme, &hints, hint_fg).spans);
+    Line::from(spans)
 }
 
 fn build_hotkey_hints(view: &View, ctx: &AppContext) -> Line<'static> {
-    let hints: Vec<(UserEvent, &str)> = match view {
+    let hints: Vec<HintSpec> = match view {
         View::List(_) => vec![
-            (UserEvent::Search, "search"),
-            (UserEvent::Filter, "filter"),
-            (UserEvent::IgnoreCaseToggle, "case"),
-            (UserEvent::CreateTag, "tag"),
-            (UserEvent::RefList, "refs"),
-            (UserEvent::RemoteRefsToggle, "remote"),
-            (UserEvent::GitHubToggle, "github"),
-            (UserEvent::Refresh, "refresh"),
-            (UserEvent::HelpToggle, "help"),
+            h(&[UserEvent::Search], "search"),
+            h(&[UserEvent::Filter], "filter"),
+            h(&[UserEvent::IgnoreCaseToggle], "case"),
+            h(&[UserEvent::CreateTag], "tag"),
+            h(&[UserEvent::RefList], "refs"),
+            h(&[UserEvent::RemoteRefsToggle], "remote"),
+            h(&[UserEvent::GitHubToggle], "github"),
+            h(&[UserEvent::Refresh], "refresh"),
+            h(&[UserEvent::HelpToggle], "help"),
         ],
-        View::Detail(_) => vec![
-            (UserEvent::ShortCopy, "copy"),
-            (UserEvent::Close, "close"),
-            (UserEvent::HelpToggle, "help"),
-        ],
+        View::Detail(ref view) => view.status_hints(),
         View::Refs(_) => vec![
-            (UserEvent::Checkout, "checkout"),
-            (UserEvent::DeleteRef, "delete"),
-            (UserEvent::Cancel, "close"),
-            (UserEvent::HelpToggle, "help"),
+            h(&[UserEvent::NavigateDown, UserEvent::NavigateUp], "move"),
+            h(&[UserEvent::Checkout], "checkout"),
+            h(&[UserEvent::DeleteRef], "delete"),
+            h(&[UserEvent::Refresh], "refresh"),
+            h(&[UserEvent::HelpToggle], "help"),
+            h(&[UserEvent::Cancel], "close"),
         ],
         View::CreateTag(_) | View::DeleteTag(_) | View::DeleteRef(_) => vec![
-            (UserEvent::Confirm, "confirm"),
-            (UserEvent::Cancel, "cancel"),
+            h(&[UserEvent::Confirm], "confirm"),
+            h(&[UserEvent::Cancel], "cancel"),
         ],
-        View::Help(_) => vec![(UserEvent::Close, "close")],
+        View::UserCommand(_) => crate::view::user_command::status_hints(),
+        View::Help(_) => vec![
+            h(&[UserEvent::NavigateDown, UserEvent::NavigateUp], "scroll"),
+            h(&[UserEvent::Close], "close"),
+        ],
         View::GitHub(ref view) => view.status_hints(),
-        _ => vec![],
+        // 窮舉而非 `_`：新增一個 view 時要在這裡被編譯器叫住，
+        // 而不是靜默得到一條空提示列。
+        View::Default => vec![],
     };
 
-    let key_fg = ctx.color_theme.help_key_fg;
-    let desc_fg = ctx.color_theme.status_input_transient_fg;
-
-    let mut spans: Vec<Span<'static>> = Vec::new();
-    for (i, (event, desc)) in hints.iter().enumerate() {
-        if let Some(key) = ctx.keybind.keys_for_event(*event).first() {
-            if i > 0 {
-                spans.push(Span::raw("  "));
-            }
-            spans.push(Span::styled(key.clone(), Style::default().fg(key_fg)));
-            spans.push(Span::raw(" "));
-            spans.push(Span::styled(
-                (*desc).to_string(),
-                Style::default().fg(desc_fg),
-            ));
-        }
-    }
-    Line::from(spans)
+    keybind_hint_line(&ctx.color_theme, &ctx.keybind, &hints)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -644,7 +638,12 @@ impl StatusLineState {
                 let msg_w = console::measure_text_width(msg.as_str());
                 if let Some(t_msg) = transient_msg {
                     let t_msg_w = console::measure_text_width(t_msg.as_str());
-                    let pad_w = area.width as usize - msg_w - t_msg_w - 2 /* pad */;
+                    // saturating：窄終端 + 長 transient message 會讓這串減法
+                    // underflow，接著 `" ".repeat(天文數字)` 直接吃光記憶體。
+                    let pad_w = (area.width as usize)
+                        .saturating_sub(msg_w)
+                        .saturating_sub(t_msg_w)
+                        .saturating_sub(2 /* pad */);
                     Line::from(vec![
                         msg.as_str().fg(self.ctx.color_theme.status_input_fg),
                         " ".repeat(pad_w).into(),
@@ -693,14 +692,10 @@ impl StatusLineState {
                 kind,
                 action,
                 ..
-            } => confirm_line(
-                action.prompt(*kind, *number),
-                self.ctx.color_theme.status_interactive_fg,
-            ),
-            StatusLine::TogglePrDraftPrompt { number, action, .. } => confirm_line(
-                action.prompt(*number),
-                self.ctx.color_theme.status_interactive_fg,
-            ),
+            } => confirm_line(action.prompt(*kind, *number), "confirm", &self.ctx),
+            StatusLine::TogglePrDraftPrompt { number, action, .. } => {
+                confirm_line(action.prompt(*number), "confirm", &self.ctx)
+            }
             StatusLine::NotificationInfo(msg) => {
                 Line::raw(msg).fg(self.ctx.color_theme.status_info_fg)
             }
@@ -714,12 +709,16 @@ impl StatusLineState {
                 .add_modifier(Modifier::BOLD)
                 .fg(self.ctx.color_theme.status_error_fg),
         };
-        let paragraph = Paragraph::new(text).block(
-            Block::default()
-                .borders(Borders::TOP)
-                .style(Style::default().fg(self.ctx.color_theme.divider_fg))
-                .padding(Padding::horizontal(1)),
-        );
+        let block = Block::default()
+            .borders(Borders::TOP)
+            .style(Style::default().fg(self.ctx.color_theme.divider_fg))
+            .padding(Padding::horizontal(1));
+
+        // 截斷統一在這裡套一次，不分支 —— picker 那幾行才是真正沒有上限的
+        // （`render_picker_line` 把每個 branch 名 inline 印出來），提示列反而是
+        // 人工策劃過的。可用寬度從 `block.inner()` 拿，不要手算 padding。
+        let max_width = block.inner(area).width as usize;
+        let paragraph = Paragraph::new(truncate_line(text, max_width)).block(block);
         f.render_widget(paragraph, area);
 
         if let StatusLine::Input(_, Some(cursor_pos), _) = &self.line {
@@ -848,17 +847,11 @@ impl StatusLineState {
                 delete_branch,
             } => {
                 let del = if delete_branch { "yes" } else { "no" };
-                Line::from(vec![
-                    format!(
-                        "Merge #{number} with {}, delete branch: {del}  ",
-                        method.display()
-                    )
-                    .into(),
-                    "[y/Enter]".fg(hint_fg),
-                    " execute  ".into(),
-                    "[Esc]".fg(hint_fg),
-                    " cancel".into(),
-                ])
+                let prompt = format!(
+                    "Merge #{number} with {}, delete branch: {del}  ",
+                    method.display()
+                );
+                confirm_line(prompt, "execute", &self.ctx)
             }
         }
     }

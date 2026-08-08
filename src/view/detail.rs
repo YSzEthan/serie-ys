@@ -25,9 +25,55 @@ use crate::{
             CommitDetailState, DetailPane, TreeRow, WorkingChangesDetail,
         },
         commit_list::{CommitList, CommitListState},
+        h,
         output_pane::{OutputPane, OutputPaneState},
+        HintSpec,
     },
 };
+
+/// 狀態列提示。依 pane 分流 —— Info pane 列不到 diff 捲動鍵，Files pane 才列。
+/// 優先序＝截斷時從尾端開始丟，所以當下情境最相關的排前面。
+///
+/// 寫成自由函式（而不是吃 `&self` 的方法）是為了可測：它只依賴 pane，
+/// 測試可以直接餵 `DetailPane` 進來檢查每個 event 都有綁鍵、也都在說明頁列出。
+pub fn status_hints_for(pane: DetailPane) -> Vec<HintSpec> {
+    let mut hints = vec![h(&[UserEvent::DetailPaneToggle], "pane")];
+    match pane {
+        DetailPane::Info => {
+            hints.push(h(
+                &[UserEvent::NavigateDown, UserEvent::NavigateUp],
+                "scroll",
+            ));
+        }
+        DetailPane::Files => {
+            hints.push(h(&[UserEvent::NavigateDown, UserEvent::NavigateUp], "file"));
+            hints.push(h(&[UserEvent::SelectDown, UserEvent::SelectUp], "diff"));
+        }
+    }
+    hints.extend([
+        h(
+            &[UserEvent::NavigateLeft, UserEvent::NavigateRight],
+            "commit",
+        ),
+        h(&[UserEvent::GoToParent], "parent"),
+        h(&[UserEvent::ShortCopy], "copy"),
+    ]);
+    if pane == DetailPane::Files {
+        hints.extend([
+            h(&[UserEvent::HalfPageDown], "half"),
+            h(&[UserEvent::PageDown], "page"),
+        ]);
+    }
+    hints.extend([
+        h(&[UserEvent::RefList], "refs"),
+        h(&[UserEvent::RemoteRefsToggle], "remote"),
+        h(&[UserEvent::GitHubToggle], "github"),
+        h(&[UserEvent::Refresh], "refresh"),
+        h(&[UserEvent::HelpToggle], "help"),
+        h(&[UserEvent::Cancel], "close"),
+    ]);
+    hints
+}
 
 #[derive(Debug)]
 enum DetailContent {
@@ -433,6 +479,10 @@ impl<'a> DetailView<'a> {
 
     pub fn marquee_needed(&self) -> bool {
         self.commit_detail_state.subject_overflows()
+    }
+
+    pub fn status_hints(&self) -> Vec<HintSpec> {
+        status_hints_for(self.commit_detail_state.active_pane())
     }
 
     pub fn select_older_commit(&mut self, repository: &Repository) {

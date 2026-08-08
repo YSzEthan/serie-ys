@@ -6,18 +6,25 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Padding, Paragraph, Widget},
 };
 
-use crate::color::ColorTheme;
+use crate::{
+    color::ColorTheme,
+    event::UserEvent,
+    keybind::KeyBind,
+    widget::{h, keybind_hint_line},
+};
 
 pub struct PendingOverlay<'a> {
     message: &'a str,
     color_theme: &'a ColorTheme,
+    keybind: &'a KeyBind,
 }
 
 impl<'a> PendingOverlay<'a> {
-    pub fn new(message: &'a str, color_theme: &'a ColorTheme) -> Self {
+    pub fn new(message: &'a str, color_theme: &'a ColorTheme, keybind: &'a KeyBind) -> Self {
         Self {
             message,
             color_theme,
+            keybind,
         }
     }
 }
@@ -64,9 +71,11 @@ impl Widget for PendingOverlay<'_> {
         let mut lines = vec![Line::raw("")];
         lines.extend(message_lines);
         lines.push(Line::raw(""));
-        lines.push(crate::widget::build_hint_line(
+        // 關掉它的是 `UserEvent::Cancel`（見 `App::handle_key`），不是寫死的 Esc。
+        lines.push(keybind_hint_line(
             self.color_theme,
-            &[("Esc", "hide")],
+            self.keybind,
+            &[h(&[UserEvent::Cancel], "hide")],
         ));
 
         Paragraph::new(lines).centered().render(inner_area, buf);

@@ -14,7 +14,10 @@ use crate::{
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
     git::{delete_remote_tag, delete_tag, CommitHash, Ref},
     view::{ListRefreshViewContext, RefreshViewContext},
-    widget::commit_list::{CommitList, CommitListState},
+    widget::{
+        commit_list::{CommitList, CommitListState},
+        h, keybind_hint_line,
+    },
 };
 
 #[derive(Debug)]
@@ -246,16 +249,20 @@ impl<'a> DeleteTagView<'a> {
         ]);
         f.render_widget(Paragraph::new(checkbox_line), checkbox_area);
 
-        let hint_line = crate::widget::build_hint_line(
+        let hints = keybind_hint_line(
             &self.ctx.color_theme,
+            &self.ctx.keybind,
             &[
-                ("Enter/y", "delete"),
-                ("Esc/n", "close"),
-                ("↑↓", "select"),
-                ("←→", "toggle"),
+                h(&[UserEvent::Confirm], "delete"),
+                h(&[UserEvent::Cancel], "close"),
+                h(&[UserEvent::NavigateDown, UserEvent::NavigateUp], "select"),
+                h(
+                    &[UserEvent::NavigateLeft, UserEvent::NavigateRight],
+                    "toggle",
+                ),
             ],
         );
-        f.render_widget(Paragraph::new(hint_line).centered(), hint_area);
+        f.render_widget(Paragraph::new(hints).centered(), hint_area);
     }
 }
 

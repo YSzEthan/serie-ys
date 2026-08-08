@@ -16,6 +16,7 @@ use crate::{
         PrDraftAction, StateAction, StateFilter,
     },
     view::View,
+    widget::{h, HintSpec},
 };
 
 use preview::{PreviewCache, PreviewInput, SelectedItem, SelectedItemExtra};
@@ -516,59 +517,62 @@ impl<'a> GitHubView<'a> {
         self.preview_offset = 0;
     }
 
-    pub fn status_hints(&self) -> Vec<(UserEvent, &'static str)> {
+    pub fn status_hints(&self) -> Vec<HintSpec> {
         match self.focus {
             GitHubFocus::CheckboxEdit => {
                 vec![
-                    (UserEvent::NavigateLeft, "toggle"),
-                    (UserEvent::Confirm, "submit"),
-                    (UserEvent::Cancel, "cancel"),
+                    h(&[UserEvent::NavigateLeft], "toggle"),
+                    h(&[UserEvent::Confirm], "submit"),
+                    h(&[UserEvent::Cancel], "cancel"),
                 ]
             }
             GitHubFocus::Prompt => {
                 vec![
-                    (UserEvent::Confirm, "done"),
-                    (UserEvent::Cancel, "clear/close"),
+                    h(&[UserEvent::Confirm], "done"),
+                    h(&[UserEvent::Cancel], "clear/close"),
                 ]
             }
             GitHubFocus::Preview => {
-                let mut hints = vec![(UserEvent::Cancel, "back")];
+                let mut hints = vec![h(&[UserEvent::Cancel], "back")];
                 hints.extend(self.action_hints());
                 hints.extend(self.commit_log_hint());
                 if self.selected_has_related() {
-                    hints.push((UserEvent::DetailPaneToggle, "related"));
+                    hints.push(h(&[UserEvent::DetailPaneToggle], "related"));
                 }
                 hints
             }
             GitHubFocus::List => {
                 if self.current_list_len() == 0 {
                     return match &self.load_state {
-                        LoadState::Loading => vec![(UserEvent::Cancel, "close")],
+                        LoadState::Loading => vec![h(&[UserEvent::Cancel], "close")],
                         LoadState::Error(_) => {
-                            vec![(UserEvent::Refresh, "retry"), (UserEvent::Cancel, "close")]
+                            vec![
+                                h(&[UserEvent::Refresh], "retry"),
+                                h(&[UserEvent::Cancel], "close"),
+                            ]
                         }
                         LoadState::Idle => vec![
-                            (UserEvent::Refresh, "refresh"),
-                            (UserEvent::Cancel, "close"),
+                            h(&[UserEvent::Refresh], "refresh"),
+                            h(&[UserEvent::Cancel], "close"),
                         ],
                     };
                 }
                 // contextual action 隨選取項目變動、使用者猜不到，排在靜態提示之前，
                 // 讓被終端寬度切掉的是 help 裡查得到的那些。
-                let mut hints = vec![(UserEvent::RefList, "switch tab")];
+                let mut hints = vec![h(&[UserEvent::RefList], "switch tab")];
                 hints.extend(self.action_hints());
                 hints.extend([
-                    (UserEvent::Search, "search"),
-                    (UserEvent::Confirm, "preview"),
-                    (UserEvent::Refresh, "refresh"),
-                    (UserEvent::Filter, "filter"),
-                    (UserEvent::ShortCopy, "copy url / C open / v #num"),
+                    h(&[UserEvent::Search], "search"),
+                    h(&[UserEvent::Confirm], "preview"),
+                    h(&[UserEvent::Refresh], "refresh"),
+                    h(&[UserEvent::Filter], "filter"),
+                    h(&[UserEvent::ShortCopy], "copy url / C open / v #num"),
                 ]);
                 hints.extend(self.commit_log_hint());
                 if self.selected_has_related() {
-                    hints.push((UserEvent::DetailPaneToggle, "related"));
+                    hints.push(h(&[UserEvent::DetailPaneToggle], "related"));
                 }
-                hints.push((UserEvent::GitHubToggle, "close"));
+                hints.push(h(&[UserEvent::GitHubToggle], "close"));
                 hints
             }
         }
@@ -605,7 +609,7 @@ impl<'a> GitHubView<'a> {
         }
     }
 
-    fn action_hints(&self) -> Vec<(UserEvent, &'static str)> {
+    fn action_hints(&self) -> Vec<HintSpec> {
         let Some((_, kind, state)) = self.selected_state_target() else {
             return Vec::new();
         };
@@ -616,23 +620,23 @@ impl<'a> GitHubView<'a> {
             let idx = self.actual_index(self.selected_index);
             if let Some(pr) = self.pull_requests.get(idx) {
                 if !pr.is_draft {
-                    hints.push((UserEvent::MergePr, "merge PR"));
+                    hints.push(h(&[UserEvent::MergePr], "merge PR"));
                 }
-                hints.push((
-                    UserEvent::TogglePrDraft,
+                hints.push(h(
+                    &[UserEvent::TogglePrDraft],
                     PrDraftAction::for_pr(pr.is_draft).hint_label(),
                 ));
             }
         }
         if let Some(action) = StateAction::for_state(state) {
-            hints.push((UserEvent::ToggleIssueState, action.hint_label(kind)));
+            hints.push(h(&[UserEvent::ToggleIssueState], action.hint_label(kind)));
         }
         hints
     }
 
     /// 跟 `action_hints` 不同，不受 `state == "OPEN"` 限制——已關閉或已
     /// merge 的 PR 一樣有值得收合的 commit log。
-    fn commit_log_hint(&self) -> Option<(UserEvent, &'static str)> {
+    fn commit_log_hint(&self) -> Option<HintSpec> {
         if !matches!(self.active_tab, GitHubTab::PullRequests) {
             return None;
         }
@@ -641,7 +645,7 @@ impl<'a> GitHubView<'a> {
         } else {
             "expand commits"
         };
-        Some((UserEvent::ToggleCommitLog, label))
+        Some(h(&[UserEvent::ToggleCommitLog], label))
     }
 
     pub fn jump_to_issue(&mut self, number: u64) -> bool {
@@ -1515,7 +1519,7 @@ mod tests {
             !view
                 .status_hints()
                 .iter()
-                .any(|(e, _)| *e == UserEvent::ToggleCommitLog),
+                .any(|(events, _)| events.contains(&UserEvent::ToggleCommitLog)),
             "no hint should be offered for a key that does nothing here"
         );
     }

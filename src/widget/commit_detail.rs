@@ -899,8 +899,11 @@ fn section_header_row(text: &str, color_theme: &ColorTheme) -> TreeRow {
     }
 }
 
+/// 契約與 `wrap_line_spans` 一致：`width == 0` 原樣回傳，這是終端機被縮到極窄時
+/// 會真實發生的狀態（`available = left_area.width - 2` 會算出 0），不是呼叫端的錯誤。
+/// 原本這裡有個 `debug_assert!(width > 0)`，跟下面自己的 graceful 處理互相矛盾，
+/// 而且會讓 debug build 在把視窗拖到很窄時直接 panic。
 fn wrap_to_width(text: &str, width: usize) -> Vec<String> {
-    debug_assert!(width > 0, "wrap_to_width requires non-zero width");
     if width == 0 {
         return vec![text.to_string()];
     }

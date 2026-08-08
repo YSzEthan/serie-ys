@@ -161,15 +161,16 @@ impl BrowserState {
 
         // 第一列固定操作說明 —— 跟本專案其餘對話框把提示放在底部的慣例相反，
         // 這是目錄瀏覽器特別要求的。
-        let hint = crate::widget::build_hint_line(
+        let hint = crate::widget::hint_line(
             theme,
             &[
-                ("↑↓", "移動"),
-                ("←", "上層目錄"),
-                ("→", "進入子目錄"),
-                ("Enter", "選取目前目錄"),
-                ("Esc", "取消"),
+                ("↑↓".into(), "移動"),
+                ("←".into(), "上層目錄"),
+                ("→".into(), "進入子目錄"),
+                ("Enter".into(), "選取目前目錄"),
+                ("Esc".into(), "取消"),
             ],
+            theme.help_key_fg,
         );
         f.render_widget(Paragraph::new(hint), hint_area);
 

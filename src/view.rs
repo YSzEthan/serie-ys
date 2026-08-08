@@ -9,7 +9,7 @@ mod help;
 mod list;
 mod markdown;
 mod refs;
-mod user_command;
+pub(crate) mod user_command;
 
 pub use refs::RefsOrigin;
 pub use views::*;

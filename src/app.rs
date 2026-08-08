@@ -775,7 +775,7 @@ impl App<'_> {
         );
 
         if let Some(message) = &self.pending_message {
-            let overlay = PendingOverlay::new(message, &self.ctx.color_theme);
+            let overlay = PendingOverlay::new(message, &self.ctx.color_theme, &self.ctx.keybind);
             f.render_widget(overlay, f.area());
         }
     }

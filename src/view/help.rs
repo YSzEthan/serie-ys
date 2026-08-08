@@ -326,6 +326,9 @@ fn help_blocks(
         b(vec![UserEvent::TagCopy],                                      "複製 tag 名稱",     "Copy tag name"),
         b(vec![UserEvent::RemoteRefsToggle],                             "切換 remote refs",  "Toggle remote refs"),
         b(vec![UserEvent::RefList],                                      "開啟 refs 清單",    "Open refs list"),
+        // 這個一直都能用（`is_browsing_view()` 含 Detail，事件由 `global_app_event`
+        // 在 App 層攔下），只是說明頁從來沒列出來。
+        b(vec![UserEvent::GitHubToggle],                                 "開啟 GitHub issues/PRs", "Open GitHub issues/PRs"),
         b(vec![UserEvent::HelpToggle],                                   "開啟說明",          "Open help"),
         b(vec![UserEvent::Refresh],                                      "重新整理",          "Refresh"),
     ];
@@ -533,6 +536,59 @@ mod tests {
             }
         }
         assert!(unbound.is_empty(), "\n{}", unbound.join("\n"));
+    }
+
+    /// 狀態列提示是**第二份**手寫清單，`source_events_are_all_claimed` 涵蓋不到它的
+    /// 漂移：那個測試的粒度是「檔案」，分不出 detail 的 Info 與 Files 兩組提示，
+    /// 而且它的比對方向反過來還會被提示表餵成假性通過（提示表裡出現的名字會讓
+    /// `claimed_events_exist_in_source` 以為說明頁的宣稱有原始碼佐證）。
+    ///
+    /// 所以這裡直接把提示表本身當受測對象：每個提示的每個 event 都必須
+    /// (a) 真的綁著鍵，(b) 也在對應的說明頁分區列出。
+    #[test]
+    fn status_hints_are_bound_and_documented() {
+        use crate::view::detail::status_hints_for;
+        use crate::widget::commit_detail::DetailPane;
+
+        let keybind = KeyBind::new(None);
+        let claimed_in = |block: HelpBlock| -> BTreeSet<String> {
+            blocks()
+                .into_iter()
+                .filter(|(b, _)| *b == block)
+                .flat_map(|(_, specs)| specs)
+                .flat_map(|s| s.events.into_iter().map(event_name))
+                .collect()
+        };
+
+        let mut problems = Vec::new();
+        let mut check = |block: HelpBlock, hints: Vec<crate::widget::HintSpec>| {
+            let claimed = claimed_in(block);
+            for (events, desc) in hints {
+                for event in events {
+                    if keybind.display_key(*event).is_none() {
+                        problems.push(format!(
+                            "「{}」的狀態列提示『{desc}』用了 {event:?}，但它沒有綁定按鍵",
+                            block.title()
+                        ));
+                    }
+                    if !claimed.contains(&event_name(*event)) {
+                        problems.push(format!(
+                            "「{}」的狀態列提示『{desc}』用了 {event:?}，但說明頁沒有列出",
+                            block.title()
+                        ));
+                    }
+                }
+            }
+        };
+
+        check(HelpBlock::Detail, status_hints_for(DetailPane::Info));
+        check(HelpBlock::Detail, status_hints_for(DetailPane::Files));
+        check(
+            HelpBlock::UserCommand,
+            crate::view::user_command::status_hints(),
+        );
+
+        assert!(problems.is_empty(), "\n{}", problems.join("\n"));
     }
 
     /// 說明頁宣稱的每個動作，都必須出現在該 view 的原始碼裡（不可亂宣稱）。

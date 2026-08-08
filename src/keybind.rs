@@ -9,19 +9,27 @@ use crate::event::UserEvent;
 const DEFAULT_KEY_BIND: &str = include_str!("../assets/default-keybind.toml");
 
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct KeyBind(FxHashMap<KeyEvent, UserEvent>);
+pub struct KeyBind {
+    map: FxHashMap<KeyEvent, UserEvent>,
+    /// 每個 event 在設定檔裡宣告的**第一個**鍵。狀態列提示只放得下一個鍵，
+    /// 而 `keys_for_event` 的排序是 `KeyEvent` 的 derive `PartialOrd`（struct
+    /// 欄位順序），跟「作者心中的主鍵」無關 —— 它會把 `navigate_down` 排成
+    /// `Down` 在前、`page_down` 排成 `PageDown` 在前。設定檔的宣告順序才是
+    /// 答案，而且使用者自己的 config.toml 順序也會自動生效。
+    primary: FxHashMap<UserEvent, KeyEvent>,
+}
 
 impl Deref for KeyBind {
     type Target = FxHashMap<KeyEvent, UserEvent>;
 
     fn deref(&self) -> &Self::Target {
-        &self.0
+        &self.map
     }
 }
 
 impl DerefMut for KeyBind {
     fn deref_mut(&mut self) -> &mut Self::Target {
-        &mut self.0
+        &mut self.map
     }
 }
 
@@ -30,13 +38,32 @@ impl KeyBind {
         let mut keybind: KeyBind =
             toml::from_str(DEFAULT_KEY_BIND).expect("default key bind should be correct");
 
-        if let Some(mut custom_keybind_patch) = custom_keybind_patch {
-            for (key_event, user_event) in custom_keybind_patch.drain() {
-                keybind.insert(key_event, user_event);
-            }
+        if let Some(custom_keybind_patch) = custom_keybind_patch {
+            keybind.merge(custom_keybind_patch);
         }
 
         keybind
+    }
+
+    /// 套用使用者設定檔的覆寫。兩張表存在的理由不同（`map` 答「按下去是什麼
+    /// 事件」、`primary` 答「這個事件的主鍵是哪個」），但合併演算法一樣：
+    /// 同 key 後者覆寫前者，就是 `Extend` 的標準語意。
+    fn merge(&mut self, patch: KeyBind) {
+        self.map.extend(patch.map);
+        self.primary.extend(patch.primary);
+    }
+
+    /// 狀態列提示要顯示的那一個鍵。未綁定、或字串化後為空（`key_event_to_string`
+    /// 對 `Null`／`Media` 這類會回空字串）都回 `None`，呼叫端據此整組略過。
+    pub fn display_key(&self, user_event: UserEvent) -> Option<String> {
+        let s = match self.primary.get(&user_event) {
+            Some(key) => key_event_to_string(*key),
+            // primary 只在 deserialize 時填。走 `insert()` 直接塞進來的綁定
+            // （測試、未來的動態綁定）沒有宣告順序可言，退回 `keys_for_event`
+            // 既有的排序——不要在這裡重抄一份同樣的排序邏輯。
+            None => self.keys_for_event(user_event).into_iter().next()?,
+        };
+        (!s.is_empty()).then_some(s)
     }
 
     pub fn keys_for_event(&self, user_event: UserEvent) -> Vec<String> {
@@ -72,8 +99,9 @@ impl<'de> Deserialize<'de> for KeyBind {
     {
         let parsed_map = FxHashMap::<UserEvent, Vec<String>>::deserialize(deserializer)?;
         let mut key_map = FxHashMap::<KeyEvent, UserEvent>::default();
+        let mut primary = FxHashMap::<UserEvent, KeyEvent>::default();
         for (user_event, key_events) in parsed_map {
-            for key_event_str in key_events {
+            for (i, key_event_str) in key_events.into_iter().enumerate() {
                 let key_event = match parse_key_event(&key_event_str) {
                     Ok(e) => e,
                     Err(s) => {
@@ -81,6 +109,10 @@ impl<'de> Deserialize<'de> for KeyBind {
                         return Err(serde::de::Error::custom(msg));
                     }
                 };
+                // 宣告順序的第一個就是主鍵，狀態列提示顯示它
+                if i == 0 {
+                    primary.insert(user_event, key_event);
+                }
                 if let Some(conflict_user_event) = key_map.insert(key_event, user_event) {
                     let msg = format!(
                         "{key_event:?} map to multiple events: {user_event:?}, {conflict_user_event:?}"
@@ -90,7 +122,10 @@ impl<'de> Deserialize<'de> for KeyBind {
             }
         }
 
-        Ok(KeyBind(key_map))
+        Ok(KeyBind {
+            map: key_map,
+            primary,
+        })
     }
 }
 
@@ -276,8 +311,9 @@ mod tests {
             user_command_view_toggle_10 = ["e"]
         "#;
 
-        let expected = KeyBind(
-            [
+        // 這個測試驗的是「按鍵字串怎麼解析成 KeyEvent」，所以只比對 key→event
+        // 這張表；宣告順序推出來的 `primary` 由下面的 display_key 測試涵蓋。
+        let expected: FxHashMap<KeyEvent, UserEvent> = [
                 (
                     KeyEvent::new(KeyCode::Char('k'), KeyModifiers::empty()),
                     UserEvent::NavigateUp,
@@ -328,12 +364,65 @@ mod tests {
                 ),
             ]
             .into_iter()
-            .collect(),
-        );
+            .collect();
 
         let actual: KeyBind = toml::from_str(toml).unwrap();
 
-        assert_eq!(actual, expected);
+        assert_eq!(*actual, expected);
+    }
+
+    /// `display_key` 取的是**設定檔宣告順序的第一個鍵**，不是 `keys_for_event`
+    /// 的排序結果。這四個案例正是兩者會分岔的地方 —— `KeyEvent` 的 derive
+    /// `PartialOrd` 會把 `Down` 排在 `j` 前、`PageDown` 排在 `Ctrl-f` 前。
+    #[test]
+    fn display_key_follows_declaration_order_not_sort_order() {
+        let keybind = KeyBind::new(None);
+
+        assert_eq!(
+            keybind.display_key(UserEvent::NavigateDown).as_deref(),
+            Some("j")
+        );
+        assert_eq!(
+            keybind.display_key(UserEvent::Cancel).as_deref(),
+            Some("Esc")
+        );
+        assert_eq!(
+            keybind.display_key(UserEvent::PageDown).as_deref(),
+            Some("Ctrl-f")
+        );
+        assert_eq!(
+            keybind.display_key(UserEvent::Confirm).as_deref(),
+            Some("Enter")
+        );
+
+        // 對照組：同樣的 event 用 keys_for_event 拿到的第一個是不一樣的東西
+        assert_eq!(
+            keybind
+                .keys_for_event(UserEvent::NavigateDown)
+                .first()
+                .unwrap(),
+            "Down"
+        );
+        assert_eq!(
+            keybind.keys_for_event(UserEvent::PageDown).first().unwrap(),
+            "PageDown"
+        );
+    }
+
+    #[test]
+    fn display_key_returns_none_for_unbound_event() {
+        // e 鍵已移除，預設沒有任何 user_command 綁定
+        let keybind = KeyBind::new(None);
+        assert_eq!(keybind.display_key(UserEvent::UserCommand(1)), None);
+    }
+
+    #[test]
+    fn display_key_uses_user_declaration_order_after_patch() {
+        let patch: KeyBind = toml::from_str(r#"cancel = ["q", "esc"]"#).unwrap();
+        let keybind = KeyBind::new(Some(patch));
+
+        // 使用者把 q 宣告在前，提示就顯示 q（不是預設的 Esc）
+        assert_eq!(keybind.display_key(UserEvent::Cancel).as_deref(), Some("q"));
     }
 
     /// 非 ASCII 按鍵過去會在啟動時炸掉整份設定檔，因為單字元那條分支測的是

@@ -84,6 +84,7 @@
 | <kbd>v</kbd> | 複製 tag 名稱 | `tag_copy` |
 | <kbd>o</kbd> | 切換 remote refs | `remote_refs_toggle` |
 | <kbd>Tab</kbd> | 開啟 refs 清單 | `ref_list` |
+| <kbd>g</kbd> | 開啟 GitHub issues/PRs | `github_toggle` |
 | <kbd>F1</kbd> <kbd>?</kbd> | 開啟說明 | `help_toggle` |
 | <kbd>r</kbd> | 重新整理 | `refresh` |
 
