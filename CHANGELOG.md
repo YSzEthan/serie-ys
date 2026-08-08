@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.1](https://github.com/YSzEthan/serie-ys/compare/v2.3.0...v2.3.1) (2026-08-08)
+
+
+### Bug Fixes
+
+* issue detail 的 timeline 查詢不再帶 PR 專屬片段 (#46) ([92043f2](https://github.com/YSzEthan/serie-ys/commit/92043f2715660ca7795ef1cefd64403b838512a0))
+
 ## [2.3.0](https://github.com/YSzEthan/serie-ys/compare/v2.2.1...v2.3.0) (2026-08-08)
 
 
