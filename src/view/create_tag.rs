@@ -15,7 +15,10 @@ use crate::{
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
     git::{create_tag, push_tag, CommitHash},
     view::{ListRefreshViewContext, RefreshViewContext},
-    widget::commit_list::{CommitList, CommitListState},
+    widget::{
+        commit_list::{CommitList, CommitListState},
+        h, keybind_hint_line,
+    },
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -315,15 +318,16 @@ impl<'a> CreateTagView<'a> {
         ]);
         f.render_widget(Paragraph::new(push_line), push_area);
 
-        let hint_line = crate::widget::build_hint_line(
+        let hints = keybind_hint_line(
             &self.ctx.color_theme,
+            &self.ctx.keybind,
             &[
-                ("Enter/y", "submit"),
-                ("Esc/n", "cancel"),
-                ("Tab/↑↓", "nav"),
+                h(&[UserEvent::Confirm], "submit"),
+                h(&[UserEvent::Cancel], "cancel"),
+                h(&[UserEvent::NavigateDown, UserEvent::NavigateUp], "nav"),
             ],
         );
-        f.render_widget(Paragraph::new(hint_line).centered(), hint_area);
+        f.render_widget(Paragraph::new(hints).centered(), hint_area);
 
         // 游標定位
         if self.focused_field == FocusedField::TagName {

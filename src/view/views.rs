@@ -5,7 +5,7 @@ use ratatui::{crossterm::event::KeyEvent, layout::Rect, Frame};
 use crate::{
     app::AppContext,
     event::{AppEvent, Sender, UserEventWithCount},
-    git::{Commit, CommitHash, FileChange, Ref, RefType, WorkingChanges},
+    git::{Commit, CommitHash, FileChange, Ref, RefType, Repository, WorkingChanges},
     view::{
         create_tag::CreateTagView, delete_ref::DeleteRefView, delete_tag::DeleteTagView,
         detail::DetailView, github::GitHubView, help::HelpView, list::ListView, refs::RefsView,
@@ -124,6 +124,7 @@ impl<'a> View<'a> {
         commit: Commit,
         changes: Vec<FileChange>,
         refs: Vec<Ref>,
+        repository: &'a Repository,
         ctx: Rc<AppContext>,
         tx: Sender,
     ) -> Self {
@@ -132,6 +133,7 @@ impl<'a> View<'a> {
             commit,
             changes,
             refs,
+            repository,
             ctx,
             tx,
         )))
@@ -140,12 +142,14 @@ impl<'a> View<'a> {
     pub fn of_working_changes_detail(
         commit_list_state: CommitListState<'a>,
         working_changes: WorkingChanges,
+        repository: &'a Repository,
         ctx: Rc<AppContext>,
         tx: Sender,
     ) -> Self {
         View::Detail(Box::new(DetailView::new_working_changes(
             commit_list_state,
             working_changes,
+            repository,
             ctx,
             tx,
         )))

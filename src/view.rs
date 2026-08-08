@@ -9,15 +9,32 @@ mod help;
 mod list;
 mod markdown;
 mod refs;
-mod user_command;
+pub(crate) mod user_command;
 
 pub use refs::RefsOrigin;
 pub use views::*;
+
+use ansi_to_tui::IntoText as _;
+use ratatui::text::Line;
 
 use crate::{
     event::{AppEvent, CheckoutPickKind, RefCopyKind, Sender},
     git::Ref,
 };
+
+/// 把外部指令 / git diff 的 stdout（含 ANSI 色碼）轉成可渲染的 `Line`。
+/// tab 無法正確渲染，先展開成空白再轉換。
+pub(crate) fn ansi_output_to_lines(
+    output: String,
+    tab_width: u16,
+) -> Result<Vec<Line<'static>>, String> {
+    let tab_spaces = " ".repeat(tab_width as usize);
+    output
+        .replace('\t', &tab_spaces)
+        .into_text()
+        .map(|t| t.into_iter().collect())
+        .map_err(|e| e.to_string())
+}
 
 pub(crate) fn dispatch_delete_branch(tx: &Sender, names: &[String], head_branch: Option<&str>) {
     let candidates: Vec<&str> = names

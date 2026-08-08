@@ -13,6 +13,10 @@ use crate::Result;
 
 const GIT_EMPTY_TREE_HASH: &str = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
+/// 單一檔案 diff 輸出的行數上限。重新產生的 lockfile、minified bundle 等單一檔案
+/// 就能撐出數萬行，不設上限會讓 UI 在 ansi 轉換與渲染時整個凍住。
+const DIFF_OUTPUT_LINE_LIMIT: usize = 5000;
+
 /// 使用 Arc<str> 以便宜複製並滿足 Send trait（`mpsc::Sender<AppEvent>` 所需）
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CommitHash(Arc<str>);
@@ -279,6 +283,90 @@ impl Repository {
         let refs = self.refs(commit_hash).into_iter().cloned().collect();
         (commit, refs)
     }
+
+    /// 單一檔案的 diff（含 ANSI 色碼）。初始 commit（無 parent）自動改跟 empty tree
+    /// 比對，判斷邏輯與 `commit_detail` 同源。
+    pub fn file_diff(&self, target: &DiffTarget) -> std::result::Result<String, String> {
+        match target {
+            DiffTarget::Commit { hash, path } => {
+                let commit = self.commit(hash).unwrap();
+                let base = if commit.parent_commit_hashes.is_empty() {
+                    GIT_EMPTY_TREE_HASH.to_string()
+                } else {
+                    format!("{}^", hash.as_str())
+                };
+                run_diff(&self.path, &[&base, hash.as_str(), "--", path])
+            }
+            DiffTarget::Staged { path } => run_diff(&self.path, &["--cached", "--", path]),
+            DiffTarget::Unstaged { path } => run_diff(&self.path, &["--", path]),
+            // untracked 檔案不在 git 追蹤範圍內，`git diff -- <path>` 對它輸出空
+            // 字串，必須改用 `--no-index` 跟 `/dev/null` 比較。
+            DiffTarget::Untracked { path } => {
+                run_diff(&self.path, &["--no-index", "--", "/dev/null", path])
+            }
+        }
+    }
+}
+
+/// 一個可自我描述的 diff 目標。每個 variant 對應一種形狀不同的 git 呼叫。
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub enum DiffTarget {
+    Commit { hash: CommitHash, path: String },
+    Staged { path: String },
+    Unstaged { path: String },
+    Untracked { path: String },
+}
+
+impl DiffTarget {
+    pub fn path(&self) -> &str {
+        match self {
+            DiffTarget::Commit { path, .. }
+            | DiffTarget::Staged { path }
+            | DiffTarget::Unstaged { path }
+            | DiffTarget::Untracked { path } => path,
+        }
+    }
+}
+
+/// `args` 決定比較範圍與 pathspec，`Commit`／`Staged`／`Unstaged`／`Untracked`
+/// 四種形狀共用同一條指令與 exit code 判斷：一般 diff 沒帶 `--exit-code`
+/// 時只會回 0，只有 `--no-index` 會用 1 代表「有差異」（這裡的正常情況），
+/// 對所有呼叫方統一接受 `0|1` 是安全的，其餘才是真的錯誤。
+fn run_diff(path: &Path, args: &[&str]) -> std::result::Result<String, String> {
+    let output = Command::new("git")
+        .args([
+            "-c",
+            "core.quotePath=false",
+            "--no-pager",
+            "diff",
+            "--color=always",
+        ])
+        .args(args)
+        .current_dir(path)
+        .output()
+        .map_err(|e| format!("Failed to execute git diff: {e}"))?;
+
+    match output.status.code() {
+        Some(0 | 1) => Ok(truncate_diff_output(&output.stdout)),
+        _ => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            Err(format!("git diff failed: {stderr}"))
+        }
+    }
+}
+
+fn truncate_diff_output(bytes: &[u8]) -> String {
+    let text = String::from_utf8_lossy(bytes);
+    let mut lines = text.lines();
+    let mut out = lines
+        .by_ref()
+        .take(DIFF_OUTPUT_LINE_LIMIT)
+        .collect::<Vec<_>>()
+        .join("\n");
+    if lines.next().is_some() {
+        out.push_str("\n... (truncated)");
+    }
+    out
 }
 
 fn check_git_repository(path: &Path) -> Result<()> {
@@ -662,6 +750,12 @@ pub enum FileChange {
         path: String,
         stats: Option<(usize, usize)>,
     },
+    /// git 完全不追蹤的新檔案。與 `Add`（已 staged 的新增）分開記，因為兩者要
+    /// 走不同的 `git diff` 呼叫形狀（`--no-index` vs 一般範圍比較）。
+    Untracked {
+        path: String,
+        stats: Option<(usize, usize)>,
+    },
 }
 
 impl FileChange {
@@ -669,7 +763,8 @@ impl FileChange {
         match self {
             FileChange::Add { path, .. }
             | FileChange::Modify { path, .. }
-            | FileChange::Delete { path, .. } => path,
+            | FileChange::Delete { path, .. }
+            | FileChange::Untracked { path, .. } => path,
         }
     }
 
@@ -677,7 +772,8 @@ impl FileChange {
         match self {
             FileChange::Add { stats, .. }
             | FileChange::Modify { stats, .. }
-            | FileChange::Delete { stats, .. } => *stats,
+            | FileChange::Delete { stats, .. }
+            | FileChange::Untracked { stats, .. } => *stats,
         }
     }
 }
@@ -700,6 +796,8 @@ impl WorkingChanges {
 
 pub fn load_working_changes(path: &Path) -> Result<WorkingChanges> {
     let mut cmd = Command::new("git")
+        .arg("-c")
+        .arg("core.quotePath=false")
         .arg("status")
         .arg("--porcelain=v1")
         .arg("--untracked-files=all")
@@ -730,7 +828,7 @@ pub fn load_working_changes(path: &Path) -> Result<WorkingChanges> {
         // 未追蹤檔案一律顯示為 `??` —— 兩個欄位必須一起處理，
         // 因為單獨一個 `?` 沒有獨立的欄位意義。
         if x == b'?' && y == b'?' {
-            unstaged.push(FileChange::Add {
+            unstaged.push(FileChange::Untracked {
                 path: file_path.into(),
                 stats: None,
             });
@@ -800,7 +898,7 @@ fn parse_status_char(status: u8, file_path: &str) -> Vec<FileChange> {
 }
 
 fn get_diff_numstat(path: &Path, args: &[&str]) -> FxHashMap<String, (usize, usize)> {
-    let mut cmd_args = vec!["diff", "--numstat"];
+    let mut cmd_args = vec!["-c", "core.quotePath=false", "diff", "--numstat"];
     cmd_args.extend_from_slice(args);
 
     let mut cmd = Command::new("git")
@@ -841,7 +939,8 @@ fn apply_numstat(changes: &mut [FileChange], stats: &FxHashMap<String, (usize, u
             match change {
                 FileChange::Add { stats: st, .. }
                 | FileChange::Modify { stats: st, .. }
-                | FileChange::Delete { stats: st, .. } => {
+                | FileChange::Delete { stats: st, .. }
+                | FileChange::Untracked { stats: st, .. } => {
                     *st = Some(s);
                 }
             }
@@ -852,6 +951,8 @@ fn apply_numstat(changes: &mut [FileChange], stats: &FxHashMap<String, (usize, u
 pub fn get_diff_summary(path: &Path, commit_hash: &CommitHash) -> Vec<FileChange> {
     let parent_arg = format!("{}^", commit_hash.as_str());
     let mut cmd = Command::new("git")
+        .arg("-c")
+        .arg("core.quotePath=false")
         .arg("diff")
         .arg("--name-status")
         .arg(&parent_arg)
@@ -902,6 +1003,8 @@ pub fn get_diff_summary(path: &Path, commit_hash: &CommitHash) -> Vec<FileChange
 
 pub fn get_initial_commit_additions(path: &Path, commit_hash: &CommitHash) -> Vec<FileChange> {
     let mut cmd = Command::new("git")
+        .arg("-c")
+        .arg("core.quotePath=false")
         .arg("ls-tree")
         .arg("--name-status")
         .arg("-r")

@@ -59,7 +59,6 @@
 | <kbd>f</kbd> | fetch 所有 remote | `fetch` |
 | <kbd>Space</kbd> | checkout 選取的 commit/ref | `checkout` |
 | <kbd>r</kbd> | 重新整理 | `refresh` |
-| <kbd>e</kbd> | 執行 user command 1 - git diff | `user_command_1` |
 
 ### Commit 詳情
 
@@ -67,8 +66,14 @@
 | --- | --- | --- |
 | <kbd>n</kbd> <kbd>Esc</kbd> <kbd>Backspace</kbd> <kbd>Enter</kbd> <kbd>y</kbd> | 關閉 commit 詳情 | `cancel` `close` `confirm` |
 | <kbd>u</kbd> | 切換詳情區塊 | `detail_pane_toggle` |
-| <kbd>Down</kbd> <kbd>j</kbd> | 向下捲動 | `navigate_down` |
-| <kbd>Up</kbd> <kbd>k</kbd> | 向上捲動 | `navigate_up` |
+| <kbd>Down</kbd> <kbd>j</kbd> | 向下捲動／Files 區塊移動檔案游標 | `navigate_down` |
+| <kbd>Up</kbd> <kbd>k</kbd> | 向上捲動／Files 區塊移動檔案游標 | `navigate_up` |
+| <kbd>J</kbd> | Files 區塊：diff 逐行下捲 | `select_down` |
+| <kbd>K</kbd> | Files 區塊：diff 逐行上捲 | `select_up` |
+| <kbd>Ctrl-d</kbd> | Files 區塊：diff 半頁下捲 | `half_page_down` |
+| <kbd>Ctrl-u</kbd> | Files 區塊：diff 半頁上捲 | `half_page_up` |
+| <kbd>PageDown</kbd> <kbd>Ctrl-f</kbd> | Files 區塊：diff 整頁下捲 | `page_down` |
+| <kbd>PageUp</kbd> <kbd>Ctrl-b</kbd> | Files 區塊：diff 整頁上捲 | `page_up` |
 | <kbd>Right</kbd> <kbd>l</kbd> | 選擇較舊 commit | `navigate_right` |
 | <kbd>Left</kbd> <kbd>h</kbd> | 選擇較新 commit | `navigate_left` |
 | <kbd>m</kbd> | 選擇 parent commit | `go_to_parent` |
@@ -79,6 +84,7 @@
 | <kbd>v</kbd> | 複製 tag 名稱 | `tag_copy` |
 | <kbd>o</kbd> | 切換 remote refs | `remote_refs_toggle` |
 | <kbd>Tab</kbd> | 開啟 refs 清單 | `ref_list` |
+| <kbd>g</kbd> | 開啟 GitHub issues/PRs | `github_toggle` |
 | <kbd>F1</kbd> <kbd>?</kbd> | 開啟說明 | `help_toggle` |
 | <kbd>r</kbd> | 重新整理 | `refresh` |
 
@@ -167,7 +173,6 @@
 | <kbd>r</kbd> | 重新整理 | `refresh` |
 | <kbd>Enter</kbd> <kbd>y</kbd> | 顯示 commit 詳情 | `confirm` |
 | <kbd>F1</kbd> <kbd>?</kbd> | 開啟說明 | `help_toggle` |
-| <kbd>e</kbd> | 執行 user command 1 - git diff | `user_command_1` |
 
 ## 寫死的按鍵
 

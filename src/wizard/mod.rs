@@ -440,14 +440,17 @@ impl WizardState {
             .collect();
         f.render_stateful_widget(styled_list(items, theme), list_area, &mut self.list);
 
-        let hint = crate::widget::build_hint_line(
+        // 精靈的按鍵不走 keybind 設定（它在主 TUI 啟動前就跑完了），所以提示
+        // 直接給字串；格式仍與主畫面統一。
+        let hint = crate::widget::hint_line(
             theme,
             &[
-                ("↑↓/kj", "選擇"),
-                ("←→/hl", "切換選項"),
-                ("Enter", "開啟/啟動"),
-                ("Esc/Ctrl-C", "離開"),
+                ("↑↓/kj".into(), "選擇"),
+                ("←→/hl".into(), "切換選項"),
+                ("Enter".into(), "開啟/啟動"),
+                ("Esc/Ctrl-C".into(), "離開"),
             ],
+            theme.help_key_fg,
         );
         f.render_widget(Paragraph::new(hint), hint_area);
     }
@@ -547,14 +550,15 @@ fn run_number_input(
 }
 
 fn render_number_input(f: &mut Frame, area: Rect, input: &tui_input::Input, theme: &ColorTheme) {
-    let hint = crate::widget::build_hint_line(
+    let hint = crate::widget::hint_line(
         theme,
         &[
-            ("←↓/hj", "-1"),
-            ("→↑/lk", "+1"),
-            ("Enter", "確認"),
-            ("Esc", "取消"), // Esc 只是放棄這次編輯，不會清空已有的值
+            ("←↓/hj".into(), "-1"),
+            ("→↑/lk".into(), "+1"),
+            ("Enter".into(), "確認"),
+            ("Esc".into(), "取消"), // Esc 只是放棄這次編輯，不會清空已有的值
         ],
+        theme.help_key_fg,
     );
 
     // 寬度跟著提示列的實際渲染寬度量，不是憑印象數 CJK 格數寫死 —— 提示文字

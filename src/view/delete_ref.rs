@@ -19,6 +19,7 @@ use crate::{
     view::{ListRefreshViewContext, RefreshViewContext, RefsOrigin},
     widget::{
         commit_list::{CommitList, CommitListState},
+        h, keybind_hint_line,
         ref_list::RefListState,
     },
 };
@@ -306,11 +307,19 @@ impl<'a> DeleteRefView<'a> {
         };
         f.render_widget(Paragraph::new(checkbox_line), checkbox_area);
 
-        let hint_line = crate::widget::build_hint_line(
+        let hints = keybind_hint_line(
             &self.ctx.color_theme,
-            &[("Enter/y", "delete"), ("Esc/n", "cancel"), ("←→", "toggle")],
+            &self.ctx.keybind,
+            &[
+                h(&[UserEvent::Confirm], "delete"),
+                h(&[UserEvent::Cancel], "cancel"),
+                h(
+                    &[UserEvent::NavigateLeft, UserEvent::NavigateRight],
+                    "toggle",
+                ),
+            ],
         );
-        f.render_widget(Paragraph::new(hint_line).centered(), hint_area);
+        f.render_widget(Paragraph::new(hints).centered(), hint_area);
     }
 }
 

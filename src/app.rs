@@ -775,7 +775,7 @@ impl App<'_> {
         );
 
         if let Some(message) = &self.pending_message {
-            let overlay = PendingOverlay::new(message, &self.ctx.color_theme);
+            let overlay = PendingOverlay::new(message, &self.ctx.color_theme, &self.ctx.keybind);
             f.render_widget(overlay, f.area());
         }
     }
@@ -792,6 +792,7 @@ impl<'a> App<'a> {
             commit,
             changes,
             refs,
+            self.repository,
             self.ctx.clone(),
             self.ec.sender(),
         );
@@ -836,6 +837,7 @@ impl App<'_> {
                 self.view = View::of_working_changes_detail(
                     commit_list_state,
                     wc,
+                    self.repository,
                     self.ctx.clone(),
                     self.ec.sender(),
                 );

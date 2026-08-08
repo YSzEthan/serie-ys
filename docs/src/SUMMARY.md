@@ -13,5 +13,6 @@
   - [自訂快捷鍵](./keybindings/custom-keybindings.md)
 - [功能](./features/index.md)
   - [使用者自訂指令](./features/user-command.md)
+  - [在 Detail view 中檢視檔案 diff](./features/file-diff.md)
   - [截圖](./features/screenshots.md)
 - [常見問題](./faq/index.md)
