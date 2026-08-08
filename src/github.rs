@@ -528,31 +528,27 @@ pub struct GhTimelinePage {
     pub mergeable: Option<Mergeable>,
 }
 
-pub fn get_timeline(
-    path: &Path,
-    number: u64,
-    kind: GhItemKind,
-    after: Option<&str>,
-) -> Result<GhTimelinePage, String> {
-    let (owner, name) = fetch_repo_name_with_owner(path)?;
-    let item_field = match kind {
-        GhItemKind::Issue => "issue",
-        GhItemKind::PullRequest => "pullRequest",
-    };
-    // issue 沒有 commit —— 對它要求 PULL_REQUEST_COMMIT 會是 GraphQL
-    // 驗證錯誤，而不是回傳空結果。
-    let item_types = match kind {
-        GhItemKind::Issue => "ISSUE_COMMENT",
-        GhItemKind::PullRequest => "ISSUE_COMMENT, PULL_REQUEST_COMMIT",
-    };
-    // issue 也沒有 `mergeable` 欄位 —— 同樣會踩到驗證錯誤的陷阱。
-    let mergeable_field = match kind {
-        GhItemKind::Issue => "",
-        GhItemKind::PullRequest => "mergeable",
+/// issue 與 PR 的 timeline 是兩個不同的 union：`Issue.timelineItems` 給的是
+/// `IssueTimelineItems`，裡面既沒有 `PullRequestCommit` 也沒有 `mergeable`。
+/// 對 issue 送出這些片段會讓整個查詢被 GraphQL 擋下（"Fragment on
+/// PullRequestCommit can't be spread inside IssueTimelineItems"），而不是安靜地
+/// 回傳空結果 —— 所以四處分岔綁在同一個 match 上，漏掉其中一項就編不過。
+fn build_timeline_query(kind: GhItemKind) -> String {
+    let (item_field, item_types, mergeable_field, commit_fragment) = match kind {
+        GhItemKind::Issue => ("issue", "ISSUE_COMMENT", "", ""),
+        GhItemKind::PullRequest => (
+            "pullRequest",
+            "ISSUE_COMMENT, PULL_REQUEST_COMMIT",
+            "mergeable",
+            r#"... on PullRequestCommit { commit {
+                                abbreviatedOid messageHeadline
+                                statusCheckRollup { state }
+                            } }"#,
+        ),
     };
     // 用 100（connection 上限）而非 50：commit 只佔一行視覺高度，
     // 而留言常常佔好幾行，混在同一頁會讓一頁實際能看到的內容打對折。
-    let query = format!(
+    format!(
         r#"query($owner:String!,$name:String!,$number:Int!,$after:String){{
             repository(owner:$owner,name:$name){{
                 {item_field}(number:$number){{
@@ -562,16 +558,23 @@ pub fn get_timeline(
                         nodes {{
                             __typename
                             ... on IssueComment {{ body createdAt author {{ login }} }}
-                            ... on PullRequestCommit {{ commit {{
-                                abbreviatedOid messageHeadline
-                                statusCheckRollup {{ state }}
-                            }} }}
+                            {commit_fragment}
                         }}
                     }}
                 }}
             }}
         }}"#
-    );
+    )
+}
+
+pub fn get_timeline(
+    path: &Path,
+    number: u64,
+    kind: GhItemKind,
+    after: Option<&str>,
+) -> Result<GhTimelinePage, String> {
+    let (owner, name) = fetch_repo_name_with_owner(path)?;
+    let query = build_timeline_query(kind);
     let owner_f = format!("owner={owner}");
     let name_f = format!("name={name}");
     let number_f = format!("number={number}");
@@ -1316,6 +1319,24 @@ mod tests {
         let json = timeline_json(None);
         let page = parse_timeline_graphql(&json, GhItemKind::PullRequest).unwrap();
         assert_eq!(page.mergeable, None);
+    }
+
+    /// issue 的 timeline union 不含 `PullRequestCommit`，也沒有 `mergeable`。
+    /// 只要有一項漏了分岔，GitHub 就會退回整個查詢，detail 畫面只剩
+    /// "comments failed"。
+    #[test]
+    fn timeline_query_omits_pr_only_pieces_for_issues() {
+        let q = build_timeline_query(GhItemKind::Issue);
+        assert!(q.contains("issue(number:$number)"));
+        assert!(!q.contains("PullRequestCommit"));
+        assert!(!q.contains("PULL_REQUEST_COMMIT"));
+        assert!(!q.contains("mergeable"));
+
+        let q = build_timeline_query(GhItemKind::PullRequest);
+        assert!(q.contains("pullRequest(number:$number)"));
+        assert!(q.contains("PullRequestCommit"));
+        assert!(q.contains("PULL_REQUEST_COMMIT"));
+        assert!(q.contains("mergeable"));
     }
 
     /// `itemTypes` 理論上只會產生兩種已知的 variant，但這個測試釘住了
