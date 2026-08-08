@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.3.0](https://github.com/YSzEthan/serie-ys/compare/v2.2.1...v2.3.0) (2026-08-08)
+
+
+### Features
+
+* detail view 單檔 diff 預覽，狀態列提示改由 keybind 動態產生 (#43, #44) (#45) ([6222485](https://github.com/YSzEthan/serie-ys/commit/6222485472cce3f63f8b6e492590afe143b75c2b))
+
 ## [2.2.1](https://github.com/YSzEthan/serie-ys/compare/v2.2.0...v2.2.1) (2026-08-07)
 
 
