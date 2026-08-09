@@ -1,23 +1,15 @@
 use std::rc::Rc;
 
-use ratatui::{
-    crossterm::event::KeyEvent,
-    layout::{Constraint, Layout, Rect},
-    style::Style,
-    text::Line,
-    widgets::Clear,
-    Frame,
-};
-
 use crate::{
     app::AppContext,
     color::ColorTheme,
     config::UserListColumnType,
+    diff::{self, DiffNotes, ModeNote, RenderedDiff},
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
     git::{Commit, DiffTarget, FileChange, Ref, Repository, WorkingChanges},
     view::{
-        ansi_output_to_lines, dispatch_branch_copy, dispatch_tag_copy, partition_branches,
-        partition_tags, ListRefreshViewContext, RefreshViewContext,
+        dispatch_branch_copy, dispatch_tag_copy, partition_branches, partition_tags,
+        ListRefreshViewContext, RefreshViewContext,
     },
     widget::{
         commit_detail::{
@@ -26,9 +18,18 @@ use crate::{
         },
         commit_list::{CommitList, CommitListState},
         h,
+        marquee::display_width,
         output_pane::{OutputPane, OutputPaneState},
-        HintSpec,
+        HintSpec, ELLIPSIS, ELLIPSIS_RESERVE,
     },
+};
+use ratatui::{
+    crossterm::event::KeyEvent,
+    layout::{Constraint, Layout, Rect},
+    style::{Style, Stylize},
+    text::{Line, Span},
+    widgets::Clear,
+    Frame,
 };
 
 /// 狀態列提示。依 pane 分流 —— Info pane 列不到 diff 捲動鍵，Files pane 才列。
@@ -48,6 +49,7 @@ pub fn status_hints_for(pane: DetailPane) -> Vec<HintSpec> {
         DetailPane::Files => {
             hints.push(h(&[UserEvent::NavigateDown, UserEvent::NavigateUp], "file"));
             hints.push(h(&[UserEvent::SelectDown, UserEvent::SelectUp], "diff"));
+            hints.push(h(&[UserEvent::GoToNext, UserEvent::GoToPrevious], "hunk"));
         }
     }
     hints.extend([
@@ -145,11 +147,11 @@ pub struct DetailView<'a> {
 
     content: DetailContent,
 
-    /// 游標所在檔案的 diff（ANSI 轉換後）。永遠只裝「一個」檔案的內容——
-    /// 不是整包 commit diff。
-    diff_lines: Vec<Line<'static>>,
+    /// 游標所在檔案的 diff（已解析、已上色、已算好行號與 hunk 索引）。
+    /// 永遠只裝「一個」檔案的內容——不是整包 commit diff。
+    diff: RenderedDiff,
     diff_pane_state: OutputPaneState,
-    /// `diff_lines` 目前對應的目標；跟游標算出的「應該顯示的目標」不一致時
+    /// `diff` 目前對應的目標；跟游標算出的「應該顯示的目標」不一致時
     /// 才重新載入，藉此避免同一個檔案被重複 spawn git。
     diff_target: Option<DiffTarget>,
 
@@ -176,7 +178,7 @@ impl<'a> DetailView<'a> {
             commit_list_state: Some(commit_list_state),
             commit_detail_state,
             content,
-            diff_lines: Vec::new(),
+            diff: RenderedDiff::default(),
             diff_pane_state: OutputPaneState::default(),
             diff_target: None,
             repository,
@@ -200,7 +202,7 @@ impl<'a> DetailView<'a> {
             commit_list_state: Some(commit_list_state),
             commit_detail_state,
             content,
-            diff_lines: Vec::new(),
+            diff: RenderedDiff::default(),
             diff_pane_state: OutputPaneState::default(),
             diff_target: None,
             repository,
@@ -262,6 +264,8 @@ impl<'a> DetailView<'a> {
                 self.scroll_diff(count, OutputPaneState::scroll_half_page_down)
             }
             UserEvent::HalfPageUp => self.scroll_diff(count, OutputPaneState::scroll_half_page_up),
+            UserEvent::GoToNext => self.jump_hunk(count, next_hunk_start),
+            UserEvent::GoToPrevious => self.jump_hunk(count, prev_hunk_start),
             UserEvent::NavigateRight => {
                 self.tx.send(AppEvent::SelectOlderCommit);
             }
@@ -409,13 +413,15 @@ impl<'a> DetailView<'a> {
 
         if show_diff {
             f.render_widget(Clear, diff_area);
-            let title = self
-                .commit_detail_state
-                .selected_file(self.content.rows())
-                .map(DiffTarget::path);
-            let mut output_pane = OutputPane::new(&self.diff_lines, self.ctx.clone());
-            if let Some(title) = title {
-                output_pane = output_pane.title(title);
+            let mut output_pane = OutputPane::new(&self.diff.lines, self.ctx.clone());
+            if let Some(target) = self.commit_detail_state.selected_file(self.content.rows()) {
+                output_pane = output_pane.title(diff_pane_title(
+                    target.path(),
+                    &self.diff.notes,
+                    self.current_hunk_display(),
+                    diff_area.width,
+                    &self.ctx.color_theme,
+                ));
             }
             f.render_stateful_widget(output_pane, diff_area, &mut self.diff_pane_state);
         }
@@ -522,7 +528,7 @@ impl<'a> DetailView<'a> {
         self.sync_diff();
     }
 
-    /// 把游標算出來的「應該顯示的目標」跟 `diff_lines` 目前對應的目標比對，
+    /// 把游標算出來的「應該顯示的目標」跟 `diff` 目前對應的目標比對，
     /// 不一致才重新載入——擋住同一個檔案被重複 spawn git，但不做任何快取
     /// （切到別的檔案／commit 後舊內容直接丟棄）。只在 Files pane 才實際
     /// 載入：pane 是 Info 時即使內容換了也不用白跑一次 git diff。
@@ -539,13 +545,19 @@ impl<'a> DetailView<'a> {
         }
         self.diff_pane_state.select_first();
         let tab_width = self.ctx.core_config.user_command.tab_width;
-        self.diff_lines = match &desired {
-            None => Vec::new(),
-            Some(target) => self
-                .repository
-                .file_diff(target)
-                .and_then(|output| ansi_output_to_lines(output, tab_width))
-                .unwrap_or_else(|err| vec![error_line(&err, &self.ctx)]),
+        self.diff = match &desired {
+            None => RenderedDiff::default(),
+            Some(target) => match self.repository.file_diff(target) {
+                Ok((text, truncated)) => {
+                    let mut rendered = diff::parse(&text, tab_width, &self.ctx.color_theme);
+                    rendered.notes.truncated = truncated;
+                    rendered
+                }
+                Err(err) => RenderedDiff {
+                    lines: vec![error_line(&err, &self.ctx)],
+                    ..RenderedDiff::default()
+                },
+            },
         };
         self.diff_target = desired;
     }
@@ -559,6 +571,40 @@ impl<'a> DetailView<'a> {
         for _ in 0..count {
             scroll(&mut self.diff_pane_state);
         }
+    }
+
+    /// `]`／`[`：跳到下一個／上一個 hunk 起點。只在 Files pane 生效，跟
+    /// `scroll_diff` 同一種分派方式——語意差異外包給呼叫端傳入的
+    /// `next_hunk_start`／`prev_hunk_start`。到頭到尾就停住，不繞回：
+    /// 找不到就回傳 `None`，迴圈當場 `break`，`offset` 留在原地。
+    /// 用 `scroll_to` 而不是逐步呼叫 `scroll_down`/`up`：hunk 之間可能隔了
+    /// 上百行 context，逐格捲會讓 `count` 次 `]` 變成非常慢的操作。
+    fn jump_hunk(&mut self, count: usize, find: fn(&[usize], usize) -> Option<usize>) {
+        if self.commit_detail_state.active_pane() != DetailPane::Files {
+            return;
+        }
+        let line_count = self.diff.lines.len();
+        let mut offset = self.diff_pane_state.offset();
+        for _ in 0..count {
+            let Some(next) = find(&self.diff.hunk_starts, offset) else {
+                break;
+            };
+            offset = next;
+        }
+        self.diff_pane_state.scroll_to(offset, line_count);
+    }
+
+    /// 目前 offset 落在第幾個 hunk（1-based）／總共幾個 hunk，給 title 的
+    /// `hunk n/m` 用。沒有 hunk（binary、純 mode 變更）就回 `None`——
+    /// 不要顯示 `hunk 1/0`。
+    fn current_hunk_display(&self) -> Option<(usize, usize)> {
+        let hunk_starts = &self.diff.hunk_starts;
+        if hunk_starts.is_empty() {
+            return None;
+        }
+        let offset = self.diff_pane_state.offset();
+        let current = hunk_starts.partition_point(|&s| s <= offset);
+        Some((current, hunk_starts.len()))
     }
 
     fn copy_commit_short_hash(&self) {
@@ -609,4 +655,167 @@ fn error_line(msg: &str, ctx: &AppContext) -> Line<'static> {
         msg.to_string(),
         Style::default().fg(ctx.color_theme.status_error_fg),
     )
+}
+
+/// diff pane title 各段之間的分隔符——路徑內部的旗標之間、路徑段與 hunk
+/// 段之間都用它，三處共用同一個值，改一次全部同步，不會漂移。
+const TITLE_SEP: &str = " · ";
+
+/// diff pane 邊框 title。組出「路徑＋只在異常時出現的旗標（binary／mode／
+/// truncated）· hunk n/m」這一整行並直接上色——降級判斷（該不該印 hunk
+/// 後綴）跟實際渲染（要不要含 hunk 那段 `Span`）共用同一份 `TITLE_SEP`
+/// 與同一個函式，不會有「算得下但沒畫出來」這種兩處各自維護才會出現的
+/// 漂移。變更類型、增刪統計、比較範圍都跟隔壁 pane 重複（tree row 已印
+/// 增刪統計、commit hash 就在正上方的 inline detail），不放進來。
+///
+/// 空間不足只有一條規則：先丟 hunk 後綴，還不夠才犧牲路徑前段——異常旗標
+/// 永遠不丟，路徑的檔名跟旗標比路徑前綴更值得保留。
+fn diff_pane_title(
+    path: &str,
+    notes: &DiffNotes,
+    hunk_display: Option<(usize, usize)>,
+    area_width: u16,
+    theme: &ColorTheme,
+) -> Line<'static> {
+    let mut flags = Vec::new();
+    if notes.binary {
+        flags.push("binary");
+    }
+    if let Some(label) = notes.mode.map(ModeNote::label) {
+        flags.push(label);
+    }
+    if notes.truncated {
+        flags.push("truncated");
+    }
+    let head = if flags.is_empty() {
+        path.to_string()
+    } else {
+        format!("{path}{TITLE_SEP}{}", flags.join(TITLE_SEP))
+    };
+    let hunk = hunk_display.map(|(current, total)| format!("hunk {current}/{total}"));
+
+    let width = area_width as usize;
+    let head_width = display_width(&head);
+    let hunk_suffix_width = hunk
+        .as_ref()
+        .map_or(0, |h| display_width(h) + display_width(TITLE_SEP));
+    let (head, hunk) = if head_width + hunk_suffix_width <= width {
+        (head, hunk)
+    } else {
+        (truncate_head(&head, width), None)
+    };
+
+    let mut spans = vec![Span::raw(head).fg(theme.diff_title_path_fg).bold()];
+    if let Some(hunk) = hunk {
+        spans.push(Span::raw(TITLE_SEP));
+        spans.push(Span::raw(hunk).fg(theme.diff_title_hunk_fg).bold());
+    }
+    Line::from(spans)
+}
+
+/// 從字串「頭部」省略到剛好塞進 `max_width`，前面補一個 `…`——保留尾端
+/// （檔名與旗標都在尾端），犧牲最沒用的路徑前段目錄。寬度計算全程走
+/// `display_width`（跟 `ELLIPSIS_RESERVE` 同一套定義），不另外手刻一份
+/// `UnicodeWidthChar` 逐字元累加。
+fn truncate_head(s: &str, max_width: usize) -> String {
+    if display_width(s) <= max_width {
+        return s.to_string();
+    }
+    if max_width == 0 {
+        return String::new();
+    }
+    let budget = max_width.saturating_sub(ELLIPSIS_RESERVE);
+    let start = s
+        .char_indices()
+        .find(|(i, _)| display_width(&s[*i..]) <= budget)
+        .map_or(s.len(), |(i, _)| i);
+    format!("{ELLIPSIS}{}", &s[start..])
+}
+
+/// 目前 offset 之後最近的 hunk 起點；已經在最後一個 hunk（或更後面）就回
+/// `None`——`jump_hunk` 靠這個 `None` 決定「不繞回第一個」。
+fn next_hunk_start(hunk_starts: &[usize], offset: usize) -> Option<usize> {
+    let idx = hunk_starts.partition_point(|&s| s <= offset);
+    hunk_starts.get(idx).copied()
+}
+
+/// 目前 offset 之前最近的 hunk 起點；已經在第一個 hunk（或更前面）就回
+/// `None`。offset 落在某個 hunk 中間（不是恰好在起點）時，先跳回「目前
+/// 這個 hunk」的起點，而不是直接跳去更前一個——跟一般編輯器的「上一個
+/// 段落」語意一致。
+fn prev_hunk_start(hunk_starts: &[usize], offset: usize) -> Option<usize> {
+    let idx = hunk_starts.partition_point(|&s| s < offset);
+    idx.checked_sub(1).map(|i| hunk_starts[i])
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn diff_pane_title_shows_only_path_when_nothing_is_wrong() {
+        let notes = DiffNotes::default();
+        let theme = ColorTheme::default();
+        let line = diff_pane_title("src/main.rs", &notes, Some((2, 5)), 80, &theme);
+        assert_eq!(line.to_string(), "src/main.rs · hunk 2/5");
+    }
+
+    #[test]
+    fn diff_pane_title_lists_every_active_flag_and_hides_hunk_when_there_is_none() {
+        let notes = DiffNotes {
+            binary: true,
+            mode: Some(ModeNote::ModeChangedToExecutable),
+            truncated: true,
+        };
+        let theme = ColorTheme::default();
+        let line = diff_pane_title("scripts/run.sh", &notes, None, 200, &theme);
+        assert_eq!(
+            line.to_string(),
+            "scripts/run.sh · binary · mode → executable · truncated",
+            "沒有 hunk（binary/純 mode 變更）就不該印出 hunk 後綴"
+        );
+    }
+
+    /// 分隔符寬度是唯一沒有其他測試釘住的數字，這裡卡在邊界上：剛好放得下
+    /// vs 差一格放不下。邊界數字故意硬寫 `3`，不呼叫
+    /// `display_width(TITLE_SEP)`——否則會變成跟實作互相印證的同義反覆
+    /// 測試，抓不到「有人把 TITLE_SEP 改長」這種真實回歸。
+    #[test]
+    fn diff_pane_title_drops_the_hunk_suffix_before_touching_the_path() {
+        let notes = DiffNotes::default();
+        let theme = ColorTheme::default();
+        let path = "src/main.rs";
+        let fits = display_width(path) + display_width("hunk 1/1") + 3;
+
+        let line = diff_pane_title(path, &notes, Some((1, 1)), fits as u16, &theme);
+        assert_eq!(
+            line.to_string(),
+            "src/main.rs · hunk 1/1",
+            "剛好放得下就不該丟"
+        );
+
+        let line = diff_pane_title(path, &notes, Some((1, 1)), (fits - 1) as u16, &theme);
+        assert_eq!(line.to_string(), path, "差一格只丟 hunk 後綴，路徑不動");
+    }
+
+    #[test]
+    fn diff_pane_title_truncates_path_head_only_when_path_alone_does_not_fit() {
+        let notes = DiffNotes::default();
+        let theme = ColorTheme::default();
+        let path = "src/very/long/path/to/some/module/that/is/quite/deep.rs";
+        let text = diff_pane_title(path, &notes, Some((1, 1)), 20, &theme).to_string();
+        assert!(
+            !text.contains("hunk"),
+            "路徑都塞不下了，hunk 後綴不該出現：{text}"
+        );
+        assert!(text.starts_with('…'), "省略路徑前段用 … 開頭：{text}");
+        assert!(text.ends_with("deep.rs"), "檔名比路徑前綴更該保留：{text}");
+        assert!(display_width(&text) <= 20);
+    }
+
+    #[test]
+    fn truncate_head_keeps_the_tail_and_only_touches_strings_that_do_not_fit() {
+        assert_eq!(truncate_head("hello world", 6), "…orld");
+        assert_eq!(truncate_head("short", 10), "short");
+    }
 }

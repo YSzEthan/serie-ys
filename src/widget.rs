@@ -17,9 +17,10 @@ const HINT_SEP: &str = "  ";
 
 /// 截斷記號。`…`（U+2026）在 unicode-width 是 East Asian **Ambiguous** —— 一般
 /// 終端算 1 格，但終端設成 CJK 寬度時佔 2 格。預留 2 格是刻意的，寧可少填一格
-/// 也不要溢出被切掉。
-const ELLIPSIS: &str = "…";
-const ELLIPSIS_RESERVE: usize = 2;
+/// 也不要溢出被切掉。`pub(crate)`：`view::detail` 的 `truncate_head` 也共用同一顆
+/// 定義，不要各寫一份、各自決定要留 1 格還是 2 格。
+pub(crate) const ELLIPSIS: &str = "…";
+pub(crate) const ELLIPSIS_RESERVE: usize = 2;
 
 /// 一組提示。多個 event 共同構成一個動作時（例如 ←→ 同為 toggle），
 /// 各取其 display key 後用 `/` 串起來。

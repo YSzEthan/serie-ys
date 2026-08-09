@@ -24,12 +24,13 @@ fn commit_file_diff_shows_only_the_selected_file() -> TestResult {
         path: "a.txt".into(),
     };
 
-    let diff = strip_ansi(&repository.file_diff(&target).unwrap());
+    let (diff, truncated) = repository.file_diff(&target).unwrap();
     assert!(diff.contains("+line2"), "diff missing added line:\n{diff}");
     assert!(
         !diff.contains("other.txt"),
         "single-file diff leaked an unrelated file:\n{diff}"
     );
+    assert!(!truncated, "small diff should not be reported as truncated");
 
     Ok(())
 }
@@ -49,7 +50,7 @@ fn commit_file_diff_initial_commit_diffs_against_empty_tree() -> TestResult {
         path: "only.txt".into(),
     };
 
-    let diff = strip_ansi(&repository.file_diff(&target).unwrap());
+    let (diff, _) = repository.file_diff(&target).unwrap();
     assert!(
         diff.contains("+hello"),
         "initial commit diff should show the whole file as added:\n{diff}"
@@ -76,7 +77,7 @@ fn untracked_file_diff_is_not_empty() -> TestResult {
         path: "new_file.txt".into(),
     };
 
-    let diff = strip_ansi(&repository.file_diff(&target).unwrap());
+    let (diff, _) = repository.file_diff(&target).unwrap();
     assert!(
         !diff.trim().is_empty(),
         "untracked file diff must not be empty"
@@ -106,7 +107,7 @@ fn staged_file_diff_shows_index_change() -> TestResult {
         path: "a.txt".into(),
     };
 
-    let diff = strip_ansi(&repository.file_diff(&target).unwrap());
+    let (diff, _) = repository.file_diff(&target).unwrap();
     assert!(diff.contains("+staged-line"), "diff:\n{diff}");
 
     Ok(())
@@ -129,7 +130,7 @@ fn unstaged_file_diff_shows_worktree_change() -> TestResult {
         path: "a.txt".into(),
     };
 
-    let diff = strip_ansi(&repository.file_diff(&target).unwrap());
+    let (diff, _) = repository.file_diff(&target).unwrap();
     assert!(diff.contains("+unstaged-line"), "diff:\n{diff}");
 
     Ok(())
@@ -153,7 +154,7 @@ fn diff_output_keeps_non_ascii_filename_unescaped() -> TestResult {
         path: filename.into(),
     };
 
-    let diff = repository.file_diff(&target).unwrap();
+    let (diff, _) = repository.file_diff(&target).unwrap();
     assert!(
         diff.contains(filename),
         "diff should show the raw filename, not an escaped one:\n{diff}"
@@ -164,26 +165,6 @@ fn diff_output_keeps_non_ascii_filename_unescaped() -> TestResult {
     );
 
     Ok(())
-}
-
-/// `--color=always` 把 ANSI 色碼插在 `+`/`-` 標記與行內容之間（各自獨立上色），
-/// 所以「+line2」這種跨標記的子字串斷言必須先脫色才有意義。
-fn strip_ansi(s: &str) -> String {
-    let mut out = String::with_capacity(s.len());
-    let mut chars = s.chars().peekable();
-    while let Some(c) = chars.next() {
-        if c == '\u{1b}' && chars.peek() == Some(&'[') {
-            chars.next();
-            for c2 in chars.by_ref() {
-                if c2.is_ascii_alphabetic() {
-                    break;
-                }
-            }
-            continue;
-        }
-        out.push(c);
-    }
-    out
 }
 
 struct TestRepo<'a> {

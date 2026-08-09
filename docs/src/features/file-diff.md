@@ -20,6 +20,7 @@ Files 區塊啟用時：
 | <kbd>j</kbd> / <kbd>k</kbd> | 移動檔案游標 |
 | <kbd>J</kbd> / <kbd>K</kbd> | 捲動 diff（逐行） |
 | <kbd>Ctrl-d</kbd> / <kbd>Ctrl-u</kbd> | 捲動 diff（半頁） |
+| <kbd>]</kbd> / <kbd>[</kbd> | 跳到下一個／上一個 hunk |
 | <kbd>Ctrl-f</kbd> / <kbd>Ctrl-b</kbd> | 捲動 diff（整頁） |
 | <kbd>h</kbd> / <kbd>l</kbd> | 切換較新／較舊 commit（跟 Info 區塊一樣） |
 

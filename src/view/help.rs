@@ -314,6 +314,8 @@ fn help_blocks(
         b(vec![UserEvent::SelectUp],                                     "Files 區塊：diff 逐行上捲", "Files pane: scroll diff up"),
         b(vec![UserEvent::HalfPageDown],                                 "Files 區塊：diff 半頁下捲", "Files pane: scroll diff down half a page"),
         b(vec![UserEvent::HalfPageUp],                                   "Files 區塊：diff 半頁上捲", "Files pane: scroll diff up half a page"),
+        b(vec![UserEvent::GoToNext],                                     "Files 區塊：跳到下一個 hunk", "Files pane: go to next hunk"),
+        b(vec![UserEvent::GoToPrevious],                                 "Files 區塊：跳到上一個 hunk", "Files pane: go to previous hunk"),
         b(vec![UserEvent::PageDown],                                     "Files 區塊：diff 整頁下捲", "Files pane: scroll diff down a page"),
         b(vec![UserEvent::PageUp],                                       "Files 區塊：diff 整頁上捲", "Files pane: scroll diff up a page"),
         b(vec![UserEvent::NavigateRight],                                "選擇較舊 commit",  "Select older commit"),
