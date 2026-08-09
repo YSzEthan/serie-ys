@@ -37,25 +37,6 @@ use status_line::StatusLineState;
 
 mod status_line;
 
-const SSH_OPEN_PREFIX: &str = "SSH: ⌘/⌥/⇧+Click ";
-
-/// OSC 8 超連結的簡短標籤。GitHub issue/PR 網址會縮成
-/// `[#N]`；其他一律 fallback 成 `[open]`。用 host 限定在 `github.com`，
-/// 避免像 `https://example.com/blog/issues/2024` 這種網址被誤判。
-fn short_link_label(url: &str) -> String {
-    let on_github = url.starts_with("https://github.com/") || url.starts_with("http://github.com/");
-    let is_issue_or_pr = url.contains("/issues/") || url.contains("/pull/");
-    let tail = url.trim_end_matches('/').rsplit('/').next();
-    if let (true, true, Some(n)) = (
-        on_github,
-        is_issue_or_pr,
-        tail.and_then(|s| s.parse::<u64>().ok()),
-    ) {
-        return format!("[#{n}]");
-    }
-    "[open]".to_string()
-}
-
 #[derive(Clone, Copy)]
 pub enum InitialSelection {
     Latest,
@@ -1534,12 +1515,19 @@ impl App<'_> {
             Ok(crate::external::OpenUrlOutcome::Spawned) => {
                 self.ec.send(AppEvent::NotifyInfo(format!("Opening {url}")));
             }
-            Ok(crate::external::OpenUrlOutcome::Hyperlinked(url)) => {
-                self.status_line_state.set_notification_hyperlink(
-                    SSH_OPEN_PREFIX,
-                    short_link_label(&url),
-                    url,
-                );
+            // 沒有本機瀏覽器可 spawn（SSH／mosh）。OSC 8 在這條路徑上沒有能
+            // 動的版本——mosh 的終端模擬器直接吃掉整個 OSC 8 序列（沒有
+            // hyperlink 欄位可存），tmux 的 DCS passthrough 則會讓 label
+            // 印到錯的座標、後續畫面留下殘骸（見 git log 這次變更的說明）。
+            // 改印純文字 URL：ghostty／iTerm2／WezTerm／Kitty 本來就有 URL
+            // 偵測，⌘+Click 一樣能開，而且穿得過 mosh 和 tmux。
+            //
+            // 同步賦值，不透過 `ec` 送事件——理由同
+            // `StatusLineState::open_related_picker` 文件註解：這一輪迴圈
+            // 才不會先閃一下 hint 列才出現通知。
+            Ok(crate::external::OpenUrlOutcome::NotSpawned) => {
+                self.status_line_state
+                    .set_notification_info(format!("SSH: {url}"));
             }
             Err(msg) => {
                 self.ec.send(AppEvent::NotifyError(msg));
@@ -2000,17 +1988,6 @@ mod tests {
             global_app_event(UserEvent::HelpToggle, true, false),
             Some(AppEvent::OpenHelp)
         ));
-    }
-
-    #[rstest]
-    #[case("https://github.com/o/r/issues/123", "[#123]")]
-    #[case("https://github.com/o/r/pull/456", "[#456]")]
-    #[case("https://github.com/o/r/issues/123/", "[#123]")]
-    #[case("https://github.com/o/r/commit/abcd1234", "[open]")]
-    #[case("https://example.com/", "[open]")]
-    #[case("https://github.com/o/r/issues/not-a-number", "[open]")]
-    fn short_link_label_extracts_issue_pr_number(#[case] url: &str, #[case] expected: &str) {
-        assert_eq!(short_link_label(url), expected);
     }
 
     // ---- GitHubLoad -----------------------------------------------------

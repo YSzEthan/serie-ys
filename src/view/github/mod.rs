@@ -566,7 +566,9 @@ impl<'a> GitHubView<'a> {
                     h(&[UserEvent::Confirm], "preview"),
                     h(&[UserEvent::Refresh], "refresh"),
                     h(&[UserEvent::Filter], "filter"),
-                    h(&[UserEvent::ShortCopy], "copy url / C open / v #num"),
+                    h(&[UserEvent::ShortCopy], "copy url"),
+                    h(&[UserEvent::FullCopy], "open"),
+                    h(&[UserEvent::TagCopy], "#num"),
                 ]);
                 hints.extend(self.commit_log_hint());
                 if self.selected_has_related() {
@@ -576,6 +578,104 @@ impl<'a> GitHubView<'a> {
                 hints
             }
         }
+    }
+
+    /// 這個 view 有可能顯示的每一條狀態列提示，給
+    /// `help::status_hints_are_bound_and_documented` 拿去跟說明頁比對。
+    ///
+    /// 樣本資料與掃描都放在這裡而不是 help 裡：`focus`／`active_tab` 這些欄位
+    /// 對別的模組是私有的，而「哪些狀態組合會長出不同提示」也只有這個模組知道。
+    #[cfg(test)]
+    pub(crate) fn every_status_hint() -> Vec<HintSpec> {
+        use crate::github::{GhAuthor, GhRelatedIssue};
+
+        let author = || GhAuthor {
+            login: "alice".to_string(),
+        };
+        let related = || {
+            vec![GhRelatedIssue {
+                number: 9,
+                title: "related".to_string(),
+                state: "OPEN".to_string(),
+                url: String::new(),
+            }]
+        };
+        let issue = |number, state: &str, sub_issues: Vec<GhRelatedIssue>| GhIssue {
+            number,
+            title: "t".to_string(),
+            state: state.to_string(),
+            labels: Vec::new(),
+            author: author(),
+            created_at: String::new(),
+            body: String::new(),
+            url: String::new(),
+            closed_at: None,
+            updated_at: String::new(),
+            parent: None,
+            sub_issues,
+        };
+        let pr = |number, state: &str, is_draft, linked_issues| GhPullRequest {
+            number,
+            title: "t".to_string(),
+            state: state.to_string(),
+            labels: Vec::new(),
+            author: author(),
+            head_ref_name: "topic".to_string(),
+            base_ref_name: "main".to_string(),
+            is_draft,
+            body: String::new(),
+            url: String::new(),
+            closed_at: None,
+            updated_at: String::new(),
+            linked_issues,
+        };
+
+        let data = GitHubData {
+            issues: vec![issue(1, "OPEN", related()), issue(2, "CLOSED", Vec::new())],
+            pull_requests: vec![
+                pr(3, "OPEN", false, related()),
+                pr(4, "OPEN", true, Vec::new()),
+                pr(5, "MERGED", false, Vec::new()),
+            ],
+            ..Default::default()
+        };
+        let (tx, _rx) = Sender::channel_for_test();
+        let mut view = GitHubView::new(View::Default, data, tx);
+
+        let mut all = Vec::new();
+        for focus in [
+            GitHubFocus::List,
+            GitHubFocus::Preview,
+            GitHubFocus::Prompt,
+            GitHubFocus::CheckboxEdit,
+        ] {
+            for tab in [GitHubTab::Issues, GitHubTab::PullRequests] {
+                for expand in [false, true] {
+                    view.focus = focus;
+                    view.active_tab = tab;
+                    view.expand_commits = expand;
+                    for i in 0..view.current_list_len() {
+                        view.selected_index = i;
+                        all.extend(view.status_hints());
+                    }
+                }
+            }
+        }
+
+        // 空清單的三條分支走的是另一組提示，清單有東西時掃不到。
+        view.issues.clear();
+        view.pull_requests.clear();
+        view.focus = GitHubFocus::List;
+        for state in [
+            LoadState::Idle,
+            LoadState::Loading,
+            LoadState::Error(String::new()),
+        ] {
+            view.load_state = state;
+            all.extend(view.status_hints());
+        }
+
+        all
     }
 
     /// 收合／展開不會重置 `preview_offset`——跟另外約 20 個在導覽時會重置
