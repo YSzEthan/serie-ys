@@ -667,6 +667,15 @@ impl App<'_> {
                         }
                     }
                 }
+                AppEvent::CheckUpdate => {
+                    crate::update::spawn_check(self.ec, true);
+                }
+                AppEvent::OpenUpdatePrompt { tag } => {
+                    self.maybe_open_update_prompt(tag);
+                }
+                AppEvent::UpdateRequested { tag } => {
+                    spawn_update_download(self.ec, tag);
+                }
             }
         }
     }
@@ -1538,6 +1547,21 @@ impl App<'_> {
         }
     }
 
+    /// 背景檢查回來時，狀態列可能正被 picker／prompt／通知佔著，或整個蓋在
+    /// pending overlay 底下（兩者都在 `handle_key` 攔截鍵，提示會被塞進看不到
+    /// 也按不了的地方），或使用者根本不在 List/Detail/Refs 這三個 browsing
+    /// view（GitHub 搜尋框、CreateTag 等對話框用的是自己的 `tui_input::Input`，
+    /// 狀態列同樣顯示 `None`，提示一彈出來就會吃掉打字）。三個條件都過才開，
+    /// 沒過就丟掉不問——節流本來就一天一次，下次再說，不做佇列。
+    fn maybe_open_update_prompt(&mut self, tag: String) {
+        if self.pending_message.is_none()
+            && self.view.is_browsing_view()
+            && self.status_line_state.is_idle()
+        {
+            self.status_line_state.open_update_prompt(tag);
+        }
+    }
+
     fn fetch_all(&self) {
         spawn_git_task(
             self.repository.path(),
@@ -1593,6 +1617,27 @@ fn spawn_merge_pr(
                 } else {
                     tx.send(AppEvent::NotifyError(e));
                 }
+            }
+        }
+    });
+}
+
+fn spawn_update_download(ec: &EventController, tag: String) {
+    let tx = ec.sender();
+    ec.send(AppEvent::ShowPendingOverlay {
+        message: format!("Downloading {tag}..."),
+    });
+    std::thread::spawn(move || {
+        let result = crate::update::download_and_replace(&tag);
+        tx.send(AppEvent::HidePendingOverlay);
+        match result {
+            Ok(()) => {
+                tx.send(AppEvent::NotifySuccess(format!(
+                    "Updated to {tag} — restart ysgit to apply"
+                )));
+            }
+            Err(e) => {
+                tx.send(AppEvent::NotifyError(e));
             }
         }
     });
@@ -1783,6 +1828,7 @@ fn global_app_event(event: UserEvent, browsing_view: bool, input_mode: bool) -> 
     match event {
         UserEvent::GitHubToggle => Some(AppEvent::OpenGitHub),
         UserEvent::HelpToggle => Some(AppEvent::OpenHelp),
+        UserEvent::CheckUpdate => Some(AppEvent::CheckUpdate),
         _ => None,
     }
 }
@@ -1919,9 +1965,11 @@ mod tests {
     // browsing view + 非輸入模式：正常攔截
     #[case(UserEvent::GitHubToggle, true,  false, true)]
     #[case(UserEvent::HelpToggle,   true,  false, true)]
+    #[case(UserEvent::CheckUpdate,  true,  false, true)]
     // 輸入模式：一律放行給 view 當文字處理
     #[case(UserEvent::GitHubToggle, true,  true,  false)]
     #[case(UserEvent::HelpToggle,   true,  true,  false)]
+    #[case(UserEvent::CheckUpdate,  true,  true,  false)]
     // 非 browsing view（modal）：本來就不攔
     #[case(UserEvent::GitHubToggle, false, false, false)]
     #[case(UserEvent::HelpToggle,   false, false, false)]

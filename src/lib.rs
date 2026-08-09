@@ -11,6 +11,7 @@ mod event;
 mod external;
 mod fuzzy;
 mod keybind;
+mod update;
 mod view;
 mod widget;
 mod wizard;
@@ -75,6 +76,10 @@ struct Args {
     /// 顯示版本
     #[arg(short = 'V', long, action = clap::ArgAction::Version)]
     version: Option<bool>,
+
+    /// 檢查 GitHub Release 並更新執行檔本身
+    #[arg(short = 'U', long)]
+    update: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
@@ -303,6 +308,13 @@ pub fn run() -> Result<()> {
         }
         Err(e) => e.exit(),
     };
+
+    // 不進 TUI、不開 repository——config 壞掉也不該擋住這條路徑（使用者
+    // 可能就是為了拿掉會修掉那個壞 config 的新版才跑 -U）。
+    if args.update {
+        return run_self_update();
+    }
+
     let (core_config, ui_config, graph_config, color_theme, keybind_patch) = config::load()?;
     let keybind = keybind::KeyBind::new(keybind_patch);
 
@@ -342,6 +354,11 @@ pub fn run() -> Result<()> {
     });
 
     let mut ec = event::EventController::init();
+    // 這一輪迴圈每次 `Ret::Refresh` 都會重建 `App` 並重跑到這裡——檢查要
+    // spawn 在迴圈外，只在整個 process 生命週期跑一次；放進 `App::run()`
+    // 開頭的話，建 tag、刪 branch、checkout 這些觸發 refresh 的操作都會
+    // 意外多 spawn 一次背景檢查。
+    update::spawn_check(&ec, false);
     let mut refresh_view_context = None;
     let mut terminal = None;
 
@@ -449,6 +466,20 @@ pub fn run() -> Result<()> {
     .ok();
     ratatui::restore();
     ret.map_err(Into::into)
+}
+
+/// `-U`／`--update`：不問 y/n（使用者是主動下的指令），繞過節流、不寫節流
+/// marker。跟 TUI 內的更新提示共用 `update::` 同一組函式。
+fn run_self_update() -> Result<()> {
+    match update::check_for_update()? {
+        Some(tag) => {
+            println!("Updating to {tag}...");
+            update::download_and_replace(&tag)?;
+            println!("Updated to {tag}. Restart ysgit to use the new version.");
+        }
+        None => println!("Already up to date (v{})", env!("CARGO_PKG_VERSION")),
+    }
+    Ok(())
 }
 
 #[cfg(test)]

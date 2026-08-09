@@ -41,6 +41,7 @@ fn help_output_lists_every_flag_including_the_new_path_browser() {
         "-i, --initial-selection",
         "-h, --help",
         "-V, --version",
+        "-U, --update",
     ] {
         assert!(
             stdout.contains(needle),

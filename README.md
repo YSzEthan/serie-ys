@@ -105,6 +105,7 @@ Options:
   -i, --initial-selection <TYPE>  初始選取的 commit [default: latest] [possible values: latest, head]
   -h, --help                      顯示說明
   -V, --version                   顯示版本
+  -U, --update                    檢查 GitHub Release 並更新執行檔本身
 ```
 
 > **`-h` 上面寫的「顯示說明」只是非 TTY（管線、CI）下的行為。** 在真人終端機直接執行

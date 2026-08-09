@@ -67,12 +67,18 @@ fn config_file_path_from_env() -> Option<PathBuf> {
     env::var(CONFIG_FILE_ENV_NAME).ok().map(PathBuf::from)
 }
 
-fn config_file_path() -> Option<PathBuf> {
+/// `~/.config/serie`（或 `$XDG_CONFIG_HOME/serie`）。`update` 模組拿它放節流
+/// 用的 marker 檔——跟 config.toml 是同一個目錄，不用另外決定放哪。
+pub(crate) fn config_dir() -> Option<PathBuf> {
     env::var(XDG_CONFIG_HOME_ENV_NAME)
         .ok()
         .map(PathBuf::from)
         .or_else(|| env::home_dir().map(|home| home.join(DEFAULT_CONFIG_DIR)))
-        .map(|config_dir| config_dir.join(APP_DIR_NAME).join(CONFIG_FILE_NAME))
+        .map(|config_dir| config_dir.join(APP_DIR_NAME))
+}
+
+fn config_file_path() -> Option<PathBuf> {
+    config_dir().map(|dir| dir.join(CONFIG_FILE_NAME))
 }
 
 fn read_config_from_path(path: &Path) -> Result<Config> {

@@ -714,6 +714,9 @@
         },
         "toggle_commit_log": {
           "$ref": "#/definitions/keybindArray"
+        },
+        "check_update": {
+          "$ref": "#/definitions/keybindArray"
         }
       },
       "patternProperties": {
