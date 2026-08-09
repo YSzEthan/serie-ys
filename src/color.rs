@@ -67,6 +67,14 @@ pub struct ColorTheme {
     #[default(RatatuiColor::Magenta)]
     pub detail_file_change_move_fg: RatatuiColor,
 
+    /// ratatui 沒有具名的 orange，208 是 xterm 256 色盤裡的 DarkOrange——
+    /// 用索引值而不是絕對 RGB，任何 256 色終端都能正確顯示，不需要
+    /// truecolor 支援。
+    #[default(RatatuiColor::Indexed(208))]
+    pub diff_title_path_fg: RatatuiColor,
+    #[default(RatatuiColor::Cyan)]
+    pub diff_title_hunk_fg: RatatuiColor,
+
     #[default(RatatuiColor::White)]
     pub ref_selected_fg: RatatuiColor,
     #[default(RatatuiColor::DarkGray)]

@@ -22,8 +22,9 @@ use crate::{
     git::Ref,
 };
 
-/// 把外部指令 / git diff 的 stdout（含 ANSI 色碼）轉成可渲染的 `Line`。
-/// tab 無法正確渲染，先展開成空白再轉換。
+/// 把外部指令的 stdout（含 ANSI 色碼）轉成可渲染的 `Line`。單檔 diff 已改走
+/// `crate::diff::parse`（`--color=never`，自己上色），這裡只剩 user command
+/// 在用。tab 無法正確渲染，先展開成空白再轉換。
 pub(crate) fn ansi_output_to_lines(
     output: String,
     tab_width: u16,

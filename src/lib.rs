@@ -5,6 +5,7 @@ mod github;
 pub mod graph;
 
 mod app;
+mod diff;
 mod emoji;
 mod event;
 mod external;

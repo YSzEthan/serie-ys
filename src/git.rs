@@ -284,9 +284,11 @@ impl Repository {
         (commit, refs)
     }
 
-    /// 單一檔案的 diff（含 ANSI 色碼）。初始 commit（無 parent）自動改跟 empty tree
-    /// 比對，判斷邏輯與 `commit_detail` 同源。
-    pub fn file_diff(&self, target: &DiffTarget) -> std::result::Result<String, String> {
+    /// 單一檔案的 diff（不含 ANSI 色碼——上色與行號、header 都交給 `crate::diff`
+    /// 自己解析）。回傳值第二項是「是否被行數上限截斷」，供呼叫端在 title 上提示；
+    /// 不再把這件事編碼成字串尾巴的 `... (truncated)` 讓呼叫端回頭解析。
+    /// 初始 commit（無 parent）自動改跟 empty tree 比對，判斷邏輯與 `commit_detail` 同源。
+    pub fn file_diff(&self, target: &DiffTarget) -> std::result::Result<(String, bool), String> {
         match target {
             DiffTarget::Commit { hash, path } => {
                 let commit = self.commit(hash).unwrap();
@@ -332,14 +334,27 @@ impl DiffTarget {
 /// 四種形狀共用同一條指令與 exit code 判斷：一般 diff 沒帶 `--exit-code`
 /// 時只會回 0，只有 `--no-index` 會用 1 代表「有差異」（這裡的正常情況），
 /// 對所有呼叫方統一接受 `0|1` 是安全的，其餘才是真的錯誤。
-fn run_diff(path: &Path, args: &[&str]) -> std::result::Result<String, String> {
+fn run_diff(path: &Path, args: &[&str]) -> std::result::Result<(String, bool), String> {
     let output = Command::new("git")
         .args([
             "-c",
             "core.quotePath=false",
+            // 上色與解析都交給 `crate::diff` 自己做，不再假手 git 的 ANSI 輸出；
+            // 同理把 noprefix／mnemonicPrefix 都釘回 git 內建行為，`--no-ext-diff`
+            // 停用外部 diff 工具 —— 否則設了這些的使用者，輸出會被我們的 parser
+            // 解析成一團垃圾（原本「git 印什麼畫什麼」的做法對他們是無害的）。
+            // 注意：停用外部 diff 不能用 `-c diff.external=`——空字串仍然是
+            // 「設了一個外部 diff 程式，只是路徑是空的」，git 會嘗試執行它
+            // 並失敗（`cannot run : No such file or directory`）；`--no-ext-diff`
+            // 才是「不要用外部 diff」。
+            "-c",
+            "diff.noprefix=false",
+            "-c",
+            "diff.mnemonicPrefix=false",
             "--no-pager",
             "diff",
-            "--color=always",
+            "--no-ext-diff",
+            "--color=never",
         ])
         .args(args)
         .current_dir(path)
@@ -355,18 +370,21 @@ fn run_diff(path: &Path, args: &[&str]) -> std::result::Result<String, String> {
     }
 }
 
-fn truncate_diff_output(bytes: &[u8]) -> String {
+/// 回傳值第二項標示是否被行數上限截斷。截斷不再往內容尾端插入
+/// `... (truncated)` 這種標記行——`crate::diff::parse_rows` 只認得
+/// hunk／context／`+`／`-`／`\ No newline` 這幾種開頭，插進去的標記行會被
+/// `_ => continue` 悄悄丟掉，等於白插；截斷的事實一律由這個布林值表達，
+/// 呼叫端拿去組 title 上的 `truncated` 旗標。
+fn truncate_diff_output(bytes: &[u8]) -> (String, bool) {
     let text = String::from_utf8_lossy(bytes);
     let mut lines = text.lines();
-    let mut out = lines
+    let out = lines
         .by_ref()
         .take(DIFF_OUTPUT_LINE_LIMIT)
         .collect::<Vec<_>>()
         .join("\n");
-    if lines.next().is_some() {
-        out.push_str("\n... (truncated)");
-    }
-    out
+    let truncated = lines.next().is_some();
+    (out, truncated)
 }
 
 fn check_git_repository(path: &Path) -> Result<()> {

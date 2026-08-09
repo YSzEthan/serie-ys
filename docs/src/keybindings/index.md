@@ -72,6 +72,8 @@
 | <kbd>K</kbd> | Files 區塊：diff 逐行上捲 | `select_up` |
 | <kbd>Ctrl-d</kbd> | Files 區塊：diff 半頁下捲 | `half_page_down` |
 | <kbd>Ctrl-u</kbd> | Files 區塊：diff 半頁上捲 | `half_page_up` |
+| <kbd>]</kbd> | Files 區塊：跳到下一個 hunk | `go_to_next` |
+| <kbd>[</kbd> | Files 區塊：跳到上一個 hunk | `go_to_previous` |
 | <kbd>PageDown</kbd> <kbd>Ctrl-f</kbd> | Files 區塊：diff 整頁下捲 | `page_down` |
 | <kbd>PageUp</kbd> <kbd>Ctrl-b</kbd> | Files 區塊：diff 整頁上捲 | `page_up` |
 | <kbd>Right</kbd> <kbd>l</kbd> | 選擇較舊 commit | `navigate_right` |

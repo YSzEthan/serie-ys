@@ -496,6 +496,16 @@
           "description": "Color for moved file status in the commit detail view.",
           "default": "magenta"
         },
+        "diff_title_path_fg": {
+          "type": "string",
+          "description": "Color for the file path in the diff pane title.",
+          "default": "208"
+        },
+        "diff_title_hunk_fg": {
+          "type": "string",
+          "description": "Color for the hunk position (n/m) in the diff pane title.",
+          "default": "cyan"
+        },
         "ref_selected_fg": {
           "type": "string",
           "description": "Foreground color for a selected item in the refs list.",
