@@ -6,7 +6,7 @@
 //! 行號無從標起。所以走 delta／tig／lazygit 的路——保留 `-`/`+` 兩行，行內只
 //! 反白真正改掉的字元。
 
-use std::ops::Range;
+use std::{ops::Range, sync::LazyLock};
 
 use ratatui::{
     style::{Modifier, Style},
@@ -14,6 +14,12 @@ use ratatui::{
 };
 
 use crate::color::ColorTheme;
+
+/// hunk 之間的分隔線。做成 static 是因為 `Line`／`Span` 存的是
+/// `Cow<'static, str>`，每個 hunk 複製到的只是指標，不會各自配一份。
+/// 1024 字元賭「比任何實際終端都寬」，真的更寬也只是被 `Paragraph`
+/// 自然截斷，不會崩潰或跑版。
+static HUNK_DIVIDER: LazyLock<String> = LazyLock::new(|| "─".repeat(1024));
 
 /// 單行超過這個字元數就不做行內高亮（整行維持整行標色）——避免單一超長行的
 /// LCS backtrack（最壞 O(n²)）拖慢同步跑在按鍵路徑上的 `sync_diff`。
@@ -381,19 +387,26 @@ fn render_rows(
     for row in rows {
         match row.kind {
             RowKind::HunkHeader => {
+                // 第一個 hunk 前不加分隔線——上面已經有 pane 自己的邊框。
+                if !hunk_starts.is_empty() {
+                    lines.push(Line::styled(
+                        HUNK_DIVIDER.as_str(),
+                        Style::default().fg(theme.divider_fg),
+                    ));
+                }
                 hunk_starts.push(lines.len());
-                lines.push(Line::from(Span::styled(
+                lines.push(Line::styled(
                     row.content.clone(),
                     Style::default()
                         .fg(theme.divider_fg)
                         .add_modifier(Modifier::BOLD),
-                )));
+                ));
             }
             RowKind::NoNewline => {
-                lines.push(Line::from(Span::styled(
+                lines.push(Line::styled(
                     row.content.clone(),
                     Style::default().fg(theme.divider_fg),
-                )));
+                ));
             }
             RowKind::Context | RowKind::Added | RowKind::Removed => {
                 let gutter = match row.line_no {
@@ -701,6 +714,38 @@ mod tests {
         let rendered = parse(diff, 4, &theme());
         assert_eq!(rendered.hunk_starts.len(), 2);
         assert_eq!(rendered.hunk_starts[0], 0);
-        assert_eq!(rendered.lines.len(), 5);
+        // 3 行內容（hunk1: header/-/+） + 1 條分隔線 + 2 行內容（hunk2: header/context）。
+        assert_eq!(rendered.lines.len(), 6);
+    }
+
+    /// `!hunk_starts.is_empty()` 這個 guard 真正的邊界：只有一個 hunk 時，
+    /// 前面沒有「上一個 hunk」可以分隔，不該出現分隔線。
+    #[test]
+    fn single_hunk_has_no_divider() {
+        let diff = "@@ -1,1 +1,1 @@\n context\n";
+        let rendered = parse(diff, 4, &theme());
+        assert_eq!(rendered.hunk_starts, vec![0]);
+        assert_eq!(
+            rendered.lines.len(),
+            2,
+            "只有 header 跟一行 context，沒有分隔線"
+        );
+    }
+
+    /// 斷言性質而非硬寫行數魔術數字：第一個 hunk 前沒有東西、其餘每個
+    /// hunk 前一行都是分隔線。
+    #[test]
+    fn dividers_precede_every_hunk_except_the_first() {
+        let diff = "@@ -1,1 +1,1 @@\n a\n@@ -5,1 +5,1 @@\n b\n@@ -9,1 +9,1 @@\n c\n";
+        let rendered = parse(diff, 4, &theme());
+        assert_eq!(rendered.hunk_starts.len(), 3);
+        assert_eq!(rendered.hunk_starts[0], 0, "第一個 hunk 前不該有分隔線");
+        for &start in &rendered.hunk_starts[1..] {
+            let divider = rendered.lines[start - 1].to_string();
+            assert!(
+                divider.starts_with('─'),
+                "hunk 起點前一行該是分隔線：{divider:?}"
+            );
+        }
     }
 }
