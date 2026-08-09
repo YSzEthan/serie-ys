@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.4.0](https://github.com/YSzEthan/serie-ys/compare/v2.3.1...v2.4.0) (2026-08-09)
+
+
+### Features
+
+* detail view diff pane 重做，自訂行號／header／行內差異／hunk 導航 (#47) (#48) ([4143143](https://github.com/YSzEthan/serie-ys/commit/41431432074a8de88af7835aaa47a826f9f2b41b))
+
 ## [2.3.1](https://github.com/YSzEthan/serie-ys/compare/v2.3.0...v2.3.1) (2026-08-08)
 
 
