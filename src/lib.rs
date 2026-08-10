@@ -443,12 +443,16 @@ pub fn run() -> Result<()> {
         .or(core_config.option.initial_selection)
         .into();
     let update_settings = update::resolve(
-        args.update_mode,
-        args.update_interval,
-        args.auto_restart,
-        core_config.update.mode,
-        core_config.update.interval_hours,
-        core_config.update.auto_restart,
+        update::UpdateOverrides {
+            mode: args.update_mode,
+            interval_hours: args.update_interval,
+            auto_restart: args.auto_restart,
+        },
+        update::UpdateOverrides {
+            mode: core_config.update.mode,
+            interval_hours: core_config.update.interval_hours,
+            auto_restart: core_config.update.auto_restart,
+        },
     );
 
     let graph_color_set = color::GraphColorSet::new(&graph_config.color);
@@ -658,12 +662,16 @@ fn run_self_update(args: &Args) -> Result<()> {
         }
     };
     let settings = update::resolve(
-        args.update_mode,
-        args.update_interval,
-        args.auto_restart,
-        core_update.mode,
-        core_update.interval_hours,
-        core_update.auto_restart,
+        update::UpdateOverrides {
+            mode: args.update_mode,
+            interval_hours: args.update_interval,
+            auto_restart: args.auto_restart,
+        },
+        update::UpdateOverrides {
+            mode: core_update.mode,
+            interval_hours: core_update.interval_hours,
+            auto_restart: core_update.auto_restart,
+        },
     );
 
     let latest = update::check_for_update()?;

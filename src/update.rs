@@ -87,6 +87,17 @@ impl Default for UpdateSettings {
     }
 }
 
+/// `resolve()` 的一組來源（CLI 或設定檔）。三個欄位型別兩兩相同
+/// （`Option<UpdateMode>`、`Option<u64>`、`Option<AutoRestart>`），拆開寫
+/// 成 6 個位置參數時 CLI 側跟設定檔側寫反編譯器抓不到——包成同一個具名
+/// 型別、呼叫端用欄位名字建構，才擋得住這種手滑。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct UpdateOverrides {
+    pub mode: Option<UpdateMode>,
+    pub interval_hours: Option<u64>,
+    pub auto_restart: Option<AutoRestart>,
+}
+
 /// 唯一的合併入口：CLI > 設定檔 > 內建預設。`YSGIT_NO_UPDATE_CHECK` 在這裡
 /// 壓成 `mode = Off`——原本散在 `should_check_on_startup` 裡的另一個閘門，
 /// 併過來後全程只剩 `mode` 一個判斷點。
@@ -94,24 +105,18 @@ impl Default for UpdateSettings {
 /// 收純值而非整個 `&Args`／`&CoreConfig`：不必為了讀三個欄位就讓這個模組
 /// 認得 `Args` 的私有欄位，呼叫端（`lib.rs::run()`）在自己的模組裡解構
 /// 一次即可，這個函式本身也因此是純函式，好測。
-pub fn resolve(
-    cli_mode: Option<UpdateMode>,
-    cli_interval_hours: Option<u64>,
-    cli_auto_restart: Option<AutoRestart>,
-    config_mode: Option<UpdateMode>,
-    config_interval_hours: Option<u64>,
-    config_auto_restart: Option<AutoRestart>,
-) -> UpdateSettings {
+pub fn resolve(cli: UpdateOverrides, config: UpdateOverrides) -> UpdateSettings {
     let mode = if env::var_os("YSGIT_NO_UPDATE_CHECK").is_some() {
         UpdateMode::Off
     } else {
-        cli_mode.or(config_mode).unwrap_or_default()
+        cli.mode.or(config.mode).unwrap_or_default()
     };
-    let interval_hours = cli_interval_hours
-        .or(config_interval_hours)
+    let interval_hours = cli
+        .interval_hours
+        .or(config.interval_hours)
         .unwrap_or(DEFAULT_INTERVAL_HOURS);
     let auto_restart =
-        cli_auto_restart.or(config_auto_restart).unwrap_or_default() == AutoRestart::On;
+        cli.auto_restart.or(config.auto_restart).unwrap_or_default() == AutoRestart::On;
     UpdateSettings {
         mode,
         interval: Duration::from_secs(interval_hours * 3600),
@@ -675,12 +680,16 @@ ca0a1ac34d2e1138b9308820e3a53b6822552268907e87a11a1350b98f1a6ada  ysgit_2.4.1-ma
     #[test]
     fn resolve_cli_wins_over_config_and_default() {
         let settings = resolve(
-            Some(UpdateMode::Auto),
-            Some(2),
-            Some(AutoRestart::On),
-            Some(UpdateMode::Off),
-            Some(20),
-            Some(AutoRestart::Off),
+            UpdateOverrides {
+                mode: Some(UpdateMode::Auto),
+                interval_hours: Some(2),
+                auto_restart: Some(AutoRestart::On),
+            },
+            UpdateOverrides {
+                mode: Some(UpdateMode::Off),
+                interval_hours: Some(20),
+                auto_restart: Some(AutoRestart::Off),
+            },
         );
         assert_eq!(settings.mode, UpdateMode::Auto);
         assert_eq!(settings.interval, Duration::from_secs(2 * 3600));
@@ -690,12 +699,12 @@ ca0a1ac34d2e1138b9308820e3a53b6822552268907e87a11a1350b98f1a6ada  ysgit_2.4.1-ma
     #[test]
     fn resolve_falls_back_to_config_when_cli_unset() {
         let settings = resolve(
-            None,
-            None,
-            None,
-            Some(UpdateMode::Off),
-            Some(20),
-            Some(AutoRestart::On),
+            UpdateOverrides::default(),
+            UpdateOverrides {
+                mode: Some(UpdateMode::Off),
+                interval_hours: Some(20),
+                auto_restart: Some(AutoRestart::On),
+            },
         );
         assert_eq!(settings.mode, UpdateMode::Off);
         assert_eq!(settings.interval, Duration::from_secs(20 * 3600));
@@ -704,7 +713,7 @@ ca0a1ac34d2e1138b9308820e3a53b6822552268907e87a11a1350b98f1a6ada  ysgit_2.4.1-ma
 
     #[test]
     fn resolve_falls_back_to_builtin_default_when_nothing_set() {
-        let settings = resolve(None, None, None, None, None, None);
+        let settings = resolve(UpdateOverrides::default(), UpdateOverrides::default());
         assert_eq!(settings.mode, UpdateMode::Check);
         assert_eq!(
             settings.interval,
