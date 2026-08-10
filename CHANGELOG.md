@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.6.0](https://github.com/YSzEthan/serie-ys/compare/v2.5.1...v2.6.0) (2026-08-10)
+
+
+### Features
+
+* -V 列出所有選項、自我更新加入 y/n 確認 (#53) (#54) ([169909b](https://github.com/YSzEthan/serie-ys/commit/169909b067bd4bfccac8d928de7e1cc7201191b9))
+
+
+### Refactors
+
+* truncate_line 兩條路徑併回一條，刪掉 str_width (#52) ([0b847d4](https://github.com/YSzEthan/serie-ys/commit/0b847d4a1cb226c465e76768c0e45f2b33ca7397))
+
 ## [2.5.1](https://github.com/YSzEthan/serie-ys/compare/v2.5.0...v2.5.1) (2026-08-10)
 
 
