@@ -1557,15 +1557,22 @@ impl App<'_> {
         }
     }
 
-    /// 下載＋替換執行檔完成，問是否要離開並以新版重啟。守衛比
-    /// `maybe_open_update_prompt` 多容許狀態列正顯示一則通知——理由見
-    /// `StatusLineState::is_showing_notification`。守衛沒過就退回通知。
-    fn maybe_open_restart_prompt(&mut self, tag: String, exe: PathBuf) {
-        if self.pending_message.is_none()
+    /// 現在能不能打斷使用者：沒有 pending overlay、在三個 browsing view 之一、
+    /// 狀態列閒置或只是顯示一則通知（picker／prompt 都不算）。比
+    /// `maybe_open_update_prompt` 的守衛寬一格——理由見
+    /// `StatusLineState::is_showing_notification`。這是唯一一處判斷「可不可以
+    /// 打斷」，`auto_restart` 的無提示重啟與這裡的重啟提示共用它，兩者不准各自
+    /// 長出一份守衛。
+    fn can_interrupt(&self) -> bool {
+        self.pending_message.is_none()
             && self.view.is_browsing_view()
             && (self.status_line_state.is_idle()
                 || self.status_line_state.is_showing_notification())
-        {
+    }
+
+    /// 下載＋替換執行檔完成，問是否要離開並以新版重啟。守衛沒過就退回通知。
+    fn maybe_open_restart_prompt(&mut self, tag: String, exe: PathBuf) {
+        if self.can_interrupt() {
             self.status_line_state.open_restart_prompt(tag, exe);
         } else {
             self.status_line_state
