@@ -68,7 +68,7 @@ fn wizard_loop(
             }
             Flow::OpenMaxCount => {
                 let current = state.draft.max_count.or(state.defaults.max_count);
-                match run_number_input(
+                if let NumberFlow::Committed(v) = run_number_input(
                     terminal,
                     current,
                     theme,
@@ -76,25 +76,19 @@ fn wizard_loop(
                     0,
                     usize::MAX,
                 )? {
-                    NumberFlow::Cancelled => {}
-                    NumberFlow::Cleared => {
-                        state.draft.max_count = None;
-                        state.max_count_touched = true;
-                    }
-                    NumberFlow::Set(n) => {
-                        state.draft.max_count = Some(n);
-                        state.max_count_touched = true;
-                    }
+                    state.draft.max_count = v;
+                    state.max_count_touched = true;
                 }
                 terminal.clear()?;
             }
             Flow::OpenUpdateInterval => {
-                let current = state
-                    .draft
-                    .update_interval
-                    .or(Some(state.defaults.update_interval))
-                    .map(|n| n as usize);
-                match run_number_input(
+                let current = Some(
+                    state
+                        .draft
+                        .update_interval
+                        .unwrap_or(state.defaults.update_interval) as usize,
+                );
+                if let NumberFlow::Committed(v) = run_number_input(
                     terminal,
                     current,
                     theme,
@@ -102,15 +96,8 @@ fn wizard_loop(
                     update::MIN_INTERVAL_HOURS as usize,
                     update::MAX_INTERVAL_HOURS as usize,
                 )? {
-                    NumberFlow::Cancelled => {}
-                    NumberFlow::Cleared => {
-                        state.draft.update_interval = None;
-                        state.update_interval_touched = true;
-                    }
-                    NumberFlow::Set(n) => {
-                        state.draft.update_interval = Some(n as u64);
-                        state.update_interval_touched = true;
-                    }
+                    state.draft.update_interval = v.map(|n| n as u64);
+                    state.update_interval_touched = true;
                 }
                 terminal.clear()?;
             }
@@ -510,7 +497,7 @@ struct WizardState {
     rows: Vec<TopRow>,
     list: ListState,
     /// `max_count`／`update_interval` 是數字輸入，不像循環選擇欄位那樣
-    /// `Some` 就代表「有碰過」——它們的清空手勢（`NumberFlow::Cleared`）
+    /// `Some` 就代表「有碰過」——它們的清空手勢（`NumberFlow::Committed(None)`）
     /// 結果也是 `None`，跟「從沒開過這個對話框」在型別上分不出來。這兩個
     /// 旗標補上那個區別，Launch 寫回時才知道「要不要把 config 裡原本的
     /// 值刪掉」跟「乾脆不動這個鍵」是兩件不同的事。
@@ -662,8 +649,10 @@ fn styled_list<'a>(items: Vec<ListItem<'a>>, theme: &ColorTheme) -> List<'a> {
 
 enum NumberFlow {
     Cancelled,
-    Cleared,
-    Set(usize),
+    /// `None` = 明確清空（空字串按 Enter），`Some(n)` = 確定成這個值——
+    /// 兩者都代表「使用者確認了」，呼叫端要做的事（標記 touched、寫回
+    /// `draft`）完全相同，只有要寫的值不同，因此不拆成兩個變體。
+    Committed(Option<usize>),
 }
 
 /// 純函式，可測。空字串當 0 處理。夾在 `[min, max]` 之間——
@@ -699,10 +688,13 @@ fn on_number_key(
     }
     match key.code {
         KeyCode::Esc => Some(NumberFlow::Cancelled),
-        KeyCode::Enter => Some(match input.value().parse::<usize>() {
-            Ok(n) => NumberFlow::Set(n.clamp(min, max)),
-            Err(_) => NumberFlow::Cleared, // 空字串
-        }),
+        KeyCode::Enter => Some(NumberFlow::Committed(
+            input
+                .value()
+                .parse::<usize>()
+                .ok()
+                .map(|n| n.clamp(min, max)),
+        )),
         KeyCode::Left | KeyCode::Down | KeyCode::Char('h') | KeyCode::Char('j') => {
             adjust_number(input, false, min, max);
             None
@@ -1332,7 +1324,7 @@ mod tests {
         let mut input = tui_input::Input::new("99".to_string());
         assert!(matches!(
             on_number_key(&mut input, key(KeyCode::Enter), 1, 48),
-            Some(NumberFlow::Set(48))
+            Some(NumberFlow::Committed(Some(48)))
         ));
     }
 
@@ -1442,7 +1434,7 @@ mod tests {
         let updated = apply_touched_settings(&s, existing).unwrap();
         assert!(updated.contains("max_count = 100"), "{updated}");
 
-        s.draft.max_count = None; // 明確清空（NumberFlow::Cleared）
+        s.draft.max_count = None; // 明確清空（NumberFlow::Committed(None)）
         let updated2 = apply_touched_settings(&s, &updated).unwrap();
         assert!(
             !updated2.contains("max_count"),
