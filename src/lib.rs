@@ -27,7 +27,7 @@ use app::{App, Ret};
 use clap::{CommandFactory, Parser, ValueEnum};
 use graph::Graph;
 use rustc_hash::FxHashSet;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 use update::{AutoRestart, UpdateMode};
 
 /// ysgit - Git Graph in Terminal
@@ -172,7 +172,7 @@ impl Args {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CommitOrderType {
     Chrono,
@@ -189,7 +189,7 @@ impl From<Option<CommitOrderType>> for git::SortCommit {
     }
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GraphWidthType {
     Auto,
@@ -197,7 +197,7 @@ pub enum GraphWidthType {
     Single,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CompactType {
     Auto,
@@ -207,7 +207,7 @@ pub enum CompactType {
 
 pub use graph::GraphStyle;
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum InitialSelection {
     Latest,

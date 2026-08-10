@@ -9,7 +9,6 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
     DefaultTerminal, Frame,
 };
-use serde::Serialize;
 use tui_input::backend::crossterm::EventHandler;
 
 use crate::{
@@ -894,9 +893,15 @@ fn table_entry<'a>(
 /// 循環選擇欄位沒有「清空」手勢，`None` 只代表「沒碰過」，所以這裡永遠是
 /// 「有值才寫，沒值就完全不動這個鍵」——不像 `set_number` 還要分辨「沒碰過」
 /// 跟「明確清空」。
-fn set_enum<T: Serialize>(table: &mut toml_edit::Table, key: &str, value: Option<T>) {
+///
+/// 字串轉換直接重用 `variant_name`（clap 的 kebab-case 名稱）而不是走
+/// `serde` 序列化：這幾個 enum 都是單字變體，clap 的 kebab-case 跟 serde
+/// 的 `rename_all = "lowercase"` 逐字相同（`config.rs` 的
+/// `*_schema_enum_matches_every_accepted_cli_value` 系列測試釘住這個等式），
+/// 沒必要為了同一個字串再繞 `serde_json` 一圈。
+fn set_enum<T: ValueEnum>(table: &mut toml_edit::Table, key: &str, value: Option<T>) {
     if let Some(v) = value {
-        table[key] = toml_edit::value(enum_to_toml_string(&v));
+        set_preserving_decor(table, key, variant_name(&v).into());
     }
 }
 
@@ -905,20 +910,26 @@ fn set_enum<T: Serialize>(table: &mut toml_edit::Table, key: &str, value: Option
 /// 解析路徑）——「沒碰過」的情況呼叫端根本不會呼叫，不需要在這裡再分支。
 fn set_number(table: &mut toml_edit::Table, key: &str, value: Option<i64>) {
     match value {
-        Some(n) => table[key] = toml_edit::value(n),
+        Some(n) => set_preserving_decor(table, key, n.into()),
         None => {
             table.remove(key);
         }
     }
 }
 
-/// 這幾個 enum 都是 `#[serde(rename_all = "lowercase")]` 的單位變體，
-/// 序列化結果保證是純字串——借道 `serde_json`（既有依賴）轉換，不必為了
-/// 「把 enum 變成小寫字串」再拉一個 `serde_plain` 之類的專用 crate。
-fn enum_to_toml_string<T: Serialize>(v: &T) -> String {
-    match serde_json::to_value(v) {
-        Ok(serde_json::Value::String(s)) => s,
-        _ => unreachable!("wizard 用到的 enum 都是 lowercase 字串變體"),
+/// `table[key] = toml_edit::value(v)` 會整個換掉舊的 `Item`，連著它的
+/// decor 一起丟掉——`assets/default-config.toml` 每一個旋鈕的說明都寫成
+/// 該鍵值後面的行內註解（例如 `order = "chrono"  # commit 排序：...`），
+/// 直接指派會讓使用者調一次那個值、說明就跟著消失，正好抵銷「含說明的
+/// 預設設定檔」這個賣點。鍵已存在時改成原地覆寫值、保留舊 decor；鍵是
+/// 新建的才用一般的 `insert`（沒有舊 decor 可留）。
+fn set_preserving_decor(table: &mut toml_edit::Table, key: &str, new_value: toml_edit::Value) {
+    if let Some(old) = table.get_mut(key).and_then(toml_edit::Item::as_value_mut) {
+        let decor = old.decor().clone();
+        *old = new_value;
+        *old.decor_mut() = decor;
+    } else {
+        table.insert(key, toml_edit::Item::Value(new_value));
     }
 }
 
@@ -1386,6 +1397,23 @@ mod tests {
         assert!(updated.contains("# 我的註解"), "{updated}");
         assert!(updated.contains("fuzzy = true"), "{updated}");
         assert!(updated.contains("order = \"topo\""), "{updated}");
+    }
+
+    #[test]
+    fn apply_touched_settings_keeps_inline_comment_on_the_key_it_overwrites() {
+        // assets/default-config.toml 把每個旋鈕的說明都寫成該鍵值後面的行內
+        // 註解——改一次那個值，說明不能跟著消失。
+        let mut s = test_state();
+        let idx = row_of_field(&s.rows, FieldKind::Order);
+        move_to_row(&mut s, idx);
+        s.on_key(key(KeyCode::Right));
+
+        let existing = "[core.option]\norder = \"chrono\"  # commit 排序\n";
+        let updated = apply_touched_settings(&s, existing).unwrap();
+        assert!(
+            updated.contains("order = \"topo\"  # commit 排序"),
+            "{updated}"
+        );
     }
 
     #[test]

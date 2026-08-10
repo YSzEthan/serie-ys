@@ -20,7 +20,7 @@ use std::{
 
 use clap::ValueEnum;
 use semver::Version;
-use serde::{Deserialize, Serialize};
+use serde::Deserialize;
 
 use crate::event::{AppEvent, EventController};
 
@@ -32,7 +32,7 @@ const CHECKSUMS_URL: &str = concat!(
 const MARKER_FILE_NAME: &str = ".ysgit.update_check";
 
 /// 自動更新檢查模式。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum UpdateMode {
     // 完全不檢查——連手動的 `U`／`-U` 都不受它影響，那是使用者當下的明確
@@ -50,7 +50,7 @@ pub enum UpdateMode {
 }
 
 /// 更新完成後是否自動重啟（TUI）／開啟新版（CLI），不再詢問。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum, Deserialize, Serialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AutoRestart {
     #[default]
