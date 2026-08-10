@@ -76,6 +76,9 @@ pub fn download_and_replace(tag: &str) -> Result<PathBuf, String> {
     if cfg!(debug_assertions) {
         return Err("開發版本（debug build）不支援自我更新".into());
     }
+    if UPDATE_INSTALLED.load(Ordering::SeqCst) {
+        return Err("目前執行檔已更新過，請先重新啟動 ysgit 再更新".into());
+    }
     if UPDATE_RUNNING.swap(true, Ordering::SeqCst) {
         return Err("已經有一個更新在進行中".into());
     }
@@ -113,6 +116,7 @@ pub fn download_and_replace(tag: &str) -> Result<PathBuf, String> {
     // （deploy-ysgit skill 記下的那個坑：舊檔被 Gatekeeper 標記過，新 binary
     // 繼承標記，啟動時 SIGKILL）。絕對不要用 `cp`。
     fs::rename(&tmp, &target).map_err(|e| format!("替換執行檔失敗: {e}"))?;
+    UPDATE_INSTALLED.store(true, Ordering::SeqCst);
     Ok(target)
 }
 
@@ -164,6 +168,15 @@ fn no_asset_error() -> String {
 // 「File exists」，只能手動 `rm` 才能解。
 
 static UPDATE_RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// 本 process 這輩子有沒有成功替換過一次執行檔——`current_exe_checked` 的
+/// `"(deleted)"` 字串偵測只在 Linux 上有效（`/proc/self/exe` 的行為），
+/// macOS 的 `current_exe()`（`_NSGetExecutablePath`）不會標記已被替換，靠它
+/// 擋不住「更新完不重啟、繼續用同一個 process 再按一次更新」——沒有這個旗標，
+/// macOS 上會整包重新下載一次（無害但白費頻寬與 300 秒 timeout）。這個旗標
+/// 是跨平台的事實：不管哪個平台，`fs::rename` 一旦成功，目前這個 process
+/// 手上的執行檔內容就已經跟磁碟上的不是同一份了。
+static UPDATE_INSTALLED: AtomicBool = AtomicBool::new(false);
 
 struct UpdateGuard;
 

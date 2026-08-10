@@ -16,7 +16,12 @@ mod view;
 mod widget;
 mod wizard;
 
-use std::{collections::VecDeque, io::IsTerminal, path::Path, rc::Rc};
+use std::{
+    collections::VecDeque,
+    io::{IsTerminal, Write},
+    path::Path,
+    rc::Rc,
+};
 
 use app::{App, Ret};
 use clap::{CommandFactory, Parser, ValueEnum};
@@ -550,41 +555,72 @@ pub fn run() -> Result<()> {
     Ok(())
 }
 
-/// `-U`／`--update`：不問 y/n（使用者是主動下的指令），繞過節流，但一律標記
-/// 已檢查——跟 `update::spawn_check` 對「兩種情況都算檢查過一次」的認定一致。
+/// 讀一行 y/n。空行（直接按 Enter）／`y`／`yes`（不分大小寫）算「是」，跟
+/// TUI `yes_no_answer`（`src/app/status_line.rs`，`KeyCode::Enter` 映射到
+/// `Answer::Confirm`）的 Enter=Confirm 一致；其餘（含 EOF）算「否」，
+/// EOF（Ctrl-D）對齊 TUI 的 Esc。
+fn confirm(prompt: &str) -> bool {
+    print!("{prompt} ");
+    let _ = std::io::stdout().flush();
+    let mut input = String::new();
+    if std::io::stdin().read_line(&mut input).unwrap_or(0) == 0 {
+        return false; // EOF：等同 Ctrl-D 取消
+    }
+    let ans = input.trim();
+    ans.is_empty() || ans.eq_ignore_ascii_case("y") || ans.eq_ignore_ascii_case("yes")
+}
+
+/// `-U`／`--update`：查到新版才問（顯示「目前版本 → 最新版本」），更新完再問
+/// 一次是否要就地開啟新版；繞過節流但一律標記已檢查——跟 `update::spawn_check`
+/// 對「兩種情況都算檢查過一次」的認定一致。
 ///
-/// 成功後盡量直接 exec 新執行檔重啟，但只在兩個條件都成立時才做——都是
-/// `run()` 本來就在用的判斷（分別見上面 `-h`／`-V` 的攔截、下方啟動 watcher
-/// 前的同一個判斷）：
-/// - `stdout().is_terminal()`：`ysgit -U >> update.log 2>&1`（cron／script／
-///   `ssh host ysgit -U`）exec 後新 process 的 stdin 是 `/dev/null`，立刻
-///   EOF——crossterm 的 mio source 會卡在內層 read 迴圈吃滿一顆核心，
-///   log 被灌一堆 alt-screen escape，得等 watchdog 逾時才結束。
-/// - `git::is_inside_work_tree`：`cd /tmp && ysgit -U` 這種不在 repo 裡的
-///   呼叫，exec 後 `Repository::load` 會直接 Err、exit 1，畫面上留一句
-///   git 錯誤，使用者會誤以為更新失敗了。`is_inside_work_tree` 內部是
-///   `Command::current_dir`，吃相對路徑就跟目前這個 process 的 cwd 一致，
-///   不需要先 canonicalize。
+/// 兩個問題都只在**互動環境**下問，非互動（cron／script／`ysgit -U >> log`）
+/// 維持「查到就直接更新、不重啟、印訊息」，不會在無人值守的地方卡住等輸入。
+/// 互動與否要 `stdin`／`stdout` **都**是 TTY 才算數，只看其中一個都不夠：
+/// `stdout` 不是 TTY（`ysgit -U | tee log`）問題會卡在 pipe 的 block-buffer
+/// 裡、使用者當下看不到；`stdin` 不是 TTY（`ysgit -U < /dev/null`）則問了也
+/// 讀不到答案，`confirm()` 立刻收到 EOF，誤判成「否」。兩個都是 TTY，才能
+/// 同時保證「問得出來、讀得到答案、真的要 exec 進 TUI 時新 process 也有活的
+/// stdin」。
 fn run_self_update(args: &Args) -> Result<()> {
     let latest = update::check_for_update()?;
     update::mark_checked();
 
-    match latest {
-        Some(tag) => {
-            println!("Updating to {tag}...");
-            let exe = update::download_and_replace(&tag)?;
+    let Some(tag) = latest else {
+        println!("Already up to date (v{})", env!("CARGO_PKG_VERSION"));
+        return Ok(());
+    };
 
-            if std::io::stdout().is_terminal() && git::is_inside_work_tree(Path::new(&args.path)) {
-                if let Err(e) = update::exec_replacing_self(&exe, &args.to_argv()) {
-                    println!("Updated to {tag}, but restart failed: {e}");
-                    println!("Restart ysgit to use the new version.");
-                }
-                // exec 成功時 process image 已被換掉，不會執行到這裡。
-            } else {
-                println!("Updated to {tag}. Restart ysgit to use the new version.");
-            }
+    let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
+    if interactive
+        && !confirm(&format!(
+            "v{} → {tag}  Update? [Y/n]",
+            env!("CARGO_PKG_VERSION")
+        ))
+    {
+        println!("Update cancelled.");
+        return Ok(());
+    }
+
+    println!("Updating to {tag}...");
+    let exe = update::download_and_replace(&tag)?;
+
+    // `git::is_inside_work_tree` 內部是 `Command::current_dir`，吃相對路徑就
+    // 跟目前這個 process 的 cwd 一致，不需要先 canonicalize。不在 repo 裡就不
+    // 問要不要開啟——`cd /tmp && ysgit -U` 這種呼叫，開下去只會看到一句
+    // git 錯誤，使用者會誤以為更新失敗了。放在 `&&` 短路鏈最後一個，非互動
+    // 環境（`interactive` 為 false）不會白 spawn 這個 git 子行程。
+    if interactive
+        && git::is_inside_work_tree(Path::new(&args.path))
+        && confirm("Launch ysgit now? [Y/n]")
+    {
+        if let Err(e) = update::exec_replacing_self(&exe, &args.to_argv()) {
+            println!("Updated to {tag}, but restart failed: {e}");
+            println!("Restart ysgit to use the new version.");
         }
-        None => println!("Already up to date (v{})", env!("CARGO_PKG_VERSION")),
+        // exec 成功時 process image 已被換掉，不會執行到這裡。
+    } else {
+        println!("Updated to {tag}. Restart ysgit to use the new version.");
     }
     Ok(())
 }

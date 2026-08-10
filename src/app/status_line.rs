@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::{path::PathBuf, rc::Rc};
 
 use ratatui::{
     crossterm::event::{KeyCode, KeyEvent},
@@ -20,6 +20,10 @@ use crate::{
 use super::AppContext;
 
 const ESC_CANCEL: &str = "(Esc to cancel)";
+
+/// `RestartPrompt` 取消後留下的提醒；`maybe_open_restart_prompt`（app.rs）
+/// 守衛沒過時也是同一句，兩處共用同一份字面值不會漂移。
+pub(super) const UPDATE_INSTALLED_HINT: &str = "Updated — restart ysgit to apply";
 
 fn picker_digit_index(key: KeyEvent) -> Option<usize> {
     let KeyCode::Char(c) = key.code else {
@@ -144,10 +148,15 @@ enum StatusLine {
         action: PrDraftAction,
         filter_state: StateFilter,
     },
-    /// 有新版 GitHub Release 可更新。跟上面兩個 y/n prompt 共用
+    /// 有新版 GitHub Release 可更新。跟其他 y/n prompt 共用
     /// `handle_yes_no_prompt_key`，唯一差異是確認後送的事件不同。
     UpdatePrompt {
         tag: String,
+    },
+    /// 下載＋替換執行檔完成，問是否要離開並以新版重啟。
+    RestartPrompt {
+        tag: String,
+        exe: PathBuf,
     },
     RelatedPicker {
         items: Vec<RelatedItem>,
@@ -248,11 +257,33 @@ impl StatusLineState {
         self.line = StatusLine::UpdatePrompt { tag };
     }
 
+    pub(super) fn open_restart_prompt(&mut self, tag: String, exe: PathBuf) {
+        self.line = StatusLine::RestartPrompt { tag, exe };
+    }
+
     /// 給 `App::maybe_open_update_prompt` 的守衛用：狀態列現在有沒有被別的
     /// 東西佔著（picker、prompt、甚至一則通知）。更新提示是背景檢查回來時
     /// 才會出現的，不能覆蓋掉使用者當下正在看的任何東西。
     pub(super) fn is_idle(&self) -> bool {
         matches!(self.line, StatusLine::None)
+    }
+
+    /// 給 `App::maybe_open_restart_prompt` 用：比 `is_idle` 寬一格，容許狀態列
+    /// 正顯示一則通知。重啟提示是使用者自己按 `U`、自己按 `y`、自己等下載完
+    /// 的結果，蓋掉一則同樣在講這件事的通知不算冒犯——跟 `is_idle` 服務的
+    /// 「背景不請自來」語意不同，不要合併這兩個判斷式。
+    ///
+    /// **不含 `NotificationError`**：跟 `dismiss_notification` 既有的三分類
+    /// 一致——錯誤要使用者主動按鍵確認過才能清掉（見該方法），這裡若也蓋得掉
+    /// 錯誤，使用者原本想按任意鍵去確認錯誤，卻可能誤觸重啟提示的 y/n
+    /// （例如習慣性按 `y`），後果比通知被覆寫嚴重得多。
+    pub(super) fn is_showing_notification(&self) -> bool {
+        matches!(
+            self.line,
+            StatusLine::NotificationInfo(_)
+                | StatusLine::NotificationSuccess(_)
+                | StatusLine::NotificationWarn(_)
+        )
     }
 
     pub(super) fn clear(&mut self) {
@@ -284,9 +315,9 @@ impl StatusLineState {
         self.line = StatusLine::NotificationError(msg);
     }
 
-    /// 回傳 true 表示這是 9 個攔截變體之一（7 個 handler：`ToggleStatePrompt`、
-    /// `TogglePrDraftPrompt`、`UpdatePrompt` 三個共用 `handle_yes_no_prompt_key`，
-    /// 其餘各自一個 handler）、鍵已被吃掉。
+    /// 回傳 true 表示這是 10 個攔截變體之一（7 個 handler：`ToggleStatePrompt`、
+    /// `TogglePrDraftPrompt`、`UpdatePrompt`、`RestartPrompt` 四個共用
+    /// `handle_yes_no_prompt_key`，其餘各自一個 handler）、鍵已被吃掉。
     ///
     /// 尾巴刻意窮舉非攔截變體而非 `_ => false`：漏接一個新變體只會讓它卡在
     /// 畫面上完全不吃鍵，編譯器不會提醒（比照 app.rs 原本就有的同款警告，
@@ -319,7 +350,8 @@ impl StatusLineState {
             }
             StatusLine::ToggleStatePrompt { .. }
             | StatusLine::TogglePrDraftPrompt { .. }
-            | StatusLine::UpdatePrompt { .. } => {
+            | StatusLine::UpdatePrompt { .. }
+            | StatusLine::RestartPrompt { .. } => {
                 self.handle_yes_no_prompt_key(key);
                 true
             }
@@ -347,7 +379,8 @@ impl StatusLineState {
             | StatusLine::MergePrPrompt { .. }
             | StatusLine::ToggleStatePrompt { .. }
             | StatusLine::TogglePrDraftPrompt { .. }
-            | StatusLine::UpdatePrompt { .. } => false,
+            | StatusLine::UpdatePrompt { .. }
+            | StatusLine::RestartPrompt { .. } => false,
             StatusLine::NotificationInfo(_)
             | StatusLine::NotificationSuccess(_)
             | StatusLine::NotificationWarn(_) => {
@@ -362,12 +395,12 @@ impl StatusLineState {
     }
 
     /// 對應 `App::is_input_mode()` 判斷式裡跟狀態列相關的那部分。**故意跟
-    /// `handle_intercepting_key` 涵蓋的變體不同步**：4 個 prompt
-    /// （`MergePrPrompt`/`ToggleStatePrompt`/`TogglePrDraftPrompt`/`UpdatePrompt`）
-    /// 不在這份清單裡，因為它們在 `handle_intercepting_key` 永遠回傳 `true`，
-    /// 唯一能繞過的只有 `ForceQuit`，而 `ForceQuit` 分支根本不查這個方法。動
-    /// `ForceQuit` 分支或動 `handle_intercepting_key` 涵蓋範圍時，回來檢查
-    /// 這裡。
+    /// `handle_intercepting_key` 涵蓋的變體不同步**：5 個 prompt
+    /// （`MergePrPrompt`/`ToggleStatePrompt`/`TogglePrDraftPrompt`/`UpdatePrompt`/
+    /// `RestartPrompt`）不在這份清單裡，因為它們在 `handle_intercepting_key`
+    /// 永遠回傳 `true`，唯一能繞過的只有 `ForceQuit`，而 `ForceQuit` 分支根本
+    /// 不查這個方法。動 `ForceQuit` 分支或動 `handle_intercepting_key` 涵蓋範圍
+    /// 時，回來檢查這裡。
     pub(super) fn is_input_mode_variant(&self) -> bool {
         match self.line {
             StatusLine::Input(_, _, _)
@@ -381,6 +414,7 @@ impl StatusLineState {
             | StatusLine::ToggleStatePrompt { .. }
             | StatusLine::TogglePrDraftPrompt { .. }
             | StatusLine::UpdatePrompt { .. }
+            | StatusLine::RestartPrompt { .. }
             | StatusLine::NotificationInfo(_)
             | StatusLine::NotificationSuccess(_)
             | StatusLine::NotificationWarn(_)
@@ -591,6 +625,11 @@ impl StatusLineState {
         // take 同時結束對 line 的借用並清掉 modal
         let prompt = std::mem::take(&mut self.line);
         if matches!(answer, Answer::Cancel) {
+            // RestartPrompt 取消時更新其實已經做完了，跟其餘 prompt「取消 =
+            // 什麼都沒發生」不同——靜默清空會讓使用者忘記要手動重啟，留一句話。
+            if matches!(prompt, StatusLine::RestartPrompt { .. }) {
+                self.line = StatusLine::NotificationSuccess(UPDATE_INSTALLED_HINT.to_string());
+            }
             return;
         }
         match prompt {
@@ -620,6 +659,9 @@ impl StatusLineState {
             }
             StatusLine::UpdatePrompt { tag } => {
                 self.tx.send(AppEvent::UpdateRequested { tag });
+            }
+            StatusLine::RestartPrompt { exe, .. } => {
+                self.tx.send(AppEvent::RestartRequested { exe });
             }
             _ => {}
         }
@@ -697,10 +739,13 @@ impl StatusLineState {
                 confirm_line(action.prompt(*number), "confirm", &self.ctx)
             }
             StatusLine::UpdatePrompt { tag } => confirm_line(
-                format!("Update to {tag}? (current v{})", env!("CARGO_PKG_VERSION")),
-                "confirm",
+                format!("v{} → {tag}", env!("CARGO_PKG_VERSION")),
+                "update",
                 &self.ctx,
             ),
+            StatusLine::RestartPrompt { tag, .. } => {
+                confirm_line(format!("Updated to {tag}."), "restart", &self.ctx)
+            }
             StatusLine::NotificationInfo(msg) => {
                 Line::raw(msg).fg(self.ctx.color_theme.status_info_fg)
             }
@@ -832,7 +877,7 @@ impl StatusLineState {
 
 #[cfg(test)]
 mod tests {
-    use std::sync::mpsc;
+    use std::{path::Path, sync::mpsc};
 
     use ratatui::crossterm::event::KeyModifiers;
 
@@ -1130,10 +1175,48 @@ mod tests {
         assert!(rx.try_recv().is_err());
     }
 
-    /// `StatusLine` 全部 15 個變體各自對 `handle_intercepting_key`／
+    #[test]
+    fn restart_prompt_confirm_sends_restart_request() {
+        let (mut state, rx) = test_state();
+        state.line = StatusLine::RestartPrompt {
+            tag: "v2.6.0".to_string(),
+            exe: PathBuf::from("/usr/local/bin/ysgit"),
+        };
+
+        state.handle_yes_no_prompt_key(char_key('y'));
+
+        assert!(matches!(state.line, StatusLine::None));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AppEvent::RestartRequested { exe }) if exe == Path::new("/usr/local/bin/ysgit")
+        ));
+    }
+
+    /// 跟其餘三個 y/n prompt 不同：`RestartPrompt` 取消時更新其實已經做完了，
+    /// 靜默清空會讓使用者忘記要手動重啟，所以要留一句提醒——這是整批改動裡
+    /// 唯一的特判，沒有這個測試擋著，日後 `/simplify` 很容易把它當成多餘的
+    /// 分歧併掉。
+    #[test]
+    fn restart_prompt_cancel_leaves_a_reminder_instead_of_clearing() {
+        let (mut state, rx) = test_state();
+        state.line = StatusLine::RestartPrompt {
+            tag: "v2.6.0".to_string(),
+            exe: PathBuf::from("/usr/local/bin/ysgit"),
+        };
+
+        state.handle_yes_no_prompt_key(char_key('n'));
+
+        assert!(matches!(
+            &state.line,
+            StatusLine::NotificationSuccess(msg) if msg == UPDATE_INSTALLED_HINT
+        ));
+        assert!(rx.try_recv().is_err());
+    }
+
+    /// `StatusLine` 全部 16 個變體各自對 `handle_intercepting_key`／
     /// `is_input_mode_variant` 的回傳值，把「兩者故意不同步」這件事從一句
     /// 註解變成有東西擋著的不變式（做法比照這個 session 的 `2fa4064` 先
-    /// 例）。4 個 prompt 變體在 handle_intercepting_key 永遠攔截，但
+    /// 例）。5 個 prompt 變體在 handle_intercepting_key 永遠攔截，但
     /// is_input_mode_variant 故意不含它們——見兩個方法各自的文件註解。
     #[test]
     fn intercept_and_input_mode_tables_stay_intentionally_out_of_sync() {
@@ -1224,6 +1307,15 @@ mod tests {
                 false,
             ),
             (
+                "RestartPrompt",
+                StatusLine::RestartPrompt {
+                    tag: String::new(),
+                    exe: PathBuf::new(),
+                },
+                true,
+                false,
+            ),
+            (
                 "NotificationInfo",
                 StatusLine::NotificationInfo(String::new()),
                 false,
@@ -1251,12 +1343,12 @@ mod tests {
 
         assert_eq!(
             cases.len(),
-            15,
-            "StatusLine 有 15 個變體，表格漏列或多列了，先檢查表格本身"
+            16,
+            "StatusLine 有 16 個變體，表格漏列或多列了，先檢查表格本身"
         );
 
         for (label, line, want_intercept, want_input_mode) in cases {
-            // handle_intercepting_key 在 9 個攔截變體上會呼叫對應 handler、
+            // handle_intercepting_key 在 10 個攔截變體上會呼叫對應 handler、
             // 可能改變 self.line 或送事件——這裡只關心它的回傳值，用一個
             // 全新的 state 避免副作用互相汙染。
             let mut for_intercept = make(line.clone());

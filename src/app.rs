@@ -658,17 +658,11 @@ impl App<'_> {
                 AppEvent::UpdateRequested { tag } => {
                     spawn_update_download(self.ec, tag);
                 }
-                AppEvent::UpdateInstalled(exe) => {
-                    if self.pending_message.is_some() {
-                        // pending overlay 顯示期間攔截所有按鍵（見上面
-                        // `pending_message.is_some()` 那段判斷），還亮著
-                        // 就代表使用者還在等這個更新，直接離開重啟。
-                        return Ok(Ret::Quit(Some(exe)));
-                    }
-                    // 按過 Esc 把 overlay 藏掉、跑去做別的事了（可能正在
-                    // create tag 的輸入框打字）——不抽地毯，只留通知。
-                    self.status_line_state
-                        .set_notification_success("Updated — restart ysgit to apply".to_string());
+                AppEvent::UpdateInstalled { tag, exe } => {
+                    self.maybe_open_restart_prompt(tag, exe);
+                }
+                AppEvent::RestartRequested { exe } => {
+                    return Ok(Ret::Quit(Some(exe)));
                 }
             }
         }
@@ -1563,6 +1557,22 @@ impl App<'_> {
         }
     }
 
+    /// 下載＋替換執行檔完成，問是否要離開並以新版重啟。守衛比
+    /// `maybe_open_update_prompt` 多容許狀態列正顯示一則通知——理由見
+    /// `StatusLineState::is_showing_notification`。守衛沒過就退回通知。
+    fn maybe_open_restart_prompt(&mut self, tag: String, exe: PathBuf) {
+        if self.pending_message.is_none()
+            && self.view.is_browsing_view()
+            && (self.status_line_state.is_idle()
+                || self.status_line_state.is_showing_notification())
+        {
+            self.status_line_state.open_restart_prompt(tag, exe);
+        } else {
+            self.status_line_state
+                .set_notification_success(status_line::UPDATE_INSTALLED_HINT.to_string());
+        }
+    }
+
     fn fetch_all(&self) {
         spawn_git_task(
             self.repository.path(),
@@ -1629,15 +1639,13 @@ fn spawn_update_download(ec: &EventController, tag: String) {
         message: format!("Downloading {tag}..."),
     });
     std::thread::spawn(move || {
-        match crate::update::download_and_replace(&tag) {
+        let result = crate::update::download_and_replace(&tag);
+        tx.send(AppEvent::HidePendingOverlay);
+        match result {
             Ok(exe) => {
-                // 成功時故意不送 HidePendingOverlay——UpdateInstalled 的處理
-                // 要靠 `pending_message` 是否還在，判斷使用者有沒有中途按
-                // Esc 藏掉 overlay 去做別的事（見該事件處理的註解）。
-                tx.send(AppEvent::UpdateInstalled(exe));
+                tx.send(AppEvent::UpdateInstalled { tag, exe });
             }
             Err(e) => {
-                tx.send(AppEvent::HidePendingOverlay);
                 tx.send(AppEvent::NotifyError(e));
             }
         }
