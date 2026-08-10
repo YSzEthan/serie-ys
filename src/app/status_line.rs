@@ -144,6 +144,11 @@ enum StatusLine {
         action: PrDraftAction,
         filter_state: StateFilter,
     },
+    /// 有新版 GitHub Release 可更新。跟上面兩個 y/n prompt 共用
+    /// `handle_yes_no_prompt_key`，唯一差異是確認後送的事件不同。
+    UpdatePrompt {
+        tag: String,
+    },
     RelatedPicker {
         items: Vec<RelatedItem>,
     },
@@ -247,6 +252,17 @@ impl StatusLineState {
         };
     }
 
+    pub(super) fn open_update_prompt(&mut self, tag: String) {
+        self.line = StatusLine::UpdatePrompt { tag };
+    }
+
+    /// 給 `App::maybe_open_update_prompt` 的守衛用：狀態列現在有沒有被別的
+    /// 東西佔著（picker、prompt、甚至一則通知）。更新提示是背景檢查回來時
+    /// 才會出現的，不能覆蓋掉使用者當下正在看的任何東西。
+    pub(super) fn is_idle(&self) -> bool {
+        matches!(self.line, StatusLine::None)
+    }
+
     pub(super) fn clear(&mut self) {
         self.line = StatusLine::None;
     }
@@ -285,8 +301,9 @@ impl StatusLineState {
         self.line = StatusLine::NotificationHyperlink { prefix, label, url };
     }
 
-    /// 回傳 true 表示這是 8 個攔截變體之一（7 個 handler，`ToggleStatePrompt`
-    /// 與 `TogglePrDraftPrompt` 共用 `handle_yes_no_prompt_key`）、鍵已被吃掉。
+    /// 回傳 true 表示這是 9 個攔截變體之一（7 個 handler：`ToggleStatePrompt`、
+    /// `TogglePrDraftPrompt`、`UpdatePrompt` 三個共用 `handle_yes_no_prompt_key`，
+    /// 其餘各自一個 handler）、鍵已被吃掉。
     ///
     /// 尾巴刻意窮舉非攔截變體而非 `_ => false`：漏接一個新變體只會讓它卡在
     /// 畫面上完全不吃鍵，編譯器不會提醒（比照 app.rs 原本就有的同款警告，
@@ -317,7 +334,9 @@ impl StatusLineState {
                 self.handle_merge_pr_prompt_key(key);
                 true
             }
-            StatusLine::ToggleStatePrompt { .. } | StatusLine::TogglePrDraftPrompt { .. } => {
+            StatusLine::ToggleStatePrompt { .. }
+            | StatusLine::TogglePrDraftPrompt { .. }
+            | StatusLine::UpdatePrompt { .. } => {
                 self.handle_yes_no_prompt_key(key);
                 true
             }
@@ -345,7 +364,8 @@ impl StatusLineState {
             | StatusLine::DeleteBranchConfirm { .. }
             | StatusLine::MergePrPrompt { .. }
             | StatusLine::ToggleStatePrompt { .. }
-            | StatusLine::TogglePrDraftPrompt { .. } => false,
+            | StatusLine::TogglePrDraftPrompt { .. }
+            | StatusLine::UpdatePrompt { .. } => false,
             StatusLine::NotificationInfo(_)
             | StatusLine::NotificationSuccess(_)
             | StatusLine::NotificationWarn(_)
@@ -361,10 +381,10 @@ impl StatusLineState {
     }
 
     /// 對應 `App::is_input_mode()` 判斷式裡跟狀態列相關的那部分。**故意跟
-    /// `handle_intercepting_key` 涵蓋的變體不同步**：3 個 prompt
-    /// （`MergePrPrompt`/`ToggleStatePrompt`/`TogglePrDraftPrompt`）不在這份
-    /// 清單裡，因為它們在 `handle_intercepting_key` 永遠回傳 `true`，唯一
-    /// 能繞過的只有 `ForceQuit`，而 `ForceQuit` 分支根本不查這個方法。動
+    /// `handle_intercepting_key` 涵蓋的變體不同步**：4 個 prompt
+    /// （`MergePrPrompt`/`ToggleStatePrompt`/`TogglePrDraftPrompt`/`UpdatePrompt`）
+    /// 不在這份清單裡，因為它們在 `handle_intercepting_key` 永遠回傳 `true`，
+    /// 唯一能繞過的只有 `ForceQuit`，而 `ForceQuit` 分支根本不查這個方法。動
     /// `ForceQuit` 分支或動 `handle_intercepting_key` 涵蓋範圍時，回來檢查
     /// 這裡。
     pub(super) fn is_input_mode_variant(&self) -> bool {
@@ -379,6 +399,7 @@ impl StatusLineState {
             | StatusLine::MergePrPrompt { .. }
             | StatusLine::ToggleStatePrompt { .. }
             | StatusLine::TogglePrDraftPrompt { .. }
+            | StatusLine::UpdatePrompt { .. }
             | StatusLine::NotificationInfo(_)
             | StatusLine::NotificationSuccess(_)
             | StatusLine::NotificationWarn(_)
@@ -617,6 +638,9 @@ impl StatusLineState {
                     filter_state,
                 });
             }
+            StatusLine::UpdatePrompt { tag } => {
+                self.tx.send(AppEvent::UpdateRequested { tag });
+            }
             _ => {}
         }
     }
@@ -696,6 +720,11 @@ impl StatusLineState {
             StatusLine::TogglePrDraftPrompt { number, action, .. } => {
                 confirm_line(action.prompt(*number), "confirm", &self.ctx)
             }
+            StatusLine::UpdatePrompt { tag } => confirm_line(
+                format!("Update to {tag}? (current v{})", env!("CARGO_PKG_VERSION")),
+                "confirm",
+                &self.ctx,
+            ),
             StatusLine::NotificationInfo(msg) => {
                 Line::raw(msg).fg(self.ctx.color_theme.status_info_fg)
             }
@@ -1157,10 +1186,10 @@ mod tests {
         assert!(rx.try_recv().is_err());
     }
 
-    /// `StatusLine` 全部 15 個變體各自對 `handle_intercepting_key`／
+    /// `StatusLine` 全部 16 個變體各自對 `handle_intercepting_key`／
     /// `is_input_mode_variant` 的回傳值，把「兩者故意不同步」這件事從一句
     /// 註解變成有東西擋著的不變式（做法比照這個 session 的 `2fa4064` 先
-    /// 例）。3 個 prompt 變體在 handle_intercepting_key 永遠攔截，但
+    /// 例）。4 個 prompt 變體在 handle_intercepting_key 永遠攔截，但
     /// is_input_mode_variant 故意不含它們——見兩個方法各自的文件註解。
     #[test]
     fn intercept_and_input_mode_tables_stay_intentionally_out_of_sync() {
@@ -1245,6 +1274,12 @@ mod tests {
                 false,
             ),
             (
+                "UpdatePrompt",
+                StatusLine::UpdatePrompt { tag: String::new() },
+                true,
+                false,
+            ),
+            (
                 "NotificationInfo",
                 StatusLine::NotificationInfo(String::new()),
                 false,
@@ -1282,8 +1317,8 @@ mod tests {
 
         assert_eq!(
             cases.len(),
-            15,
-            "StatusLine 有 15 個變體，表格漏列或多列了，先檢查表格本身"
+            16,
+            "StatusLine 有 16 個變體，表格漏列或多列了，先檢查表格本身"
         );
 
         for (label, line, want_intercept, want_input_mode) in cases {

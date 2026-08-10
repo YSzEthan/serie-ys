@@ -16,6 +16,7 @@
 | <kbd>Ctrl-c</kbd> | 強制離開 | `force_quit` |
 | <kbd>q</kbd> | 離開（按兩下） | `quit` |
 | <kbd>F1</kbd> <kbd>?</kbd> | 開啟說明 | `help_toggle` |
+| <kbd>U</kbd> | 檢查更新 | `check_update` |
 
 ### 說明頁
 

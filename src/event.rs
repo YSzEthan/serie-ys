@@ -177,6 +177,19 @@ pub enum AppEvent {
         action: crate::github::PrDraftAction,
         filter_state: crate::github::StateFilter,
     },
+    /// 觸發一次更新檢查——啟動時的自動檢查直接 spawn thread，不經過這裡；
+    /// 這個只給 `U` 鍵／`UserEvent::CheckUpdate` 用，走 `global_app_event`
+    /// 才能受 `is_browsing_view`／`is_input_mode` 守衛，不會在文字輸入框裡
+    /// 把打的 `U` 吃掉。
+    CheckUpdate,
+    /// 有新版才送——見 `update::check_for_update`。
+    OpenUpdatePrompt {
+        tag: String,
+    },
+    /// 使用者在更新提示按下確認。
+    UpdateRequested {
+        tag: String,
+    },
     /// draft 切換成功後就地更新列表，補上 RefreshGitHub 完成前的空窗。
     PrDraftToggled {
         number: u64,
@@ -753,6 +766,7 @@ pub enum UserEvent {
     ToggleIssueState,
     TogglePrDraft,
     ToggleCommitLog,
+    CheckUpdate,
     Unknown,
 }
 
@@ -811,6 +825,7 @@ impl UserEvent {
             UserEvent::ToggleIssueState => "toggle_issue_state",
             UserEvent::TogglePrDraft => "toggle_pr_draft",
             UserEvent::ToggleCommitLog => "toggle_commit_log",
+            UserEvent::CheckUpdate => "check_update",
             UserEvent::Unknown => return None,
         };
         Some(name.to_string())
@@ -892,6 +907,7 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "toggle_issue_state" => Ok(UserEvent::ToggleIssueState),
                         "toggle_pr_draft" => Ok(UserEvent::TogglePrDraft),
                         "toggle_commit_log" => Ok(UserEvent::ToggleCommitLog),
+                        "check_update" => Ok(UserEvent::CheckUpdate),
                         _ => {
                             let msg = format!("Unknown user event: {value}");
                             Err(de::Error::custom(msg))
@@ -1059,6 +1075,8 @@ mod tests {
             UserEvent::MergePr,
             UserEvent::ToggleIssueState,
             UserEvent::TogglePrDraft,
+            UserEvent::ToggleCommitLog,
+            UserEvent::CheckUpdate,
         ];
 
         for event in all_events {

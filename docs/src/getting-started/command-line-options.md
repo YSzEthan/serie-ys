@@ -144,3 +144,18 @@ _可選值：_ `latest`、`head`
 `latest` 選取最新的 commit。
 
 `head` 選取 HEAD 所在的 commit。
+
+## -U, --update
+
+檢查 GitHub Release 是否有新版，有就下載對應這台機器的執行檔並就地替換，不進 TUI。
+
+不問 y/n（主動下的指令），也不受節流限制。已是最新印一行後 exit 0；下載失敗
+（沒裝 `curl`、沒網路、平台沒有對應的發布版本等）exit 非 0 並印出原因。
+完成後需要重新啟動 ysgit 才會套用新版本——執行中的程式不會自己重啟。
+
+開發版本（`cargo build` 未帶 `--release`）與 Windows 不支援，會直接印錯誤退出；
+Windows 請至 [GitHub Releases](https://github.com/YSzEthan/serie-ys/releases) 頁面手動下載。
+
+啟動 TUI 時（不帶 `-U`）也會在背景做同樣的檢查，一天最多一次，有新版才會在
+狀態列跳出 `y`/`n` 提示；設定 `YSGIT_NO_UPDATE_CHECK` 環境變數（任意值）可以
+關掉這個背景檢查。想立刻手動檢查，TUI 內按 <kbd>U</kbd>。

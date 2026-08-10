@@ -263,6 +263,7 @@ fn help_blocks(
         b(vec![UserEvent::ForceQuit],   "強制離開",      "Force quit"),
         b(vec![UserEvent::Quit],        "離開（按兩下）", "Quit (press twice)"),
         b(vec![UserEvent::HelpToggle],  "開啟說明",      "Open help"),
+        b(vec![UserEvent::CheckUpdate], "檢查更新",      "Check for update"),
     ];
 
     let help = vec![
