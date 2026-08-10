@@ -1,7 +1,5 @@
 pub(crate) mod path_browser;
 
-use std::io::Write;
-
 use clap::{Parser, ValueEnum};
 use ratatui::{
     crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
@@ -14,43 +12,35 @@ use ratatui::{
 use tui_input::backend::crossterm::EventHandler;
 
 use crate::{
-    color::ColorTheme, Args, CommitOrderType, CompactType, GraphStyle, GraphWidthType,
-    InitialSelection,
+    color::ColorTheme,
+    config,
+    update::{self, AutoRestart, UpdateMode},
+    Args, CommitOrderType, CompactType, GraphStyle, GraphWidthType, InitialSelection,
 };
 
 /// -h 在 TTY 下的入口。回傳 `None` = 使用者放棄（等同原本 `--help` 印完離開，
 /// `run()` 收到後直接 `return Ok(())`）；`Some(args)` = 使用者選好了，直接接續
-/// `run()` 274 行以後的邏輯。
+/// `src/lib.rs::run()` 裡 `Args::try_parse()` 之後的邏輯。
 ///
-/// 完全不依賴 `config::load()`：固定用 `ColorTheme::default()` 畫面，這樣 config
-/// 檔壞掉也不會連 `-h` 都叫不出來 —— 那正是使用者最需要它的時候。
+/// 精靈畫面固定用 `ColorTheme::default()`：設定檔壞掉時 `-h` 還要能開得起來，
+/// 不能依賴 `config::load()` 成功。但「目前值」的顯示與循環切換的起點需要
+/// 真正的設定檔內容——這兩件事分開處理，`ResolvedDefaults::load()` 自己
+/// 容錯（載入失敗就退回內建硬預設），不影響這裡固定選用的主題。
 pub fn run() -> crate::Result<Option<Args>> {
     let theme = ColorTheme::default();
     let mut terminal = ratatui::init();
     let outcome = wizard_loop(&mut terminal, WizardState::new(), &theme);
     ratatui::restore();
-    drop(terminal); // 游標要等這裡才會被叫回來，print 必須在這之後才做
+    drop(terminal); // 游標要等這裡才會被叫回來
 
-    match outcome? {
-        None => Ok(None),
-        Some((draft, print)) => {
-            if print {
-                println!("{}", format_equivalent_command(&draft));
-                print!("按 Enter 繼續啟動 ysgit... ");
-                std::io::stdout().flush().ok();
-                let mut discard = String::new();
-                std::io::stdin().read_line(&mut discard).ok();
-            }
-            Ok(Some(draft))
-        }
-    }
+    outcome
 }
 
 fn wizard_loop(
     terminal: &mut DefaultTerminal,
     mut state: WizardState,
     theme: &ColorTheme,
-) -> crate::Result<Option<(Args, bool)>> {
+) -> crate::Result<Option<Args>> {
     loop {
         terminal.draw(|f| state.render(f, f.area(), theme))?;
         let Event::Key(key) = ratatui::crossterm::event::read()? else {
@@ -59,7 +49,7 @@ fn wizard_loop(
         match state.on_key(key) {
             Flow::Continue => {}
             Flow::Abort => return Ok(None),
-            Flow::Launch { print } => return Ok(Some((state.draft, print))),
+            Flow::Launch => return Ok(Some(state.draft)),
             Flow::OpenPath => {
                 let start = path_browser::start_dir(&state.draft.path);
                 if let Some(p) = path_browser::run(terminal, &start, theme)? {
@@ -68,10 +58,38 @@ fn wizard_loop(
                 terminal.clear()?;
             }
             Flow::OpenMaxCount => {
-                match run_number_input(terminal, state.draft.max_count, theme)? {
+                let current = state.draft.max_count.or(state.defaults.max_count);
+                match run_number_input(
+                    terminal,
+                    current,
+                    theme,
+                    "要渲染的最大 commit 數量",
+                    0,
+                    usize::MAX,
+                )? {
                     NumberFlow::Cancelled => {}
                     NumberFlow::Cleared => state.draft.max_count = None,
                     NumberFlow::Set(n) => state.draft.max_count = Some(n),
+                }
+                terminal.clear()?;
+            }
+            Flow::OpenUpdateInterval => {
+                let current = state
+                    .draft
+                    .update_interval
+                    .or(Some(state.defaults.update_interval))
+                    .map(|n| n as usize);
+                match run_number_input(
+                    terminal,
+                    current,
+                    theme,
+                    "自動更新的檢查間隔（小時，1–48）",
+                    update::MIN_INTERVAL_HOURS as usize,
+                    update::MAX_INTERVAL_HOURS as usize,
+                )? {
+                    NumberFlow::Cancelled => {}
+                    NumberFlow::Cleared => state.draft.update_interval = None,
+                    NumberFlow::Set(n) => state.draft.update_interval = Some(n as u64),
                 }
                 terminal.clear()?;
             }
@@ -129,25 +147,91 @@ fn initial_selection_desc(v: InitialSelection) -> &'static str {
     }
 }
 
+fn update_mode_desc(v: UpdateMode) -> &'static str {
+    match v {
+        UpdateMode::Off => "關閉",
+        UpdateMode::Check => "檢查後詢問",
+        UpdateMode::Auto => "自動安裝",
+    }
+}
+
+fn auto_restart_desc(v: AutoRestart) -> &'static str {
+    match v {
+        AutoRestart::Off => "關閉",
+        AutoRestart::On => "開啟",
+    }
+}
+
+/// 精靈顯示「目前值」與循環切換起點用的參考點。跟 `src/lib.rs` 的 `run()`
+/// 裡 `args.field.or(core_config.option.field)` 那條合併鏈讀的是同一份
+/// 設定檔，語意也一樣（沒被使用者這次 session 動過的欄位，最終生效的值
+/// 就是設定檔裡的值）——差別只在這裡要先解出來給畫面顯示與 `cycle_value`
+/// 當起點用，`run()` 那條合併鏈則是留給 CLI／設定檔的合併結果。
+///
+/// `from_core` 是純函式（不碰檔案系統），`load` 才是會呼叫
+/// `config::load()` 的入口，兩者分開是為了讓測試能繞過真實檔案系統直接
+/// 建構，不會因為開發機上 `target/debug/` 底下剛好有沒有一份設定檔而
+/// 測出不一樣的結果。
+struct ResolvedDefaults {
+    order: CommitOrderType,
+    graph_width: GraphWidthType,
+    compact: CompactType,
+    graph_style: GraphStyle,
+    initial_selection: InitialSelection,
+    max_count: Option<usize>,
+    update_mode: UpdateMode,
+    update_interval: u64,
+    auto_restart: AutoRestart,
+}
+
+impl ResolvedDefaults {
+    fn from_core(core: &config::CoreConfig) -> Self {
+        Self {
+            order: core.option.order.unwrap_or(CommitOrderType::Chrono),
+            graph_width: core.option.graph_width.unwrap_or(GraphWidthType::Auto),
+            compact: core.option.compact.unwrap_or(CompactType::Auto),
+            graph_style: core.option.graph_style.unwrap_or_default(),
+            initial_selection: core
+                .option
+                .initial_selection
+                .unwrap_or(InitialSelection::Latest),
+            max_count: core.option.max_count,
+            update_mode: core.update.mode.unwrap_or_default(),
+            update_interval: core
+                .update
+                .interval_hours
+                .unwrap_or(update::DEFAULT_INTERVAL_HOURS),
+            auto_restart: core.update.auto_restart.unwrap_or_default(),
+        }
+    }
+
+    /// 設定檔壞掉、讀不到、解析失敗——任何 `config::load()` 失敗的原因都一律
+    /// 退回內建硬預設，精靈仍然開得起來。這條路徑不能用 `?`。
+    fn load() -> Self {
+        let core = config::load().map(|(core, ..)| core).unwrap_or_default();
+        Self::from_core(&core)
+    }
+}
+
 // ---------------------------------------------------------------------------
-// 單層清單：四個 `<TYPE>` 欄位用 ←/→ 在原地輪迴切換值。循環只在該欄位的
-// N 個合法值之間繞（不含「未設定」），還沒碰過的欄位一按 →／← 就直接落在
-// 第一個／最後一個值 —— 循環站數等於真正的選項數，不會多一站看起來像
-// 「N+1 個選項」。碰過之後就沒有回到「未設定」的路：選錯了就繼續循環到
-// 想要的那個值，不是退回預設。
+// 單層清單：循環選擇欄位用 ←/→ 在原地輪迴切換值。循環只在該欄位的 N 個
+// 合法值之間繞（不含「未設定」），還沒碰過的欄位一按 →／← 就直接落在
+// 「目前有效值」的下一站／上一站 —— 循環站數等於真正的選項數，不會多一站
+// 看起來像「N+1 個選項」。碰過之後就沒有回到「未設定」的路：選錯了就繼續
+// 循環到想要的那個值，不是退回預設。
 // ---------------------------------------------------------------------------
 
 /// 在 `T::value_variants()` 上把 `*slot` 往 `delta` 方向移一站，寫回去的
 /// 結果永遠是 `Some`。`*slot` 是 `None`（還沒碰過這個欄位）時，把它當成
-/// 「已經站在 `default` 那一格」來算下一步 —— 不然第一次按 → 會落在跟畫面
-/// 上顯示的預設值一模一樣的格子（因為預設值本身就是 `value_variants()` 的
-/// 第一個），數值沒變、只是多了個勾，等於白按一次。這樣算，第一次按不管
-/// 哪個方向都保證換到一個不一樣的值。
+/// 「已經站在 `current` 那一格」來算下一步（`current` 是這個欄位目前真正
+/// 生效的值，見 `ResolvedDefaults`）—— 不然第一次按 → 會落在跟畫面上顯示
+/// 的目前值一模一樣的格子，數值沒變、只是多了個勾，等於白按一次。這樣算，
+/// 第一次按不管哪個方向都保證換到一個不一樣的值。
 ///
-/// 四個 `<TYPE>` 欄位共用同一份算術，只是各自的 `T`／`default` 不同，所以
+/// 七個循環選擇欄位共用同一份算術，只是各自的 `T`／`current` 不同，所以
 /// 抽成吃 `&mut Option<T>` 的自由函式而不是把 `FieldKind` 本身泛型化——後者
 /// 才會讓型別設計變複雜，這裡型別完全由呼叫端推導。
-fn cycle_value<T: ValueEnum + Copy + PartialEq>(slot: &mut Option<T>, default: T, delta: i32) {
+fn cycle_value<T: ValueEnum + Copy + PartialEq>(slot: &mut Option<T>, current: T, delta: i32) {
     let variants = T::value_variants();
     let index_of = |v: T| {
         variants
@@ -155,21 +239,20 @@ fn cycle_value<T: ValueEnum + Copy + PartialEq>(slot: &mut Option<T>, default: T
             .position(|&x| x == v)
             .expect("值一定是合法變體之一")
     };
-    let current = index_of(slot.unwrap_or(default)) as i32;
-    let next = (current + delta).rem_euclid(variants.len() as i32);
+    let idx = index_of(slot.unwrap_or(current)) as i32;
+    let next = (idx + delta).rem_euclid(variants.len() as i32);
     *slot = Some(variants[next as usize]);
 }
 
 /// (目前有效值的中文說明, 是不是使用者這次 session 主動選的)。未設定時
-/// 顯示的仍是這個欄位真正的預設值（跟 `run()` 裡 `config::load()` 之後
-/// `.or(core_config.option.*)` 鏈最終落地的那個值一致），不是「使用預設值」
-/// 這種空話。
+/// 顯示的是這個欄位真正的目前值（`ResolvedDefaults`，讀自設定檔），不是
+/// 「使用預設值」這種空話。
 fn resolve_desc<T: Copy>(
     slot: Option<T>,
-    default: T,
+    current: T,
     desc: fn(T) -> &'static str,
 ) -> (&'static str, bool) {
-    (desc(slot.unwrap_or(default)), slot.is_some())
+    (desc(slot.unwrap_or(current)), slot.is_some())
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -179,6 +262,8 @@ enum FieldKind {
     Compact,
     GraphStyle,
     InitialSelection,
+    UpdateMode,
+    AutoRestart,
 }
 
 impl FieldKind {
@@ -189,6 +274,8 @@ impl FieldKind {
             FieldKind::Compact => "-c, --compact",
             FieldKind::GraphStyle => "-s, --graph-style",
             FieldKind::InitialSelection => "-i, --initial-selection",
+            FieldKind::UpdateMode => "--update-mode",
+            FieldKind::AutoRestart => "--auto-restart",
         }
     }
 
@@ -199,43 +286,57 @@ impl FieldKind {
             FieldKind::Compact => "緊湊模式",
             FieldKind::GraphStyle => "Commit 圖形邊線風格",
             FieldKind::InitialSelection => "初始選取的 commit",
+            FieldKind::UpdateMode => "自動更新檢查模式",
+            FieldKind::AutoRestart => "更新後自動重啟／開啟新版",
         }
     }
 
     /// `delta = 1` 往前一站（→／Enter），`delta = -1` 往後一站（←）。
-    fn cycle(self, draft: &mut Args, delta: i32) {
+    fn cycle(self, draft: &mut Args, defaults: &ResolvedDefaults, delta: i32) {
         match self {
-            FieldKind::Order => cycle_value(&mut draft.order, CommitOrderType::Chrono, delta),
+            FieldKind::Order => cycle_value(&mut draft.order, defaults.order, delta),
             FieldKind::GraphWidth => {
-                cycle_value(&mut draft.graph_width, GraphWidthType::Auto, delta)
+                cycle_value(&mut draft.graph_width, defaults.graph_width, delta)
             }
-            FieldKind::Compact => cycle_value(&mut draft.compact, CompactType::Auto, delta),
+            FieldKind::Compact => cycle_value(&mut draft.compact, defaults.compact, delta),
             FieldKind::GraphStyle => {
-                cycle_value(&mut draft.graph_style, GraphStyle::Rounded, delta)
+                cycle_value(&mut draft.graph_style, defaults.graph_style, delta)
             }
             FieldKind::InitialSelection => cycle_value(
                 &mut draft.initial_selection,
-                InitialSelection::Latest,
+                defaults.initial_selection,
                 delta,
             ),
+            FieldKind::UpdateMode => {
+                cycle_value(&mut draft.update_mode, defaults.update_mode, delta)
+            }
+            FieldKind::AutoRestart => {
+                cycle_value(&mut draft.auto_restart, defaults.auto_restart, delta)
+            }
         }
     }
 
-    fn current(self, draft: &Args) -> (&'static str, bool) {
+    fn current(self, draft: &Args, defaults: &ResolvedDefaults) -> (&'static str, bool) {
         match self {
-            FieldKind::Order => resolve_desc(draft.order, CommitOrderType::Chrono, order_desc),
+            FieldKind::Order => resolve_desc(draft.order, defaults.order, order_desc),
             FieldKind::GraphWidth => {
-                resolve_desc(draft.graph_width, GraphWidthType::Auto, graph_width_desc)
+                resolve_desc(draft.graph_width, defaults.graph_width, graph_width_desc)
             }
-            FieldKind::Compact => resolve_desc(draft.compact, CompactType::Auto, compact_desc),
+            FieldKind::Compact => resolve_desc(draft.compact, defaults.compact, compact_desc),
             FieldKind::GraphStyle => {
-                resolve_desc(draft.graph_style, GraphStyle::Rounded, graph_style_desc)
+                resolve_desc(draft.graph_style, defaults.graph_style, graph_style_desc)
             }
             FieldKind::InitialSelection => resolve_desc(
                 draft.initial_selection,
-                InitialSelection::Latest,
+                defaults.initial_selection,
                 initial_selection_desc,
             ),
+            FieldKind::UpdateMode => {
+                resolve_desc(draft.update_mode, defaults.update_mode, update_mode_desc)
+            }
+            FieldKind::AutoRestart => {
+                resolve_desc(draft.auto_restart, defaults.auto_restart, auto_restart_desc)
+            }
         }
     }
 }
@@ -243,8 +344,9 @@ impl FieldKind {
 enum TopRowAction {
     OpenPath,
     OpenMaxCount,
+    OpenUpdateInterval,
     Field(FieldKind),
-    Launch { print: bool },
+    Launch,
 }
 
 struct TopRow {
@@ -258,7 +360,7 @@ fn build_top_rows() -> Vec<TopRow> {
         TopRow {
             action: TopRowAction::OpenPath,
             flags: "[PATH]",
-            help: "git 倉庫路徑",
+            help: "git 倉庫路徑（僅本次，不存檔）",
         },
         TopRow {
             action: TopRowAction::OpenMaxCount,
@@ -291,47 +393,70 @@ fn build_top_rows() -> Vec<TopRow> {
             help: FieldKind::InitialSelection.help(),
         },
         TopRow {
-            action: TopRowAction::Launch { print: false },
-            flags: "▶ 啟動 ysgit",
-            help: "",
+            action: TopRowAction::Field(FieldKind::UpdateMode),
+            flags: FieldKind::UpdateMode.flags(),
+            help: FieldKind::UpdateMode.help(),
         },
         TopRow {
-            action: TopRowAction::Launch { print: true },
-            flags: "▶ 啟動 ysgit（先印出等效指令字串）",
+            action: TopRowAction::OpenUpdateInterval,
+            flags: "--update-interval <HOURS>",
+            help: "自動更新的檢查間隔",
+        },
+        TopRow {
+            action: TopRowAction::Field(FieldKind::AutoRestart),
+            flags: FieldKind::AutoRestart.flags(),
+            help: FieldKind::AutoRestart.help(),
+        },
+        TopRow {
+            action: TopRowAction::Launch,
+            flags: "▶ 啟動 ysgit",
             help: "",
         },
     ]
 }
 
-/// 每一列的顯示文字：PATH／MaxCount／`<TYPE>` 欄位都附上目前有效值（明確的
-/// 內容，不是「使用預設值」這種空話）；`<TYPE>` 欄位額外用打勾標示「這是
-/// 使用者主動選的」。
-fn top_row_label(row: &TopRow, draft: &Args) -> String {
+/// 每一列的顯示文字：所有欄位都附上目前有效值（讀設定檔得到的真實值，不是
+/// 硬預設）。循環選擇的欄位（`Field`）額外用 `< >` 包住值，標示「這欄按
+/// 左右鍵會變」；數字輸入的欄位（`OpenMaxCount`／`OpenUpdateInterval`）
+/// 不用 `< >`——那是另一種互動（開子畫面打字），混用會誤導使用者以為也能
+/// 直接左右切換。`✓` 標示這欄本次 session 有被使用者主動改過。
+fn top_row_label(row: &TopRow, draft: &Args, defaults: &ResolvedDefaults) -> String {
     let (checked, body) = match row.action {
         TopRowAction::OpenPath => (
             false,
             format!("{}  {}（目前：{}）", row.flags, row.help, draft.path),
         ),
-        TopRowAction::OpenMaxCount => (
-            false,
+        TopRowAction::OpenMaxCount => {
+            let effective = draft.max_count.or(defaults.max_count);
+            (
+                draft.max_count.is_some(),
+                format!(
+                    "{}  {}（目前：{}）",
+                    row.flags,
+                    row.help,
+                    effective
+                        .map(|n| n.to_string())
+                        .unwrap_or_else(|| "不限制".to_string())
+                ),
+            )
+        }
+        TopRowAction::OpenUpdateInterval => (
+            draft.update_interval.is_some(),
             format!(
-                "{}  {}（目前：{}）",
+                "{}  {}（目前：{} 小時）",
                 row.flags,
                 row.help,
-                draft
-                    .max_count
-                    .map(|n| n.to_string())
-                    .unwrap_or_else(|| "不限制".to_string())
+                draft.update_interval.unwrap_or(defaults.update_interval)
             ),
         ),
         TopRowAction::Field(field) => {
-            let (desc, explicit) = field.current(draft);
+            let (desc, touched) = field.current(draft, defaults);
             (
-                explicit,
-                format!("{}  {}（目前：{}）", row.flags, row.help, desc),
+                touched,
+                format!("{}  {}（目前：< {desc} >）", row.flags, row.help),
             )
         }
-        TopRowAction::Launch { .. } => (false, row.flags.to_string()),
+        TopRowAction::Launch => (false, row.flags.to_string()),
     };
     let prefix = if checked { "✓ " } else { "  " };
     format!("{prefix}{body}")
@@ -340,24 +465,31 @@ fn top_row_label(row: &TopRow, draft: &Args) -> String {
 enum Flow {
     Continue,
     Abort,
-    Launch { print: bool },
+    Launch,
     OpenPath,
     OpenMaxCount,
+    OpenUpdateInterval,
 }
 
 struct WizardState {
     draft: Args,
+    defaults: ResolvedDefaults,
     rows: Vec<TopRow>,
     list: ListState,
 }
 
 impl WizardState {
     fn new() -> Self {
+        Self::with_defaults(ResolvedDefaults::load())
+    }
+
+    fn with_defaults(defaults: ResolvedDefaults) -> Self {
         let draft = Args::try_parse_from(["ysgit"]).expect("無參數的 parse 一定要成功");
         let mut list = ListState::default();
         list.select(Some(0));
         Self {
             draft,
+            defaults,
             rows: build_top_rows(),
             list,
         }
@@ -402,20 +534,20 @@ impl WizardState {
         self.list.select(Some(next as usize));
     }
 
-    /// ← 或「→ 之前」呼叫：如果選中的是 `<TYPE>` 欄位，往 `delta` 方向輪迴
-    /// 切換一站；其餘欄位（PATH／MaxCount／Launch）不受影響。
+    /// ← 或「→ 之前」呼叫：如果選中的是循環選擇欄位，往 `delta` 方向輪迴
+    /// 切換一站；其餘欄位（PATH／數字輸入／Launch）不受影響。
     fn cycle_selected(&mut self, delta: i32) {
         let Some(row_idx) = self.list.selected() else {
             return;
         };
         if let TopRowAction::Field(field) = self.rows[row_idx].action {
-            field.cycle(&mut self.draft, delta);
+            field.cycle(&mut self.draft, &self.defaults, delta);
         }
     }
 
     /// Enter 與 →／l 都會呼叫（→／l 先呼叫 `cycle_selected` 切換值，這裡
-    /// 再處理「有明確終點動作」的列）。PATH／MaxCount 開對應的子畫面；
-    /// Launch 直接啟動——兩個觸發鍵沒有差別待遇。`<TYPE>` 欄位在這裡是
+    /// 再處理「有明確終點動作」的列）。PATH／數字輸入開對應的子畫面；
+    /// Launch 直接啟動——兩個觸發鍵沒有差別待遇。循環選擇欄位在這裡是
     /// no-op：切換已經在 `cycle_selected` 做完了，這裡不用再做事。
     fn activate_selected(&mut self) -> Flow {
         let Some(row_idx) = self.list.selected() else {
@@ -424,8 +556,9 @@ impl WizardState {
         match self.rows[row_idx].action {
             TopRowAction::OpenPath => Flow::OpenPath,
             TopRowAction::OpenMaxCount => Flow::OpenMaxCount,
+            TopRowAction::OpenUpdateInterval => Flow::OpenUpdateInterval,
             TopRowAction::Field(_) => Flow::Continue,
-            TopRowAction::Launch { print } => Flow::Launch { print },
+            TopRowAction::Launch => Flow::Launch,
         }
     }
 
@@ -436,7 +569,7 @@ impl WizardState {
         let items: Vec<ListItem> = self
             .rows
             .iter()
-            .map(|row| ListItem::new(top_row_label(row, &self.draft)))
+            .map(|row| ListItem::new(top_row_label(row, &self.draft, &self.defaults)))
             .collect();
         f.render_stateful_widget(styled_list(items, theme), list_area, &mut self.list);
 
@@ -448,7 +581,7 @@ impl WizardState {
                 ("↑↓/kj".into(), "選擇"),
                 ("←→/hl".into(), "切換選項"),
                 ("Enter".into(), "開啟/啟動"),
-                ("Esc/Ctrl-C".into(), "離開"),
+                ("Esc/Ctrl-C".into(), "放棄（不啟動、不存檔）"),
             ],
             theme.help_key_fg,
         );
@@ -465,8 +598,9 @@ fn styled_list<'a>(items: Vec<ListItem<'a>>, theme: &ColorTheme) -> List<'a> {
 }
 
 // ---------------------------------------------------------------------------
-// -n/--max-count 的數字輸入彈窗。←/↓（含 vim 的 h/j）減一，→/↑（含 vim 的
-// l/k）加一；打字仍然可以直接輸入精確數字，但只收數字字元。
+// 數字輸入彈窗（-n/--max-count、--update-interval 共用）。←/↓（含 vim 的
+// h/j）減一，→/↑（含 vim 的 l/k）加一；打字仍然可以直接輸入精確數字，但
+// 只收數字字元。
 // ---------------------------------------------------------------------------
 
 enum NumberFlow {
@@ -475,21 +609,31 @@ enum NumberFlow {
     Set(usize),
 }
 
-/// 純函式，可測。空字串當 0 處理；減到 0 就不再往下（`max_count` 是
-/// `usize`，沒有負數）。
-fn adjust_number(input: &mut tui_input::Input, increase: bool) {
+/// 純函式，可測。空字串當 0 處理。夾在 `[min, max]` 之間——
+/// `max_count` 沒有上限（`min = 0, max = usize::MAX`），`update_interval`
+/// 是 `[1, 48]`。
+fn adjust_number(input: &mut tui_input::Input, increase: bool, min: usize, max: usize) {
     let current: usize = input.value().parse().unwrap_or(0);
     let next = if increase {
-        current.saturating_add(1)
+        current.saturating_add(1).min(max)
     } else {
-        current.saturating_sub(1)
+        current.saturating_sub(1).max(min)
     };
     *input = tui_input::Input::new(next.to_string());
 }
 
 /// 零 I/O 的純狀態轉移，可以直接餵 `KeyEvent` 測試 —— 跟 `WizardState::on_key`
 /// 同一個模式。回傳 `Some(flow)` 表示這一鍵該結束對話框，`None` 表示繼續編輯。
-fn on_number_key(input: &mut tui_input::Input, key: KeyEvent) -> Option<NumberFlow> {
+///
+/// `min`／`max` 只用來夾住方向鍵的 ±1 與 Enter 確認時的最終值，不擋輸入
+/// 過程中的中間狀態——邊打字邊驗證範圍會讓「先打 4 再打 8 湊出 48」這種
+/// 多位數輸入在中途卡住，直接輸入完再夾比較不擾民。
+fn on_number_key(
+    input: &mut tui_input::Input,
+    key: KeyEvent,
+    min: usize,
+    max: usize,
+) -> Option<NumberFlow> {
     if key.kind != KeyEventKind::Press {
         return None;
     }
@@ -499,15 +643,15 @@ fn on_number_key(input: &mut tui_input::Input, key: KeyEvent) -> Option<NumberFl
     match key.code {
         KeyCode::Esc => Some(NumberFlow::Cancelled),
         KeyCode::Enter => Some(match input.value().parse::<usize>() {
-            Ok(n) => NumberFlow::Set(n),
+            Ok(n) => NumberFlow::Set(n.clamp(min, max)),
             Err(_) => NumberFlow::Cleared, // 空字串
         }),
         KeyCode::Left | KeyCode::Down | KeyCode::Char('h') | KeyCode::Char('j') => {
-            adjust_number(input, false);
+            adjust_number(input, false, min, max);
             None
         }
         KeyCode::Right | KeyCode::Up | KeyCode::Char('l') | KeyCode::Char('k') => {
-            adjust_number(input, true);
+            adjust_number(input, true, min, max);
             None
         }
         KeyCode::Char(c) if c.is_ascii_digit() => {
@@ -536,20 +680,29 @@ fn run_number_input(
     terminal: &mut DefaultTerminal,
     current: Option<usize>,
     theme: &ColorTheme,
+    title: &str,
+    min: usize,
+    max: usize,
 ) -> crate::Result<NumberFlow> {
     let mut input = tui_input::Input::new(current.map(|n| n.to_string()).unwrap_or_default());
     loop {
-        terminal.draw(|f| render_number_input(f, f.area(), &input, theme))?;
+        terminal.draw(|f| render_number_input(f, f.area(), &input, theme, title))?;
         let Event::Key(key) = ratatui::crossterm::event::read()? else {
             continue;
         };
-        if let Some(flow) = on_number_key(&mut input, key) {
+        if let Some(flow) = on_number_key(&mut input, key, min, max) {
             return Ok(flow);
         }
     }
 }
 
-fn render_number_input(f: &mut Frame, area: Rect, input: &tui_input::Input, theme: &ColorTheme) {
+fn render_number_input(
+    f: &mut Frame,
+    area: Rect,
+    input: &tui_input::Input,
+    theme: &ColorTheme,
+    title: &str,
+) {
     let hint = crate::widget::hint_line(
         theme,
         &[
@@ -569,7 +722,7 @@ fn render_number_input(f: &mut Frame, area: Rect, input: &tui_input::Input, them
 
     f.render_widget(Clear, dialog_area);
     let block = Block::default()
-        .title(" 要渲染的最大 commit 數量 ")
+        .title(format!(" {title} "))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(theme.divider_fg))
         .style(Style::default().bg(theme.bg).fg(theme.fg));
@@ -597,41 +750,27 @@ fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
     Rect::new(x, y, width, height)
 }
 
-// ---------------------------------------------------------------------------
-// 等效指令字串
-// ---------------------------------------------------------------------------
-
-/// 純函式，可測。路徑含空白時加單引號，這行是給人複製貼上重跑用的，不是給
-/// shell 直接吃的，不需要完整 shell-escape。
-fn quote_if_needed(s: &str) -> String {
-    if s.chars().any(char::is_whitespace) {
-        format!("'{s}'")
-    } else {
-        s.to_string()
-    }
-}
-
-/// 跟 `-U` 更新完自動重啟共用同一份「欄位 → 旗標」邏輯（見 `Args::to_argv`），
-/// 這裡只負責把它排成給人看、複製貼上重跑用的字串。
-pub(crate) fn format_equivalent_command(args: &Args) -> String {
-    args.to_argv()
-        .iter()
-        .map(|s| quote_if_needed(s))
-        .collect::<Vec<_>>()
-        .join(" ")
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    // Row 索引固定：0=PATH 1=MaxCount 2=Order 3=GraphWidth 4=Compact
-    // 5=GraphStyle 6=InitialSelection 7=Launch(靜默) 8=Launch(印字串)。
-    // 用按幾次 Down 移動來定位。
-    const ROW_ORDER: usize = 2;
-    const ROW_GRAPH_STYLE: usize = 5;
-    const ROW_MAX_COUNT: usize = 1;
-    const ROW_LAUNCH: usize = 7;
+    fn test_state() -> WizardState {
+        WizardState::with_defaults(ResolvedDefaults::from_core(&config::CoreConfig::default()))
+    }
+
+    /// 依動作找列索引，取代寫死的數字常數——新增／刪除列時不用逐一改測試。
+    fn row_of(rows: &[TopRow], pred: impl Fn(&TopRowAction) -> bool) -> usize {
+        rows.iter()
+            .position(|r| pred(&r.action))
+            .expect("找不到符合條件的列")
+    }
+
+    fn row_of_field(rows: &[TopRow], field: FieldKind) -> usize {
+        row_of(
+            rows,
+            move |a| matches!(a, TopRowAction::Field(f) if *f == field),
+        )
+    }
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
@@ -654,15 +793,16 @@ mod tests {
 
     #[test]
     fn right_cycles_forward_through_each_variant_and_wraps() {
-        let mut s = WizardState::new();
-        move_to_row(&mut s, ROW_ORDER);
+        let mut s = test_state();
+        let idx = row_of_field(&s.rows, FieldKind::Order);
+        move_to_row(&mut s, idx);
         assert_eq!(s.draft.order, None, "還沒碰過，維持未設定");
 
         s.on_key(key(KeyCode::Right));
         assert_eq!(
             s.draft.order,
             Some(CommitOrderType::Topo),
-            "chrono 是預設值，第一次按 → 要跳過它，直接切到 topo"
+            "chrono 是目前值，第一次按 → 要跳過它，直接切到 topo"
         );
 
         s.on_key(key(KeyCode::Right));
@@ -682,15 +822,16 @@ mod tests {
     // `right_cycles_forward_through_each_variant_and_wraps` 跟這條測試同時綠燈。
     // 換三個值的 `-s`，方向錯了序列才會真的不一樣。
     fn left_cycles_backward_through_each_variant_and_wraps() {
-        let mut s = WizardState::new();
-        move_to_row(&mut s, ROW_GRAPH_STYLE);
+        let mut s = test_state();
+        let idx = row_of_field(&s.rows, FieldKind::GraphStyle);
+        move_to_row(&mut s, idx);
         assert_eq!(s.draft.graph_style, None);
 
         s.on_key(key(KeyCode::Left));
         assert_eq!(
             s.draft.graph_style,
             Some(GraphStyle::Ascii),
-            "第一次按 ← 要跳過預設值 rounded，往後繞到最後一個值 ascii"
+            "第一次按 ← 要跳過目前值 rounded，往後繞到最後一個值 ascii"
         );
 
         s.on_key(key(KeyCode::Left));
@@ -712,23 +853,25 @@ mod tests {
     }
 
     /// `-o` 只有兩個值，←/→ 從未設定出發的第一步剛好會落在同一個地方，看不出
-    /// 方向的差異。換一個三個值的欄位，才能證明「跳過預設值」這件事對兩個
+    /// 方向的差異。換一個三個值的欄位，才能證明「跳過目前值」這件事對兩個
     /// 方向都成立，而且方向真的不同。
     #[test]
-    fn first_press_skips_the_default_variant_in_either_direction() {
-        let mut s = WizardState::new();
-        move_to_row(&mut s, ROW_GRAPH_STYLE);
+    fn first_press_skips_the_current_variant_in_either_direction() {
+        let mut s = test_state();
+        let idx = row_of_field(&s.rows, FieldKind::GraphStyle);
+        move_to_row(&mut s, idx);
         assert_eq!(s.draft.graph_style, None);
 
         s.on_key(key(KeyCode::Right));
         assert_eq!(
             s.draft.graph_style,
             Some(GraphStyle::Angular),
-            "rounded 是預設值，→ 要跳過它，切到 angular"
+            "rounded 是目前值，→ 要跳過它，切到 angular"
         );
 
-        let mut s = WizardState::new();
-        move_to_row(&mut s, ROW_GRAPH_STYLE);
+        let mut s = test_state();
+        let idx = row_of_field(&s.rows, FieldKind::GraphStyle);
+        move_to_row(&mut s, idx);
         s.on_key(key(KeyCode::Left));
         assert_eq!(
             s.draft.graph_style,
@@ -739,24 +882,51 @@ mod tests {
 
     #[test]
     fn cycling_a_type_field_updates_the_row_label_immediately() {
-        let mut s = WizardState::new();
-        move_to_row(&mut s, ROW_ORDER);
-        s.on_key(key(KeyCode::Right)); // 跳過預設值，直接切到 topo
+        let mut s = test_state();
+        let idx = row_of_field(&s.rows, FieldKind::Order);
+        move_to_row(&mut s, idx);
+        s.on_key(key(KeyCode::Right)); // 跳過目前值，直接切到 topo
 
-        let row = &s.rows[ROW_ORDER];
+        let row = &s.rows[idx];
         assert!(
-            top_row_label(row, &s.draft).contains("拓撲序"),
+            top_row_label(row, &s.draft, &s.defaults).contains("拓撲序"),
             "切換完不用離開這一列就看得到新值"
         );
     }
 
+    #[test]
+    fn cycle_field_rows_wrap_the_value_in_angle_brackets() {
+        let s = test_state();
+        let idx = row_of_field(&s.rows, FieldKind::Order);
+        let label = top_row_label(&s.rows[idx], &s.draft, &s.defaults);
+        assert!(
+            label.contains("< 時間序 >"),
+            "循環選擇欄位要用 < > 標示可切換：{label}"
+        );
+    }
+
+    #[test]
+    fn number_input_rows_do_not_use_angle_brackets() {
+        // `row.flags` 本身含 `<NUMBER>`（CLI 語法），這裡只檢查「目前：」後面
+        // 的值沒有被包一層 `< >`，不是整條 label 零角括號。
+        let s = test_state();
+        let idx = row_of(&s.rows, |a| matches!(a, TopRowAction::OpenMaxCount));
+        let label = top_row_label(&s.rows[idx], &s.draft, &s.defaults);
+        let value_part = label.split("目前：").nth(1).expect("label 要含「目前：」");
+        assert!(
+            !value_part.starts_with('<'),
+            "數字輸入不是循環選擇，值不該被包在 < > 裡：{label}"
+        );
+    }
+
     /// 切換已經在 `cycle_selected`（←/→ 那一步）做完了，`activate_selected`
-    /// 對 `<TYPE>` 欄位刻意什麼都不做——這裡釘住這個行為，避免以後改動
+    /// 對循環選擇欄位刻意什麼都不做——這裡釘住這個行為，避免以後改動
     /// `activate_selected` 時不小心讓 Enter 在 Field 列上又多做一次切換。
     #[test]
     fn enter_on_a_type_field_row_is_a_no_op() {
-        let mut s = WizardState::new();
-        move_to_row(&mut s, ROW_ORDER);
+        let mut s = test_state();
+        let idx = row_of_field(&s.rows, FieldKind::Order);
+        move_to_row(&mut s, idx);
         s.on_key(key(KeyCode::Right)); // 先切到 topo
         assert_eq!(s.draft.order, Some(CommitOrderType::Topo));
 
@@ -764,43 +934,82 @@ mod tests {
         assert_eq!(
             s.draft.order,
             Some(CommitOrderType::Topo),
-            "Enter 在 <TYPE> 列上不觸發任何動作，值維持不變"
+            "Enter 在循環選擇列上不觸發任何動作，值維持不變"
         );
     }
 
     #[test]
     fn left_is_a_no_op_on_the_path_row() {
-        let mut s = WizardState::new();
+        let mut s = test_state();
         assert!(matches!(s.on_key(key(KeyCode::Left)), Flow::Continue));
         assert_eq!(s.draft.path, ".", "PATH 不是可循環的欄位，← 不動它");
     }
 
     #[test]
     fn enter_on_path_row_requests_path_browser() {
-        let mut s = WizardState::new();
+        let mut s = test_state();
         assert!(matches!(s.on_key(key(KeyCode::Enter)), Flow::OpenPath));
     }
 
     #[test]
     fn enter_on_max_count_row_requests_number_input() {
-        let mut s = WizardState::new();
-        move_to_row(&mut s, ROW_MAX_COUNT);
+        let mut s = test_state();
+        let idx = row_of(&s.rows, |a| matches!(a, TopRowAction::OpenMaxCount));
+        move_to_row(&mut s, idx);
         assert!(matches!(s.on_key(key(KeyCode::Enter)), Flow::OpenMaxCount));
     }
 
     #[test]
+    fn enter_on_update_interval_row_requests_number_input() {
+        let mut s = test_state();
+        let idx = row_of(&s.rows, |a| matches!(a, TopRowAction::OpenUpdateInterval));
+        move_to_row(&mut s, idx);
+        assert!(matches!(
+            s.on_key(key(KeyCode::Enter)),
+            Flow::OpenUpdateInterval
+        ));
+    }
+
+    #[test]
+    fn update_mode_row_cycles_and_skips_the_current_variant() {
+        let mut s = test_state();
+        let idx = row_of_field(&s.rows, FieldKind::UpdateMode);
+        move_to_row(&mut s, idx);
+        assert_eq!(s.draft.update_mode, None);
+
+        s.on_key(key(KeyCode::Right));
+        assert_eq!(
+            s.draft.update_mode,
+            Some(UpdateMode::Auto),
+            "check 是目前值，第一次按 → 跳過它，切到下一個 auto"
+        );
+    }
+
+    #[test]
+    fn auto_restart_row_toggles() {
+        let mut s = test_state();
+        let idx = row_of_field(&s.rows, FieldKind::AutoRestart);
+        move_to_row(&mut s, idx);
+        assert_eq!(s.draft.auto_restart, None);
+
+        s.on_key(key(KeyCode::Right));
+        assert_eq!(s.draft.auto_restart, Some(AutoRestart::On));
+    }
+
+    #[test]
     fn right_on_path_row_also_opens_the_browser() {
-        let mut s = WizardState::new();
+        let mut s = test_state();
         assert!(matches!(s.on_key(key(KeyCode::Right)), Flow::OpenPath));
     }
 
     #[test]
     fn right_l_and_enter_all_trigger_launch() {
         for trigger in [key(KeyCode::Right), char_key('l'), key(KeyCode::Enter)] {
-            let mut s = WizardState::new();
-            move_to_row(&mut s, ROW_LAUNCH);
+            let mut s = test_state();
+            let idx = row_of(&s.rows, |a| matches!(a, TopRowAction::Launch));
+            move_to_row(&mut s, idx);
             assert!(
-                matches!(s.on_key(trigger), Flow::Launch { print: false }),
+                matches!(s.on_key(trigger), Flow::Launch),
                 "{trigger:?} 在 Launch 列上都要能直接觸發啟動"
             );
         }
@@ -808,7 +1017,7 @@ mod tests {
 
     #[test]
     fn esc_and_ctrl_c_abort() {
-        let mut s = WizardState::new();
+        let mut s = test_state();
         assert!(matches!(s.on_key(key(KeyCode::Esc)), Flow::Abort));
         assert!(matches!(s.on_key(ctrl_key('c')), Flow::Abort));
         assert!(matches!(s.on_key(ctrl_key('d')), Flow::Abort));
@@ -816,7 +1025,7 @@ mod tests {
 
     #[test]
     fn plain_c_without_control_does_not_abort_or_move() {
-        let mut s = WizardState::new();
+        let mut s = test_state();
         assert!(matches!(s.on_key(char_key('c')), Flow::Continue));
         assert_eq!(
             s.list.selected(),
@@ -827,7 +1036,7 @@ mod tests {
 
     #[test]
     fn vim_jk_move_selection_same_as_arrow_keys() {
-        let mut s = WizardState::new();
+        let mut s = test_state();
         s.on_key(char_key('j'));
         assert_eq!(s.list.selected(), Some(1));
         s.on_key(char_key('j'));
@@ -840,8 +1049,9 @@ mod tests {
     // 一樣換三個值的 graph_style：h 若誤接成 +1，會從 Angular 再往前跳到
     // Ascii 而不是退回 Rounded，斷言才抓得到方向錯誤。
     fn vim_hl_cycle_type_field_same_as_arrow_keys() {
-        let mut s = WizardState::new();
-        move_to_row(&mut s, ROW_GRAPH_STYLE);
+        let mut s = test_state();
+        let idx = row_of_field(&s.rows, FieldKind::GraphStyle);
+        move_to_row(&mut s, idx);
         s.on_key(char_key('l'));
         assert_eq!(s.draft.graph_style, Some(GraphStyle::Angular));
         s.on_key(char_key('h'));
@@ -854,7 +1064,7 @@ mod tests {
 
     #[test]
     fn move_selection_clamps_at_both_ends() {
-        let mut s = WizardState::new();
+        let mut s = test_state();
         s.on_key(key(KeyCode::Up));
         assert_eq!(s.list.selected(), Some(0), "已在第 0 項，不會變成負數");
 
@@ -867,35 +1077,80 @@ mod tests {
 
     #[test]
     fn top_row_shows_the_real_default_not_a_vague_placeholder() {
-        let s = WizardState::new();
+        let s = test_state();
+        let order_idx = row_of_field(&s.rows, FieldKind::Order);
         assert!(
-            top_row_label(&s.rows[ROW_ORDER], &s.draft).contains("時間序"),
-            "chrono 是真正的預設值"
+            top_row_label(&s.rows[order_idx], &s.draft, &s.defaults).contains("時間序"),
+            "chrono 是真正的目前值"
         );
-        assert!(top_row_label(&s.rows[ROW_MAX_COUNT], &s.draft).contains("不限制"));
+        let max_count_idx = row_of(&s.rows, |a| matches!(a, TopRowAction::OpenMaxCount));
+        assert!(top_row_label(&s.rows[max_count_idx], &s.draft, &s.defaults).contains("不限制"));
+    }
+
+    /// `ResolvedDefaults` 讀到設定檔真實值時，顯示與循環起點都要反映它，
+    /// 不是精靈自己那套硬預設——這是這批改動要修的核心失真。
+    #[test]
+    fn resolved_defaults_from_config_drive_the_display_and_cycle_start() {
+        let mut core = config::CoreConfig::default();
+        core.option.order = Some(CommitOrderType::Topo);
+        let mut s = WizardState::with_defaults(ResolvedDefaults::from_core(&core));
+
+        let idx = row_of_field(&s.rows, FieldKind::Order);
+        assert!(
+            top_row_label(&s.rows[idx], &s.draft, &s.defaults).contains("拓撲序"),
+            "設定檔寫的是 topo，精靈顯示的目前值要跟著是拓撲序，不是硬預設的時間序"
+        );
+
+        move_to_row(&mut s, idx);
+        s.on_key(key(KeyCode::Right));
+        assert_eq!(
+            s.draft.order,
+            Some(CommitOrderType::Chrono),
+            "topo 才是目前值，第一次按 → 要跳過它切到 chrono，不是繞回 topo"
+        );
     }
 
     #[test]
     fn adjust_number_increments_and_decrements() {
         let mut input = tui_input::Input::new("5".to_string());
-        adjust_number(&mut input, true);
+        adjust_number(&mut input, true, 0, usize::MAX);
         assert_eq!(input.value(), "6");
-        adjust_number(&mut input, false);
+        adjust_number(&mut input, false, 0, usize::MAX);
         assert_eq!(input.value(), "5");
     }
 
     #[test]
     fn adjust_number_does_not_go_below_zero() {
         let mut input = tui_input::Input::new("0".to_string());
-        adjust_number(&mut input, false);
+        adjust_number(&mut input, false, 0, usize::MAX);
         assert_eq!(input.value(), "0", "usize 沒有負數，減到底就停在 0");
     }
 
     #[test]
     fn adjust_number_treats_empty_input_as_zero() {
         let mut input = tui_input::Input::default();
-        adjust_number(&mut input, true);
+        adjust_number(&mut input, true, 0, usize::MAX);
         assert_eq!(input.value(), "1");
+    }
+
+    #[test]
+    fn adjust_number_respects_custom_min_and_max() {
+        let mut input = tui_input::Input::new("1".to_string());
+        adjust_number(&mut input, false, 1, 48);
+        assert_eq!(input.value(), "1", "已在下限，減不下去");
+
+        let mut input = tui_input::Input::new("48".to_string());
+        adjust_number(&mut input, true, 1, 48);
+        assert_eq!(input.value(), "48", "已在上限，加不上去");
+    }
+
+    #[test]
+    fn on_number_key_enter_clamps_the_typed_value() {
+        let mut input = tui_input::Input::new("99".to_string());
+        assert!(matches!(
+            on_number_key(&mut input, key(KeyCode::Enter), 1, 48),
+            Some(NumberFlow::Set(48))
+        ));
     }
 
     /// `on_number_key` 一次收四個「-1」鍵跟四個「+1」鍵，直接鎖住每一個鍵
@@ -910,7 +1165,7 @@ mod tests {
             char_key('j'),
         ] {
             let mut input = tui_input::Input::new("5".to_string());
-            assert!(on_number_key(&mut input, decrease_key).is_none());
+            assert!(on_number_key(&mut input, decrease_key, 0, usize::MAX).is_none());
             assert_eq!(input.value(), "4", "{decrease_key:?} 應該是 -1");
         }
 
@@ -921,33 +1176,8 @@ mod tests {
             char_key('k'),
         ] {
             let mut input = tui_input::Input::new("5".to_string());
-            assert!(on_number_key(&mut input, increase_key).is_none());
+            assert!(on_number_key(&mut input, increase_key, 0, usize::MAX).is_none());
             assert_eq!(input.value(), "6", "{increase_key:?} 應該是 +1");
         }
-    }
-
-    #[test]
-    fn format_equivalent_command_only_includes_touched_fields() {
-        let default_args = Args::try_parse_from(["ysgit"]).unwrap();
-        assert_eq!(format_equivalent_command(&default_args), "ysgit");
-
-        let mut args = Args::try_parse_from(["ysgit"]).unwrap();
-        args.max_count = Some(50);
-        args.order = Some(CommitOrderType::Topo);
-        assert_eq!(format_equivalent_command(&args), "ysgit -n 50 -o topo");
-    }
-
-    #[test]
-    fn format_equivalent_command_quotes_paths_with_whitespace() {
-        let mut args = Args::try_parse_from(["ysgit"]).unwrap();
-        args.path = "/Users/a b/repo".to_string();
-        assert_eq!(format_equivalent_command(&args), "ysgit '/Users/a b/repo'");
-    }
-
-    #[test]
-    fn format_equivalent_command_does_not_quote_plain_paths() {
-        let mut args = Args::try_parse_from(["ysgit"]).unwrap();
-        args.path = "/Users/a/repo".to_string();
-        assert_eq!(format_equivalent_command(&args), "ysgit /Users/a/repo");
     }
 }

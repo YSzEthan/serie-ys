@@ -234,9 +234,8 @@ pub fn download_and_replace(tag: &str) -> Result<PathBuf, String> {
 /// 進入時先把 stdout flush 掉：`println!` 是 LineWriter，重導向到檔案時是
 /// block-buffered，`exec` 換掉 process image 的瞬間緩衝區內容會直接消失。
 ///
-/// `argv[0]` 預期是程式名（`Args::to_argv` 的輸出就長這樣，也是給
-/// `wizard::format_equivalent_command` 顯示用的），這裡跳過它——`exec`
-/// 本身就會帶入新 process 的 argv[0]，不需要呼叫端另外去頭。
+/// `argv[0]` 預期是程式名（`Args::to_argv` 的輸出就長這樣），這裡跳過
+/// 它——`exec` 本身就會帶入新 process 的 argv[0]，不需要呼叫端另外去頭。
 pub fn exec_replacing_self(exe: &Path, argv: &[String]) -> Result<(), String> {
     use std::io::Write;
     let _ = std::io::stdout().flush();

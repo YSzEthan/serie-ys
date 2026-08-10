@@ -119,8 +119,7 @@ impl Args {
     /// 畫圖旋鈕同一個道理：命令列上明確給的值要保留，不是特例。
     ///
     /// 用解構式綁定：日後 `Args` 加欄位而忘了在這裡處理，編譯直接失敗——手寫的
-    /// round-trip 測試擋不住這種漏。也給 `wizard::format_equivalent_command`
-    /// 共用，兩處不會各自維護一份「欄位 → 旗標」對照表。
+    /// round-trip 測試擋不住這種漏。
     pub(crate) fn to_argv(&self) -> Vec<String> {
         let Args {
             path,
