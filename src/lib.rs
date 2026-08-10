@@ -489,6 +489,9 @@ pub fn run() -> Result<()> {
             update_settings.interval,
         );
     }
+    // 清掃上次啟動可能留下的自我更新殘檔——跟這次的 `mode` 無關（上次啟動
+    // 沒關閉時留下的殘檔，不能因為這次關了就不清），背景執行不擋啟動。
+    std::thread::spawn(update::cleanup_stale_temp_files);
     let mut refresh_view_context = None;
     let mut terminal = None;
 

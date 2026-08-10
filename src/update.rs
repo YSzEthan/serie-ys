@@ -354,6 +354,61 @@ fn touch(path: &Path) -> bool {
     fs::File::create(path).is_ok()
 }
 
+// ── 殘檔清掃：process 被砍掉（SIGKILL、斷電）時來不及跑到
+// `download_and_replace` 結尾的 `fs::remove_file`，留下 `.{exe}.new.{pid}`。
+//
+// 判準只看 mtime 夠不夠舊，不比對 pid 是不是自己的：pid 會被 OS 重用，
+// 「pid 跟我不同就刪」會誤殺另一個真的正在下載的 ysgit 實例手上的暫存檔
+// （它才剛建立，遠比一次下載的逾時新），害它之後 `fs::rename` 撞
+// ENOENT。下載逾時（`curl --max-time`）是幾百秒等級，用遠大於它的門檻
+// 就足夠安全地把「早就沒有 process 在管」的殘檔篩出來。
+
+const STALE_TMP_FILE_AGE: Duration = Duration::from_secs(24 * 3600);
+
+/// 啟動時掃一次執行檔目錄，清掉早就沒人管的自我更新暫存檔。跟更新設定
+/// （`UpdateMode`）無關——`mode = Off` 的這次啟動一樣可能有上次啟動
+/// （那時還沒關）留下的殘檔要清，不能因為這次沒在檢查更新就跳過。
+pub fn cleanup_stale_temp_files() {
+    let Some(dir) = exe_dir() else {
+        return;
+    };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let now = SystemTime::now();
+    for entry in entries.flatten() {
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if !is_stale_tmp_name(&name) {
+            continue;
+        }
+        let is_old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .is_ok_and(|modified| {
+                now.duration_since(modified)
+                    .is_ok_and(|age| age >= STALE_TMP_FILE_AGE)
+            });
+        if is_old {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// `download_and_replace` 產生的暫存檔名固定是 `.{原檔名}.new.{pid}`——
+/// 認 `.new.` 這個中段加上結尾是純數字（pid），不比對確切的執行檔名稱：
+/// 不同平台的原檔名不一樣（Windows 帶 `.exe`），沒必要在這裡重算一次。
+fn is_stale_tmp_name(name: &str) -> bool {
+    if !name.starts_with('.') {
+        return false;
+    }
+    let Some((_, pid)) = name.rsplit_once(".new.") else {
+        return false;
+    };
+    !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit())
+}
+
 // ── 純函式 ──
 
 /// release.yml 產出的四個平台各自的檔名後綴。linux 沒有 arm64 target，
@@ -688,5 +743,38 @@ ca0a1ac34d2e1138b9308820e3a53b6822552268907e87a11a1350b98f1a6ada  ysgit_2.4.1-ma
         let last = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
         let now = SystemTime::UNIX_EPOCH;
         assert!(!check_due(last, now, Duration::from_secs(3600)));
+    }
+
+    // ── is_stale_tmp_name() ──
+
+    #[test]
+    fn is_stale_tmp_name_matches_unix_style_name() {
+        assert!(is_stale_tmp_name(".ysgit.new.12345"));
+    }
+
+    #[test]
+    fn is_stale_tmp_name_matches_windows_style_name() {
+        assert!(is_stale_tmp_name(".ysgit.exe.new.12345"));
+    }
+
+    #[test]
+    fn is_stale_tmp_name_rejects_missing_leading_dot() {
+        assert!(!is_stale_tmp_name("ysgit.new.12345"));
+    }
+
+    #[test]
+    fn is_stale_tmp_name_rejects_non_numeric_suffix() {
+        assert!(!is_stale_tmp_name(".ysgit.new.abc"));
+    }
+
+    #[test]
+    fn is_stale_tmp_name_rejects_empty_suffix() {
+        assert!(!is_stale_tmp_name(".ysgit.new."));
+    }
+
+    #[test]
+    fn is_stale_tmp_name_rejects_unrelated_dotfile() {
+        assert!(!is_stale_tmp_name(".ysgit.toml"));
+        assert!(!is_stale_tmp_name(".ysgit.update_check"));
     }
 }
