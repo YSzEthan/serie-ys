@@ -15,10 +15,7 @@ use crate::{
     CommitOrderType, CompactType, GraphStyle, GraphWidthType, InitialSelection, Result,
 };
 
-const XDG_CONFIG_HOME_ENV_NAME: &str = "XDG_CONFIG_HOME";
-const DEFAULT_CONFIG_DIR: &str = ".config";
-const APP_DIR_NAME: &str = "serie";
-const CONFIG_FILE_NAME: &str = "config.toml";
+const CONFIG_FILE_NAME: &str = ".ysgit.toml";
 const CONFIG_FILE_ENV_NAME: &str = "SERIE_CONFIG_FILE";
 
 pub fn load() -> Result<(
@@ -39,17 +36,10 @@ pub fn load() -> Result<(
             }
             read_config_from_path(&user_path)
         }
-        None => {
-            if let Some(default_path) = config_file_path() {
-                if default_path.exists() {
-                    read_config_from_path(&default_path)
-                } else {
-                    Ok(Config::default())
-                }
-            } else {
-                Ok(Config::default())
-            }
-        }
+        None => match default_config_file_path() {
+            Some(default_path) if default_path.exists() => read_config_from_path(&default_path),
+            _ => Ok(Config::default()),
+        },
     }?;
 
     config.validate()?;
@@ -67,18 +57,13 @@ fn config_file_path_from_env() -> Option<PathBuf> {
     env::var(CONFIG_FILE_ENV_NAME).ok().map(PathBuf::from)
 }
 
-/// `~/.config/serie`（或 `$XDG_CONFIG_HOME/serie`）。`update` 模組拿它放節流
-/// 用的 marker 檔——跟 config.toml 是同一個目錄，不用另外決定放哪。
-pub(crate) fn config_dir() -> Option<PathBuf> {
-    env::var(XDG_CONFIG_HOME_ENV_NAME)
-        .ok()
-        .map(PathBuf::from)
-        .or_else(|| env::home_dir().map(|home| home.join(DEFAULT_CONFIG_DIR)))
-        .map(|config_dir| config_dir.join(APP_DIR_NAME))
-}
-
-fn config_file_path() -> Option<PathBuf> {
-    config_dir().map(|dir| dir.join(CONFIG_FILE_NAME))
+/// 設定檔跟著執行檔走的位置：`<exe 所在目錄>/.ysgit.toml`。自我更新只
+/// `fs::rename` 執行檔本身（見 `update::download_and_replace`），同目錄的
+/// 設定檔不會被動到——這是選這個位置而不是 `~/.config` 的核心理由。
+/// `exe_dir()` 已經處理過 symlink／`(deleted)` 這些自我更新特有的坑
+/// （見該函式註解），這裡不重算一次。
+fn default_config_file_path() -> Option<PathBuf> {
+    crate::update::exe_dir().map(|dir| dir.join(CONFIG_FILE_NAME))
 }
 
 fn read_config_from_path(path: &Path) -> Result<Config> {

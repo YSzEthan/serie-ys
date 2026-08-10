@@ -11,7 +11,10 @@ use std::{
     env, fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        OnceLock,
+    },
     time::{Duration, SystemTime},
 };
 
@@ -25,7 +28,7 @@ const CHECKSUMS_URL: &str = concat!(
     "/releases/latest/download/checksum.txt"
 );
 const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
-const MARKER_FILE_NAME: &str = "update_check";
+const MARKER_FILE_NAME: &str = ".ysgit.update_check";
 
 /// 檢查並視需要開啟更新提示。啟動時的自動檢查與 `U` 鍵／`-U` 共用這個入口，
 /// 差異只在 `manual`：
@@ -187,16 +190,32 @@ impl Drop for UpdateGuard {
 }
 
 // ── 節流：一個 0-byte 檔，只看 mtime ──
+//
+// 兩層路徑：優先跟著執行檔走（`exe_dir()`），寫不進去（例如裝在
+// `/usr/local/bin` 這種唯讀目錄）就退到系統暫存目錄。只保護「寫不寫得
+// 進去」，不處理多使用者共用暫存目錄可能撞名——marker 內容只有 mtime，
+// 撞名的後果最多是誤判節流時機，不是安全問題，犯不著為它另外做隔離。
 
-fn marker_path() -> Option<PathBuf> {
-    crate::config::config_dir().map(|dir| dir.join(MARKER_FILE_NAME))
+fn primary_marker_path() -> Option<PathBuf> {
+    exe_dir().map(|dir| dir.join(MARKER_FILE_NAME))
+}
+
+fn fallback_marker_path() -> PathBuf {
+    env::temp_dir().join(MARKER_FILE_NAME)
+}
+
+/// 讀取用：兩個位置誰有檔就用誰，優先層先看。都沒有就當作「從沒檢查過」。
+fn existing_marker_path() -> Option<PathBuf> {
+    primary_marker_path()
+        .filter(|p| p.exists())
+        .or_else(|| Some(fallback_marker_path()).filter(|p| p.exists()))
 }
 
 fn should_check_on_startup() -> bool {
     if env::var_os("YSGIT_NO_UPDATE_CHECK").is_some() {
         return false;
     }
-    let Some(path) = marker_path() else {
+    let Some(path) = existing_marker_path() else {
         return true;
     };
     let Ok(modified) = fs::metadata(&path).and_then(|m| m.modified()) else {
@@ -207,14 +226,21 @@ fn should_check_on_startup() -> bool {
         .is_ok_and(|elapsed| elapsed >= CHECK_INTERVAL)
 }
 
+/// 寫入用：先試優先層，寫失敗（唯讀目錄）才退到暫存目錄。
 pub fn mark_checked() {
-    let Some(path) = marker_path() else {
-        return;
-    };
+    if let Some(primary) = primary_marker_path() {
+        if touch(&primary) {
+            return;
+        }
+    }
+    touch(&fallback_marker_path());
+}
+
+fn touch(path: &Path) -> bool {
     if let Some(dir) = path.parent() {
         let _ = fs::create_dir_all(dir);
     }
-    let _ = fs::File::create(&path);
+    fs::File::create(path).is_ok()
 }
 
 // ── 純函式 ──
@@ -360,6 +386,23 @@ fn current_exe_checked() -> Result<PathBuf, String> {
         return Err(format!("{} 不是一般檔案", exe.display()));
     }
     Ok(exe)
+}
+
+/// 執行檔所在目錄，啟動早期算一次後永久快取。自我更新的 `fs::rename` 會讓
+/// Linux 上 `current_exe()` 在同一個 process 裡回傳帶 `(deleted)` 的路徑
+/// （見 `current_exe_checked` 的註解）——不快取的話，下載完成後同一個
+/// process 任何再次呼叫（marker、設定檔讀寫）都會突然失敗。設定檔的位置
+/// （`config::default_config_file_path`）也共用這個函式，不在那邊另外算
+/// 一次 `current_exe()`。
+pub(crate) fn exe_dir() -> Option<&'static Path> {
+    static EXE_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+    EXE_DIR
+        .get_or_init(|| {
+            current_exe_checked()
+                .ok()
+                .and_then(|p| p.parent().map(Path::to_path_buf))
+        })
+        .as_deref()
 }
 
 fn curl_spawn_error(e: &std::io::Error) -> String {
