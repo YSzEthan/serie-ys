@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.1](https://github.com/YSzEthan/serie-ys/compare/v2.5.0...v2.5.1) (2026-08-10)
+
+
+### Bug Fixes
+
+* GitHub view 提示列格式、Vercel HTML 留言、SSH/mosh 開連結三處修正 (#51) ([7f2433b](https://github.com/YSzEthan/serie-ys/commit/7f2433be5b02360eba99c778ee6bebd200eae2f6))
+
 ## [2.5.0](https://github.com/YSzEthan/serie-ys/compare/v2.4.1...v2.5.0) (2026-08-10)
 
 
