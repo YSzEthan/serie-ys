@@ -12,6 +12,7 @@ use umbra::optional;
 use crate::{
     color::{ColorTheme, OptionalColorTheme},
     keybind::KeyBind,
+    update::{AutoRestart, UpdateMode, MAX_INTERVAL_HOURS, MIN_INTERVAL_HOURS},
     CommitOrderType, CompactType, GraphStyle, GraphWidthType, InitialSelection, Result,
 };
 
@@ -107,6 +108,9 @@ pub struct CoreConfig {
     #[garde(dive)]
     #[nested]
     pub external: CoreExternalConfig,
+    #[garde(dive)]
+    #[nested]
+    pub update: CoreUpdateConfig,
 }
 
 #[optional(derives = [Deserialize])]
@@ -117,6 +121,23 @@ pub struct CoreOptionConfig {
     pub compact: Option<CompactType>,
     pub graph_style: Option<GraphStyle>,
     pub initial_selection: Option<InitialSelection>,
+    pub max_count: Option<usize>,
+}
+
+/// 自動更新設定，三個欄位對應 `-U`／背景檢查／重啟提示。`interval_hours`
+/// 要驗證範圍：設 0 會讓週期檢查退化成無限打網路，沒有上限則
+/// `hours * 3600` 在 release build 會 wrapping、繞回極小值，回到同一個熱
+/// 迴圈——兩者都要在載入時就擋掉，不能靠程式裡默默 clamp（那會讓使用者
+/// 以為設定生效了）。
+#[optional(derives = [Deserialize])]
+#[derive(Debug, Clone, PartialEq, Eq, SmartDefault, Validate)]
+pub struct CoreUpdateConfig {
+    #[garde(skip)]
+    pub mode: Option<UpdateMode>,
+    #[garde(range(min = MIN_INTERVAL_HOURS, max = MAX_INTERVAL_HOURS))]
+    pub interval_hours: Option<u64>,
+    #[garde(skip)]
+    pub auto_restart: Option<AutoRestart>,
 }
 
 #[optional(derives = [Deserialize])]
@@ -412,6 +433,12 @@ mod tests {
                     compact: None,
                     graph_style: None,
                     initial_selection: None,
+                    max_count: None,
+                },
+                update: CoreUpdateConfig {
+                    mode: None,
+                    interval_hours: None,
+                    auto_restart: None,
                 },
                 search: CoreSearchConfig {
                     ignore_case: false,
@@ -517,6 +544,12 @@ mod tests {
                     compact: None,
                     graph_style: Some(GraphStyle::Angular),
                     initial_selection: Some(InitialSelection::Head),
+                    max_count: None,
+                },
+                update: CoreUpdateConfig {
+                    mode: None,
+                    interval_hours: None,
+                    auto_restart: None,
                 },
                 search: CoreSearchConfig {
                     ignore_case: true,
@@ -624,6 +657,12 @@ mod tests {
                     compact: None,
                     graph_style: None,
                     initial_selection: None,
+                    max_count: None,
+                },
+                update: CoreUpdateConfig {
+                    mode: None,
+                    interval_hours: None,
+                    auto_restart: None,
                 },
                 search: CoreSearchConfig {
                     ignore_case: false,
@@ -745,10 +784,12 @@ mod tests {
 
         let parsed: OptionalConfig = toml::from_str(example).unwrap();
         let mut actual = Config::from(parsed);
-        // `core.option` 的五個欄位與 `keybind` 是 Option，「未設定」與「設定成
-        // 預設值」在型別上不同（命令列參數要能覆蓋，所以預設留到更後面才解析）。
-        // 範例把它們明寫出來正是它的用途，比對前歸零，其餘欄位照比。
+        // `core.option`／`core.update` 的欄位與 `keybind` 是 Option，「未設定」
+        // 與「設定成預設值」在型別上不同（命令列參數要能覆蓋，所以預設留到更
+        // 後面才解析）。範例把它們明寫出來正是它的用途，比對前歸零，其餘欄位
+        // 照比。
         actual.core.option = CoreOptionConfig::default();
+        actual.core.update = CoreUpdateConfig::default();
         actual.keybind = None;
         assert_eq!(actual, Config::default());
     }
@@ -806,6 +847,68 @@ mod tests {
             .collect();
 
         let mut accepted: Vec<String> = CompactType::value_variants()
+            .iter()
+            .flat_map(|variant| {
+                variant
+                    .to_possible_value()
+                    .expect("每個變體都該有對應的命令列值")
+                    .get_name_and_aliases()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+
+        declared.sort();
+        accepted.sort();
+        assert_eq!(declared, accepted);
+    }
+
+    #[test]
+    fn update_mode_schema_enum_matches_every_accepted_cli_value() {
+        use clap::ValueEnum;
+
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../config.schema.json")).unwrap();
+        let mut declared: Vec<String> = schema["properties"]["core"]["properties"]["update"]
+            ["properties"]["mode"]["enum"]
+            .as_array()
+            .expect("config.schema.json 裡的 core.update.mode 沒有 enum")
+            .iter()
+            .map(|v| v.as_str().expect("enum 值不是字串").to_string())
+            .collect();
+
+        let mut accepted: Vec<String> = UpdateMode::value_variants()
+            .iter()
+            .flat_map(|variant| {
+                variant
+                    .to_possible_value()
+                    .expect("每個變體都該有對應的命令列值")
+                    .get_name_and_aliases()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+
+        declared.sort();
+        accepted.sort();
+        assert_eq!(declared, accepted);
+    }
+
+    #[test]
+    fn auto_restart_schema_enum_matches_every_accepted_cli_value() {
+        use clap::ValueEnum;
+
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../config.schema.json")).unwrap();
+        let mut declared: Vec<String> = schema["properties"]["core"]["properties"]["update"]
+            ["properties"]["auto_restart"]["enum"]
+            .as_array()
+            .expect("config.schema.json 裡的 core.update.auto_restart 沒有 enum")
+            .iter()
+            .map(|v| v.as_str().expect("enum 值不是字串").to_string())
+            .collect();
+
+        let mut accepted: Vec<String> = AutoRestart::value_variants()
             .iter()
             .flat_map(|variant| {
                 variant
@@ -891,5 +994,42 @@ mod tests {
                 commands: vec!["xclip".into(), "-selection".into(), "clipboard".into()]
             }
         );
+    }
+
+    #[test]
+    fn update_interval_hours_zero_fails_validation() {
+        let update = CoreUpdateConfig {
+            mode: None,
+            interval_hours: Some(0),
+            auto_restart: None,
+        };
+        assert!(update.validate().is_err());
+    }
+
+    #[test]
+    fn update_interval_hours_above_max_fails_validation() {
+        let update = CoreUpdateConfig {
+            mode: None,
+            interval_hours: Some(MAX_INTERVAL_HOURS + 1),
+            auto_restart: None,
+        };
+        assert!(update.validate().is_err());
+    }
+
+    #[test]
+    fn update_interval_hours_within_range_passes_validation() {
+        let update = CoreUpdateConfig {
+            mode: None,
+            interval_hours: Some(MIN_INTERVAL_HOURS),
+            auto_restart: None,
+        };
+        assert!(update.validate().is_ok());
+    }
+
+    #[test]
+    fn update_interval_hours_unset_passes_validation() {
+        // None＝沒設定，garde 對 Option<T> 的 range 是 None 放行、Some 才驗。
+        let update = CoreUpdateConfig::default();
+        assert!(update.validate().is_ok());
     }
 }

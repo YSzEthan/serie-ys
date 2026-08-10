@@ -145,6 +145,43 @@ _可選值：_ `latest`、`head`
 
 `head` 選取 HEAD 所在的 commit。
 
+## --update-mode \<MODE\>
+
+自動更新檢查模式。
+
+_可選值：_ `off`、`check`、`auto`
+
+`off` 完全不自動檢查——手動的 <kbd>U</kbd> 鍵／`-U` 不受影響，那是使用者當下
+的明確意圖，跟「程式自作主張背景檢查」是兩回事。
+
+`check` 查到新版問 y/n（預設，現行行為）。
+
+`auto` 查到新版就直接下載替換，不問。`-U` 在這個模式下會跳過「Update?」那個
+確認（見下方 [`-U, --update`](#-u---update)）。
+
+設定檔對應鍵是 `core.update.mode`，命令列參數指定的值優先。
+
+## --update-interval \<HOURS\>
+
+自動更新的檢查間隔，單位小時，啟動時查一次、之後持續運作期間每隔這個時間
+再查一次。
+
+_可選範圍：_ `1`–`48`，預設 `6`。
+
+設定檔對應鍵是 `core.update.interval_hours`，命令列參數指定的值優先。
+
+## --auto-restart \<TYPE\>
+
+更新完成後自動重啟（TUI）／開啟新版（CLI），不再詢問。
+
+_可選值：_ `off`、`on`
+
+開啟時 `-U` 會跳過「Launch ysgit now?」那個確認（見下方
+[`-U, --update`](#-u---update)），TUI 內下載完成後也不再彈重啟提示，直接
+離開並以新版重啟。
+
+設定檔對應鍵是 `core.update.auto_restart`，命令列參數指定的值優先。
+
 ## -U, --update
 
 檢查 GitHub Release 是否有新版，有就下載對應這台機器的執行檔並就地替換。
@@ -153,10 +190,11 @@ _可選值：_ `latest`、`head`
 都是 `y`／`yes`／直接按 Enter 算「是」（不分大小寫），其餘算「否」：
 
 1. 顯示「目前版本 → 最新版本」問是否要更新；答「否」印一行取消訊息就結束，
-   不會下載。
+   不會下載。`update_mode = auto` 時跳過這一問，查到就直接更新。
 2. 下載替換完成後，若目前目錄位於 git repo 內，再問一次是否要就地開啟新版；
    答「否」，或替換後開啟失敗，都會印出手動重新啟動的提示。不在 repo 內
    （例如 `cd /tmp && ysgit -U`）則不問這一題，直接印手動重新啟動的提示。
+   `auto_restart = on` 時跳過這一問，下載完直接開啟。
 
 非互動環境（cron、script、`ysgit -U >> log` 之類的重導向）兩個問題都跳過，
 查到新版就直接更新、不重啟，維持原本可安全放進自動化流程的行為。已是最新
@@ -166,7 +204,11 @@ exit 非 0 並印出原因。
 開發版本（`cargo build` 未帶 `--release`）與 Windows 不支援，會直接印錯誤退出；
 Windows 請至 [GitHub Releases](https://github.com/YSzEthan/serie-ys/releases) 頁面手動下載。
 
-啟動 TUI 時（不帶 `-U`）也會在背景做同樣的檢查，一天最多一次，有新版才會在
-狀態列跳出 `y`/`n` 提示；下載替換完成後會再問一次是否要離開並以新版重啟。
-設定 `YSGIT_NO_UPDATE_CHECK` 環境變數（任意值）可以關掉這個背景檢查。想立刻
-手動檢查，TUI 內按 <kbd>U</kbd>。
+啟動 TUI 時（不帶 `-U`）也會在背景做同樣的檢查，依 `--update-interval`／
+`core.update.interval_hours` 設定的間隔（預設 6 小時），啟動查一次、之後
+持續運作期間每隔這個時間再查一次。`update_mode = check`（預設）查到新版在
+狀態列跳出 `y`/`n` 提示；`update_mode = auto` 直接下載替換，裝好後依
+`auto_restart` 決定要不要問是否重啟；`update_mode = off` 完全不自動檢查。
+設定 `YSGIT_NO_UPDATE_CHECK` 環境變數（任意值）等同 `update_mode = off`。
+想立刻手動檢查，TUI 內按 <kbd>U</kbd>——手動檢查不受 `update_mode = off`
+限制。

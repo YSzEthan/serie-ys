@@ -10,6 +10,11 @@ compact = "auto"
 graph_style = "rounded"
 initial_selection = "latest"
 
+[core.update]
+mode = "check"
+interval_hours = 6
+auto_restart = "off"
+
 [core.search]
 ignore_case = false
 fuzzy = false
@@ -167,6 +172,50 @@ Commit 圖形的邊線風格。
 - 可選值：
   - `latest`
   - `head`
+
+命令列參數指定的值優先。
+
+### `core.option.max_count`
+
+要渲染的最大 commit 數量。
+
+- 型別：`integer`
+- 預設值：無（不限制，渲染全部 commit）
+
+命令列參數指定的值優先。
+
+### `core.update.mode`
+
+自動更新檢查模式。
+
+- 型別：`string`（enum）
+- 預設值：`check`
+- 可選值：
+  - `off`：完全不自動檢查——手動的 <kbd>U</kbd> 鍵／`-U` 不受影響
+  - `check`：查到新版問 y/n
+  - `auto`：查到新版就直接下載替換，不問
+
+命令列參數指定的值優先。
+
+### `core.update.interval_hours`
+
+自動更新的檢查間隔（小時），啟動時查一次、之後持續運作期間每隔這個時間再查一次。
+
+- 型別：`integer`
+- 預設值：`6`
+- 可選範圍：`1`–`48`
+
+命令列參數指定的值優先。
+
+### `core.update.auto_restart`
+
+更新完成後是否自動重啟（TUI）／開啟新版（CLI），不再詢問。
+
+- 型別：`string`（enum）
+- 預設值：`off`
+- 可選值：
+  - `off`
+  - `on`
 
 命令列參數指定的值優先。
 

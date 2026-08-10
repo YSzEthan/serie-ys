@@ -28,6 +28,7 @@ use clap::{CommandFactory, Parser, ValueEnum};
 use graph::Graph;
 use rustc_hash::FxHashSet;
 use serde::Deserialize;
+use update::{AutoRestart, UpdateMode};
 
 /// ysgit - Git Graph in Terminal
 #[derive(Parser)]
@@ -74,6 +75,24 @@ struct Args {
     #[arg(short, long, value_name = "TYPE")]
     initial_selection: Option<InitialSelection>,
 
+    /// 自動更新檢查模式 [default: check]
+    #[arg(long, value_name = "MODE")]
+    update_mode: Option<UpdateMode>,
+
+    /// 自動更新的檢查間隔，單位小時 [default: 6]
+    #[arg(
+        long,
+        value_name = "HOURS",
+        value_parser = clap::value_parser!(u64).range(
+            update::MIN_INTERVAL_HOURS..=update::MAX_INTERVAL_HOURS
+        )
+    )]
+    update_interval: Option<u64>,
+
+    /// 更新完成後自動重啟（TUI）／開啟新版（CLI），不再詢問 [default: off]
+    #[arg(long, value_name = "TYPE")]
+    auto_restart: Option<AutoRestart>,
+
     /// 顯示說明
     #[arg(short = 'h', long, action = clap::ArgAction::Help)]
     help: Option<bool>,
@@ -96,7 +115,8 @@ impl Args {
     /// 目錄瀏覽器；`-U` 這條路徑則是還沒跑到 `-p` 的處理就 early return 了，
     /// `-p` 本來就不會生效，跟這裡排除它是兩回事）；`help`／`version` 不必
     /// 特判——`ArgAction::Help`／`Version` 會中止 parse，成功 parse 出的
-    /// `Args` 裡兩者恆為 `None`。
+    /// `Args` 裡兩者恆為 `None`。三個更新設定跟 `order`／`compact` 那些
+    /// 畫圖旋鈕同一個道理：命令列上明確給的值要保留，不是特例。
     ///
     /// 用解構式綁定：日後 `Args` 加欄位而忘了在這裡處理，編譯直接失敗——手寫的
     /// round-trip 測試擋不住這種漏。也給 `wizard::format_equivalent_command`
@@ -111,6 +131,9 @@ impl Args {
             compact,
             graph_style,
             initial_selection,
+            update_mode,
+            update_interval,
+            auto_restart,
             help: _,
             version: _,
             update: _,
@@ -124,6 +147,15 @@ impl Args {
             ("-c", compact.as_ref().map(wizard::variant_name)),
             ("-s", graph_style.as_ref().map(wizard::variant_name)),
             ("-i", initial_selection.as_ref().map(wizard::variant_name)),
+            (
+                "--update-mode",
+                update_mode.as_ref().map(wizard::variant_name),
+            ),
+            ("--update-interval", update_interval.map(|h| h.to_string())),
+            (
+                "--auto-restart",
+                auto_restart.as_ref().map(wizard::variant_name),
+            ),
         ] {
             if let Some(value) = value {
                 argv.push(flag.to_string());
@@ -393,7 +425,7 @@ pub fn run() -> Result<()> {
     let (core_config, ui_config, graph_config, color_theme, keybind_patch) = config::load()?;
     let keybind = keybind::KeyBind::new(keybind_patch);
 
-    let max_count = args.max_count;
+    let max_count = args.max_count.or(core_config.option.max_count);
     let order = args.order.or(core_config.option.order).into();
     let graph_width = args.graph_width.or(core_config.option.graph_width);
     let compact = args.compact.or(core_config.option.compact);
@@ -405,6 +437,14 @@ pub fn run() -> Result<()> {
         .initial_selection
         .or(core_config.option.initial_selection)
         .into();
+    let update_settings = update::resolve(
+        args.update_mode,
+        args.update_interval,
+        args.auto_restart,
+        core_config.update.mode,
+        core_config.update.interval_hours,
+        core_config.update.auto_restart,
+    );
 
     let graph_color_set = color::GraphColorSet::new(&graph_config.color);
 
@@ -426,6 +466,7 @@ pub fn run() -> Result<()> {
         graph_style,
         graph_width,
         compact,
+        update: update_settings,
     });
 
     let mut ec = event::EventController::init();
@@ -433,7 +474,7 @@ pub fn run() -> Result<()> {
     // spawn 在迴圈外，只在整個 process 生命週期跑一次；放進 `App::run()`
     // 開頭的話，建 tag、刪 branch、checkout 這些觸發 refresh 的操作都會
     // 意外多 spawn 一次背景檢查。
-    update::spawn_check(&ec, false);
+    update::spawn_check(&ec, false, update_settings);
     let mut refresh_view_context = None;
     let mut terminal = None;
 
@@ -582,7 +623,32 @@ fn confirm(prompt: &str) -> bool {
 /// 讀不到答案，`confirm()` 立刻收到 EOF，誤判成「否」。兩個都是 TTY，才能
 /// 同時保證「問得出來、讀得到答案、真的要 exec 進 TUI 時新 process 也有活的
 /// stdin」。
+///
+/// `settings.mode == Auto` 跳過第一問、`settings.auto_restart` 跳過第二問——
+/// 兩個短路只取代對應的 `confirm()`，`interactive` 與
+/// `git::is_inside_work_tree` 兩道守衛不受影響：前者是「有沒有活的 stdin／
+/// stdout」，後者是「開下去會不會直接報錯」，跟使用者要不要被問是兩件事。
 fn run_self_update(args: &Args) -> Result<()> {
+    // 這條路徑排在 `run()` 的 `config::load()?` 之前（config 壞掉也不該擋住
+    // `-U`——使用者可能就是為了拿掉會修掉那個壞 config 的新版才跑 -U），
+    // 所以這裡要自己載入，且失敗不能靜默：直接用 `.ok()` 吞掉的話，
+    // `update_mode = auto` 沒生效卻什麼都不會顯示，使用者無從得知。
+    let core_update = match config::load() {
+        Ok((core, ..)) => core.update,
+        Err(e) => {
+            eprintln!("設定檔載入失敗（{e}），本次 -U 使用預設更新設定");
+            config::CoreConfig::default().update
+        }
+    };
+    let settings = update::resolve(
+        args.update_mode,
+        args.update_interval,
+        args.auto_restart,
+        core_update.mode,
+        core_update.interval_hours,
+        core_update.auto_restart,
+    );
+
     let latest = update::check_for_update()?;
     update::mark_checked();
 
@@ -593,6 +659,7 @@ fn run_self_update(args: &Args) -> Result<()> {
 
     let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
     if interactive
+        && settings.mode != UpdateMode::Auto
         && !confirm(&format!(
             "v{} → {tag}  Update? [Y/n]",
             env!("CARGO_PKG_VERSION")
@@ -612,7 +679,7 @@ fn run_self_update(args: &Args) -> Result<()> {
     // 環境（`interactive` 為 false）不會白 spawn 這個 git 子行程。
     if interactive
         && git::is_inside_work_tree(Path::new(&args.path))
-        && confirm("Launch ysgit now? [Y/n]")
+        && (settings.auto_restart || confirm("Launch ysgit now? [Y/n]"))
     {
         if let Err(e) = update::exec_replacing_self(&exe, &args.to_argv()) {
             println!("Updated to {tag}, but restart failed: {e}");
@@ -661,6 +728,12 @@ mod tests {
             "ascii",
             "-i",
             "head",
+            "--update-mode",
+            "auto",
+            "--update-interval",
+            "12",
+            "--auto-restart",
+            "on",
             "/some/repo",
         ])
         .unwrap();
@@ -674,6 +747,9 @@ mod tests {
         assert_eq!(reparsed.compact, args.compact);
         assert_eq!(reparsed.graph_style, args.graph_style);
         assert_eq!(reparsed.initial_selection, args.initial_selection);
+        assert_eq!(reparsed.update_mode, args.update_mode);
+        assert_eq!(reparsed.update_interval, args.update_interval);
+        assert_eq!(reparsed.auto_restart, args.auto_restart);
         assert_eq!(reparsed.path, args.path);
     }
 
@@ -700,5 +776,17 @@ mod tests {
     fn to_argv_of_defaults_is_just_the_program_name() {
         let args = Args::try_parse_from(["ysgit"]).unwrap();
         assert_eq!(args.to_argv(), vec!["ysgit"]);
+    }
+
+    #[test]
+    fn update_interval_rejects_zero_and_values_above_max() {
+        assert!(Args::try_parse_from(["ysgit", "--update-interval", "0"]).is_err());
+        assert!(Args::try_parse_from(["ysgit", "--update-interval", "49"]).is_err());
+    }
+
+    #[test]
+    fn update_interval_accepts_the_full_range() {
+        assert!(Args::try_parse_from(["ysgit", "--update-interval", "1"]).is_ok());
+        assert!(Args::try_parse_from(["ysgit", "--update-interval", "48"]).is_ok());
     }
 }

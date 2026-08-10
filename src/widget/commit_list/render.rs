@@ -1045,6 +1045,7 @@ mod tests {
                 graph_style,
                 graph_width: Some(graph_width),
                 compact: Some(CompactType::Off),
+                update: crate::update::UpdateSettings::default(),
             })
         }
 
@@ -1307,6 +1308,7 @@ mod tests {
                 graph_style: GraphStyle::Rounded,
                 graph_width: Some(graph_width),
                 compact: Some(CompactType::On),
+                update: crate::update::UpdateSettings::default(),
             });
             let area = Rect::new(0, 0, TERM_W, height);
             let mut buf = Buffer::empty(area);
@@ -1849,6 +1851,7 @@ mod tests {
                 graph_style: GraphStyle::Rounded,
                 graph_width: Some(GraphWidthType::Single),
                 compact: Some(CompactType::On),
+                update: crate::update::UpdateSettings::default(),
             });
             let area = Rect::new(0, 0, TERM_W, 10);
             let mut buf = Buffer::empty(area);

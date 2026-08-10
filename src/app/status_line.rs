@@ -906,6 +906,7 @@ mod tests {
             graph_style: GraphStyle::default(),
             graph_width: None,
             compact: None,
+            update: crate::update::UpdateSettings::default(),
         })
     }
 

@@ -25,6 +25,7 @@ use crate::{
     },
     graph::{Graph, GraphStyle},
     keybind::KeyBind,
+    update::UpdateSettings,
     view::{dispatch_delete_branch, RefreshViewContext, RefsOrigin, View},
     widget::{
         commit_list::{CommitInfo, CommitListState, RawCommitIdx},
@@ -69,6 +70,9 @@ pub struct AppContext {
     pub graph_width: Option<GraphWidthType>,
     /// 已合併 CLI／設定檔的緊湊模式偏好，理由跟 `graph_width` 一樣。
     pub compact: Option<CompactType>,
+    /// 已合併 CLI／設定檔的自動更新設定，`update::spawn_check` 與
+    /// `auto_restart` 的中斷判斷共用同一份，不各自再 `.or()` 一遍。
+    pub update: UpdateSettings,
 }
 
 /// `q` 雙擊退出的判定結果。
@@ -650,7 +654,7 @@ impl App<'_> {
                     }
                 }
                 AppEvent::CheckUpdate => {
-                    crate::update::spawn_check(self.ec, true);
+                    crate::update::spawn_check(self.ec, true, self.ctx.update);
                 }
                 AppEvent::OpenUpdatePrompt { tag } => {
                     self.maybe_open_update_prompt(tag);
@@ -659,6 +663,12 @@ impl App<'_> {
                     spawn_update_download(self.ec, tag);
                 }
                 AppEvent::UpdateInstalled { tag, exe } => {
+                    // auto_restart 開著時不問，但仍要走 can_interrupt()
+                    // ——它跟重啟提示共用同一個「現在能不能打斷使用者」判斷，
+                    // 背景 fetch 在跑或輸入框在打字時不准抽地毯。
+                    if self.ctx.update.auto_restart && self.can_interrupt() {
+                        return Ok(Ret::Quit(Some(exe)));
+                    }
                     self.maybe_open_restart_prompt(tag, exe);
                 }
                 AppEvent::RestartRequested { exe } => {
@@ -1547,7 +1557,8 @@ impl App<'_> {
     /// 也按不了的地方），或使用者根本不在 List/Detail/Refs 這三個 browsing
     /// view（GitHub 搜尋框、CreateTag 等對話框用的是自己的 `tui_input::Input`，
     /// 狀態列同樣顯示 `None`，提示一彈出來就會吃掉打字）。三個條件都過才開，
-    /// 沒過就丟掉不問——節流本來就一天一次，下次再說，不做佇列。
+    /// 沒過就丟掉不問——節流間隔可設定（`core.update.interval_hours`），
+    /// 下次再說，不做佇列。
     fn maybe_open_update_prompt(&mut self, tag: String) {
         if self.pending_message.is_none()
             && self.view.is_browsing_view()

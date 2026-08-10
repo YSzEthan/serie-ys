@@ -18,7 +18,9 @@ use std::{
     time::{Duration, SystemTime},
 };
 
+use clap::ValueEnum;
 use semver::Version;
+use serde::{Deserialize, Serialize};
 
 use crate::event::{AppEvent, EventController};
 
@@ -27,25 +29,123 @@ const CHECKSUMS_URL: &str = concat!(
     env!("CARGO_PKG_REPOSITORY"),
     "/releases/latest/download/checksum.txt"
 );
-const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
 const MARKER_FILE_NAME: &str = ".ysgit.update_check";
 
-/// 檢查並視需要開啟更新提示。啟動時的自動檢查與 `U` 鍵／`-U` 共用這個入口，
+/// 自動更新檢查模式。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdateMode {
+    // 完全不檢查——連手動的 `U`／`-U` 都不受它影響，那是使用者當下的明確
+    // 意圖，跟「程式自作主張背景檢查」是兩回事。
+    //
+    // 用一般註解而非 `///`：clap 的 `ValueEnum` derive 會把 doc comment
+    // 當成每個變體的說明文字塞進 `--help`（長格式），但 `-h`（短格式）
+    // 不會展開它——一旦某個 enum 的變體有 doc comment，兩者就不再逐字
+    // 相同，會撞上 `tests/help_flag.rs` 釘住的
+    // `short_and_long_help_are_byte_identical_and_exit_zero`。
+    Off,
+    #[default]
+    Check,
+    Auto,
+}
+
+/// 更新完成後是否自動重啟（TUI）／開啟新版（CLI），不再詢問。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum, Deserialize, Serialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AutoRestart {
+    #[default]
+    Off,
+    On,
+}
+
+/// 檢查間隔的合法範圍（小時）；CLI／設定檔／精靈三處都要用同一組數字。
+pub const MIN_INTERVAL_HOURS: u64 = 1;
+pub const MAX_INTERVAL_HOURS: u64 = 48;
+pub const DEFAULT_INTERVAL_HOURS: u64 = 6;
+
+/// CLI 與設定檔合併後的自動更新設定，`run()`／`run_self_update` 只算一次、
+/// 之後所有地方（`AppContext`、`-U` 的兩個 confirm、背景檢查 thread）都吃
+/// 這個值，不各自再 `.or()` 一遍。
+#[derive(Debug, Clone, Copy)]
+pub struct UpdateSettings {
+    pub mode: UpdateMode,
+    pub interval: Duration,
+    pub auto_restart: bool,
+}
+
+impl Default for UpdateSettings {
+    /// 給測試 fixture 用（真正的合併入口是 `resolve()`，`run()` 一律走它）。
+    /// 手寫而非 derive：`Duration` 的 derive 預設是 0 秒，套進
+    /// `should_check_on_startup` 會讓每次呼叫都判定「早就該查了」，測試
+    /// 用到這個預設值時看起來會像巧合通過，不是邏輯真的對。
+    fn default() -> Self {
+        Self {
+            mode: UpdateMode::default(),
+            interval: Duration::from_secs(DEFAULT_INTERVAL_HOURS * 3600),
+            auto_restart: false,
+        }
+    }
+}
+
+/// 唯一的合併入口：CLI > 設定檔 > 內建預設。`YSGIT_NO_UPDATE_CHECK` 在這裡
+/// 壓成 `mode = Off`——原本散在 `should_check_on_startup` 裡的另一個閘門，
+/// 併過來後全程只剩 `mode` 一個判斷點。
+///
+/// 收純值而非整個 `&Args`／`&CoreConfig`：不必為了讀三個欄位就讓這個模組
+/// 認得 `Args` 的私有欄位，呼叫端（`lib.rs::run()`）在自己的模組裡解構
+/// 一次即可，這個函式本身也因此是純函式，好測。
+pub fn resolve(
+    cli_mode: Option<UpdateMode>,
+    cli_interval_hours: Option<u64>,
+    cli_auto_restart: Option<AutoRestart>,
+    config_mode: Option<UpdateMode>,
+    config_interval_hours: Option<u64>,
+    config_auto_restart: Option<AutoRestart>,
+) -> UpdateSettings {
+    let mode = if env::var_os("YSGIT_NO_UPDATE_CHECK").is_some() {
+        UpdateMode::Off
+    } else {
+        cli_mode.or(config_mode).unwrap_or_default()
+    };
+    let interval_hours = cli_interval_hours
+        .or(config_interval_hours)
+        .unwrap_or(DEFAULT_INTERVAL_HOURS);
+    let auto_restart =
+        cli_auto_restart.or(config_auto_restart).unwrap_or_default() == AutoRestart::On;
+    UpdateSettings {
+        mode,
+        interval: Duration::from_secs(interval_hours * 3600),
+        auto_restart,
+    }
+}
+
+/// 檢查並視需要開啟更新提示。啟動時的自動檢查與 `U` 鍵共用這個入口，
 /// 差異只在 `manual`：
-/// - 自動（`manual = false`）：沒開 config 旋鈕給這件事，節流未到期就整個
-///   不檢查；已是最新或出錯（沒裝 curl、沒網路）一律靜默，不能在啟動時噴錯。
-/// - 手動：繞過節流，任何結果都要吭聲。
+/// - 自動（`manual = false`）：`mode = Off` 或節流未到期就整個不檢查；
+///   已是最新或出錯（沒裝 curl、沒網路）一律靜默，不能在啟動時噴錯。
+/// - 手動：繞過節流與 `mode = Off`（使用者當下的明確意圖，跟「程式自作
+///   主張背景檢查」是兩回事），任何結果都要吭聲。
+///
+/// `mode = Auto` 時（不論手動或自動觸發）查到新版直接下載替換，不彈 y/n
+/// 提示——跟 `-U` 在 `mode = Auto` 下跳過 confirm 是同一個承諾，不因為
+/// 觸發來源是背景 thread 還是使用者按鍵而有兩套行為。
 ///
 /// 兩種情況都會標記「已檢查」，手動觸發後下次啟動不會馬上又問一次。
-pub fn spawn_check(ec: &EventController, manual: bool) {
-    if !manual && !should_check_on_startup() {
+pub fn spawn_check(ec: &EventController, manual: bool, settings: UpdateSettings) {
+    if !manual && (settings.mode == UpdateMode::Off || !should_check_on_startup(settings.interval))
+    {
         return;
     }
     let tx = ec.sender();
+    let auto_download = settings.mode == UpdateMode::Auto;
     std::thread::spawn(move || {
         let result = check_for_update();
         mark_checked();
         match result {
+            Ok(Some(tag)) if auto_download => match download_and_replace(&tag) {
+                Ok(exe) => tx.send(AppEvent::UpdateInstalled { tag, exe }),
+                Err(e) => tx.send(AppEvent::NotifyError(e)),
+            },
             Ok(Some(tag)) => tx.send(AppEvent::OpenUpdatePrompt { tag }),
             Ok(None) if manual => tx.send(AppEvent::NotifyInfo(format!(
                 "Already up to date (v{})",
@@ -211,19 +311,22 @@ fn existing_marker_path() -> Option<PathBuf> {
         .or_else(|| Some(fallback_marker_path()).filter(|p| p.exists()))
 }
 
-fn should_check_on_startup() -> bool {
-    if env::var_os("YSGIT_NO_UPDATE_CHECK").is_some() {
-        return false;
-    }
+/// 距上次檢查是否已經超過 `interval`——純函式，供啟動檢查與週期檢查共用
+/// 判斷。`YSGIT_NO_UPDATE_CHECK` 不在這裡判斷：那個閘門已經併進 `resolve()`
+/// 壓成 `mode = Off`，`spawn_check` 用 `mode` 一個判斷點就夠。
+fn check_due(last_checked: SystemTime, now: SystemTime, interval: Duration) -> bool {
+    now.duration_since(last_checked)
+        .is_ok_and(|elapsed| elapsed >= interval)
+}
+
+fn should_check_on_startup(interval: Duration) -> bool {
     let Some(path) = existing_marker_path() else {
         return true;
     };
     let Ok(modified) = fs::metadata(&path).and_then(|m| m.modified()) else {
         return true;
     };
-    SystemTime::now()
-        .duration_since(modified)
-        .is_ok_and(|elapsed| elapsed >= CHECK_INTERVAL)
+    check_due(modified, SystemTime::now(), interval)
 }
 
 /// 寫入用：先試優先層，寫失敗（唯讀目錄）才退到暫存目錄。
@@ -496,5 +599,86 @@ ca0a1ac34d2e1138b9308820e3a53b6822552268907e87a11a1350b98f1a6ada  ysgit_2.4.1-ma
     #[test]
     fn newer_than_current_older_version_is_none() {
         assert!(newer_than_current("2.3.0", "2.4.1").is_none());
+    }
+
+    // ── resolve()：CLI > 設定檔 > 內建預設 ──
+    //
+    // 不測 YSGIT_NO_UPDATE_CHECK 那條分支：`cargo test` 預設多執行緒跑同一個
+    // process，`env::set_var` 會是跨測試共用的全域可變狀態，這個專案沒有
+    // `serial_test` 之類的依賴能安全隔離它。那條分支是單行 if，用人工驗證
+    // （README／docs 的驗證清單）覆蓋，不值得為了測它引入新依賴或測試順序
+    // 依賴。
+
+    #[test]
+    fn resolve_cli_wins_over_config_and_default() {
+        let settings = resolve(
+            Some(UpdateMode::Auto),
+            Some(2),
+            Some(AutoRestart::On),
+            Some(UpdateMode::Off),
+            Some(20),
+            Some(AutoRestart::Off),
+        );
+        assert_eq!(settings.mode, UpdateMode::Auto);
+        assert_eq!(settings.interval, Duration::from_secs(2 * 3600));
+        assert!(settings.auto_restart);
+    }
+
+    #[test]
+    fn resolve_falls_back_to_config_when_cli_unset() {
+        let settings = resolve(
+            None,
+            None,
+            None,
+            Some(UpdateMode::Off),
+            Some(20),
+            Some(AutoRestart::On),
+        );
+        assert_eq!(settings.mode, UpdateMode::Off);
+        assert_eq!(settings.interval, Duration::from_secs(20 * 3600));
+        assert!(settings.auto_restart);
+    }
+
+    #[test]
+    fn resolve_falls_back_to_builtin_default_when_nothing_set() {
+        let settings = resolve(None, None, None, None, None, None);
+        assert_eq!(settings.mode, UpdateMode::Check);
+        assert_eq!(
+            settings.interval,
+            Duration::from_secs(DEFAULT_INTERVAL_HOURS * 3600)
+        );
+        assert!(!settings.auto_restart);
+    }
+
+    // ── check_due()：邊界 ──
+
+    #[test]
+    fn check_due_exactly_at_interval_is_due() {
+        let last = SystemTime::UNIX_EPOCH;
+        let now = last + Duration::from_secs(3600);
+        assert!(check_due(last, now, Duration::from_secs(3600)));
+    }
+
+    #[test]
+    fn check_due_just_under_interval_is_not_due() {
+        let last = SystemTime::UNIX_EPOCH;
+        let now = last + Duration::from_secs(3599);
+        assert!(!check_due(last, now, Duration::from_secs(3600)));
+    }
+
+    #[test]
+    fn check_due_well_past_interval_is_due() {
+        let last = SystemTime::UNIX_EPOCH;
+        let now = last + Duration::from_secs(3600 * 100);
+        assert!(check_due(last, now, Duration::from_secs(3600)));
+    }
+
+    #[test]
+    fn check_due_clock_went_backwards_is_not_due() {
+        // duration_since 在 now < last 時回 Err——不是「早就該查了」，是
+        // 系統時鐘被調過去，寧可保守不查。
+        let last = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+        let now = SystemTime::UNIX_EPOCH;
+        assert!(!check_due(last, now, Duration::from_secs(3600)));
     }
 }
