@@ -1,7 +1,7 @@
 [package]
 name = "ysgit"
 version = "2.5.1"
-description = "A rich git commit graph in your terminal, like magic"
+description = "Git Graph in Terminal"
 authors = ["YSEthan"]
 homepage = "https://github.com/YSzEthan/serie-ys"
 repository = "https://github.com/YSzEthan/serie-ys"

@@ -1,7 +1,7 @@
 use std::{
     ffi::OsStr,
     fmt::{self, Debug, Formatter},
-    path::{Component, Path},
+    path::{Component, Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc, Arc, Mutex,
@@ -189,6 +189,16 @@ pub enum AppEvent {
     /// 使用者在更新提示按下確認。
     UpdateRequested {
         tag: String,
+    },
+    /// 下載＋替換執行檔完成——帶替換後的路徑（供離開前 exec 用）與版本號
+    /// （供重啟提示顯示 `Updated to {tag}. Restart now?`）。
+    UpdateInstalled {
+        tag: String,
+        exe: PathBuf,
+    },
+    /// 使用者在重啟提示按下確認。
+    RestartRequested {
+        exe: PathBuf,
     },
     /// draft 切換成功後就地更新列表，補上 RefreshGitHub 完成前的空窗。
     PrDraftToggled {

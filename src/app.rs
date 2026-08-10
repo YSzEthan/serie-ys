@@ -1,4 +1,4 @@
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -44,7 +44,8 @@ pub enum InitialSelection {
 }
 
 pub enum Ret {
-    Quit,
+    /// `Some` = 離開前 exec 這個路徑的執行檔（自我更新完成後的重啟）。
+    Quit(Option<PathBuf>),
     Refresh(RefreshRequest),
 }
 
@@ -341,7 +342,7 @@ impl App<'_> {
                     let _ = (w, h);
                 }
                 AppEvent::Quit => {
-                    return Ok(Ret::Quit);
+                    return Ok(Ret::Quit(None));
                 }
                 AppEvent::OpenDetail => {
                     self.open_detail();
@@ -656,6 +657,12 @@ impl App<'_> {
                 }
                 AppEvent::UpdateRequested { tag } => {
                     spawn_update_download(self.ec, tag);
+                }
+                AppEvent::UpdateInstalled { tag, exe } => {
+                    self.maybe_open_restart_prompt(tag, exe);
+                }
+                AppEvent::RestartRequested { exe } => {
+                    return Ok(Ret::Quit(Some(exe)));
                 }
             }
         }
@@ -1550,6 +1557,22 @@ impl App<'_> {
         }
     }
 
+    /// 下載＋替換執行檔完成，問是否要離開並以新版重啟。守衛比
+    /// `maybe_open_update_prompt` 多容許狀態列正顯示一則通知——理由見
+    /// `StatusLineState::is_showing_notification`。守衛沒過就退回通知。
+    fn maybe_open_restart_prompt(&mut self, tag: String, exe: PathBuf) {
+        if self.pending_message.is_none()
+            && self.view.is_browsing_view()
+            && (self.status_line_state.is_idle()
+                || self.status_line_state.is_showing_notification())
+        {
+            self.status_line_state.open_restart_prompt(tag, exe);
+        } else {
+            self.status_line_state
+                .set_notification_success(status_line::UPDATE_INSTALLED_HINT.to_string());
+        }
+    }
+
     fn fetch_all(&self) {
         spawn_git_task(
             self.repository.path(),
@@ -1619,10 +1642,8 @@ fn spawn_update_download(ec: &EventController, tag: String) {
         let result = crate::update::download_and_replace(&tag);
         tx.send(AppEvent::HidePendingOverlay);
         match result {
-            Ok(()) => {
-                tx.send(AppEvent::NotifySuccess(format!(
-                    "Updated to {tag} — restart ysgit to apply"
-                )));
+            Ok(exe) => {
+                tx.send(AppEvent::UpdateInstalled { tag, exe });
             }
             Err(e) => {
                 tx.send(AppEvent::NotifyError(e));

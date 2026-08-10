@@ -63,13 +63,21 @@ pub fn check_for_update() -> Result<Option<String>, String> {
     Ok(newer_than_current(&latest, env!("CARGO_PKG_VERSION")).map(|v| format!("v{v}")))
 }
 
-/// 下載 `tag` 對應這台機器的 asset 並就地替換目前執行檔。
-pub fn download_and_replace(tag: &str) -> Result<(), String> {
+/// 下載 `tag` 對應這台機器的 asset 並就地替換目前執行檔，回傳替換後的執行檔路徑。
+///
+/// 呼叫端不能事後自己再叫一次 `current_exe()`：`fs::rename` 已經把舊 inode
+/// unlink 掉，Linux 上 `/proc/self/exe` 對已 unlink 的執行檔會回傳
+/// `".../ysgit (deleted)"`（見 `current_exe_checked` 的註解）。這裡回傳的是
+/// `current_exe_checked()` 在 rename 前就算好的路徑，避開這個坑。
+pub fn download_and_replace(tag: &str) -> Result<PathBuf, String> {
     if cfg!(windows) {
         return Err("Windows 請至 GitHub Releases 頁面手動下載更新".into());
     }
     if cfg!(debug_assertions) {
         return Err("開發版本（debug build）不支援自我更新".into());
+    }
+    if UPDATE_INSTALLED.load(Ordering::SeqCst) {
+        return Err("目前執行檔已更新過，請先重新啟動 ysgit 再更新".into());
     }
     if UPDATE_RUNNING.swap(true, Ordering::SeqCst) {
         return Err("已經有一個更新在進行中".into());
@@ -107,7 +115,41 @@ pub fn download_and_replace(tag: &str) -> Result<(), String> {
     // 全新 inode，天然避開 macOS 用 `cp` 覆蓋會繼承舊檔 security metadata 的坑
     // （deploy-ysgit skill 記下的那個坑：舊檔被 Gatekeeper 標記過，新 binary
     // 繼承標記，啟動時 SIGKILL）。絕對不要用 `cp`。
-    fs::rename(&tmp, &target).map_err(|e| format!("替換執行檔失敗: {e}"))
+    fs::rename(&tmp, &target).map_err(|e| format!("替換執行檔失敗: {e}"))?;
+    UPDATE_INSTALLED.store(true, Ordering::SeqCst);
+    Ok(target)
+}
+
+/// 用替換後的新執行檔取代目前 process；成功時不返回。
+///
+/// unix 專用：`CommandExt::exec` 直接置換 process image，保留 pid／stdio／
+/// 終端機連線，比另外 spawn 一個子行程再退出乾淨——不會有「父行程先死、子行程
+/// 變成 orphan 被 shell job control 用不同方式對待」的落差。`download_and_replace`
+/// 開頭已經擋掉 Windows，這裡的 `#[cfg(not(unix))]` 分支純粹是讓其他平台編得動，
+/// 實際執行不到。
+///
+/// 進入時先把 stdout flush 掉：`println!` 是 LineWriter，重導向到檔案時是
+/// block-buffered，`exec` 換掉 process image 的瞬間緩衝區內容會直接消失。
+///
+/// `argv[0]` 預期是程式名（`Args::to_argv` 的輸出就長這樣，也是給
+/// `wizard::format_equivalent_command` 顯示用的），這裡跳過它——`exec`
+/// 本身就會帶入新 process 的 argv[0]，不需要呼叫端另外去頭。
+pub fn exec_replacing_self(exe: &Path, argv: &[String]) -> Result<(), String> {
+    use std::io::Write;
+    let _ = std::io::stdout().flush();
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::process::CommandExt;
+        // 成功時 exec() 不返回；回傳值本身就是失敗原因，不是 Result。
+        let err = Command::new(exe).args(argv.iter().skip(1)).exec();
+        Err(format!("自動重新啟動失敗: {err}"))
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = (exe, argv);
+        Err("此平台不支援自動重新啟動".to_string())
+    }
 }
 
 fn no_asset_error() -> String {
@@ -126,6 +168,15 @@ fn no_asset_error() -> String {
 // 「File exists」，只能手動 `rm` 才能解。
 
 static UPDATE_RUNNING: AtomicBool = AtomicBool::new(false);
+
+/// 本 process 這輩子有沒有成功替換過一次執行檔——`current_exe_checked` 的
+/// `"(deleted)"` 字串偵測只在 Linux 上有效（`/proc/self/exe` 的行為），
+/// macOS 的 `current_exe()`（`_NSGetExecutablePath`）不會標記已被替換，靠它
+/// 擋不住「更新完不重啟、繼續用同一個 process 再按一次更新」——沒有這個旗標，
+/// macOS 上會整包重新下載一次（無害但白費頻寬與 300 秒 timeout）。這個旗標
+/// 是跨平台的事實：不管哪個平台，`fs::rename` 一旦成功，目前這個 process
+/// 手上的執行檔內容就已經跟磁碟上的不是同一份了。
+static UPDATE_INSTALLED: AtomicBool = AtomicBool::new(false);
 
 struct UpdateGuard;
 
@@ -156,7 +207,7 @@ fn should_check_on_startup() -> bool {
         .is_ok_and(|elapsed| elapsed >= CHECK_INTERVAL)
 }
 
-fn mark_checked() {
+pub fn mark_checked() {
     let Some(path) = marker_path() else {
         return;
     };
