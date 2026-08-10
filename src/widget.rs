@@ -9,7 +9,7 @@ use ratatui::{
     style::{Color, Style},
     text::{Line, Span},
 };
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthChar;
 
 use crate::{color::ColorTheme, event::UserEvent, keybind::KeyBind};
 
@@ -116,16 +116,10 @@ pub fn truncate_line(mut line: Line<'_>, max_width: usize) -> Line<'_> {
         let head = split_at_width(line.spans[0].content.as_ref(), budget)
             .0
             .to_string();
-        let style = line.spans[0].style;
-        line.spans.clear();
-        if !head.is_empty() {
-            line.spans.push(Span::styled(head, style));
-        }
-        line.spans.push(Span::raw(ELLIPSIS));
-        return line;
+        line.spans[0].content = head.into();
     }
 
-    line.spans.truncate(keep);
+    line.spans.truncate(keep.max(1));
     line.spans.push(Span::raw(ELLIPSIS));
     line
 }
@@ -146,12 +140,6 @@ pub(crate) fn split_at_width(s: &str, max: usize) -> (&str, &str) {
         w += cw;
     }
     (s, "")
-}
-
-/// 跟 `span_display_width` 同樣的寬度計算，但省掉 ANSI 掃描——呼叫端
-/// （表格換行、單 span 截斷）處理的都是純文字。
-pub(crate) fn str_width(s: &str) -> usize {
-    s.width()
 }
 
 #[cfg(test)]

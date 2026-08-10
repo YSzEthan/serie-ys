@@ -12,7 +12,9 @@ use ratatui::{
     text::{Line, Span},
 };
 
-use crate::widget::{split_at_width, str_width};
+use unicode_width::UnicodeWidthStr;
+
+use crate::widget::split_at_width;
 
 const RULE_WIDTH: usize = 40;
 
@@ -454,7 +456,7 @@ fn wrap_cell(spans: &[Span<'static>], width: usize) -> Vec<Vec<Span<'static>>> {
                 continue;
             }
             row.push(Span::styled(head.to_string(), span.style));
-            used += str_width(head);
+            used += head.width();
             rest = tail;
             if used >= width && !rest.is_empty() {
                 rows.push(std::mem::take(&mut row));
