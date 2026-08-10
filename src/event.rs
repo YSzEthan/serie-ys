@@ -182,6 +182,12 @@ pub enum AppEvent {
     /// 才能受 `is_browsing_view`／`is_input_mode` 守衛，不會在文字輸入框裡
     /// 把打的 `U` 吃掉。
     CheckUpdate,
+    /// 持續運作期間每隔一個 `interval` 再檢查一次——`send_after` 自我重新
+    /// 武裝，不是 detached thread + `loop { sleep }`（那會有 wall clock vs
+    /// 單調時鐘的落差、多實例流量放大、且要真的等一個 interval 才驗得到）。
+    /// 沒有鍵盤／`UserEvent` 對應：只有 `lib.rs::run()` 排第一次、
+    /// 處理它的地方排下一次，使用者無法直接觸發。
+    PeriodicUpdateCheck,
     /// 有新版才送——見 `update::check_for_update`。
     OpenUpdatePrompt {
         tag: String,

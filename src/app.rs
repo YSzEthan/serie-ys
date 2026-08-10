@@ -656,6 +656,17 @@ impl App<'_> {
                 AppEvent::CheckUpdate => {
                     crate::update::spawn_check(self.ec, true, self.ctx.update);
                 }
+                AppEvent::PeriodicUpdateCheck => {
+                    // 已經裝好但還沒重啟：不再檢查，也不重新武裝——鏈就
+                    // 停在這裡，下一輪 interval 不會再有這個事件。重啟後
+                    // 是全新 process，`lib.rs::run()` 會重新排第一次。
+                    if !crate::update::is_update_installed() {
+                        crate::update::spawn_check(self.ec, false, self.ctx.update);
+                        self.ec
+                            .sender()
+                            .send_after(AppEvent::PeriodicUpdateCheck, self.ctx.update.interval);
+                    }
+                }
                 AppEvent::OpenUpdatePrompt { tag } => {
                     self.maybe_open_update_prompt(tag);
                 }

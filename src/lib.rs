@@ -480,6 +480,15 @@ pub fn run() -> Result<()> {
     // 開頭的話，建 tag、刪 branch、checkout 這些觸發 refresh 的操作都會
     // 意外多 spawn 一次背景檢查。
     update::spawn_check(&ec, false, update_settings);
+    // 排第一次週期檢查——`mode = Off` 就不排：這條鏈之後只會在
+    // `AppEvent::PeriodicUpdateCheck` 的處理裡自我重新武裝，起點只有這裡
+    // 一個，跟上面 `spawn_check` 一樣只在整個 process 生命週期跑一次。
+    if update_settings.mode != UpdateMode::Off {
+        ec.sender().send_after(
+            event::AppEvent::PeriodicUpdateCheck,
+            update_settings.interval,
+        );
+    }
     let mut refresh_view_context = None;
     let mut terminal = None;
 

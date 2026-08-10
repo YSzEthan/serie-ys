@@ -132,8 +132,7 @@ pub fn resolve(
 ///
 /// 兩種情況都會標記「已檢查」，手動觸發後下次啟動不會馬上又問一次。
 pub fn spawn_check(ec: &EventController, manual: bool, settings: UpdateSettings) {
-    if !manual && (settings.mode == UpdateMode::Off || !should_check_on_startup(settings.interval))
-    {
+    if !manual && (settings.mode == UpdateMode::Off || !should_check_now(settings.interval)) {
         return;
     }
     let tx = ec.sender();
@@ -280,6 +279,14 @@ static UPDATE_RUNNING: AtomicBool = AtomicBool::new(false);
 /// 手上的執行檔內容就已經跟磁碟上的不是同一份了。
 static UPDATE_INSTALLED: AtomicBool = AtomicBool::new(false);
 
+/// 本 process 這輩子有沒有成功替換過一次執行檔——週期檢查用它決定要不要
+/// 停止重新武裝（見 `AppEvent::PeriodicUpdateCheck` 的處理）。裝好但還沒
+/// 重啟時再查下去沒有意義：`download_and_replace` 一定會被上面那個守衛
+/// 擋下回 Err，`Auto` 模式又是靜默失敗，只會白白每個 interval 打一次網路。
+pub fn is_update_installed() -> bool {
+    UPDATE_INSTALLED.load(Ordering::SeqCst)
+}
+
 struct UpdateGuard;
 
 impl Drop for UpdateGuard {
@@ -318,7 +325,9 @@ fn check_due(last_checked: SystemTime, now: SystemTime, interval: Duration) -> b
         .is_ok_and(|elapsed| elapsed >= interval)
 }
 
-fn should_check_on_startup(interval: Duration) -> bool {
+/// 啟動檢查與週期檢查共用同一個節流判斷——名字不叫 `on_startup` 是因為
+/// `spawn_check(manual = false)` 兩種觸發時機都會走到這裡。
+fn should_check_now(interval: Duration) -> bool {
     let Some(path) = existing_marker_path() else {
         return true;
     };
