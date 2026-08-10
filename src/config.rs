@@ -60,6 +60,15 @@ fn config_file_path_from_env() -> Option<PathBuf> {
     env::var(CONFIG_FILE_ENV_NAME).ok().map(PathBuf::from)
 }
 
+/// 設定檔實際會用到的路徑：`$SERIE_CONFIG_FILE` 優先，否則跟著執行檔走。
+/// `load()`／精靈的寫回都要看同一個檔案——`load()` 自己的分支邏輯還要
+/// 額外分辨「env 指定但檔案不存在就報錯」，跟這裡「單純告訴呼叫端寫去
+/// 哪」是不同需求，所以沒有讓 `load()` 直接呼叫這個函式，兩者各自維護，
+/// 但公式必須逐字一致。
+pub(crate) fn effective_path() -> Option<PathBuf> {
+    config_file_path_from_env().or_else(default_config_file_path)
+}
+
 /// 首次啟動生成一份含所有旋鈕與中文說明的預設設定檔——沒有這一步，「調整
 /// 設定」就只能影響那一次啟動：根本沒有檔案可以寫回。要在 `Args::try_parse()`
 /// 之前呼叫（`run()` 裡的順序），精靈才讀得到剛生成的檔。

@@ -1,6 +1,6 @@
 use clap::ValueEnum;
 use ratatui::style::Color as RatatuiColor;
-use serde::Deserialize;
+use serde::{Deserialize, Serialize};
 
 use crate::{
     git::CommitHash,
@@ -274,7 +274,7 @@ impl TextCell {
 /// 了「CLI 值需要在執行期解析」的型別而存在（`Auto` 取決於終端機寬度，在 `check.rs`
 /// 解出來）。`GraphStyle` 沒有這道解析步驟，硬留兩個 enum 外加一個做翻譯的 `From`
 /// impl 純粹是重複。
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum, Deserialize)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum, Deserialize, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum GraphStyle {
     #[default]

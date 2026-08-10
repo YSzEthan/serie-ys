@@ -3145,6 +3145,7 @@ dependencies = [
  "smart-default",
  "tempfile",
  "toml",
+ "toml_edit",
  "tui-input",
  "tui-tree-widget",
  "umbra",

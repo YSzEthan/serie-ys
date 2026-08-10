@@ -4,11 +4,12 @@ use clap::{Parser, ValueEnum};
 use ratatui::{
     crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     layout::{Constraint, Layout, Rect},
-    style::Style,
+    style::{Style, Stylize},
     text::Line,
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
     DefaultTerminal, Frame,
 };
+use serde::Serialize;
 use tui_input::backend::crossterm::EventHandler;
 
 use crate::{
@@ -49,7 +50,16 @@ fn wizard_loop(
         match state.on_key(key) {
             Flow::Continue => {}
             Flow::Abort => return Ok(None),
-            Flow::Launch => return Ok(Some(state.draft)),
+            Flow::Launch => {
+                // 每次按 Launch 都是新的嘗試，先清掉上一次的錯誤——寫成功
+                // 就直接離開；寫失敗把原因留在畫面上，continue 迴圈讓使用者
+                // 看得到，不強行啟動一個「以為存了、其實沒存」的 session。
+                state.write_error = None;
+                match write_touched_settings(&state) {
+                    Ok(()) => return Ok(Some(state.draft)),
+                    Err(e) => state.write_error = Some(e),
+                }
+            }
             Flow::OpenPath => {
                 let start = path_browser::start_dir(&state.draft.path);
                 if let Some(p) = path_browser::run(terminal, &start, theme)? {
@@ -68,8 +78,14 @@ fn wizard_loop(
                     usize::MAX,
                 )? {
                     NumberFlow::Cancelled => {}
-                    NumberFlow::Cleared => state.draft.max_count = None,
-                    NumberFlow::Set(n) => state.draft.max_count = Some(n),
+                    NumberFlow::Cleared => {
+                        state.draft.max_count = None;
+                        state.max_count_touched = true;
+                    }
+                    NumberFlow::Set(n) => {
+                        state.draft.max_count = Some(n);
+                        state.max_count_touched = true;
+                    }
                 }
                 terminal.clear()?;
             }
@@ -88,8 +104,14 @@ fn wizard_loop(
                     update::MAX_INTERVAL_HOURS as usize,
                 )? {
                     NumberFlow::Cancelled => {}
-                    NumberFlow::Cleared => state.draft.update_interval = None,
-                    NumberFlow::Set(n) => state.draft.update_interval = Some(n as u64),
+                    NumberFlow::Cleared => {
+                        state.draft.update_interval = None;
+                        state.update_interval_touched = true;
+                    }
+                    NumberFlow::Set(n) => {
+                        state.draft.update_interval = Some(n as u64);
+                        state.update_interval_touched = true;
+                    }
                 }
                 terminal.clear()?;
             }
@@ -419,8 +441,11 @@ fn build_top_rows() -> Vec<TopRow> {
 /// 硬預設）。循環選擇的欄位（`Field`）額外用 `< >` 包住值，標示「這欄按
 /// 左右鍵會變」；數字輸入的欄位（`OpenMaxCount`／`OpenUpdateInterval`）
 /// 不用 `< >`——那是另一種互動（開子畫面打字），混用會誤導使用者以為也能
-/// 直接左右切換。`✓` 標示這欄本次 session 有被使用者主動改過。
-fn top_row_label(row: &TopRow, draft: &Args, defaults: &ResolvedDefaults) -> String {
+/// 直接左右切換。`✓` 標示這欄本次 session 有被使用者主動改過（Launch 時
+/// 會寫回設定檔）。
+fn top_row_label(row: &TopRow, state: &WizardState) -> String {
+    let draft = &state.draft;
+    let defaults = &state.defaults;
     let (checked, body) = match row.action {
         TopRowAction::OpenPath => (
             false,
@@ -429,7 +454,7 @@ fn top_row_label(row: &TopRow, draft: &Args, defaults: &ResolvedDefaults) -> Str
         TopRowAction::OpenMaxCount => {
             let effective = draft.max_count.or(defaults.max_count);
             (
-                draft.max_count.is_some(),
+                state.max_count_touched,
                 format!(
                     "{}  {}（目前：{}）",
                     row.flags,
@@ -441,7 +466,7 @@ fn top_row_label(row: &TopRow, draft: &Args, defaults: &ResolvedDefaults) -> Str
             )
         }
         TopRowAction::OpenUpdateInterval => (
-            draft.update_interval.is_some(),
+            state.update_interval_touched,
             format!(
                 "{}  {}（目前：{} 小時）",
                 row.flags,
@@ -451,9 +476,18 @@ fn top_row_label(row: &TopRow, draft: &Args, defaults: &ResolvedDefaults) -> Str
         ),
         TopRowAction::Field(field) => {
             let (desc, touched) = field.current(draft, defaults);
+            // YSGIT_NO_UPDATE_CHECK 會在 `update::resolve()` 把 mode 壓成
+            // Off——這裡只是提醒使用者，不是這一列本身的邏輯改變。
+            let note = if field == FieldKind::UpdateMode
+                && std::env::var_os("YSGIT_NO_UPDATE_CHECK").is_some()
+            {
+                "（目前被 YSGIT_NO_UPDATE_CHECK 壓成 off）"
+            } else {
+                ""
+            };
             (
                 touched,
-                format!("{}  {}（目前：< {desc} >）", row.flags, row.help),
+                format!("{}  {}（目前：< {desc} >）{note}", row.flags, row.help),
             )
         }
         TopRowAction::Launch => (false, row.flags.to_string()),
@@ -476,6 +510,16 @@ struct WizardState {
     defaults: ResolvedDefaults,
     rows: Vec<TopRow>,
     list: ListState,
+    /// `max_count`／`update_interval` 是數字輸入，不像循環選擇欄位那樣
+    /// `Some` 就代表「有碰過」——它們的清空手勢（`NumberFlow::Cleared`）
+    /// 結果也是 `None`，跟「從沒開過這個對話框」在型別上分不出來。這兩個
+    /// 旗標補上那個區別，Launch 寫回時才知道「要不要把 config 裡原本的
+    /// 值刪掉」跟「乾脆不動這個鍵」是兩件不同的事。
+    max_count_touched: bool,
+    update_interval_touched: bool,
+    /// 上一次 Launch 寫回設定檔失敗的原因，顯示在畫面上；成功或還沒按過
+    /// Launch 都是 `None`。
+    write_error: Option<String>,
 }
 
 impl WizardState {
@@ -492,6 +536,9 @@ impl WizardState {
             defaults,
             rows: build_top_rows(),
             list,
+            max_count_touched: false,
+            update_interval_touched: false,
+            write_error: None,
         }
     }
 
@@ -563,15 +610,26 @@ impl WizardState {
     }
 
     fn render(&mut self, f: &mut Frame, area: Rect, theme: &ColorTheme) {
-        let [list_area, hint_area] =
-            Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
+        let [list_area, error_area, hint_area] = Layout::vertical([
+            Constraint::Min(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
+        ])
+        .areas(area);
 
         let items: Vec<ListItem> = self
             .rows
             .iter()
-            .map(|row| ListItem::new(top_row_label(row, &self.draft, &self.defaults)))
+            .map(|row| ListItem::new(top_row_label(row, self)))
             .collect();
         f.render_stateful_widget(styled_list(items, theme), list_area, &mut self.list);
+
+        if let Some(err) = &self.write_error {
+            f.render_widget(
+                Paragraph::new(Line::raw(err.as_str()).fg(theme.status_error_fg)),
+                error_area,
+            );
+        }
 
         // 精靈的按鍵不走 keybind 設定（它在主 TUI 啟動前就跑完了），所以提示
         // 直接給字串；格式仍與主畫面統一。
@@ -750,6 +808,120 @@ fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
     Rect::new(x, y, width, height)
 }
 
+// ---------------------------------------------------------------------------
+// Launch 寫回設定檔。只動這次 session 被使用者改過的鍵，其餘內容（含使用者
+// 手寫的註解、排版、其他區塊）原封不動——這是用 `toml_edit` 做部分更新，
+// 而不是整份 `toml::to_string` 重寫的唯一理由。
+// ---------------------------------------------------------------------------
+
+fn write_touched_settings(state: &WizardState) -> Result<(), String> {
+    let Some(path) = config::effective_path() else {
+        // 無法決定要寫到哪（`exe_dir()` 解析不出來），安靜放棄，不擋 Launch
+        // ——跟 `ensure_config_file()` 同一個哲學：存檔是附加價值，不是
+        // 啟動的必要條件。
+        return Ok(());
+    };
+    let existing = std::fs::read_to_string(&path).unwrap_or_default();
+    let updated = apply_touched_settings(state, &existing)?;
+    std::fs::write(&path, updated).map_err(|e| format!("寫入設定檔失敗：{e}"))
+}
+
+/// 純函式：把 `state` 裡本次 session 被使用者改過的欄位套進既有的 TOML
+/// 內容，回傳新的檔案內容字串。不碰檔案系統，方便直接測。
+///
+/// `Err` 只有一種原因：`existing` 語法本身就壞了（`toml_edit` 也 parse
+/// 不動）。這裡直接不寫，絕不能 fallback 成「重建一份新文件」——那就是
+/// 把使用者的檔案洗掉。語法合法但值不合法（例如 `graph_style = "asci"`）
+/// 不會走到這條錯誤：`toml_edit` 只在乎語法，不驗語意，外科手術式改寫
+/// 對這種情況是安全的，順便把壞鍵修掉。
+fn apply_touched_settings(state: &WizardState, existing: &str) -> Result<String, String> {
+    let mut doc = existing
+        .parse::<toml_edit::DocumentMut>()
+        .map_err(|e| format!("設定檔語法錯誤，這次改動不會存檔：{e}"))?;
+
+    let core = table_entry(doc.as_table_mut(), "core")?;
+    let option = table_entry(core, "option")?;
+    set_enum(option, "order", state.draft.order);
+    set_enum(option, "graph_width", state.draft.graph_width);
+    set_enum(option, "compact", state.draft.compact);
+    set_enum(option, "graph_style", state.draft.graph_style);
+    set_enum(option, "initial_selection", state.draft.initial_selection);
+    if state.max_count_touched {
+        set_number(option, "max_count", state.draft.max_count.map(|n| n as i64));
+    }
+
+    // 重新從 `doc` 借一次：上面 `option` 借用的生命週期在這裡已經結束
+    // （最後一次使用是前面的 `set_number`），才能再借出 `core.update`。
+    let core = table_entry(doc.as_table_mut(), "core")?;
+    let update = table_entry(core, "update")?;
+    set_enum(update, "mode", state.draft.update_mode);
+    if state.update_interval_touched {
+        set_number(
+            update,
+            "interval_hours",
+            state.draft.update_interval.map(|n| n as i64),
+        );
+    }
+    set_enum(update, "auto_restart", state.draft.auto_restart);
+
+    Ok(doc.to_string())
+}
+
+/// `Table::entry(key).or_insert(...)` 而不是 `doc["a"]["b"]` 那種鏈式索引：
+/// 後者在 `a` 還不存在時，`Item` 的 `IndexMut` 實作會把它自動生成成
+/// **inline table**（`a = { b = ... }`）而不是一般的 `[a]` 表格區塊——這是
+/// `toml_edit` 為了支援 `doc["a"]["b"]["c"] = value(1)` 這種寫法的既有
+/// 行為（見 `Index for str` 的 `index_mut`：遇到 `Item::None` 直接包一層
+/// `InlineTable` 再繼續索引），不是這裡的臭蟲，但拿來寫巢狀 `[core.option]`
+/// 這種一定要是標準表格區塊的鍵就會生成使用者看不懂的格式。改用
+/// `Table::entry()` 直接操作 `Table`，不經過 `Item` 索引，就不會踩到這個
+/// 自動生成規則。
+///
+/// 鍵已存在但不是表格（例如使用者手寫了 `core = "oops"`）時回錯誤而不是
+/// panic——語法合法但結構跟預期不符，跟語法本身壞掉是同一類「不強行動
+/// 使用者檔案」的情況。
+fn table_entry<'a>(
+    table: &'a mut toml_edit::Table,
+    key: &'static str,
+) -> Result<&'a mut toml_edit::Table, String> {
+    table
+        .entry(key)
+        .or_insert(toml_edit::table())
+        .as_table_mut()
+        .ok_or_else(|| format!("設定檔的 `{key}` 不是表格，這次改動不會存檔"))
+}
+
+/// 循環選擇欄位沒有「清空」手勢，`None` 只代表「沒碰過」，所以這裡永遠是
+/// 「有值才寫，沒值就完全不動這個鍵」——不像 `set_number` 還要分辨「沒碰過」
+/// 跟「明確清空」。
+fn set_enum<T: Serialize>(table: &mut toml_edit::Table, key: &str, value: Option<T>) {
+    if let Some(v) = value {
+        table[key] = toml_edit::value(enum_to_toml_string(&v));
+    }
+}
+
+/// 呼叫端只在對應的 `*_touched` 旗標為真時才呼叫這個函式（`Some` = 設成
+/// 這個值，`None` = 明確清空，移除該鍵，讓它退回 `config::load()` 的預設
+/// 解析路徑）——「沒碰過」的情況呼叫端根本不會呼叫，不需要在這裡再分支。
+fn set_number(table: &mut toml_edit::Table, key: &str, value: Option<i64>) {
+    match value {
+        Some(n) => table[key] = toml_edit::value(n),
+        None => {
+            table.remove(key);
+        }
+    }
+}
+
+/// 這幾個 enum 都是 `#[serde(rename_all = "lowercase")]` 的單位變體，
+/// 序列化結果保證是純字串——借道 `serde_json`（既有依賴）轉換，不必為了
+/// 「把 enum 變成小寫字串」再拉一個 `serde_plain` 之類的專用 crate。
+fn enum_to_toml_string<T: Serialize>(v: &T) -> String {
+    match serde_json::to_value(v) {
+        Ok(serde_json::Value::String(s)) => s,
+        _ => unreachable!("wizard 用到的 enum 都是 lowercase 字串變體"),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -889,7 +1061,7 @@ mod tests {
 
         let row = &s.rows[idx];
         assert!(
-            top_row_label(row, &s.draft, &s.defaults).contains("拓撲序"),
+            top_row_label(row, &s).contains("拓撲序"),
             "切換完不用離開這一列就看得到新值"
         );
     }
@@ -898,7 +1070,7 @@ mod tests {
     fn cycle_field_rows_wrap_the_value_in_angle_brackets() {
         let s = test_state();
         let idx = row_of_field(&s.rows, FieldKind::Order);
-        let label = top_row_label(&s.rows[idx], &s.draft, &s.defaults);
+        let label = top_row_label(&s.rows[idx], &s);
         assert!(
             label.contains("< 時間序 >"),
             "循環選擇欄位要用 < > 標示可切換：{label}"
@@ -911,7 +1083,7 @@ mod tests {
         // 的值沒有被包一層 `< >`，不是整條 label 零角括號。
         let s = test_state();
         let idx = row_of(&s.rows, |a| matches!(a, TopRowAction::OpenMaxCount));
-        let label = top_row_label(&s.rows[idx], &s.draft, &s.defaults);
+        let label = top_row_label(&s.rows[idx], &s);
         let value_part = label.split("目前：").nth(1).expect("label 要含「目前：」");
         assert!(
             !value_part.starts_with('<'),
@@ -1080,11 +1252,11 @@ mod tests {
         let s = test_state();
         let order_idx = row_of_field(&s.rows, FieldKind::Order);
         assert!(
-            top_row_label(&s.rows[order_idx], &s.draft, &s.defaults).contains("時間序"),
+            top_row_label(&s.rows[order_idx], &s).contains("時間序"),
             "chrono 是真正的目前值"
         );
         let max_count_idx = row_of(&s.rows, |a| matches!(a, TopRowAction::OpenMaxCount));
-        assert!(top_row_label(&s.rows[max_count_idx], &s.draft, &s.defaults).contains("不限制"));
+        assert!(top_row_label(&s.rows[max_count_idx], &s).contains("不限制"));
     }
 
     /// `ResolvedDefaults` 讀到設定檔真實值時，顯示與循環起點都要反映它，
@@ -1097,7 +1269,7 @@ mod tests {
 
         let idx = row_of_field(&s.rows, FieldKind::Order);
         assert!(
-            top_row_label(&s.rows[idx], &s.draft, &s.defaults).contains("拓撲序"),
+            top_row_label(&s.rows[idx], &s).contains("拓撲序"),
             "設定檔寫的是 topo，精靈顯示的目前值要跟著是拓撲序，不是硬預設的時間序"
         );
 
@@ -1179,5 +1351,100 @@ mod tests {
             assert!(on_number_key(&mut input, increase_key, 0, usize::MAX).is_none());
             assert_eq!(input.value(), "6", "{increase_key:?} 應該是 +1");
         }
+    }
+
+    // ── Launch 寫回：apply_touched_settings 是純函式，不碰檔案系統 ──
+
+    #[test]
+    fn apply_touched_settings_only_writes_touched_keys() {
+        let mut s = test_state();
+        let idx = row_of_field(&s.rows, FieldKind::Order);
+        move_to_row(&mut s, idx);
+        s.on_key(key(KeyCode::Right)); // order = Some(Topo)，其餘欄位沒碰過
+
+        let updated = apply_touched_settings(&s, "").unwrap();
+        assert!(updated.contains("order = \"topo\""), "{updated}");
+        assert!(
+            !updated.contains("graph_width"),
+            "沒碰過的鍵不該出現：{updated}"
+        );
+        assert!(
+            !updated.contains("max_count"),
+            "沒碰過的鍵不該出現：{updated}"
+        );
+    }
+
+    #[test]
+    fn apply_touched_settings_preserves_existing_comments_and_unrelated_keys() {
+        let mut s = test_state();
+        let idx = row_of_field(&s.rows, FieldKind::Order);
+        move_to_row(&mut s, idx);
+        s.on_key(key(KeyCode::Right));
+
+        let existing = "# 我的註解\n[core.search]\nfuzzy = true\n";
+        let updated = apply_touched_settings(&s, existing).unwrap();
+        assert!(updated.contains("# 我的註解"), "{updated}");
+        assert!(updated.contains("fuzzy = true"), "{updated}");
+        assert!(updated.contains("order = \"topo\""), "{updated}");
+    }
+
+    #[test]
+    fn apply_touched_settings_rejects_syntax_broken_existing_file() {
+        let s = test_state();
+        let broken = "[core.option\norder = chrono"; // 缺右中括號
+        assert!(apply_touched_settings(&s, broken).is_err());
+    }
+
+    #[test]
+    fn apply_touched_settings_does_not_touch_file_when_syntax_is_broken() {
+        // 語法壞掉時絕對不能 fallback 成重建新文件——那就是把使用者的檔案
+        // 洗掉。這裡驗證錯誤發生前檔案內容完全沒被讀取進 doc 重寫。
+        let s = test_state();
+        let broken = "not valid = = toml [[[";
+        let err = apply_touched_settings(&s, broken).unwrap_err();
+        assert!(err.contains("語法錯誤"), "{err}");
+    }
+
+    #[test]
+    fn apply_touched_settings_removes_max_count_key_when_cleared() {
+        let mut s = test_state();
+        s.draft.max_count = Some(100);
+        s.max_count_touched = true;
+        let existing = "[core.option]\nmax_count = 100\n";
+        let updated = apply_touched_settings(&s, existing).unwrap();
+        assert!(updated.contains("max_count = 100"), "{updated}");
+
+        s.draft.max_count = None; // 明確清空（NumberFlow::Cleared）
+        let updated2 = apply_touched_settings(&s, &updated).unwrap();
+        assert!(
+            !updated2.contains("max_count"),
+            "清空要移除這個鍵，不是寫 0：{updated2}"
+        );
+    }
+
+    #[test]
+    fn apply_touched_settings_leaves_max_count_alone_when_never_opened() {
+        // max_count_touched 為 false（對話框從沒開過）時，即使 draft.max_count
+        // 剛好是 None，也不該去動設定檔裡原本的值——「沒碰過」跟「明確清空」
+        // 型別上分不出來，touched 旗標就是為了補上這個區別。
+        let s = test_state();
+        assert!(!s.max_count_touched);
+        let existing = "[core.option]\nmax_count = 100\n";
+        let updated = apply_touched_settings(&s, existing).unwrap();
+        assert!(
+            updated.contains("max_count = 100"),
+            "沒開過對話框，原本的值要原封不動：{updated}"
+        );
+    }
+
+    #[test]
+    fn apply_touched_settings_writes_update_settings_too() {
+        let mut s = test_state();
+        let idx = row_of_field(&s.rows, FieldKind::AutoRestart);
+        move_to_row(&mut s, idx);
+        s.on_key(key(KeyCode::Right)); // auto_restart = Some(On)
+
+        let updated = apply_touched_settings(&s, "").unwrap();
+        assert!(updated.contains("auto_restart = \"on\""), "{updated}");
     }
 }
