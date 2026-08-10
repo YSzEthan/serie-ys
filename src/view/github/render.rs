@@ -188,8 +188,13 @@ impl<'a> GitHubView<'a> {
 
         // 對每個可視列的 `#N` 疊加 OSC 8。cell 版面配置定義在
         // `LIST_LINK_COL_OFFSET`——要跟 indicator + padding 保持同步。
-        // tmux 的 DCS passthrough 會遺失游標定位，導致 host 終端機把 label
-        // 畫在任意欄位——在 tmux 裡跳過疊加。
+        //
+        // OSC 8 只用在「畫面上那段文字本身不可能是網址」的地方——`#123`
+        // 沒有終端能猜出它是連結，只能靠 OSC 8。這裡能安全疊加是因為底稿
+        // 已經畫了同寬度的純文字 `#N`：tmux 的 DCS passthrough 會遺失游標
+        // 定位，導致 host 終端機把 label 畫到任意欄位，但在 tmux 裡跳過疊加
+        // 時看到的仍是正確的純文字，不會露出殘骸（跟狀態列那則通知改印純
+        // URL 是同一個判準，見 `app.rs::open_url`）。
         if crate::external::is_tmux() {
             return;
         }
@@ -379,8 +384,9 @@ impl<'a> GitHubView<'a> {
 
         // 用 OSC 8 超連結疊加 `#N` cell。必須在 Paragraph render 之後執行，
         // 才能覆蓋掉先前畫上去的純文字 `#N` 字元。
-        // tmux 的 DCS passthrough 會遺失游標定位，導致 host 終端機把 label
-        // 畫在任意欄位——在 tmux 裡跳過疊加。
+        //
+        // 跳過 tmux 的判準同上面 `render_list` 那份註解：能安全 early-return
+        // 是因為底下已經有同寬度的純文字 `#N` 可以退回。
         if crate::external::is_tmux() {
             return;
         }

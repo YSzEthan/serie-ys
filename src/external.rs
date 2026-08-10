@@ -177,12 +177,12 @@ fn copy_to_clipboard_auto(value: String) -> Result<(), String> {
     })
 }
 
-/// `open_url` 的結果。`Hyperlinked` 表示我們無法（或不該）在本機開瀏覽器 ——
-/// 呼叫端應改為把這個 URL 呈現成 OSC 8 可點擊按鈕，交給使用者本機終端機的
-/// 瀏覽器處理。
+/// `open_url` 的結果。`NotSpawned`：沒有本機瀏覽器可開（SSH／mosh），
+/// 呼叫端負責把 URL 顯示出來、讓終端自己偵測——理由見它的呼叫端
+/// `App::open_url`。
 pub enum OpenUrlOutcome {
     Spawned,
-    Hyperlinked(String),
+    NotSpawned,
 }
 
 pub fn open_url(url: &str) -> Result<OpenUrlOutcome, String> {
@@ -191,7 +191,7 @@ pub fn open_url(url: &str) -> Result<OpenUrlOutcome, String> {
     }
 
     if is_ssh_session() {
-        return Ok(OpenUrlOutcome::Hyperlinked(url.to_string()));
+        return Ok(OpenUrlOutcome::NotSpawned);
     }
 
     #[cfg(target_os = "macos")]
@@ -210,15 +210,15 @@ pub fn open_url(url: &str) -> Result<OpenUrlOutcome, String> {
 }
 
 /// 把 URL 加標籤格式化成 OSC 8 超連結跳脫序列。支援 OSC 8 的終端機（ghostty、
-/// iTerm2、Kitty、WezTerm）會把標籤渲染成可點擊連結。tmux 會另外包一層
-/// DCS passthrough。
+/// iTerm2、Kitty、WezTerm）會把標籤渲染成可點擊連結。
+///
+/// **呼叫端負責在 tmux 下跳過**，不要指望這裡處理：tmux 的 DCS passthrough
+/// 會把 inner sequence 直接轉發給外層終端、不保留游標定位，疊在 cell 上的
+/// label 會被印到任意座標。這在「疊加在同寬度純文字上」的場景（GitHub
+/// 列表／預覽的 `#N`）能被 `is_tmux()` early-return 安全跳過——跳過後看到
+/// 的仍是正確的純文字；換成別的場景前，先確認一樣有純文字可以退回。
 pub fn format_osc8_hyperlink(url: &str, label: &str) -> String {
-    let raw = format!("\x1b]8;;{url}\x1b\\{label}\x1b]8;;\x1b\\");
-    if is_tmux() {
-        wrap_for_tmux(&raw)
-    } else {
-        raw
-    }
+    format!("\x1b]8;;{url}\x1b\\{label}\x1b]8;;\x1b\\")
 }
 
 pub struct ExternalCommandParameters<'a> {
@@ -351,11 +351,7 @@ mod tests {
     }
 
     #[test]
-    fn format_osc8_hyperlink_plain_no_tmux() {
-        // 跑 test 通常不在 tmux 內；若在 tmux 下請跳過此檢查。
-        if is_tmux() {
-            return;
-        }
+    fn format_osc8_hyperlink_wraps_url_and_label() {
         assert_eq!(
             format_osc8_hyperlink("https://x.com", "[#1]"),
             "\x1b]8;;https://x.com\x1b\\[#1]\x1b]8;;\x1b\\"

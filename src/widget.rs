@@ -9,6 +9,7 @@ use ratatui::{
     style::{Color, Style},
     text::{Line, Span},
 };
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::{color::ColorTheme, event::UserEvent, keybind::KeyBind};
 
@@ -107,6 +108,23 @@ pub fn truncate_line(mut line: Line<'_>, max_width: usize) -> Line<'_> {
             used <= budget
         })
         .count();
+    if keep == 0 {
+        // 連第一個 span 都放不下。提示列到這裡整條清空是合理的（殘字看不懂），
+        // 但通知是單一 span（`Line::raw(msg)`），整條清空等於畫面上只剩一個
+        // `…`——git／gh 的錯誤訊息動輒上百字元，使用者會什麼都讀不到。退回
+        // 在字元邊界切，至少讀得到開頭。
+        let head = split_at_width(line.spans[0].content.as_ref(), budget)
+            .0
+            .to_string();
+        let style = line.spans[0].style;
+        line.spans.clear();
+        if !head.is_empty() {
+            line.spans.push(Span::styled(head, style));
+        }
+        line.spans.push(Span::raw(ELLIPSIS));
+        return line;
+    }
+
     line.spans.truncate(keep);
     line.spans.push(Span::raw(ELLIPSIS));
     line
@@ -114,6 +132,26 @@ pub fn truncate_line(mut line: Line<'_>, max_width: usize) -> Line<'_> {
 
 fn span_display_width(span: &Span<'_>) -> usize {
     console::measure_text_width(span.content.as_ref())
+}
+
+/// 在保持寬度不超過 `max` 的前提下，找到最後一個字元邊界切開 `s`。
+/// `truncate_line` 與 `markdown::wrap_cell` 共用同一份。
+pub(crate) fn split_at_width(s: &str, max: usize) -> (&str, &str) {
+    let mut w = 0usize;
+    for (i, c) in s.char_indices() {
+        let cw = c.width().unwrap_or(0);
+        if w + cw > max {
+            return s.split_at(i);
+        }
+        w += cw;
+    }
+    (s, "")
+}
+
+/// 跟 `span_display_width` 同樣的寬度計算，但省掉 ANSI 掃描——呼叫端
+/// （表格換行、單 span 截斷）處理的都是純文字。
+pub(crate) fn str_width(s: &str) -> usize {
+    s.width()
 }
 
 #[cfg(test)]
@@ -220,5 +258,22 @@ mod tests {
         let out = truncate_line(line.clone(), 0);
         assert_eq!(out.style, line.style);
         assert!(out.spans.is_empty());
+    }
+
+    /// 通知都是單一 span（`Line::raw(msg)`），單一 span 放不進 `budget`
+    /// 時原本會整條清空，只剩一個 `…`。窄終端上按 `C` 開連結會看到這個
+    /// 情況——退回在字元邊界切，至少讀得到開頭。
+    #[test]
+    fn truncate_single_span_falls_back_to_char_boundary() {
+        let line = Line::raw("SSH: https://github.com/scanoo/scanoo-web/pull/886");
+        let out = truncate_line(line, 12);
+        let text: String = out.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_ne!(text, ELLIPSIS, "應保留開頭而非整條清空：{text}");
+        assert!(text.starts_with("SSH:"), "{text}");
+        assert!(text.ends_with(ELLIPSIS), "{text}");
+        assert!(
+            console::measure_text_width(&text) <= 12,
+            "截斷後仍超寬：{text}"
+        );
     }
 }

@@ -590,6 +590,10 @@ mod tests {
             HelpBlock::UserCommand,
             crate::view::user_command::status_hints(),
         );
+        check(
+            HelpBlock::GitHub,
+            crate::view::github::GitHubView::every_status_hint(),
+        );
 
         assert!(problems.is_empty(), "\n{}", problems.join("\n"));
     }

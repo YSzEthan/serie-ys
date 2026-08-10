@@ -156,14 +156,6 @@ enum StatusLine {
     NotificationSuccess(String),
     NotificationWarn(String),
     NotificationError(String),
-    /// 尾端是 OSC 8 超連結的通知。渲染時必須繞過 `Line::raw`——
-    /// 它會把跳脫序列逐 byte 拆到不同 cell——改成用
-    /// `set_symbol` + 後續 cell 的 `set_skip` 把整包 payload 塞進單一 cell。
-    NotificationHyperlink {
-        prefix: &'static str,
-        label: String,
-        url: String,
-    },
 }
 
 #[derive(Debug)]
@@ -292,15 +284,6 @@ impl StatusLineState {
         self.line = StatusLine::NotificationError(msg);
     }
 
-    pub(super) fn set_notification_hyperlink(
-        &mut self,
-        prefix: &'static str,
-        label: String,
-        url: String,
-    ) {
-        self.line = StatusLine::NotificationHyperlink { prefix, label, url };
-    }
-
     /// 回傳 true 表示這是 9 個攔截變體之一（7 個 handler：`ToggleStatePrompt`、
     /// `TogglePrDraftPrompt`、`UpdatePrompt` 三個共用 `handle_yes_no_prompt_key`，
     /// 其餘各自一個 handler）、鍵已被吃掉。
@@ -345,8 +328,7 @@ impl StatusLineState {
             | StatusLine::NotificationInfo(_)
             | StatusLine::NotificationSuccess(_)
             | StatusLine::NotificationWarn(_)
-            | StatusLine::NotificationError(_)
-            | StatusLine::NotificationHyperlink { .. } => false,
+            | StatusLine::NotificationError(_) => false,
         }
     }
 
@@ -368,8 +350,7 @@ impl StatusLineState {
             | StatusLine::UpdatePrompt { .. } => false,
             StatusLine::NotificationInfo(_)
             | StatusLine::NotificationSuccess(_)
-            | StatusLine::NotificationWarn(_)
-            | StatusLine::NotificationHyperlink { .. } => {
+            | StatusLine::NotificationWarn(_) => {
                 self.line = StatusLine::None;
                 false
             }
@@ -403,8 +384,7 @@ impl StatusLineState {
             | StatusLine::NotificationInfo(_)
             | StatusLine::NotificationSuccess(_)
             | StatusLine::NotificationWarn(_)
-            | StatusLine::NotificationError(_)
-            | StatusLine::NotificationHyperlink { .. } => false,
+            | StatusLine::NotificationError(_) => false,
         }
     }
 
@@ -647,10 +627,6 @@ impl StatusLineState {
 
     pub(super) fn render(&self, f: &mut Frame, area: Rect, view: &View, numeric_prefix: &str) {
         let text: Line = match &self.line {
-            StatusLine::NotificationHyperlink { prefix, label, url } => {
-                self.render_hyperlink_notification(f, area, prefix, label, url);
-                return;
-            }
             StatusLine::None => {
                 if numeric_prefix.is_empty() {
                     build_hotkey_hints(view, &self.ctx)
@@ -761,38 +737,6 @@ impl StatusLineState {
                     f.buffer_mut().set_string(x, y, cursor, style);
                 }
             }
-        }
-    }
-
-    fn render_hyperlink_notification(
-        &self,
-        f: &mut Frame,
-        area: Rect,
-        prefix: &str,
-        label: &str,
-        url: &str,
-    ) {
-        let block = Block::default()
-            .borders(Borders::TOP)
-            .style(Style::default().fg(self.ctx.color_theme.divider_fg))
-            .padding(Padding::horizontal(1));
-        let inner = block.inner(area);
-        f.render_widget(block, area);
-
-        let buf = f.buffer_mut();
-        let style = Style::default().fg(self.ctx.color_theme.status_info_fg);
-        buf.set_string(inner.left(), inner.top(), prefix, style);
-        let prefix_w = console::measure_text_width(prefix) as u16;
-        let x0 = inner.left().saturating_add(prefix_w);
-        if x0 >= inner.right() {
-            return;
-        }
-        let payload = crate::external::format_osc8_hyperlink(url, label);
-        let label_width = console::measure_text_width(label) as u16;
-        buf[(x0, inner.top())].set_symbol(&payload).set_style(style);
-        let remaining = inner.right().saturating_sub(x0);
-        for i in 1..label_width.min(remaining) {
-            buf[(x0 + i, inner.top())].set_skip(true);
         }
     }
 
@@ -1186,7 +1130,7 @@ mod tests {
         assert!(rx.try_recv().is_err());
     }
 
-    /// `StatusLine` 全部 16 個變體各自對 `handle_intercepting_key`／
+    /// `StatusLine` 全部 15 個變體各自對 `handle_intercepting_key`／
     /// `is_input_mode_variant` 的回傳值，把「兩者故意不同步」這件事從一句
     /// 註解變成有東西擋著的不變式（做法比照這個 session 的 `2fa4064` 先
     /// 例）。4 個 prompt 變體在 handle_intercepting_key 永遠攔截，但
@@ -1303,26 +1247,16 @@ mod tests {
                 false,
                 false,
             ),
-            (
-                "NotificationHyperlink",
-                StatusLine::NotificationHyperlink {
-                    prefix: "",
-                    label: String::new(),
-                    url: String::new(),
-                },
-                false,
-                false,
-            ),
         ];
 
         assert_eq!(
             cases.len(),
-            16,
-            "StatusLine 有 16 個變體，表格漏列或多列了，先檢查表格本身"
+            15,
+            "StatusLine 有 15 個變體，表格漏列或多列了，先檢查表格本身"
         );
 
         for (label, line, want_intercept, want_input_mode) in cases {
-            // handle_intercepting_key 在 8 個攔截變體上會呼叫對應 handler、
+            // handle_intercepting_key 在 9 個攔截變體上會呼叫對應 handler、
             // 可能改變 self.line 或送事件——這裡只關心它的回傳值，用一個
             // 全新的 state 避免副作用互相汙染。
             let mut for_intercept = make(line.clone());

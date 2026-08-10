@@ -3,14 +3,16 @@
 //! 以行為單位處理，不依賴外部 crate。支援：標題（1-3 級）、
 //! 無序／有序列表、引言區塊、水平線、fenced code、依可用寬度排版的
 //! GFM 表格、`**bold**`、`` `code` ``、`[text](url)` 以及
-//! HTML 實體。連結參考定義、HTML 註解與原始 HTML 一律捨棄——
-//! bot 留言（Vercel、CI）充斥這些東西，而它們在終端機裡什麼都顯示不出來。
-//! `*italic*` 則沒有處理。
+//! HTML 實體。連結參考定義、HTML 註解與 HTML 標籤一律捨棄（標籤是行內
+//! 剝除，剝完什麼都不剩的行整行丟掉）——bot 留言（Vercel、CI）充斥這些
+//! 東西，而它們在終端機裡什麼都顯示不出來。`*italic*` 則沒有處理。
 
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
 };
+
+use crate::widget::{split_at_width, str_width};
 
 const RULE_WIDTH: usize = 40;
 
@@ -75,12 +77,6 @@ pub fn render(body: &str, width: usize) -> Vec<Line<'static>> {
 
         // 渲染後的 markdown 看不到；Vercel 會產生一大段 base64。
         if is_link_reference_definition(line) {
-            i += 1;
-            continue;
-        }
-
-        // 區塊層級的原始 HTML（`<a href=…>`、`<picture>`、`</div>`）。
-        if is_html_block(line) {
             i += 1;
             continue;
         }
@@ -173,8 +169,14 @@ pub fn render(body: &str, width: usize) -> Vec<Line<'static>> {
             continue;
         }
 
-        // 一般文字行，做行內掃描
+        // 一般文字行，做行內掃描。掃完一無所剩、原始行卻不是空白，代表整行
+        // 都是被剝掉的標記（bot 留言常見的整行 `<a><picture>…`）或一張圖片——
+        // 連空行都不要留，否則 Vercel 那種留言會被撐出一堆空隙。
         let spans = scan_inline(line);
+        if spans.is_empty() && !line.trim().is_empty() {
+            i += 1;
+            continue;
+        }
         out.push(if spans.is_empty() {
             Line::raw(String::new())
         } else {
@@ -217,18 +219,31 @@ fn is_link_reference_definition(s: &str) -> bool {
     !dest.is_empty() && dest.is_ascii() && !dest.contains(char::is_whitespace)
 }
 
-/// 判斷一行是原始 HTML 而非一般文字。
+/// 從 `open` 所在的 `<` 開始解析一個 HTML 標籤，回傳緊接在 `>` 之後的
+/// byte 索引。不是標籤則回傳 None。
 ///
-/// 光看 `<` 不夠：`<= 3 表示 ... > 0` 只是普通文字。
-/// 要求 `<` 後面緊接 ASCII 字母或 `/`，是能保留一般文字的低成本判斷法。
-fn is_html_block(s: &str) -> bool {
-    let t = s.trim();
-    let mut chars = t.chars();
-    if chars.next() != Some('<') {
-        return false;
+/// 光看 `<` 不夠，要求後面緊接 ASCII 字母或 `/`：`<= 3 表示 ... > 0` 只是
+/// 普通文字。另外要排掉 CommonMark autolink（`<https://x>`、`<a@b.com>`）——
+/// GitHub 會把它渲染成連結，刪掉等於吞掉一整條網址。判準是「裡面沒有空白、
+/// 而且有 `:` 或 `@`」：真正的標籤只要帶屬性就一定有空白（`<a href="…">`），
+/// 不帶屬性的（`<sup>`、`</a>`）則兩個字元都不會出現。
+///
+/// 屬性值裡含 `>`、標籤跨行都不處理——GitHub 與 bot 的實際輸出都不長那樣。
+///
+/// 回傳緊接在 `>` 之後的 byte 索引，以及標籤名與屬性之間的原文（`inner`）——
+/// 呼叫端要判斷是不是 `<br>` 時直接重用這段，不必再從頭剝一次角括號。
+fn parse_html_tag(text: &str, open: usize) -> Option<(usize, &str)> {
+    let rest = text.get(open + 1..)?;
+    let first = rest.chars().next()?;
+    if !(first.is_ascii_alphabetic() || first == '/') {
+        return None;
     }
-    let is_tag_start = matches!(chars.next(), Some(c) if c.is_ascii_alphabetic() || c == '/');
-    is_tag_start && t.contains('>')
+    let close = rest.find('>')?;
+    let inner = &rest[..close];
+    if !inner.contains(char::is_whitespace) && (inner.contains(':') || inner.contains('@')) {
+        return None;
+    }
+    Some((open + 1 + close + 1, inner))
 }
 
 fn is_table_row(s: &str) -> bool {
@@ -453,23 +468,6 @@ fn wrap_cell(spans: &[Span<'static>], width: usize) -> Vec<Vec<Span<'static>>> {
     rows
 }
 
-fn str_width(s: &str) -> usize {
-    Span::raw(s).width()
-}
-
-/// 在保持寬度不超過 `max` 的前提下，找到最後一個字元邊界切開 `s`。
-fn split_at_width(s: &str, max: usize) -> (&str, &str) {
-    let mut w = 0usize;
-    for (i, c) in s.char_indices() {
-        let cw = str_width(c.encode_utf8(&mut [0u8; 4]));
-        if w + cw > max {
-            return s.split_at(i);
-        }
-        w += cw;
-    }
-    (s, "")
-}
-
 /// `1. rest` 或 `23. rest` → (含句點的前綴, rest)。不是有序列表則回傳 None。
 fn split_ordered_list(s: &str) -> Option<(&str, &str)> {
     let dot_pos = s.find('.')?;
@@ -482,7 +480,7 @@ fn split_ordered_list(s: &str) -> Option<(&str, &str)> {
 }
 
 /// 把一行文字拆成帶樣式的 span，處理 `**bold**`、`` `code` ``、
-/// `[text](url)`、`![alt](url)` 以及 HTML 實體。
+/// `[text](url)`、`![alt](url)`、HTML 標籤與 HTML 實體。
 /// 沒對上的文字變成一般 span。沒對上的標記符號原樣保留。
 fn scan_inline(text: &str) -> Vec<Span<'static>> {
     let mut spans: Vec<Span<'static>> = Vec::new();
@@ -511,6 +509,23 @@ fn scan_inline(text: &str) -> Vec<Span<'static>> {
                         .fg(Color::Blue)
                         .add_modifier(Modifier::UNDERLINED),
                 ));
+                i = end;
+                continue;
+            }
+        }
+        // 行內 HTML 標籤。Vercel 新版留言把 `<a><sup><img/></sup></a>` 塞進
+        // 表格儲存格，那條路徑只會走到這裡，行首判斷攔不到。
+        if bytes[i] == b'<' {
+            if let Some((end, inner)) = parse_html_tag(text, i) {
+                // `<br>`／`<br/>`／`<br />`：GitHub 表格儲存格靠它分行，剝掉
+                // 標籤時得留一個空白，否則 `foo<br>bar` 會黏成 `foobar`。
+                if inner
+                    .trim_end_matches('/')
+                    .trim()
+                    .eq_ignore_ascii_case("br")
+                {
+                    buf.push(' ');
+                }
                 i = end;
                 continue;
             }
@@ -783,6 +798,44 @@ mod tests {
     }
 
     #[test]
+    fn strips_inline_html_tags() {
+        let lines = render("前<b>粗</b>後<img src=\"x.svg\" alt=\"\" />尾");
+        assert_eq!(text_of(&lines[0]), "前粗後尾");
+    }
+
+    #[test]
+    fn br_becomes_a_space() {
+        // GitHub 的表格儲存格靠 `<br>` 分行，直接刪掉會把兩段文字黏在一起。
+        for body in ["a<br>b", "a<br/>b", "a<BR />b"] {
+            assert_eq!(text_of(&render(body)[0]), "a b", "{body}");
+        }
+    }
+
+    #[test]
+    fn keeps_autolinks() {
+        // CommonMark autolink，GitHub 會渲染成連結——不是可以吃掉的標籤。
+        let lines = render("see <https://example.com> and <a@b.com>");
+        assert_eq!(
+            text_of(&lines[0]),
+            "see <https://example.com> and <a@b.com>"
+        );
+    }
+
+    #[test]
+    fn generic_args_are_eaten_like_github_does() {
+        // `<String>` 在 GitHub 上也會被當標籤吃掉（沒加反引號的代價）。
+        // 刻意跟網頁行為一致，而不是自己發明一套。
+        assert_eq!(text_of(&render("Vec<String> 很長")[0]), "Vec 很長");
+    }
+
+    #[test]
+    fn keeps_inline_less_than_in_prose() {
+        // `<` 後面接非字母字元是算式，行中出現時跟行首一樣要留著。
+        let lines = render("條件是 a <= b 而且 c > d");
+        assert_eq!(text_of(&lines[0]), "條件是 a <= b 而且 c > d");
+    }
+
+    #[test]
     fn decodes_html_entities() {
         let lines = render("a &amp; b &lt;c&gt; &quot;d&quot; &#39;e&#39;");
         let text: String = lines[0]
@@ -949,5 +1002,43 @@ mod tests {
             "table row is {} wide: {table_row:?}",
             table_row.width()
         );
+    }
+
+    /// Vercel 後來改了留言格式，把專案圖示的 `<a><sup><img/></sup></a>` 直接
+    /// 塞進表格儲存格。這條路徑只走 `scan_inline`，不經過任何行首判斷——
+    /// 內容取自 scanoo-tw/scanoo-web#886 的實際留言。
+    #[test]
+    fn vercel_comment_with_inline_html_in_cells() {
+        let body = concat!(
+            "| Project | Deployment | Actions | Updated (UTC) |\n",
+            "| :--- | :----- | :------ | :------ |\n",
+            "| <a href=\"https://vercel.com/scanoo-projects/scanoo-web\"><sup>",
+            "<img src=\"https://vercel.com/api/www/avatar?projectId=prj_NEmNjGM9",
+            "&teamId=team_bm5Pz0v7wQhfmBkYpNmGGDpM&s=32\" width=\"16\" height=\"16\" ",
+            "align=\"middle\" alt=\"\" /></sup></a> ",
+            "[scanoo-web](https://vercel.com/scanoo-projects/scanoo-web) ",
+            "| ![Ready](https://vercel.com/static/status/ready.svg) ",
+            "[Ready](https://vercel.com/scanoo-projects/scanoo-web/ELwvvDg97wLQ) ",
+            "| [Preview](https://scanoo-web-git-issue-878-scanoo-projects.vercel.app) ",
+            "| Aug 9, 2026 12:24pm |\n",
+        );
+        let width = 46;
+        let lines = super::render(body, width);
+        let text: String = lines.iter().map(|l| text_of(l)).collect();
+
+        for leaked in ["<a", "href=", "<img", "<sup", "https://", "width="] {
+            assert!(!text.contains(leaked), "{leaked} leaked: {text:?}");
+        }
+        for kept in ["scanoo-web", "Ready", "Preview"] {
+            assert!(text.contains(kept), "{kept} missing: {text:?}");
+        }
+
+        // 拿掉圖示後，第一欄不能多出一個開頭空白把整欄往右推。
+        let row = lines
+            .iter()
+            .find(|l| l.spans.iter().any(|s| s.content.contains("scanoo-web")))
+            .expect("table row present");
+        assert_eq!(row.spans[0].content.as_ref(), "scanoo-web", "{row:?}");
+        assert!(row.width() <= width, "row is {} wide: {row:?}", row.width());
     }
 }
