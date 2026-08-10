@@ -1,5 +1,7 @@
 use std::{
     env,
+    fs::OpenOptions,
+    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -56,6 +58,42 @@ pub fn load() -> Result<(
 
 fn config_file_path_from_env() -> Option<PathBuf> {
     env::var(CONFIG_FILE_ENV_NAME).ok().map(PathBuf::from)
+}
+
+/// 首次啟動生成一份含所有旋鈕與中文說明的預設設定檔——沒有這一步，「調整
+/// 設定」就只能影響那一次啟動：根本沒有檔案可以寫回。要在 `Args::try_parse()`
+/// 之前呼叫（`run()` 裡的順序），精靈才讀得到剛生成的檔。
+///
+/// 三個邊界，都刻意不出聲失敗（成功也不出聲——這是背景動作，不是使用者
+/// 主動要求的操作，吵反而不對）：
+/// - `$SERIE_CONFIG_FILE` 那條不自動建：使用者明確指定了路徑，維持
+///   `load()` 既有的「檔案不存在就報錯」行為，不能在這裡搶先生成一份
+///   放在別的位置。
+/// - 用 `create_new` 而非「`exists()` 再 `write`」：後者是 TOCTOU，兩次
+///   系統呼叫間檔案可能被別的 ysgit process 建立。`create_new` 是單一
+///   atomic 的 open，`AlreadyExists` 直接當作正常結束。
+/// - 目錄唯讀（例如裝在 `/usr/local/bin`）時寫入會失敗：印一句提示，
+///   不能擋住啟動——這只是「幫使用者建一份範本」，不是必要條件，
+///   `load()` 找不到檔案本來就會退回內建預設值繼續跑。
+pub fn ensure_config_file() {
+    if config_file_path_from_env().is_some() {
+        return;
+    }
+    let Some(path) = default_config_file_path() else {
+        return;
+    };
+    match OpenOptions::new().write(true).create_new(true).open(&path) {
+        Ok(mut file) => {
+            const DEFAULT_CONFIG: &str = include_str!("../assets/default-config.toml");
+            if let Err(e) = file.write_all(DEFAULT_CONFIG.as_bytes()) {
+                eprintln!("寫入預設設定檔失敗（{}）：{e}", path.display());
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => {
+            eprintln!("無法建立預設設定檔（{}）：{e}", path.display());
+        }
+    }
 }
 
 /// 設定檔跟著執行檔走的位置：`<exe 所在目錄>/.ysgit.toml`。自我更新只
@@ -788,6 +826,54 @@ mod tests {
         // 與「設定成預設值」在型別上不同（命令列參數要能覆蓋，所以預設留到更
         // 後面才解析）。範例把它們明寫出來正是它的用途，比對前歸零，其餘欄位
         // 照比。
+        actual.core.option = CoreOptionConfig::default();
+        actual.core.update = CoreUpdateConfig::default();
+        actual.keybind = None;
+        assert_eq!(actual, Config::default());
+    }
+
+    /// `assets/default-config.toml` 是首次啟動寫給使用者的那份檔案，跟
+    /// 上面那個文件範例是同一件事的兩份拷貝（一份給人讀文件、一份給程式
+    /// 內嵌），值必須同步——這條測試就是防漂移的機制：兩者各自 parse
+    /// 成 `Config` 後逐欄位比對，不比原始文字（註解、排版本來就不同）。
+    #[test]
+    fn default_config_asset_matches_documented_example() {
+        let doc = include_str!("../docs/src/configurations/config-file-format.md");
+        let example = doc
+            .split("```toml\n")
+            .nth(1)
+            .and_then(|s| s.split("```").next())
+            .expect("設定檔格式文件裡找不到 ```toml 範例區塊");
+        let doc_config: Config = toml::from_str::<OptionalConfig>(example).unwrap().into();
+
+        let asset = include_str!("../assets/default-config.toml");
+        let asset_config: Config = toml::from_str::<OptionalConfig>(asset).unwrap().into();
+
+        assert_eq!(asset_config, doc_config);
+    }
+
+    /// `assets/default-config.toml` 本身也要通過 schema 檢查——它是首次
+    /// 啟動就會寫到使用者磁碟上的檔案，死鍵在這裡比在文件範例裡更嚴重
+    /// （文件錯了只是誤導讀者，這個錯了是實際寫進使用者設定檔）。
+    #[test]
+    fn default_config_asset_keys_are_declared_in_schema() {
+        let asset = include_str!("../assets/default-config.toml");
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../config.schema.json")).unwrap();
+        let table: toml::Table = toml::from_str(asset)
+            .unwrap_or_else(|e| panic!("assets/default-config.toml 不是合法 TOML: {e}"));
+        assert_keys_declared_in_schema(&table, &schema, "");
+    }
+
+    /// `assets/default-config.toml` 裡明寫出來的值（`core.option`／
+    /// `core.update` 除外，理由同 `documented_example_config_is_valid_...`）
+    /// 必須真的是 `Config::default()`——這是它作為「首次啟動範本」的存在
+    /// 意義：使用者看到的第一份設定檔，內容要跟沒有這份檔案時的行為一致。
+    #[test]
+    fn default_config_asset_shows_real_defaults() {
+        let asset = include_str!("../assets/default-config.toml");
+        let parsed: OptionalConfig = toml::from_str(asset).unwrap();
+        let mut actual = Config::from(parsed);
         actual.core.option = CoreOptionConfig::default();
         actual.core.update = CoreUpdateConfig::default();
         actual.keybind = None;

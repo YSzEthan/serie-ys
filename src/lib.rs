@@ -380,6 +380,12 @@ pub fn run() -> Result<()> {
         prev_hook(info);
     }));
 
+    // 首次啟動生成預設設定檔。要排在 `Args::try_parse()` 之前——`-h` 會進
+    // 互動式精靈，精靈要讀到這份剛生成的檔才能顯示真正的目前值。寫失敗
+    // 不影響這裡的控制流：`ensure_config_file()` 自己吞掉錯誤只印一句，
+    // 不回傳 `Result`，因為它不是任何後續步驟的必要條件。
+    config::ensure_config_file();
+
     // `-h`／`--help` 在真人終端機下改成互動選單，非 TTY（管線、CI）維持原本
     // `Args::parse()` 印靜態文字＋exit(0) 的行為。刻意不碰 Args 的 help/version
     // 欄位（維持 clap 原生的 ArgAction::Help/Version）：這是唯一能保證非 TTY 輸出、

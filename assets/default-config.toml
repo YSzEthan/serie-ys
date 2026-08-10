@@ -1,0 +1,121 @@
+# ysgit 預設設定檔——首次啟動自動生成，之後由 ysgit 自己讀寫（互動式精靈
+# 調整的設定會寫回這個檔案）。改壞了也不會擋住啟動：解析失敗時 ysgit 會
+# 印一句錯誤訊息並暫時用內建預設值跑，不會卡在啟動畫面出不來。
+#
+# 完整欄位說明：https://github.com/YSzEthan/serie-ys/blob/main/docs/src/configurations/config-file-format.md
+# 命令列參數指定的值一律優先於這裡的設定。
+
+[core.option]
+# 畫面呈現相關的旋鈕，等同於 -o/-g/-c/-s/-i/-n 這幾個命令列參數的預設值。
+order = "chrono"              # commit 排序：chrono（時間序）｜topo（拓撲序）
+graph_width = "auto"          # 圖形欄寬：auto｜double｜single
+compact = "auto"              # 緊湊模式：auto｜on｜off
+graph_style = "rounded"       # 圖形邊線風格：rounded｜angular｜ascii
+initial_selection = "latest"  # 啟動時初始選取：latest｜head
+# max_count 預設不限制，取消註解並填數字可限制渲染的最大 commit 數量。
+# max_count = 1000
+
+[core.update]
+# 自動更新設定，對應 --update-mode/--update-interval/--auto-restart。
+mode = "check"          # off（完全不自動檢查）｜check（查到問 y/n）｜auto（查到直接裝）
+interval_hours = 6      # 檢查間隔（小時），範圍 1-48；啟動查一次，之後持續運作期間每隔這個時間再查
+auto_restart = "off"    # off｜on——on 的話更新完不再詢問，TUI 直接重啟、CLI（-U）直接開啟
+
+[core.search]
+ignore_case = false  # 是否預設忽略大小寫
+fuzzy = false         # 是否預設啟用模糊比對
+
+[core.user_command]
+tab_width = 4  # 使用者自訂指令輸出裡的 tab 展開寬度
+# 自訂指令本身用 commands_{n} = { ... } 的格式新增，
+# 詳見「使用者自訂指令」文件。
+
+[core.external]
+clipboard = "Auto"  # Auto｜Osc52｜{ Custom = { commands = [...] } }
+
+[ui.common]
+cursor_type = "Native"  # 終端機游標樣式
+
+[ui.list]
+columns = ["graph", "marker", "subject", "date", "name", "hash"]
+subject_min_width = 20
+date_format = "%Y-%m-%d"
+date_width = 10
+date_local = true
+name_width = 20
+
+[ui.detail]
+height = 20
+date_format = "%Y-%m-%d %H:%M:%S %z"
+date_local = true
+
+[ui.diff]
+height = 20
+
+[ui.user_command]
+height = 20
+
+[ui.refs]
+width = 26
+
+[graph.color]
+# 各分支依序輪流套用的顏色。
+branches = [
+  "#E06C76",
+  "#98C379",
+  "#E5C07B",
+  "#61AFEF",
+  "#C678DD",
+  "#56B6C2",
+]
+
+# 介面配色。顏色可以是 ANSI 色名（"red"、"dark-gray"⋯）、"reset"（沿用終端機
+# 預設色），或 "#rrggbb"／0-255 的數字（256 色代碼）。
+[color]
+fg = "reset"
+bg = "reset"
+list_selected_fg = "white"
+list_selected_bg = "dark-gray"
+list_ref_paren_fg = "yellow"
+list_ref_branch_fg = "green"
+list_ref_remote_branch_fg = "red"
+list_ref_tag_fg = "yellow"
+list_ref_stash_fg = "magenta"
+list_head_fg = "cyan"
+list_subject_fg = "reset"
+list_name_fg = "cyan"
+list_hash_fg = "yellow"
+list_date_fg = "magenta"
+list_match_fg = "black"
+list_match_bg = "yellow"
+detail_label_fg = "reset"
+detail_name_fg = "reset"
+detail_date_fg = "reset"
+detail_email_fg = "blue"
+detail_hash_fg = "reset"
+detail_ref_branch_fg = "green"
+detail_ref_remote_branch_fg = "red"
+detail_ref_tag_fg = "yellow"
+detail_file_change_add_fg = "green"
+detail_file_change_modify_fg = "yellow"
+detail_file_change_delete_fg = "red"
+detail_file_change_move_fg = "magenta"
+diff_title_path_fg = "208"
+diff_title_hunk_fg = "cyan"
+ref_selected_fg = "white"
+ref_selected_bg = "dark-gray"
+help_block_title_fg = "green"
+help_key_fg = "yellow"
+virtual_cursor_fg = "reset"
+status_input_fg = "reset"
+status_input_transient_fg = "dark-gray"
+status_info_fg = "cyan"
+status_success_fg = "green"
+status_warn_fg = "yellow"
+status_error_fg = "red"
+divider_fg = "dark-gray"
+
+[keybind]
+# 快捷鍵覆蓋，詳見「自訂快捷鍵」文件；預設鍵位見
+# https://github.com/YSzEthan/serie-ys/blob/main/assets/default-keybind.toml
+# quit = ["q", "ctrl-c"]
