@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.5.0](https://github.com/YSzEthan/serie-ys/compare/v2.4.1...v2.5.0) (2026-08-10)
+
+
+### Features
+
+* 新增自我更新功能，偵測 GitHub Release 新版並就地替換執行檔 (#50) ([fd4ad7a](https://github.com/YSzEthan/serie-ys/commit/fd4ad7ad1f4554b6cd42403648c37a5206622da5))
+
 ## [2.4.1](https://github.com/YSzEthan/serie-ys/compare/v2.4.0...v2.4.1) (2026-08-09)
 
 
