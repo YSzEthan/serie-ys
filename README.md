@@ -4,7 +4,7 @@
 
 [![Built With Ratatui](https://img.shields.io/badge/Built_With-Ratatui-000?logo=ratatui&logoColor=fff&labelColor=000&color=fff)](https://ratatui.rs)
 
-在終端機中呈現豐富的 git commit 圖，如同魔法般 📚
+Git Graph in Terminal
 
 <img src="./docs/src/img/list.svg" width="100%">
 
@@ -88,7 +88,7 @@ $ ysgit <你的 git 儲存庫>
 ### 選項
 
 ```
-ysgit - 在你的終端機中呈現豐富的 git commit 圖，宛如魔法 📚
+ysgit - Git Graph in Terminal
 
 Usage: ysgit [OPTIONS] [PATH]
 

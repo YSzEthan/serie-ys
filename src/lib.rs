@@ -19,12 +19,12 @@ mod wizard;
 use std::{collections::VecDeque, io::IsTerminal, path::Path, rc::Rc};
 
 use app::{App, Ret};
-use clap::{Parser, ValueEnum};
+use clap::{CommandFactory, Parser, ValueEnum};
 use graph::Graph;
 use rustc_hash::FxHashSet;
 use serde::Deserialize;
 
-/// ysgit - 在你的終端機中呈現豐富的 git commit 圖，宛如魔法 📚
+/// ysgit - Git Graph in Terminal
 #[derive(Parser)]
 // `disable_help_flag`／`disable_version_flag`：關掉 clap 自動產生的英文 -h／-V，
 // 改用下面手動定義的欄位取代，讓說明文字可以換成中文。
@@ -80,6 +80,60 @@ struct Args {
     /// 檢查 GitHub Release 並更新執行檔本身
     #[arg(short = 'U', long)]
     update: bool,
+}
+
+impl Args {
+    /// 自我更新完成後，重啟時要帶的參數：序列化「命令列上實際給的值」（不是
+    /// 與 config 檔合併後的結果——重啟後照樣會重新讀 config）。
+    ///
+    /// 故意不含 `-U`（重啟不該再更新一次）、`-p`（TUI 離開重啟這條路徑上，
+    /// 選到的路徑已經在 `run()` 裡寫回 `path`，帶 path 就夠，也不會再彈一次
+    /// 目錄瀏覽器；`-U` 這條路徑則是還沒跑到 `-p` 的處理就 early return 了，
+    /// `-p` 本來就不會生效，跟這裡排除它是兩回事）；`help`／`version` 不必
+    /// 特判——`ArgAction::Help`／`Version` 會中止 parse，成功 parse 出的
+    /// `Args` 裡兩者恆為 `None`。
+    ///
+    /// 用解構式綁定：日後 `Args` 加欄位而忘了在這裡處理，編譯直接失敗——手寫的
+    /// round-trip 測試擋不住這種漏。也給 `wizard::format_equivalent_command`
+    /// 共用，兩處不會各自維護一份「欄位 → 旗標」對照表。
+    pub(crate) fn to_argv(&self) -> Vec<String> {
+        let Args {
+            path,
+            path_browser: _,
+            max_count,
+            order,
+            graph_width,
+            compact,
+            graph_style,
+            initial_selection,
+            help: _,
+            version: _,
+            update: _,
+        } = self;
+
+        let mut argv = vec!["ysgit".to_string()];
+        for (flag, value) in [
+            ("-n", max_count.map(|n| n.to_string())),
+            ("-o", order.as_ref().map(wizard::variant_name)),
+            ("-g", graph_width.as_ref().map(wizard::variant_name)),
+            ("-c", compact.as_ref().map(wizard::variant_name)),
+            ("-s", graph_style.as_ref().map(wizard::variant_name)),
+            ("-i", initial_selection.as_ref().map(wizard::variant_name)),
+        ] {
+            if let Some(value) = value {
+                argv.push(flag.to_string());
+                argv.push(value);
+            }
+        }
+        if path != "." {
+            // path 以 `-` 開頭時不加 `--` 會被當成旗標解析。
+            if path.starts_with('-') {
+                argv.push("--".to_string());
+            }
+            argv.push(path.clone());
+        }
+        argv
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
@@ -306,13 +360,29 @@ pub fn run() -> Result<()> {
             };
             a
         }
+        // `-V` 在真人終端機下順便接印完整選項清單——`-h` 被精靈接管後，CLI 上
+        // 原本就看不到這份靜態說明。非 TTY 維持原本只印一行版本號：
+        // `update::verify_binary` 就是拿 `.output()`（天然非 TTY）跑
+        // `<新binary> --version`，版本不符時整段 stdout 會被塞進單行狀態列，
+        // 若這裡不分 TTY 一律接印，那段錯誤訊息會變成幾十行灌進去。
+        // `$(ysgit --version)` 這類 script 慣例也因此不受影響。
+        Err(e)
+            if e.kind() == clap::error::ErrorKind::DisplayVersion
+                && std::io::stdout().is_terminal() =>
+        {
+            let mut cmd = Args::command();
+            print!("{}", cmd.render_version());
+            println!();
+            cmd.print_help()?;
+            return Ok(());
+        }
         Err(e) => e.exit(),
     };
 
     // 不進 TUI、不開 repository——config 壞掉也不該擋住這條路徑（使用者
     // 可能就是為了拿掉會修掉那個壞 config 的新版才跑 -U）。
     if args.update {
-        return run_self_update();
+        return run_self_update(&args);
     }
 
     let (core_config, ui_config, graph_config, color_theme, keybind_patch) = config::load()?;
@@ -401,8 +471,8 @@ pub fn run() -> Result<()> {
         );
 
         match app.run(terminal.as_mut().unwrap()) {
-            Ok(Ret::Quit) => {
-                break Ok(());
+            Ok(Ret::Quit(restart)) => {
+                break Ok(restart);
             }
             Ok(Ret::Refresh(request)) => {
                 refresh_view_context = Some(request.context);
@@ -465,17 +535,54 @@ pub fn run() -> Result<()> {
     )
     .ok();
     ratatui::restore();
-    ret.map_err(Into::into)
+
+    // exec 必須排在 DisableMouseCapture／ratatui::restore() 之後——新 process
+    // 接手的終端機這時才是還原乾淨的，不然會接手一個還在 alt screen ＋
+    // raw mode 的終端機。
+    if let Some(exe) = ret? {
+        if let Err(e) = update::exec_replacing_self(&exe, &args.to_argv()) {
+            // 執行檔已經換好了，只是沒能自動重啟——印出來讓使用者知道要
+            // 手動重開，不能回頭再跑一次 -U（新 process 已經是新版，
+            // current_exe_checked 也不會再讓它跑）。
+            eprintln!("{e}");
+        }
+    }
+    Ok(())
 }
 
-/// `-U`／`--update`：不問 y/n（使用者是主動下的指令），繞過節流、不寫節流
-/// marker。跟 TUI 內的更新提示共用 `update::` 同一組函式。
-fn run_self_update() -> Result<()> {
-    match update::check_for_update()? {
+/// `-U`／`--update`：不問 y/n（使用者是主動下的指令），繞過節流，但一律標記
+/// 已檢查——跟 `update::spawn_check` 對「兩種情況都算檢查過一次」的認定一致。
+///
+/// 成功後盡量直接 exec 新執行檔重啟，但只在兩個條件都成立時才做——都是
+/// `run()` 本來就在用的判斷（分別見上面 `-h`／`-V` 的攔截、下方啟動 watcher
+/// 前的同一個判斷）：
+/// - `stdout().is_terminal()`：`ysgit -U >> update.log 2>&1`（cron／script／
+///   `ssh host ysgit -U`）exec 後新 process 的 stdin 是 `/dev/null`，立刻
+///   EOF——crossterm 的 mio source 會卡在內層 read 迴圈吃滿一顆核心，
+///   log 被灌一堆 alt-screen escape，得等 watchdog 逾時才結束。
+/// - `git::is_inside_work_tree`：`cd /tmp && ysgit -U` 這種不在 repo 裡的
+///   呼叫，exec 後 `Repository::load` 會直接 Err、exit 1，畫面上留一句
+///   git 錯誤，使用者會誤以為更新失敗了。`is_inside_work_tree` 內部是
+///   `Command::current_dir`，吃相對路徑就跟目前這個 process 的 cwd 一致，
+///   不需要先 canonicalize。
+fn run_self_update(args: &Args) -> Result<()> {
+    let latest = update::check_for_update()?;
+    update::mark_checked();
+
+    match latest {
         Some(tag) => {
             println!("Updating to {tag}...");
-            update::download_and_replace(&tag)?;
-            println!("Updated to {tag}. Restart ysgit to use the new version.");
+            let exe = update::download_and_replace(&tag)?;
+
+            if std::io::stdout().is_terminal() && git::is_inside_work_tree(Path::new(&args.path)) {
+                if let Err(e) = update::exec_replacing_self(&exe, &args.to_argv()) {
+                    println!("Updated to {tag}, but restart failed: {e}");
+                    println!("Restart ysgit to use the new version.");
+                }
+                // exec 成功時 process image 已被換掉，不會執行到這裡。
+            } else {
+                println!("Updated to {tag}. Restart ysgit to use the new version.");
+            }
         }
         None => println!("Already up to date (v{})", env!("CARGO_PKG_VERSION")),
     }
@@ -500,5 +607,62 @@ mod tests {
     #[test]
     fn removed_text_flag_is_rejected() {
         assert!(Args::try_parse_from(["ysgit", "-t"]).is_err());
+    }
+
+    #[test]
+    fn to_argv_round_trips_non_default_fields() {
+        let args = Args::try_parse_from([
+            "ysgit",
+            "-n",
+            "50",
+            "-o",
+            "topo",
+            "-g",
+            "single",
+            "-c",
+            "on",
+            "-s",
+            "ascii",
+            "-i",
+            "head",
+            "/some/repo",
+        ])
+        .unwrap();
+
+        let argv = args.to_argv();
+        let reparsed = Args::try_parse_from(&argv).unwrap();
+
+        assert_eq!(reparsed.max_count, args.max_count);
+        assert_eq!(reparsed.order, args.order);
+        assert_eq!(reparsed.graph_width, args.graph_width);
+        assert_eq!(reparsed.compact, args.compact);
+        assert_eq!(reparsed.graph_style, args.graph_style);
+        assert_eq!(reparsed.initial_selection, args.initial_selection);
+        assert_eq!(reparsed.path, args.path);
+    }
+
+    #[test]
+    fn to_argv_omits_update_and_path_browser() {
+        let args = Args::try_parse_from(["ysgit", "-U", "-p"]).unwrap();
+        let argv = args.to_argv();
+        assert!(!argv.iter().any(|a| a == "-U" || a == "-p"));
+    }
+
+    #[test]
+    fn to_argv_escapes_a_path_that_looks_like_a_flag() {
+        let mut args = Args::try_parse_from(["ysgit"]).unwrap();
+        args.path = "-foo".to_string();
+
+        let argv = args.to_argv();
+        assert_eq!(argv, vec!["ysgit", "--", "-foo"]);
+        // 沒有這個 `--`，"-foo" 重新 parse 時會被當成不明旗標，
+        // 而不是還原成 args.path。
+        assert_eq!(Args::try_parse_from(&argv).unwrap().path, "-foo");
+    }
+
+    #[test]
+    fn to_argv_of_defaults_is_just_the_program_name() {
+        let args = Args::try_parse_from(["ysgit"]).unwrap();
+        assert_eq!(args.to_argv(), vec!["ysgit"]);
     }
 }

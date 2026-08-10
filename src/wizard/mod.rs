@@ -84,7 +84,7 @@ fn is_abort_key(key: &KeyEvent) -> bool {
         && key.modifiers.contains(KeyModifiers::CONTROL)
 }
 
-fn variant_name<T: ValueEnum>(v: &T) -> String {
+pub(crate) fn variant_name<T: ValueEnum>(v: &T) -> String {
     v.to_possible_value()
         .expect("wizard 用到的 ValueEnum 沒有任何變體用 #[value(skip)]")
         .get_name()
@@ -611,30 +611,14 @@ fn quote_if_needed(s: &str) -> String {
     }
 }
 
+/// 跟 `-U` 更新完自動重啟共用同一份「欄位 → 旗標」邏輯（見 `Args::to_argv`），
+/// 這裡只負責把它排成給人看、複製貼上重跑用的字串。
 pub(crate) fn format_equivalent_command(args: &Args) -> String {
-    let mut parts = vec!["ysgit".to_string()];
-    if let Some(n) = args.max_count {
-        parts.push(format!("-n {n}"));
-    }
-    if let Some(v) = args.order {
-        parts.push(format!("-o {}", variant_name(&v)));
-    }
-    if let Some(v) = args.graph_width {
-        parts.push(format!("-g {}", variant_name(&v)));
-    }
-    if let Some(v) = args.compact {
-        parts.push(format!("-c {}", variant_name(&v)));
-    }
-    if let Some(v) = args.graph_style {
-        parts.push(format!("-s {}", variant_name(&v)));
-    }
-    if let Some(v) = args.initial_selection {
-        parts.push(format!("-i {}", variant_name(&v)));
-    }
-    if args.path != "." {
-        parts.push(quote_if_needed(&args.path));
-    }
-    parts.join(" ")
+    args.to_argv()
+        .iter()
+        .map(|s| quote_if_needed(s))
+        .collect::<Vec<_>>()
+        .join(" ")
 }
 
 #[cfg(test)]
