@@ -126,10 +126,11 @@ pub fn resolve(cli: UpdateOverrides, config: UpdateOverrides) -> UpdateSettings 
 
 /// 檢查並視需要開啟更新提示。啟動時的自動檢查與 `U` 鍵共用這個入口，
 /// 差異只在 `manual`：
-/// - 自動（`manual = false`）：`mode = Off` 或節流未到期就整個不檢查；
-///   已是最新或出錯（沒裝 curl、沒網路）一律靜默，不能在啟動時噴錯。
+/// - 自動（`manual = false`）：執行檔已被替換、`mode = Off`、或節流未到期
+///   就整個不檢查；已是最新或出錯（沒裝 curl、沒網路）一律靜默，不能在
+///   啟動時噴錯。
 /// - 手動：繞過節流與 `mode = Off`（使用者當下的明確意圖，跟「程式自作
-///   主張背景檢查」是兩回事），任何結果都要吭聲。
+///   主張背景檢查」是兩回事），任何結果都要吭聲——包括執行檔已被替換。
 ///
 /// `mode = Auto` 時（不論手動或自動觸發）查到新版直接下載替換，不彈 y/n
 /// 提示——跟 `-U` 在 `mode = Auto` 下跳過 confirm 是同一個承諾，不因為
@@ -137,6 +138,15 @@ pub fn resolve(cli: UpdateOverrides, config: UpdateOverrides) -> UpdateSettings 
 ///
 /// 兩種情況都會標記「已檢查」，手動觸發後下次啟動不會馬上又問一次。
 pub fn spawn_check(ec: &EventController, manual: bool, settings: UpdateSettings) {
+    // 執行檔已被替換時，`mode` 與節流都不再有意義——不管 `Off` 還是還沒
+    // 到期，這次檢查都問不出正確答案。手動觸發一樣要吭聲，跟下面
+    // `mode = Off` 的早退是同一個哲學：使用者當下的明確意圖不能被吞掉。
+    if exe_is_stale() {
+        if manual {
+            ec.send(AppEvent::NotifyInfo(EXE_REPLACED_MSG.to_string()));
+        }
+        return;
+    }
     if !manual && (settings.mode == UpdateMode::Off || !should_check_now(settings.interval)) {
         return;
     }
@@ -183,8 +193,8 @@ pub fn download_and_replace(tag: &str) -> Result<PathBuf, String> {
     if cfg!(debug_assertions) {
         return Err("開發版本（debug build）不支援自我更新".into());
     }
-    if UPDATE_INSTALLED.load(Ordering::SeqCst) {
-        return Err("目前執行檔已更新過，請先重新啟動 ysgit 再更新".into());
+    if exe_is_stale() {
+        return Err(EXE_REPLACED_MSG.into());
     }
     if UPDATE_RUNNING.swap(true, Ordering::SeqCst) {
         return Err("已經有一個更新在進行中".into());
@@ -275,21 +285,115 @@ fn no_asset_error() -> String {
 
 static UPDATE_RUNNING: AtomicBool = AtomicBool::new(false);
 
-/// 本 process 這輩子有沒有成功替換過一次執行檔——`current_exe_checked` 的
-/// `"(deleted)"` 字串偵測只在 Linux 上有效（`/proc/self/exe` 的行為），
-/// macOS 的 `current_exe()`（`_NSGetExecutablePath`）不會標記已被替換，靠它
-/// 擋不住「更新完不重啟、繼續用同一個 process 再按一次更新」——沒有這個旗標，
-/// macOS 上會整包重新下載一次（無害但白費頻寬與 300 秒 timeout）。這個旗標
-/// 是跨平台的事實：不管哪個平台，`fs::rename` 一旦成功，目前這個 process
-/// 手上的執行檔內容就已經跟磁碟上的不是同一份了。
+// ── 「磁碟上的執行檔已經不是我在跑的那一份」 ──
+//
+// 這件事有兩個來源，但它們是同一個事實，所以只有一個 predicate
+// （`exe_is_stale`）：
+// - 本 process 自己更新過（`UPDATE_INSTALLED`）
+// - 別的 ysgit 實例更新過，或使用者手動部署過（inode 變了）
+//
+// 拆成兩個判斷的話，三個呼叫點就得各自記得該問哪一個。實際發生過的
+// 後果：週期重新武裝只問了前者，於是另一個實例更新完之後，這個 process
+// 每個 interval 打一次網路、彈一次提示、被 `download_and_replace` 擋下，
+// 永遠迴圈。
+
+/// 本 process 自己成功替換過執行檔。是 `exe_is_stale()` 的其中一個來源：
+/// 非 unix（沒有 inode 可比）時是唯一來源，unix 上則是省掉一次 stat 的
+/// 短路——`fs::rename` 一旦成功，這個 process 手上的執行檔內容就已經跟
+/// 磁碟上的不是同一份，不必再去問檔案系統。
 static UPDATE_INSTALLED: AtomicBool = AtomicBool::new(false);
 
-/// 本 process 這輩子有沒有成功替換過一次執行檔——週期檢查用它決定要不要
-/// 停止重新武裝（見 `AppEvent::PeriodicUpdateCheck` 的處理）。裝好但還沒
-/// 重啟時再查下去沒有意義：`download_and_replace` 一定會被上面那個守衛
-/// 擋下回 Err，`Auto` 模式又是靜默失敗，只會白白每個 interval 打一次網路。
-pub fn is_update_installed() -> bool {
-    UPDATE_INSTALLED.load(Ordering::SeqCst)
+/// 啟動時的執行檔身分：canonicalize 過的路徑，加上它當下的 inode。
+///
+/// `None` = 沒有可用快照（非 unix，或啟動時就解析不出執行檔路徑），此時
+/// 守衛失效、一律視同未被替換。用 `Option<(PathBuf, u64)>` 而不是
+/// `(PathBuf, Option<u64>)`：兩個獨立的失敗軸會有四種狀態而只有兩種有
+/// 意義，而且路徑解析失敗時根本生不出那個 `PathBuf`。
+static STARTUP_EXE: OnceLock<Option<(PathBuf, u64)>> = OnceLock::new();
+
+/// 三個守衛共用同一句話——`download_and_replace` 的重入檢查、
+/// `current_exe_checked` 的 `(deleted)` 偵測、`spawn_check` 的早退，講的
+/// 都是同一個事實。
+///
+/// 措辭中性、不指名兇手：deploy 走的是 `rm` + `cp`（macOS security
+/// metadata 那個坑），那也會換 inode，手動部署測試版時說「已由其他實例
+/// 更新」是在說謊。
+const EXE_REPLACED_MSG: &str = "磁碟上的 ysgit 已被替換（自我更新或手動部署），請重新啟動後再更新";
+
+/// 啟動早期呼叫一次，把執行檔身分釘住。
+///
+/// 必須排在 `-U` 那條早退路徑之前（`lib.rs::run()` 裡跟
+/// `config::ensure_config_file()` 相鄰），否則 `ysgit -U` 全程沒有快照，
+/// 守衛靜默失效。
+///
+/// 需要這個明確的初始化點，是因為 `OnceLock` 是惰性的：沒有它，第一次
+/// `get_or_init` 會發生在比對的當下，快照永遠等於現值，守衛一輩子不會
+/// 觸發。也不能指望 `config::ensure_config_file()` 順手 force 出
+/// `exe_dir()`——`$SERIE_CONFIG_FILE` 有設時它直接 return，根本沒碰。
+///
+/// 失敗完全靜默：這是背景事實不是使用者要求的操作，而且 `-h`／`--help`
+/// 的輸出被 `tests/help_flag.rs` 釘成逐位元組相同，多印一行都會踩到。
+pub fn snapshot_exe() {
+    STARTUP_EXE.get_or_init(|| {
+        let path = current_exe_checked().ok()?;
+        let ino = exe_fingerprint(&path)?;
+        Some((path, ino))
+    });
+}
+
+/// 這個路徑當下的 inode。非 unix 沒有等價概念，回 `None`。
+///
+/// **收路徑而不自己找**：`fs::rename` 換掉執行檔後，Linux 的
+/// `/proc/self/exe` 會回 `".../ysgit (deleted)"`，`current_exe_checked()`
+/// 因此回 `Err`（見該函式註解）。在這裡改成現算路徑的話，正好會在「別的
+/// 實例剛更新完」這個唯一需要偵測的場景拿到 `None`，`stale()` 判定未被
+/// 替換，週期鏈繼續無限迴圈。而 macOS 的 `current_exe()` 不會標記已被
+/// 替換，所以這個坑只在 Linux 發作，開發機上測不出來。
+///
+/// 傳進來的是 `snapshot_exe()` 啟動時算好的乾淨路徑，rename 之後對它
+/// stat 拿到的是新檔的 inode，兩個平台行為一致。
+///
+/// 不快取：這個函式的全部價值就是反映「現在」磁碟上的狀態，快取等於把它
+/// 變成第二個 `UPDATE_INSTALLED`。一次 `stat(2)` 在 dentry cache 裡是微秒
+/// 級，而呼叫頻率是每個 interval 一次——`should_check_now()` 對 marker 檔
+/// 本來就在做同一件事。
+fn exe_fingerprint(path: &Path) -> Option<u64> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::MetadataExt;
+        fs::metadata(path).ok().map(|m| m.ino())
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = path;
+        None
+    }
+}
+
+/// 純函式，三個輸入攤開才測得到（`exe_is_stale()` 讀全域 static）。
+///
+/// 快照或現值任一為 `None` 就視同未被替換（fail open）：非 unix、啟動時
+/// 解析失敗、執行檔被整個刪掉——這幾種都寧可讓更新走既有路徑，也不要拿
+/// 一個問不出答案的判準去擋使用者。
+fn stale(installed: bool, startup: Option<u64>, current: Option<u64>) -> bool {
+    installed || startup.zip(current).is_some_and(|(a, b)| a != b)
+}
+
+/// 磁碟上的執行檔是不是已經不是我在跑的那一份。
+///
+/// `fs::rename` 換上新 binary 必然產生新 inode，所以 inode 是精確的判準。
+/// inode 重用在這裡不會發生：呼叫者正在跑舊 binary，kernel 的 vnode 釘住
+/// 舊 inode，unlink 之後也不會被釋放重用。
+///
+/// 已知的理論風險：某些 FUSE／網路掛載對同一個檔案回不穩定的 inode，那種
+/// 環境會永久判定被替換、再也自我更新不了。訊息（`EXE_REPLACED_MSG`）是
+/// 中性的，使用者看得懂發生什麼事。
+pub fn exe_is_stale() -> bool {
+    let (startup, current) = match STARTUP_EXE.get().and_then(Option::as_ref) {
+        Some((path, ino)) => (Some(*ino), exe_fingerprint(path)),
+        None => (None, None),
+    };
+    stale(UPDATE_INSTALLED.load(Ordering::SeqCst), startup, current)
 }
 
 struct UpdateGuard;
@@ -550,7 +654,7 @@ fn current_exe_checked() -> Result<PathBuf, String> {
     let exe = env::current_exe().map_err(|e| format!("找不到目前執行檔路徑: {e}"))?;
     let raw_name = exe.file_name().and_then(|n| n.to_str()).unwrap_or("");
     if raw_name.contains("(deleted)") {
-        return Err("目前執行檔已被替換過，請先重新啟動 ysgit 再更新".into());
+        return Err(EXE_REPLACED_MSG.into());
     }
     let exe = fs::canonicalize(&exe).map_err(|e| format!("無法解析執行檔路徑: {e}"))?;
     if !exe.is_file() {
@@ -667,6 +771,37 @@ ca0a1ac34d2e1138b9308820e3a53b6822552268907e87a11a1350b98f1a6ada  ysgit_2.4.1-ma
     #[test]
     fn newer_than_current_older_version_is_none() {
         assert!(newer_than_current("2.3.0", "2.4.1").is_none());
+    }
+
+    // ── stale()：磁碟上的執行檔是不是已經不是我在跑的那一份 ──
+
+    #[test]
+    fn stale_same_inode_is_not_stale() {
+        assert!(!stale(false, Some(42), Some(42)));
+    }
+
+    #[test]
+    fn stale_different_inode_is_stale() {
+        assert!(stale(false, Some(42), Some(99)));
+    }
+
+    #[test]
+    fn stale_missing_startup_is_not_stale() {
+        // 沒有可用快照（非 unix／啟動時解析失敗）：問不出答案，fail open。
+        assert!(!stale(false, None, Some(42)));
+    }
+
+    #[test]
+    fn stale_missing_current_is_not_stale() {
+        // 現值拿不到（例如執行檔被整個刪掉）：同樣 fail open。
+        assert!(!stale(false, Some(42), None));
+    }
+
+    #[test]
+    fn stale_installed_short_circuits_regardless_of_inode() {
+        // 本 process 自己裝過，不必管 inode 比對結果。
+        assert!(stale(true, Some(42), Some(42)));
+        assert!(stale(true, None, None));
     }
 
     // ── resolve()：CLI > 設定檔 > 內建預設 ──
