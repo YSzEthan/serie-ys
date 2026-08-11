@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.7.1](https://github.com/YSzEthan/serie-ys/compare/v2.7.0...v2.7.1) (2026-08-11)
+
+
+### Bug Fixes
+
+* gh CLI 呼叫加 timeout，並優化 GitHub 資料載入效率 (#57) (#58) ([ec7d8d7](https://github.com/YSzEthan/serie-ys/commit/ec7d8d7e4ecfbd9ba9fca9715fa68f38e9cd1254))
+
 ## [2.7.0](https://github.com/YSzEthan/serie-ys/compare/v2.6.0...v2.7.0) (2026-08-11)
 
 
