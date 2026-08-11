@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.7.2](https://github.com/YSzEthan/serie-ys/compare/v2.7.1...v2.7.2) (2026-08-11)
+
+
+### Bug Fixes
+
+* 以 exe_is_stale() 收斂更新狀態判斷，解決多實例重複下載 (#59) (#63) ([cc2c43e](https://github.com/YSzEthan/serie-ys/commit/cc2c43e84a528b1d94212e934b9473b14ce0fcc9))
+
 ## [2.7.1](https://github.com/YSzEthan/serie-ys/compare/v2.7.0...v2.7.1) (2026-08-11)
 
 
