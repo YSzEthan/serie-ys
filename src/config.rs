@@ -467,7 +467,19 @@ pub struct GraphColorConfig {
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
+
+    /// 取出設定檔格式文件裡第一段 ```toml 範例。三條測試都要拿它跟
+    /// `assets/default-config.toml` 或 `ColorTheme::default()` 比對。
+    fn documented_example() -> &'static str {
+        include_str!("../docs/src/configurations/config-file-format.md")
+            .split("```toml\n")
+            .nth(1)
+            .and_then(|s| s.split("```").next())
+            .expect("設定檔格式文件裡找不到 ```toml 範例區塊")
+    }
 
     #[test]
     fn test_config_default() {
@@ -816,12 +828,7 @@ mod tests {
     /// 實際是 date/name/hash）。
     #[test]
     fn documented_example_config_is_valid_and_shows_real_defaults() {
-        let doc = include_str!("../docs/src/configurations/config-file-format.md");
-        let example = doc
-            .split("```toml\n")
-            .nth(1)
-            .and_then(|s| s.split("```").next())
-            .expect("設定檔格式文件裡找不到 ```toml 範例區塊");
+        let example = documented_example();
 
         let schema: serde_json::Value =
             serde_json::from_str(include_str!("../config.schema.json")).unwrap();
@@ -847,12 +854,7 @@ mod tests {
     /// 成 `Config` 後逐欄位比對，不比原始文字（註解、排版本來就不同）。
     #[test]
     fn default_config_asset_matches_documented_example() {
-        let doc = include_str!("../docs/src/configurations/config-file-format.md");
-        let example = doc
-            .split("```toml\n")
-            .nth(1)
-            .and_then(|s| s.split("```").next())
-            .expect("設定檔格式文件裡找不到 ```toml 範例區塊");
+        let example = documented_example();
         let doc_config: Config = toml::from_str::<OptionalConfig>(example).unwrap().into();
 
         let asset = include_str!("../assets/default-config.toml");
@@ -887,6 +889,51 @@ mod tests {
         actual.core.update = CoreUpdateConfig::default();
         actual.keybind = None;
         assert_eq!(actual, Config::default());
+    }
+
+    /// 取出 `[color]` 表的欄位名，只認鍵不看值。`ColorTheme` 目前是全平的
+    /// （每個欄位都是 `RatatuiColor`），用不到遞迴——真要拆成巢狀子區塊，
+    /// 這裡再回頭加。
+    fn color_keys(value: &toml::Value) -> BTreeSet<&str> {
+        value
+            .as_table()
+            .expect("[color] 應該是一張 TOML 表")
+            .keys()
+            .map(String::as_str)
+            .collect()
+    }
+
+    /// `ColorTheme` 有的欄位，範本與文件範例都一定要寫出來。
+    ///
+    /// 上面兩條測試只守單向：`assert_keys_declared_in_schema` 驗「範例的鍵
+    /// 在 schema 裡有宣告」，`default_config_asset_shows_real_defaults` 驗
+    /// 「範本寫出來的值等於預設值」。兩者都建立在「範本裡沒寫的鍵就當作
+    /// 沒有」這個前提上——少寫一個鍵，比對照樣兩邊都是預設值，全部綠燈，
+    /// `status_interactive_fg` 就是這樣消失了好幾個版本沒人發現。
+    ///
+    /// 這裡反過來，從 `ColorTheme::default()` 本身出發：struct 有的欄位，
+    /// 範本／文件範例都要出現。只比鍵、不比值——`ratatui::Color` 的
+    /// `Serialize` 走 `Display`（`Color::Reset` 序列化成 `"Reset"`），跟
+    /// 範本手寫的 `"reset"` 本來就對不上，值的漂移已經有上面那條測試守著。
+    #[test]
+    fn every_color_field_appears_in_asset_and_doc_example() {
+        let expected = toml::Value::try_from(ColorTheme::default()).unwrap();
+        let expected_keys = color_keys(&expected);
+
+        let asset: toml::Table =
+            toml::from_str(include_str!("../assets/default-config.toml")).unwrap();
+        let asset_keys = color_keys(asset.get("color").unwrap());
+        assert_eq!(
+            asset_keys, expected_keys,
+            "assets/default-config.toml 的 [color] 跟 ColorTheme 欄位對不上"
+        );
+
+        let doc_table: toml::Table = toml::from_str(documented_example()).unwrap();
+        let doc_keys = color_keys(doc_table.get("color").unwrap());
+        assert_eq!(
+            doc_keys, expected_keys,
+            "文件範例的 [color] 跟 ColorTheme 欄位對不上"
+        );
     }
 
     /// `graph_width` 的可選值散在四個地方：`GraphWidthType` 的 derive、

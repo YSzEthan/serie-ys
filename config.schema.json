@@ -578,6 +578,11 @@
           "description": "Foreground color for transient messages in the status bar.",
           "default": "dark-gray"
         },
+        "status_interactive_fg": {
+          "type": "string",
+          "description": "Foreground color for interactive elements (e.g. key hints, selectable numbers) in the status bar.",
+          "default": "yellow"
+        },
         "status_info_fg": {
           "type": "string",
           "description": "Color for informational messages in the status bar.",

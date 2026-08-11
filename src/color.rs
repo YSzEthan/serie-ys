@@ -1,11 +1,14 @@
 use ratatui::style::Color as RatatuiColor;
 use serde::Deserialize;
+#[cfg(test)]
+use serde::Serialize;
 use smart_default::SmartDefault;
 use umbra::optional;
 
 use crate::config::GraphColorConfig;
 
 #[optional(derives = [Deserialize], visibility = pub)]
+#[cfg_attr(test, derive(Serialize))]
 #[derive(Debug, Clone, PartialEq, Eq, SmartDefault)]
 pub struct ColorTheme {
     #[default(RatatuiColor::Reset)]
