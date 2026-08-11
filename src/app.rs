@@ -1277,8 +1277,23 @@ impl App<'_> {
 
         std::thread::spawn(move || {
             let state = filter.as_str();
-            let issues_result = crate::github::list_issues(&repo_path, state, None);
-            let prs_result = crate::github::list_pull_requests(&repo_path, state, None);
+            // 兩個查詢彼此獨立，改用 thread::scope 併發——序列跑今天要
+            // 2 個 gh 呼叫的 wall clock 疊加，併發只要較慢那個的時間。
+            let (issues_result, prs_result) = std::thread::scope(|s| {
+                let issues = s.spawn(|| crate::github::list_issues(&repo_path, state, None));
+                let prs = s.spawn(|| crate::github::list_pull_requests(&repo_path, state, None));
+                (issues.join(), prs.join())
+            });
+            // join() 回傳 Result<_, Box<dyn Any>>：thread panic 要轉成
+            // 錯誤訊息，不能讓它靜靜消失。今天 list_issues 若 panic，
+            // 整條 refresh thread 直接死掉、沒有任何事件送回主執行緒，
+            // GitHubLoad 永遠停在 Loading，之後每次 on_refresh_requested
+            // 都回 false——GitHub refresh 對這個 process 永久失效，不只
+            // 是這一次卡住，症狀跟這個 issue 要修的一模一樣。
+            let issues_result =
+                issues_result.unwrap_or_else(|_| Err("GitHub issues thread panicked".into()));
+            let prs_result =
+                prs_result.unwrap_or_else(|_| Err("GitHub PRs thread panicked".into()));
 
             let mut any_ok = false;
             let mut warnings = Vec::new();
