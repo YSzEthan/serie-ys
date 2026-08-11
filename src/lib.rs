@@ -385,6 +385,13 @@ pub fn run() -> Result<()> {
     // 不回傳 `Result`，因為它不是任何後續步驟的必要條件。
     config::ensure_config_file();
 
+    // 釘住這個 process 啟動時的執行檔身分（路徑＋inode），供
+    // `update::exe_is_stale()` 判斷磁碟上的執行檔是否已被別的實例換掉。
+    // 要排在這裡、`run_self_update()`（`-U`）的早退之前——那條路徑跟這裡
+    // 共用同一個 `OnceLock`，晚一步初始化的話 `-U` 全程沒有快照，守衛
+    // 靜默失效。
+    update::snapshot_exe();
+
     // `-h`／`--help` 在真人終端機下改成互動選單，非 TTY（管線、CI）維持原本
     // `Args::parse()` 印靜態文字＋exit(0) 的行為。刻意不碰 Args 的 help/version
     // 欄位（維持 clap 原生的 ArgAction::Help/Version）：這是唯一能保證非 TTY 輸出、

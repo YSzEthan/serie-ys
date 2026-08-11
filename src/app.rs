@@ -657,10 +657,12 @@ impl App<'_> {
                     crate::update::spawn_check(self.ec, true, self.ctx.update);
                 }
                 AppEvent::PeriodicUpdateCheck => {
-                    // 已經裝好但還沒重啟：不再檢查，也不重新武裝——鏈就
-                    // 停在這裡，下一輪 interval 不會再有這個事件。重啟後
-                    // 是全新 process，`lib.rs::run()` 會重新排第一次。
-                    if !crate::update::is_update_installed() {
+                    // 磁碟上的執行檔已經不是我在跑的那一份（本 process 裝好
+                    // 還沒重啟，或別的 ysgit 實例／手動部署換掉了）：不再
+                    // 檢查，也不重新武裝——鏈就停在這裡，下一輪 interval
+                    // 不會再有這個事件。重啟後是全新 process，
+                    // `lib.rs::run()` 會重新排第一次。
+                    if !crate::update::exe_is_stale() {
                         crate::update::spawn_check(self.ec, false, self.ctx.update);
                         self.ec
                             .sender()
