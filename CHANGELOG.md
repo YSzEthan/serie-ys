@@ -1,5 +1,12 @@
 # Changelog
 
+## [2.7.0](https://github.com/YSzEthan/serie-ys/compare/v2.6.0...v2.7.0) (2026-08-11)
+
+
+### Features
+
+* 自動更新新增三態模式、可調間隔、自動重啟，設定檔跟著執行檔走 (#55) (#56) ([68da156](https://github.com/YSzEthan/serie-ys/commit/68da15602e40ad314b237c7657c7cbea874ced5c))
+
 ## [2.6.0](https://github.com/YSzEthan/serie-ys/compare/v2.5.1...v2.6.0) (2026-08-10)
 
 
