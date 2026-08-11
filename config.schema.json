@@ -220,33 +220,54 @@
       "type": "object",
       "description": "UI appearance settings",
       "properties": {
-        "common": {
-          "type": "object",
-          "properties": {
-            "cursor_type": {
-              "description": "The type of cursor to display in input fields.",
-              "oneOf": [
-                {
+        "cursor_type": {
+          "description": "The type of cursor to display in input fields.",
+          "oneOf": [
+            {
+              "type": "string",
+              "enum": [
+                "Native"
+              ]
+            },
+            {
+              "type": "object",
+              "properties": {
+                "Virtual": {
                   "type": "string",
-                  "enum": [
-                    "Native"
-                  ]
-                },
-                {
-                  "type": "object",
-                  "properties": {
-                    "Virtual": {
-                      "type": "string",
-                      "description": "A string to be used as a virtual cursor."
-                    }
-                  },
-                  "required": [
-                    "Virtual"
-                  ],
-                  "additionalProperties": false
+                  "description": "A string to be used as a virtual cursor."
                 }
+              },
+              "required": [
+                "Virtual"
               ],
-              "default": "Native"
+              "additionalProperties": false
+            }
+          ],
+          "default": "Native"
+        },
+        "refs_width": {
+          "type": "integer",
+          "description": "The width of the refs list area.",
+          "default": 26
+        },
+        "pane_height": {
+          "type": "object",
+          "description": "The heights of the detail, diff, and user command panes.",
+          "properties": {
+            "detail": {
+              "type": "integer",
+              "description": "The height of the commit detail area.",
+              "default": 20
+            },
+            "diff": {
+              "type": "integer",
+              "description": "The height of the file diff area.",
+              "default": 20
+            },
+            "user_command": {
+              "type": "integer",
+              "description": "The height of the user command area.",
+              "default": 20
             }
           },
           "additionalProperties": false
@@ -302,11 +323,6 @@
           "type": "object",
           "description": "Settings for the commit detail view.",
           "properties": {
-            "height": {
-              "type": "integer",
-              "description": "The height of the commit detail area.",
-              "default": 20
-            },
             "date_format": {
               "type": "string",
               "description": "The date format for author/committer dates in strftime format.",
@@ -316,72 +332,6 @@
               "type": "boolean",
               "description": "Whether to show dates in local timezone.",
               "default": true
-            }
-          },
-          "additionalProperties": false
-        },
-        "diff": {
-          "type": "object",
-          "description": "Settings for the single-file diff pane in the commit detail view.",
-          "properties": {
-            "height": {
-              "type": "integer",
-              "description": "The height of the file diff area.",
-              "default": 20
-            }
-          },
-          "additionalProperties": false
-        },
-        "user_command": {
-          "type": "object",
-          "description": "Settings for the user command view.",
-          "properties": {
-            "height": {
-              "type": "integer",
-              "description": "The height of the user command area.",
-              "default": 20
-            }
-          },
-          "additionalProperties": false
-        },
-        "refs": {
-          "type": "object",
-          "description": "Settings for the refs list view.",
-          "properties": {
-            "width": {
-              "type": "integer",
-              "description": "The width of the refs list area.",
-              "default": 26
-            }
-          },
-          "additionalProperties": false
-        }
-      },
-      "additionalProperties": false
-    },
-    "graph": {
-      "type": "object",
-      "description": "Commit graph rendering settings",
-      "properties": {
-        "color": {
-          "type": "object",
-          "description": "Colors for the commit graph.",
-          "properties": {
-            "branches": {
-              "type": "array",
-              "description": "Colors used for the branches in the graph. Should be in #RRGGBB or #RRGGBBAA format.",
-              "items": {
-                "type": "string",
-                "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$"
-              },
-              "default": [
-                "#E06C76",
-                "#98C379",
-                "#E5C07B",
-                "#61AFEF",
-                "#C678DD",
-                "#56B6C2"
-              ]
             }
           },
           "additionalProperties": false
@@ -578,6 +528,11 @@
           "description": "Foreground color for transient messages in the status bar.",
           "default": "dark-gray"
         },
+        "status_interactive_fg": {
+          "type": "string",
+          "description": "Foreground color for interactive elements (e.g. key hints, selectable numbers) in the status bar.",
+          "default": "yellow"
+        },
         "status_info_fg": {
           "type": "string",
           "description": "Color for informational messages in the status bar.",
@@ -602,6 +557,29 @@
           "type": "string",
           "description": "Color for dividers.",
           "default": "dark-gray"
+        },
+        "graph": {
+          "type": "object",
+          "description": "Colors for the commit graph.",
+          "properties": {
+            "branches": {
+              "type": "array",
+              "description": "Colors used for the branches in the graph. Should be in #RRGGBB or #RRGGBBAA format.",
+              "items": {
+                "type": "string",
+                "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$"
+              },
+              "default": [
+                "#E06C76",
+                "#98C379",
+                "#E5C07B",
+                "#61AFEF",
+                "#C678DD",
+                "#56B6C2"
+              ]
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

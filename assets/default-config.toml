@@ -33,8 +33,15 @@ tab_width = 4  # 使用者自訂指令輸出裡的 tab 展開寬度
 [core.external]
 clipboard = "Auto"  # Auto｜Osc52｜{ Custom = { commands = [...] } }
 
-[ui.common]
+[ui]
 cursor_type = "Native"  # 終端機游標樣式
+refs_width = 26         # Refs 清單區域的寬度
+
+[ui.pane_height]
+# Detail／Diff／使用者自訂指令三個區域各自的高度。
+detail = 20
+diff = 20
+user_command = 20
 
 [ui.list]
 columns = ["graph", "marker", "subject", "date", "name", "hash"]
@@ -45,29 +52,8 @@ date_local = true
 name_width = 20
 
 [ui.detail]
-height = 20
 date_format = "%Y-%m-%d %H:%M:%S %z"
 date_local = true
-
-[ui.diff]
-height = 20
-
-[ui.user_command]
-height = 20
-
-[ui.refs]
-width = 26
-
-[graph.color]
-# 各分支依序輪流套用的顏色。
-branches = [
-  "#E06C76",
-  "#98C379",
-  "#E5C07B",
-  "#61AFEF",
-  "#C678DD",
-  "#56B6C2",
-]
 
 # 介面配色。顏色可以是 ANSI 色名（"red"、"dark-gray"⋯）、"reset"（沿用終端機
 # 預設色），或 "#rrggbb"／0-255 的數字（256 色代碼）。
@@ -109,11 +95,23 @@ help_key_fg = "yellow"
 virtual_cursor_fg = "reset"
 status_input_fg = "reset"
 status_input_transient_fg = "dark-gray"
+status_interactive_fg = "yellow"
 status_info_fg = "cyan"
 status_success_fg = "green"
 status_warn_fg = "yellow"
 status_error_fg = "red"
 divider_fg = "dark-gray"
+
+[color.graph]
+# 各分支依序輪流套用的顏色。
+branches = [
+  "#E06C76",
+  "#98C379",
+  "#E5C07B",
+  "#61AFEF",
+  "#C678DD",
+  "#56B6C2",
+]
 
 [keybind]
 # 快捷鍵覆蓋，詳見「自訂快捷鍵」文件；預設鍵位見

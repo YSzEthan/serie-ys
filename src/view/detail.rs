@@ -327,8 +327,8 @@ impl<'a> DetailView<'a> {
         let diff_height = if pane_wants_diff {
             self.ctx
                 .ui_config
+                .pane_height
                 .diff
-                .height
                 .min(area.height.saturating_sub(3))
         } else {
             0
@@ -341,7 +341,7 @@ impl<'a> DetailView<'a> {
         let area_cap = list_area.height.saturating_sub(2);
         let max_height =
             self.content
-                .max_height(area_cap, self.ctx.ui_config.detail.height, show_diff);
+                .max_height(area_cap, self.ctx.ui_config.pane_height.detail, show_diff);
         let content_height = match &self.content {
             DetailContent::Commit { commit, refs, rows } => {
                 CommitDetail::new(commit, rows, refs, self.ctx.clone(), marquee_frame)

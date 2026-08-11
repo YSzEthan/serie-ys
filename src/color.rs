@@ -1,12 +1,15 @@
+use garde::Validate;
 use ratatui::style::Color as RatatuiColor;
 use serde::Deserialize;
+#[cfg(test)]
+use serde::Serialize;
 use smart_default::SmartDefault;
 use umbra::optional;
 
-use crate::config::GraphColorConfig;
-
 #[optional(derives = [Deserialize], visibility = pub)]
-#[derive(Debug, Clone, PartialEq, Eq, SmartDefault)]
+#[cfg_attr(test, derive(Serialize))]
+#[derive(Debug, Clone, PartialEq, Eq, SmartDefault, Validate)]
+#[garde(allow_unvalidated)]
 pub struct ColorTheme {
     #[default(RatatuiColor::Reset)]
     pub fg: RatatuiColor,
@@ -104,6 +107,29 @@ pub struct ColorTheme {
 
     #[default(RatatuiColor::DarkGray)]
     pub divider_fg: RatatuiColor,
+
+    #[garde(dive)]
+    #[nested]
+    pub graph: GraphColors,
+}
+
+/// Commit 圖形依序輪流套用的顏色。原本是獨立的 `[graph.color]` 區塊，
+/// 跟 `[color]` 分家；搬進 `ColorTheme` 讓它們共用同一份驗證與遷移邏輯，
+/// `[color.graph]` 在設定檔裡也就跟其他介面顏色放在一起。
+#[optional(derives = [Deserialize])]
+#[cfg_attr(test, derive(Serialize))]
+#[derive(Debug, Clone, PartialEq, Eq, SmartDefault, Validate)]
+pub struct GraphColors {
+    #[garde(length(min = 1), inner(pattern(r"^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")))]
+    #[default(vec![
+        "#E06C76".into(),
+        "#98C379".into(),
+        "#E5C07B".into(),
+        "#61AFEF".into(),
+        "#C678DD".into(),
+        "#56B6C2".into(),
+    ])]
+    pub branches: Vec<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -129,7 +155,7 @@ pub struct GraphColorSet {
 }
 
 impl GraphColorSet {
-    pub fn new(config: &GraphColorConfig) -> Self {
+    pub fn new(config: &GraphColors) -> Self {
         let colors = config
             .branches
             .iter()

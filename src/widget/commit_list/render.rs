@@ -445,7 +445,7 @@ impl CommitList<'_> {
             // 哪幾欄要把線接下去是 `Glyph` 該回答的事，不是這個迴圈 ——
             // 見 `Glyph::extends_downward`。至於這一欄究竟有沒有被合併成
             // junction，那是 `Column::can_merge` 的判斷，多色欄位下取決於
-            // `graph.color.branches`。
+            // `color.graph.branches`。
             if !cell.glyph.extends_downward() {
                 continue;
             }
@@ -1015,8 +1015,8 @@ mod tests {
     mod render_graph_tests {
         use super::*;
         use crate::{
-            color::GraphColorSet,
-            config::{CoreConfig, GraphColorConfig, UiConfig},
+            color::{GraphColorSet, GraphColors},
+            config::{CoreConfig, UiConfig},
             git::{FileChange, WorkingChanges},
             graph::{CellWidthType, Edge, EdgeType, Graph, GraphStyle},
             keybind::KeyBind,
@@ -1050,7 +1050,7 @@ mod tests {
         }
 
         fn test_graph_color_set() -> GraphColorSet {
-            GraphColorSet::new(&GraphColorConfig {
+            GraphColorSet::new(&GraphColors {
                 branches: vec!["#FF0000".into(), "#00FF00".into(), "#0000FF".into()],
             })
         }

@@ -226,7 +226,7 @@ impl<'a> DeleteRefView<'a> {
 
         let graph_width = list_state.panel_left_edge();
         let refs_width =
-            (area.width.saturating_sub(graph_width)).min(self.ctx.ui_config.refs.width);
+            (area.width.saturating_sub(graph_width)).min(self.ctx.ui_config.refs_width);
 
         let [list_area, refs_area] =
             Layout::horizontal([Constraint::Min(0), Constraint::Length(refs_width)]).areas(area);

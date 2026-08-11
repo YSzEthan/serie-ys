@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     env,
     fs::OpenOptions,
     io::Write,
@@ -21,13 +22,7 @@ use crate::{
 const CONFIG_FILE_NAME: &str = ".ysgit.toml";
 const CONFIG_FILE_ENV_NAME: &str = "SERIE_CONFIG_FILE";
 
-pub fn load() -> Result<(
-    CoreConfig,
-    UiConfig,
-    GraphConfig,
-    ColorTheme,
-    Option<KeyBind>,
-)> {
+pub fn load() -> Result<(CoreConfig, UiConfig, ColorTheme, Option<KeyBind>)> {
     let config = match config_file_path_from_env() {
         Some(user_path) => {
             if !user_path.exists() {
@@ -47,13 +42,7 @@ pub fn load() -> Result<(
 
     config.validate()?;
 
-    Ok((
-        config.core,
-        config.ui,
-        config.graph,
-        config.color,
-        config.keybind,
-    ))
+    Ok((config.core, config.ui, config.color, config.keybind))
 }
 
 fn config_file_path_from_env() -> Option<PathBuf> {
@@ -116,6 +105,7 @@ fn default_config_file_path() -> Option<PathBuf> {
 
 fn read_config_from_path(path: &Path) -> Result<Config> {
     let content = std::fs::read_to_string(path)?;
+    let content = migrate_legacy_toml(&content);
     let config: OptionalConfig = toml::from_str(&content)?;
     Ok(config.into())
 }
@@ -130,9 +120,6 @@ struct Config {
     #[nested]
     ui: UiConfig,
     #[garde(dive)]
-    #[nested]
-    graph: GraphConfig,
-    #[garde(skip)]
     #[nested]
     color: ColorTheme,
     // 使用者自訂的按鍵綁定，格式請參考 `assets/default-keybind.toml`
@@ -306,33 +293,23 @@ pub enum UserCommandType {
 }
 
 #[optional(derives = [Deserialize])]
-#[derive(Debug, Default, Clone, PartialEq, Eq, Validate)]
+#[derive(Debug, Clone, PartialEq, Eq, SmartDefault, Validate)]
 pub struct UiConfig {
     #[garde(skip)]
+    #[default(CursorType::Native)]
+    pub cursor_type: CursorType,
+    #[garde(range(min = 1))]
+    #[default = 26]
+    pub refs_width: u16,
+    #[garde(dive)]
     #[nested]
-    pub common: UiCommonConfig,
+    pub pane_height: UiPaneHeightConfig,
     #[garde(dive)]
     #[nested]
     pub list: UiListConfig,
     #[garde(dive)]
     #[nested]
     pub detail: UiDetailConfig,
-    #[garde(dive)]
-    #[nested]
-    pub diff: UiDiffConfig,
-    #[garde(dive)]
-    #[nested]
-    pub user_command: UiUserCommandConfig,
-    #[garde(dive)]
-    #[nested]
-    pub refs: UiRefsConfig,
-}
-
-#[optional(derives = [Deserialize])]
-#[derive(Debug, Clone, PartialEq, Eq, SmartDefault)]
-pub struct UiCommonConfig {
-    #[default(CursorType::Native)]
-    pub cursor_type: CursorType,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -404,9 +381,6 @@ pub enum UserListColumnType {
 #[optional(derives = [Deserialize])]
 #[derive(Debug, Clone, PartialEq, Eq, SmartDefault, Validate)]
 pub struct UiDetailConfig {
-    #[garde(range(min = 1))]
-    #[default = 20]
-    pub height: u16,
     #[garde(length(min = 1))]
     #[default = "%Y-%m-%d %H:%M:%S %z"]
     pub date_format: String,
@@ -415,59 +389,280 @@ pub struct UiDetailConfig {
     pub date_local: bool,
 }
 
-/// Detail view 選檔案時，底部單一檔案 diff pane 的高度。tab 展開沿用
-/// `core.user_command.tab_width`——同一個程式裡不該有兩個「一個 tab 展開成
-/// 幾格」的答案。
+/// Detail／Diff／使用者自訂指令三個 pane 各自的高度。
+///
+/// `diff` 是 Detail view 選檔案時，底部單一檔案 diff pane 的高度。tab 展開
+/// 沿用 `core.user_command.tab_width`——同一個程式裡不該有兩個「一個 tab
+/// 展開成幾格」的答案。
 #[optional(derives = [Deserialize])]
 #[derive(Debug, Clone, PartialEq, Eq, SmartDefault, Validate)]
-pub struct UiDiffConfig {
+pub struct UiPaneHeightConfig {
     #[garde(range(min = 1))]
     #[default = 20]
-    pub height: u16,
-}
-
-#[optional(derives = [Deserialize])]
-#[derive(Debug, Clone, PartialEq, Eq, SmartDefault, Validate)]
-pub struct UiUserCommandConfig {
+    pub detail: u16,
     #[garde(range(min = 1))]
     #[default = 20]
-    pub height: u16,
-}
-
-#[optional(derives = [Deserialize])]
-#[derive(Debug, Clone, PartialEq, Eq, SmartDefault, Validate)]
-pub struct UiRefsConfig {
+    pub diff: u16,
     #[garde(range(min = 1))]
-    #[default = 26]
-    pub width: u16,
+    #[default = 20]
+    pub user_command: u16,
 }
 
-#[optional(derives = [Deserialize])]
-#[derive(Debug, Default, Clone, PartialEq, Eq, Validate)]
-pub struct GraphConfig {
-    #[garde(dive)]
-    #[nested]
-    pub color: GraphColorConfig,
+// ---------------------------------------------------------------------------
+// 舊版 TOML 結構 → 新結構的遷移。純函式，不寫檔——`read_config_from_path()`
+// 讀進來的內容在記憶體裡先轉換再 parse，`load()` 因此永遠能拿到值；檔案
+// 本身要等使用者進精靈存檔（`wizard::write_touched_settings()`）才會真的
+// 落地變成新格式，理由與取捨見該函式呼叫處的說明。
+// ---------------------------------------------------------------------------
+
+/// 舊路徑 → 新路徑的搬移表。`graph.color.branches` 那條的目的地鍵名跟
+/// 來源相同（`branches`），其餘四條連鍵名都變了（`width` → `refs_width`
+/// 之類）——`move_value` 兩種都處理，搬移表不用分兩張。
+const LEGACY_KEY_MOVES: &[(&[&str], &[&str])] = &[
+    (
+        &["graph", "color", "branches"],
+        &["color", "graph", "branches"],
+    ),
+    (&["ui", "common", "cursor_type"], &["ui", "cursor_type"]),
+    (&["ui", "refs", "width"], &["ui", "refs_width"]),
+    (
+        &["ui", "detail", "height"],
+        &["ui", "pane_height", "detail"],
+    ),
+    (&["ui", "diff", "height"], &["ui", "pane_height", "diff"]),
+    (
+        &["ui", "user_command", "height"],
+        &["ui", "pane_height", "user_command"],
+    ),
+];
+
+/// 把舊格式 `.ysgit.toml`（`[ui.common]`／`[ui.detail]`／`[ui.diff]`／
+/// `[ui.user_command]`／`[ui.refs]` 的 `height`／`width`／`cursor_type`，
+/// 以及獨立的 `[graph.color]`）轉成新結構。
+///
+/// 沒有任何舊鍵、或 `existing` 本身 parse 不動（`toml_edit` 對語法錯誤沒
+/// 辦法），一律原樣借回去——語法錯誤留給 `toml::from_str` 產生它自己
+/// 唯一、正規的錯誤訊息，這裡不用再開一條錯誤路徑。
+pub(crate) fn migrate_legacy_toml(existing: &str) -> Cow<'_, str> {
+    let Ok(mut doc) = existing.parse::<toml_edit::DocumentMut>() else {
+        return Cow::Borrowed(existing);
+    };
+
+    // 不能用 `.any()` short-circuit：每一條都要真的執行過 `move_value`，
+    // 不是只求「有沒有任何一條命中」。
+    let mut touched = false;
+    for (from, to) in LEGACY_KEY_MOVES {
+        touched |= move_value(&mut doc, from, to);
+    }
+
+    // 搬空的舊區塊要清掉，否則會印出一段沒有內容的 `[ui.diff]`——父層直接
+    // 從 `LEGACY_KEY_MOVES` 的來源路徑推導，不手寫第二張表：那張表曾經
+    // 手抄漏過 `ui.detail`（`height` 搬空之後，只寫過 `height` 沒寫
+    // `date_format`／`date_local` 的舊檔案會留下一段空的 `[ui.detail]`），
+    // 兩份清單本來就該是同一份。
+    for (from, _) in LEGACY_KEY_MOVES {
+        if let Some((_, parents)) = from.split_last() {
+            remove_if_empty(&mut doc, parents);
+        }
+    }
+
+    if touched {
+        Cow::Owned(doc.to_string())
+    } else {
+        Cow::Borrowed(existing)
+    }
 }
 
-#[optional(derives = [Deserialize])]
-#[derive(Debug, Clone, PartialEq, Eq, SmartDefault, Validate)]
-pub struct GraphColorConfig {
-    #[garde(length(min = 1), inner(pattern(r"^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$")))]
-    #[default(vec![
-        "#E06C76".into(),
-        "#98C379".into(),
-        "#E5C07B".into(),
-        "#61AFEF".into(),
-        "#C678DD".into(),
-        "#56B6C2".into(),
-    ])]
-    pub branches: Vec<String>,
+/// 把 `from` 路徑的鍵搬到 `to` 路徑，保留鍵本身的 decor（含鍵前面的行內
+/// 註解）。`from` 不存在時是 no-op（代表這條已經是新格式）；`to` 已經有
+/// 值時新格式優先，`from` 直接丟棄不覆寫——半升級檔案（使用者手動改過
+/// 一部分）不該被舊值蓋掉。回傳是否真的搬動了什麼。
+fn move_value(doc: &mut toml_edit::DocumentMut, from: &[&str], to: &[&str]) -> bool {
+    let (Some((from_key, from_parents)), Some((to_key, to_parents))) =
+        (from.split_last(), to.split_last())
+    else {
+        return false;
+    };
+
+    let Some((key, item)) =
+        navigate(doc.as_table_mut(), from_parents).and_then(|src| src.remove_entry(from_key))
+    else {
+        return false;
+    };
+
+    let Some(dest_table) = ensure_table(doc.as_table_mut(), to_parents) else {
+        // 目的路徑上有非表格值（使用者自己寫壞的）——放回原地，不能讓
+        // 值憑空消失。
+        if let Some(src_table) = navigate(doc.as_table_mut(), from_parents) {
+            src_table.insert_formatted(&key, item);
+        }
+        return false;
+    };
+    if dest_table.contains_key(to_key) {
+        return true;
+    }
+    dest_table.insert_formatted(&rename_key(key, to_key), item);
+    true
+}
+
+/// 沿著 `path` 逐層找子表，中途任何一段不是表格就回 `None`。
+fn navigate<'a>(
+    mut table: &'a mut toml_edit::Table,
+    path: &[&str],
+) -> Option<&'a mut toml_edit::Table> {
+    for segment in path {
+        table = table.get_mut(segment)?.as_table_mut()?;
+    }
+    Some(table)
+}
+
+/// 沿著 `path` 逐層找子表，不存在就建立（跟 `wizard::table_entry` 同一套
+/// `Table::entry().or_insert(toml_edit::table())` 寫法，不用 `doc["a"]["b"]`
+/// 鏈式索引，理由見該函式的註解——那種寫法在中間層不存在時會生成
+/// inline table）。中途任何一段已經是非表格值就回 `None`。
+fn ensure_table<'a>(
+    mut table: &'a mut toml_edit::Table,
+    path: &[&str],
+) -> Option<&'a mut toml_edit::Table> {
+    for segment in path {
+        table = table
+            .entry(segment)
+            .or_insert(toml_edit::table())
+            .as_table_mut()?;
+    }
+    Some(table)
+}
+
+/// 鍵名不變就原樣傳回；改名時保留原本的 decor（鍵前面的空白與行內
+/// 註解），只是換掉印出來的名字——這正是要用 `insert_formatted` 而不是
+/// `insert(&str, ..)` 的理由：後者的 `Key::new` 是全新的空 decor。
+fn rename_key(key: toml_edit::Key, new_name: &str) -> toml_edit::Key {
+    if key.get() == new_name {
+        return key;
+    }
+    let mut renamed = toml_edit::Key::new(new_name);
+    *renamed.leaf_decor_mut() = key.leaf_decor().clone();
+    renamed
+}
+
+/// 只在真的空的時候才刪——使用者若在裡面寫了別的（含已經失效的舊鍵），
+/// 原封不動留著，不能連著使用者自己的東西一起清掉。
+fn remove_if_empty(doc: &mut toml_edit::DocumentMut, path: &[&str]) {
+    let Some((last, parents)) = path.split_last() else {
+        return;
+    };
+    let Some(table) = navigate(doc.as_table_mut(), parents) else {
+        return;
+    };
+    let is_empty = table
+        .get(last)
+        .and_then(toml_edit::Item::as_table)
+        .is_some_and(toml_edit::Table::is_empty);
+    if is_empty {
+        table.remove(last);
+    }
 }
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
+
     use super::*;
+    use crate::color::GraphColors;
+
+    /// 取出設定檔格式文件裡第一段 ```toml 範例。三條測試都要拿它跟
+    /// `assets/default-config.toml` 或 `ColorTheme::default()` 比對。
+    fn documented_example() -> &'static str {
+        include_str!("../docs/src/configurations/config-file-format.md")
+            .split("```toml\n")
+            .nth(1)
+            .and_then(|s| s.split("```").next())
+            .expect("設定檔格式文件裡找不到 ```toml 範例區塊")
+    }
+
+    #[test]
+    fn migrate_legacy_toml_moves_every_known_path_to_its_new_location() {
+        let old = r##"
+            [ui.common]
+            cursor_type = { Virtual = "|" }
+            [ui.detail]
+            height = 30
+            date_format = "%Y/%m/%d %H:%M:%S"
+            [ui.diff]
+            height = 15
+            [ui.user_command]
+            height = 25
+            [ui.refs]
+            width = 40
+            [graph.color]
+            branches = ["#ff0000", "#00ff00"]
+        "##;
+        let migrated = migrate_legacy_toml(old);
+        assert!(matches!(migrated, Cow::Owned(_)));
+
+        let config: Config = toml::from_str::<OptionalConfig>(&migrated).unwrap().into();
+        assert_eq!(config.ui.cursor_type, CursorType::Virtual("|".into()));
+        assert_eq!(config.ui.refs_width, 40);
+        assert_eq!(config.ui.pane_height.detail, 30);
+        assert_eq!(config.ui.pane_height.diff, 15);
+        assert_eq!(config.ui.pane_height.user_command, 25);
+        assert_eq!(config.ui.detail.date_format, "%Y/%m/%d %H:%M:%S");
+        assert_eq!(
+            config.color.graph.branches,
+            vec!["#ff0000".to_string(), "#00ff00".to_string()]
+        );
+
+        // 舊區塊搬空了就該消失，不能留下一段沒有內容的 `[ui.diff]`。
+        let doc: toml::Table = toml::from_str(&migrated).unwrap();
+        assert!(!doc.contains_key("graph"));
+        let ui = doc["ui"].as_table().unwrap();
+        for legacy in ["common", "diff", "user_command", "refs"] {
+            assert!(!ui.contains_key(legacy), "`ui.{legacy}` 應該已經搬空移除");
+        }
+    }
+
+    #[test]
+    fn migrate_legacy_toml_is_a_noop_on_already_new_format() {
+        let new = documented_example();
+        let migrated = migrate_legacy_toml(new);
+        assert!(matches!(migrated, Cow::Borrowed(_)));
+        assert_eq!(migrated.as_ref(), new);
+    }
+
+    #[test]
+    fn migrate_legacy_toml_keeps_the_comment_above_a_moved_key() {
+        let old = "[graph.color]\n# 各分支依序輪流套用的顏色。\nbranches = [\"#ff0000\"]\n";
+        let migrated = migrate_legacy_toml(old);
+        // 光是「字串還在」不能證明真的搬了——原封不動借回去一樣會過。
+        // 要連著確認舊區塊消失、註解緊貼著搬到新鍵前面，才是真的釘住
+        // `insert_formatted` 保留 decor 這件事。
+        assert!(!migrated.contains("[graph.color]"), "{migrated}");
+        assert!(
+            migrated.contains("# 各分支依序輪流套用的顏色。\nbranches ="),
+            "{migrated}"
+        );
+    }
+
+    #[test]
+    fn migrate_legacy_toml_leaves_syntactically_broken_files_untouched() {
+        let broken = "[ui.common\ncursor_type = \"Native\"";
+        let migrated = migrate_legacy_toml(broken);
+        assert!(matches!(migrated, Cow::Borrowed(_)));
+        assert_eq!(migrated.as_ref(), broken);
+    }
+
+    #[test]
+    fn migrate_legacy_toml_prefers_the_new_key_when_both_exist() {
+        let old = r#"
+            [ui]
+            refs_width = 99
+            [ui.refs]
+            width = 40
+        "#;
+        let migrated = migrate_legacy_toml(old);
+        let config: Config = toml::from_str::<OptionalConfig>(&migrated).unwrap().into();
+        assert_eq!(config.ui.refs_width, 99);
+    }
 
     #[test]
     fn test_config_default() {
@@ -500,8 +695,12 @@ mod tests {
                 },
             },
             ui: UiConfig {
-                common: UiCommonConfig {
-                    cursor_type: CursorType::Native,
+                cursor_type: CursorType::Native,
+                refs_width: 26,
+                pane_height: UiPaneHeightConfig {
+                    detail: 20,
+                    diff: 20,
+                    user_command: 20,
                 },
                 list: UiListConfig {
                     columns: vec![
@@ -519,24 +718,8 @@ mod tests {
                     name_width: 20,
                 },
                 detail: UiDetailConfig {
-                    height: 20,
                     date_format: "%Y-%m-%d %H:%M:%S %z".into(),
                     date_local: true,
-                },
-                diff: UiDiffConfig { height: 20 },
-                user_command: UiUserCommandConfig { height: 20 },
-                refs: UiRefsConfig { width: 26 },
-            },
-            graph: GraphConfig {
-                color: GraphColorConfig {
-                    branches: vec![
-                        "#E06C76".into(),
-                        "#98C379".into(),
-                        "#E5C07B".into(),
-                        "#61AFEF".into(),
-                        "#C678DD".into(),
-                        "#56B6C2".into(),
-                    ],
                 },
             },
             color: ColorTheme::default(),
@@ -562,8 +745,12 @@ mod tests {
             commands_10 = { name = "echo world", type = "inline", commands = ["echo", "world"], refresh = false }
             commands_3 = { name = "open vim", type = "suspend", commands = ["vim"] }
             tab_width = 2
-            [ui.common]
+            [ui]
             cursor_type = { Virtual = "|" }
+            refs_width = 40
+            [ui.pane_height]
+            detail = 30
+            user_command = 30
             [ui.list]
             columns = ["date", "subject", "hash", "graph"]
             subject_min_width = 40
@@ -572,14 +759,9 @@ mod tests {
             date_local = false
             name_width = 30
             [ui.detail]
-            height = 30
             date_format = "%Y/%m/%d %H:%M:%S"
             date_local = false
-            [ui.user_command]
-            height = 30
-            [ui.refs]
-            width = 40
-            [graph.color]
+            [color.graph]
             branches = ["#ff0000", "#00ff00", "#0000ff"]
         "##;
         let actual: Config = toml::from_str::<OptionalConfig>(toml).unwrap().into();
@@ -653,8 +835,12 @@ mod tests {
                 },
             },
             ui: UiConfig {
-                common: UiCommonConfig {
-                    cursor_type: CursorType::Virtual("|".into()),
+                cursor_type: CursorType::Virtual("|".into()),
+                refs_width: 40,
+                pane_height: UiPaneHeightConfig {
+                    detail: 30,
+                    diff: 20,
+                    user_command: 30,
                 },
                 list: UiListConfig {
                     columns: vec![
@@ -670,20 +856,16 @@ mod tests {
                     name_width: 30,
                 },
                 detail: UiDetailConfig {
-                    height: 30,
                     date_format: "%Y/%m/%d %H:%M:%S".into(),
                     date_local: false,
                 },
-                diff: UiDiffConfig { height: 20 },
-                user_command: UiUserCommandConfig { height: 30 },
-                refs: UiRefsConfig { width: 40 },
             },
-            graph: GraphConfig {
-                color: GraphColorConfig {
+            color: ColorTheme {
+                graph: GraphColors {
                     branches: vec!["#ff0000".into(), "#00ff00".into(), "#0000ff".into()],
                 },
+                ..ColorTheme::default()
             },
-            color: ColorTheme::default(),
             keybind: None,
         };
         assert_eq!(actual, expected);
@@ -696,75 +878,20 @@ mod tests {
             date_format = "%Y/%m/%d"
         "#;
         let actual: Config = toml::from_str::<OptionalConfig>(toml).unwrap().into();
+        // 只設了 `ui.list.date_format`，其餘每一項都該維持預設——這正是這條
+        // 測試要證明的事，所以只明寫那一個欄位，其餘用 `..Default::default()`
+        // 帶過。`test_config_default` 已經逐欄位釘死過完整的預設值一次，
+        // 這裡不用再抄一份（`test_config_complete_toml` 不適用這招：那條
+        // 測試每個欄位都該明寫，才驗得出「解析出來的值」而非「預設值」）。
         let expected = Config {
-            core: CoreConfig {
-                option: CoreOptionConfig {
-                    order: None,
-                    graph_width: None,
-                    compact: None,
-                    graph_style: None,
-                    initial_selection: None,
-                    max_count: None,
-                },
-                update: CoreUpdateConfig {
-                    mode: None,
-                    interval_hours: None,
-                    auto_restart: None,
-                },
-                search: CoreSearchConfig {
-                    ignore_case: false,
-                    fuzzy: false,
-                },
-                user_command: CoreUserCommandConfig {
-                    commands: FxHashMap::default(),
-                    tab_width: 4,
-                },
-                external: CoreExternalConfig {
-                    clipboard: ClipboardConfig::Auto,
-                },
-            },
             ui: UiConfig {
-                common: UiCommonConfig {
-                    cursor_type: CursorType::Native,
-                },
                 list: UiListConfig {
-                    columns: vec![
-                        UserListColumnType::Graph,
-                        UserListColumnType::Marker,
-                        UserListColumnType::Subject,
-                        UserListColumnType::Date,
-                        UserListColumnType::Name,
-                        UserListColumnType::Hash,
-                    ],
-                    subject_min_width: 20,
                     date_format: "%Y/%m/%d".into(),
-                    date_width: 10,
-                    date_local: true,
-                    name_width: 20,
+                    ..UiListConfig::default()
                 },
-                detail: UiDetailConfig {
-                    height: 20,
-                    date_format: "%Y-%m-%d %H:%M:%S %z".into(),
-                    date_local: true,
-                },
-                diff: UiDiffConfig { height: 20 },
-                user_command: UiUserCommandConfig { height: 20 },
-                refs: UiRefsConfig { width: 26 },
+                ..UiConfig::default()
             },
-            graph: GraphConfig {
-                color: GraphColorConfig {
-                    branches: vec![
-                        "#E06C76".into(),
-                        "#98C379".into(),
-                        "#E5C07B".into(),
-                        "#61AFEF".into(),
-                        "#C678DD".into(),
-                        "#56B6C2".into(),
-                    ],
-                },
-            },
-            color: ColorTheme::default(),
-            keybind: None,
+            ..Config::default()
         };
         assert_eq!(actual, expected);
     }
@@ -816,12 +943,7 @@ mod tests {
     /// 實際是 date/name/hash）。
     #[test]
     fn documented_example_config_is_valid_and_shows_real_defaults() {
-        let doc = include_str!("../docs/src/configurations/config-file-format.md");
-        let example = doc
-            .split("```toml\n")
-            .nth(1)
-            .and_then(|s| s.split("```").next())
-            .expect("設定檔格式文件裡找不到 ```toml 範例區塊");
+        let example = documented_example();
 
         let schema: serde_json::Value =
             serde_json::from_str(include_str!("../config.schema.json")).unwrap();
@@ -847,12 +969,7 @@ mod tests {
     /// 成 `Config` 後逐欄位比對，不比原始文字（註解、排版本來就不同）。
     #[test]
     fn default_config_asset_matches_documented_example() {
-        let doc = include_str!("../docs/src/configurations/config-file-format.md");
-        let example = doc
-            .split("```toml\n")
-            .nth(1)
-            .and_then(|s| s.split("```").next())
-            .expect("設定檔格式文件裡找不到 ```toml 範例區塊");
+        let example = documented_example();
         let doc_config: Config = toml::from_str::<OptionalConfig>(example).unwrap().into();
 
         let asset = include_str!("../assets/default-config.toml");
@@ -887,6 +1004,66 @@ mod tests {
         actual.core.update = CoreUpdateConfig::default();
         actual.keybind = None;
         assert_eq!(actual, Config::default());
+    }
+
+    /// 取出 `[color]` 表的欄位路徑，只認鍵不看值；巢狀表（目前只有
+    /// `graph`）用 `.` 串接成 `graph.branches` 這種路徑，不然只比頂層鍵
+    /// 的話，`[color.graph]` 底下漏寫 `branches` 也會被放行——跟
+    /// `status_interactive_fg` 消失好幾個版本沒人發現是同一種盲點。
+    fn color_keys(value: &toml::Value) -> BTreeSet<String> {
+        fn walk(value: &toml::Value, prefix: &str, out: &mut BTreeSet<String>) {
+            match value.as_table() {
+                Some(table) => {
+                    for (key, v) in table {
+                        let path = if prefix.is_empty() {
+                            key.clone()
+                        } else {
+                            format!("{prefix}.{key}")
+                        };
+                        walk(v, &path, out);
+                    }
+                }
+                None => {
+                    out.insert(prefix.to_string());
+                }
+            }
+        }
+        let mut out = BTreeSet::new();
+        walk(value, "", &mut out);
+        out
+    }
+
+    /// `ColorTheme` 有的欄位，範本與文件範例都一定要寫出來。
+    ///
+    /// 上面兩條測試只守單向：`assert_keys_declared_in_schema` 驗「範例的鍵
+    /// 在 schema 裡有宣告」，`default_config_asset_shows_real_defaults` 驗
+    /// 「範本寫出來的值等於預設值」。兩者都建立在「範本裡沒寫的鍵就當作
+    /// 沒有」這個前提上——少寫一個鍵，比對照樣兩邊都是預設值，全部綠燈，
+    /// `status_interactive_fg` 就是這樣消失了好幾個版本沒人發現。
+    ///
+    /// 這裡反過來，從 `ColorTheme::default()` 本身出發：struct 有的欄位，
+    /// 範本／文件範例都要出現。只比鍵、不比值——`ratatui::Color` 的
+    /// `Serialize` 走 `Display`（`Color::Reset` 序列化成 `"Reset"`），跟
+    /// 範本手寫的 `"reset"` 本來就對不上，值的漂移已經有上面那條測試守著。
+    #[test]
+    fn every_color_field_appears_in_asset_and_doc_example() {
+        let expected = toml::Value::try_from(ColorTheme::default()).unwrap();
+        let expected_keys = color_keys(&expected);
+
+        let asset: toml::Table =
+            toml::from_str(include_str!("../assets/default-config.toml")).unwrap();
+        let asset_keys = color_keys(asset.get("color").unwrap());
+        assert_eq!(
+            asset_keys, expected_keys,
+            "assets/default-config.toml 的 [color] 跟 ColorTheme 欄位對不上"
+        );
+
+        let doc_table: toml::Table = toml::from_str(documented_example()).unwrap();
+        let doc_keys = color_keys(doc_table.get("color").unwrap());
+        assert_eq!(
+            doc_keys, expected_keys,
+            "文件範例的 [color] 跟 ColorTheme 欄位對不上"
+        );
     }
 
     /// `graph_width` 的可選值散在四個地方：`GraphWidthType` 的 derive、

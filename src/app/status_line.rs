@@ -773,7 +773,7 @@ impl StatusLineState {
 
         if let StatusLine::Input(_, Some(cursor_pos), _) = &self.line {
             let (x, y) = (area.x + cursor_pos + 1, area.y + 1);
-            match &self.ctx.ui_config.common.cursor_type {
+            match &self.ctx.ui_config.cursor_type {
                 CursorType::Native => {
                     f.set_cursor_position((x, y));
                 }

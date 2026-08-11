@@ -33,5 +33,5 @@ Files 區塊啟用時：
 
 ## 設定
 
-diff 區域的高度可以透過 `ui.diff.height` 調整，詳見
-[設定檔格式](../configurations/config-file-format.md#uidiffheight)。
+diff 區域的高度可以透過 `ui.pane_height.diff` 調整，詳見
+[設定檔格式](../configurations/config-file-format.md#uipane_heightdiff)。

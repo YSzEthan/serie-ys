@@ -1,7 +1,7 @@
 use std::{path::Path, process::Command};
 
 use chrono::{DateTime, Days, NaiveDate, TimeZone, Utc};
-use ysgit::{color, config, git, graph};
+use ysgit::{color, git, graph};
 
 type TestResult = Result<(), Box<dyn std::error::Error>>;
 
@@ -1237,8 +1237,8 @@ fn build_graph_snapshot_source(
 
     let graph = graph::calc_graph(&repository, head_hint.as_ref(), option.reserve_head_col);
 
-    let graph_color_config = config::GraphColorConfig::default();
-    let graph_color_set = color::GraphColorSet::new(&graph_color_config);
+    let graph_colors = color::GraphColors::default();
+    let graph_color_set = color::GraphColorSet::new(&graph_colors);
     let colors = graph_color_set
         .colors
         .iter()
