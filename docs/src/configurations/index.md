@@ -6,10 +6,15 @@
 
 - `$SERIE_CONFIG_FILE`
   - 若已設定 `$SERIE_CONFIG_FILE` 但檔案不存在，將會產生錯誤。
-- `$XDG_CONFIG_HOME/serie/config.toml`
-  - 若未設定 `$XDG_CONFIG_HOME`，則使用 `~/.config/`。
+- `<執行檔所在目錄>/.ysgit.toml`
+  - 跟著執行檔走的隱藏檔，首次啟動會自動生成一份含所有選項與說明的預設檔。
+  - 自我更新（見[命令列選項](../getting-started/command-line-options.md#-u---update)）
+    只會 `rename` 替換執行檔本身，不會動到這個檔案。
 
 沒設到的項目一律用預設值，不管是整份設定檔不存在，還是檔案裡漏了某幾項。
+
+舊版（v2.5.x 以前）設定檔放在 `~/.config/serie/config.toml`，不再讀取；有需要的話手動
+把內容搬到新位置即可。
 
 ## 舊設定檔裡的死鍵
 

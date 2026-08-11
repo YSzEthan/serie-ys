@@ -59,6 +59,43 @@
                 "head"
               ],
               "default": "latest"
+            },
+            "max_count": {
+              "type": "integer",
+              "description": "The maximum number of commits to render. Unset renders all commits. The value specified in the command line argument takes precedence."
+            }
+          },
+          "additionalProperties": false
+        },
+        "update": {
+          "type": "object",
+          "description": "Self-update check settings.",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "description": "Self-update check mode. \"off\": never check automatically (manual U key / -U flag still work). \"check\": check and prompt y/n before updating. \"auto\": check and install automatically without prompting. The value specified in the command line argument takes precedence.",
+              "enum": [
+                "off",
+                "check",
+                "auto"
+              ],
+              "default": "check"
+            },
+            "interval_hours": {
+              "type": "integer",
+              "description": "How often (in hours) to check for updates, both at startup and while the app keeps running. The value specified in the command line argument takes precedence.",
+              "minimum": 1,
+              "maximum": 48,
+              "default": 6
+            },
+            "auto_restart": {
+              "type": "string",
+              "description": "Whether to restart (TUI) or launch (CLI -U) the new version automatically after a successful update, without asking. The value specified in the command line argument takes precedence.",
+              "enum": [
+                "off",
+                "on"
+              ],
+              "default": "off"
             }
           },
           "additionalProperties": false

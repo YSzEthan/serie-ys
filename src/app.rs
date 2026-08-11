@@ -25,6 +25,7 @@ use crate::{
     },
     graph::{Graph, GraphStyle},
     keybind::KeyBind,
+    update::UpdateSettings,
     view::{dispatch_delete_branch, RefreshViewContext, RefsOrigin, View},
     widget::{
         commit_list::{CommitInfo, CommitListState, RawCommitIdx},
@@ -69,6 +70,9 @@ pub struct AppContext {
     pub graph_width: Option<GraphWidthType>,
     /// 已合併 CLI／設定檔的緊湊模式偏好，理由跟 `graph_width` 一樣。
     pub compact: Option<CompactType>,
+    /// 已合併 CLI／設定檔的自動更新設定，`update::spawn_check` 與
+    /// `auto_restart` 的中斷判斷共用同一份，不各自再 `.or()` 一遍。
+    pub update: UpdateSettings,
 }
 
 /// `q` 雙擊退出的判定結果。
@@ -650,7 +654,18 @@ impl App<'_> {
                     }
                 }
                 AppEvent::CheckUpdate => {
-                    crate::update::spawn_check(self.ec, true);
+                    crate::update::spawn_check(self.ec, true, self.ctx.update);
+                }
+                AppEvent::PeriodicUpdateCheck => {
+                    // 已經裝好但還沒重啟：不再檢查，也不重新武裝——鏈就
+                    // 停在這裡，下一輪 interval 不會再有這個事件。重啟後
+                    // 是全新 process，`lib.rs::run()` 會重新排第一次。
+                    if !crate::update::is_update_installed() {
+                        crate::update::spawn_check(self.ec, false, self.ctx.update);
+                        self.ec
+                            .sender()
+                            .send_after(AppEvent::PeriodicUpdateCheck, self.ctx.update.interval);
+                    }
                 }
                 AppEvent::OpenUpdatePrompt { tag } => {
                     self.maybe_open_update_prompt(tag);
@@ -659,6 +674,12 @@ impl App<'_> {
                     spawn_update_download(self.ec, tag);
                 }
                 AppEvent::UpdateInstalled { tag, exe } => {
+                    // auto_restart 開著時不問，但仍要走 can_interrupt()
+                    // ——它跟重啟提示共用同一個「現在能不能打斷使用者」判斷，
+                    // 背景 fetch 在跑或輸入框在打字時不准抽地毯。
+                    if self.ctx.update.auto_restart && self.can_interrupt() {
+                        return Ok(Ret::Quit(Some(exe)));
+                    }
                     self.maybe_open_restart_prompt(tag, exe);
                 }
                 AppEvent::RestartRequested { exe } => {
@@ -1547,7 +1568,8 @@ impl App<'_> {
     /// 也按不了的地方），或使用者根本不在 List/Detail/Refs 這三個 browsing
     /// view（GitHub 搜尋框、CreateTag 等對話框用的是自己的 `tui_input::Input`，
     /// 狀態列同樣顯示 `None`，提示一彈出來就會吃掉打字）。三個條件都過才開，
-    /// 沒過就丟掉不問——節流本來就一天一次，下次再說，不做佇列。
+    /// 沒過就丟掉不問——節流間隔可設定（`core.update.interval_hours`），
+    /// 下次再說，不做佇列。
     fn maybe_open_update_prompt(&mut self, tag: String) {
         if self.pending_message.is_none()
             && self.view.is_browsing_view()
@@ -1557,15 +1579,22 @@ impl App<'_> {
         }
     }
 
-    /// 下載＋替換執行檔完成，問是否要離開並以新版重啟。守衛比
-    /// `maybe_open_update_prompt` 多容許狀態列正顯示一則通知——理由見
-    /// `StatusLineState::is_showing_notification`。守衛沒過就退回通知。
-    fn maybe_open_restart_prompt(&mut self, tag: String, exe: PathBuf) {
-        if self.pending_message.is_none()
+    /// 現在能不能打斷使用者：沒有 pending overlay、在三個 browsing view 之一、
+    /// 狀態列閒置或只是顯示一則通知（picker／prompt 都不算）。比
+    /// `maybe_open_update_prompt` 的守衛寬一格——理由見
+    /// `StatusLineState::is_showing_notification`。這是唯一一處判斷「可不可以
+    /// 打斷」，`auto_restart` 的無提示重啟與這裡的重啟提示共用它，兩者不准各自
+    /// 長出一份守衛。
+    fn can_interrupt(&self) -> bool {
+        self.pending_message.is_none()
             && self.view.is_browsing_view()
             && (self.status_line_state.is_idle()
                 || self.status_line_state.is_showing_notification())
-        {
+    }
+
+    /// 下載＋替換執行檔完成，問是否要離開並以新版重啟。守衛沒過就退回通知。
+    fn maybe_open_restart_prompt(&mut self, tag: String, exe: PathBuf) {
+        if self.can_interrupt() {
             self.status_line_state.open_restart_prompt(tag, exe);
         } else {
             self.status_line_state

@@ -1,5 +1,7 @@
 use std::{
     env,
+    fs::OpenOptions,
+    io::Write,
     path::{Path, PathBuf},
 };
 
@@ -12,13 +14,11 @@ use umbra::optional;
 use crate::{
     color::{ColorTheme, OptionalColorTheme},
     keybind::KeyBind,
+    update::{AutoRestart, UpdateMode, MAX_INTERVAL_HOURS, MIN_INTERVAL_HOURS},
     CommitOrderType, CompactType, GraphStyle, GraphWidthType, InitialSelection, Result,
 };
 
-const XDG_CONFIG_HOME_ENV_NAME: &str = "XDG_CONFIG_HOME";
-const DEFAULT_CONFIG_DIR: &str = ".config";
-const APP_DIR_NAME: &str = "serie";
-const CONFIG_FILE_NAME: &str = "config.toml";
+const CONFIG_FILE_NAME: &str = ".ysgit.toml";
 const CONFIG_FILE_ENV_NAME: &str = "SERIE_CONFIG_FILE";
 
 pub fn load() -> Result<(
@@ -39,17 +39,10 @@ pub fn load() -> Result<(
             }
             read_config_from_path(&user_path)
         }
-        None => {
-            if let Some(default_path) = config_file_path() {
-                if default_path.exists() {
-                    read_config_from_path(&default_path)
-                } else {
-                    Ok(Config::default())
-                }
-            } else {
-                Ok(Config::default())
-            }
-        }
+        None => match default_config_file_path() {
+            Some(default_path) if default_path.exists() => read_config_from_path(&default_path),
+            _ => Ok(Config::default()),
+        },
     }?;
 
     config.validate()?;
@@ -67,18 +60,58 @@ fn config_file_path_from_env() -> Option<PathBuf> {
     env::var(CONFIG_FILE_ENV_NAME).ok().map(PathBuf::from)
 }
 
-/// `~/.config/serie`（或 `$XDG_CONFIG_HOME/serie`）。`update` 模組拿它放節流
-/// 用的 marker 檔——跟 config.toml 是同一個目錄，不用另外決定放哪。
-pub(crate) fn config_dir() -> Option<PathBuf> {
-    env::var(XDG_CONFIG_HOME_ENV_NAME)
-        .ok()
-        .map(PathBuf::from)
-        .or_else(|| env::home_dir().map(|home| home.join(DEFAULT_CONFIG_DIR)))
-        .map(|config_dir| config_dir.join(APP_DIR_NAME))
+/// 設定檔實際會用到的路徑：`$SERIE_CONFIG_FILE` 優先，否則跟著執行檔走。
+/// `load()`／精靈的寫回都要看同一個檔案——`load()` 自己的分支邏輯還要
+/// 額外分辨「env 指定但檔案不存在就報錯」，跟這裡「單純告訴呼叫端寫去
+/// 哪」是不同需求，所以沒有讓 `load()` 直接呼叫這個函式，兩者各自維護，
+/// 但公式必須逐字一致。
+pub(crate) fn effective_path() -> Option<PathBuf> {
+    config_file_path_from_env().or_else(default_config_file_path)
 }
 
-fn config_file_path() -> Option<PathBuf> {
-    config_dir().map(|dir| dir.join(CONFIG_FILE_NAME))
+/// 首次啟動生成一份含所有旋鈕與中文說明的預設設定檔——沒有這一步，「調整
+/// 設定」就只能影響那一次啟動：根本沒有檔案可以寫回。要在 `Args::try_parse()`
+/// 之前呼叫（`run()` 裡的順序），精靈才讀得到剛生成的檔。
+///
+/// 三個邊界，都刻意不出聲失敗（成功也不出聲——這是背景動作，不是使用者
+/// 主動要求的操作，吵反而不對）：
+/// - `$SERIE_CONFIG_FILE` 那條不自動建：使用者明確指定了路徑，維持
+///   `load()` 既有的「檔案不存在就報錯」行為，不能在這裡搶先生成一份
+///   放在別的位置。
+/// - 用 `create_new` 而非「`exists()` 再 `write`」：後者是 TOCTOU，兩次
+///   系統呼叫間檔案可能被別的 ysgit process 建立。`create_new` 是單一
+///   atomic 的 open，`AlreadyExists` 直接當作正常結束。
+/// - 目錄唯讀（例如裝在 `/usr/local/bin`）時寫入會失敗：印一句提示，
+///   不能擋住啟動——這只是「幫使用者建一份範本」，不是必要條件，
+///   `load()` 找不到檔案本來就會退回內建預設值繼續跑。
+pub fn ensure_config_file() {
+    if config_file_path_from_env().is_some() {
+        return;
+    }
+    let Some(path) = default_config_file_path() else {
+        return;
+    };
+    match OpenOptions::new().write(true).create_new(true).open(&path) {
+        Ok(mut file) => {
+            const DEFAULT_CONFIG: &str = include_str!("../assets/default-config.toml");
+            if let Err(e) = file.write_all(DEFAULT_CONFIG.as_bytes()) {
+                eprintln!("寫入預設設定檔失敗（{}）：{e}", path.display());
+            }
+        }
+        Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
+        Err(e) => {
+            eprintln!("無法建立預設設定檔（{}）：{e}", path.display());
+        }
+    }
+}
+
+/// 設定檔跟著執行檔走的位置：`<exe 所在目錄>/.ysgit.toml`。自我更新只
+/// `fs::rename` 執行檔本身（見 `update::download_and_replace`），同目錄的
+/// 設定檔不會被動到——這是選這個位置而不是 `~/.config` 的核心理由。
+/// `exe_dir()` 已經處理過 symlink／`(deleted)` 這些自我更新特有的坑
+/// （見該函式註解），這裡不重算一次。
+fn default_config_file_path() -> Option<PathBuf> {
+    crate::update::exe_dir().map(|dir| dir.join(CONFIG_FILE_NAME))
 }
 
 fn read_config_from_path(path: &Path) -> Result<Config> {
@@ -122,6 +155,9 @@ pub struct CoreConfig {
     #[garde(dive)]
     #[nested]
     pub external: CoreExternalConfig,
+    #[garde(dive)]
+    #[nested]
+    pub update: CoreUpdateConfig,
 }
 
 #[optional(derives = [Deserialize])]
@@ -132,6 +168,23 @@ pub struct CoreOptionConfig {
     pub compact: Option<CompactType>,
     pub graph_style: Option<GraphStyle>,
     pub initial_selection: Option<InitialSelection>,
+    pub max_count: Option<usize>,
+}
+
+/// 自動更新設定，三個欄位對應 `-U`／背景檢查／重啟提示。`interval_hours`
+/// 要驗證範圍：設 0 會讓週期檢查退化成無限打網路，沒有上限則
+/// `hours * 3600` 在 release build 會 wrapping、繞回極小值，回到同一個熱
+/// 迴圈——兩者都要在載入時就擋掉，不能靠程式裡默默 clamp（那會讓使用者
+/// 以為設定生效了）。
+#[optional(derives = [Deserialize])]
+#[derive(Debug, Clone, PartialEq, Eq, SmartDefault, Validate)]
+pub struct CoreUpdateConfig {
+    #[garde(skip)]
+    pub mode: Option<UpdateMode>,
+    #[garde(range(min = MIN_INTERVAL_HOURS, max = MAX_INTERVAL_HOURS))]
+    pub interval_hours: Option<u64>,
+    #[garde(skip)]
+    pub auto_restart: Option<AutoRestart>,
 }
 
 #[optional(derives = [Deserialize])]
@@ -427,6 +480,12 @@ mod tests {
                     compact: None,
                     graph_style: None,
                     initial_selection: None,
+                    max_count: None,
+                },
+                update: CoreUpdateConfig {
+                    mode: None,
+                    interval_hours: None,
+                    auto_restart: None,
                 },
                 search: CoreSearchConfig {
                     ignore_case: false,
@@ -532,6 +591,12 @@ mod tests {
                     compact: None,
                     graph_style: Some(GraphStyle::Angular),
                     initial_selection: Some(InitialSelection::Head),
+                    max_count: None,
+                },
+                update: CoreUpdateConfig {
+                    mode: None,
+                    interval_hours: None,
+                    auto_restart: None,
                 },
                 search: CoreSearchConfig {
                     ignore_case: true,
@@ -639,6 +704,12 @@ mod tests {
                     compact: None,
                     graph_style: None,
                     initial_selection: None,
+                    max_count: None,
+                },
+                update: CoreUpdateConfig {
+                    mode: None,
+                    interval_hours: None,
+                    auto_restart: None,
                 },
                 search: CoreSearchConfig {
                     ignore_case: false,
@@ -760,10 +831,60 @@ mod tests {
 
         let parsed: OptionalConfig = toml::from_str(example).unwrap();
         let mut actual = Config::from(parsed);
-        // `core.option` 的五個欄位與 `keybind` 是 Option，「未設定」與「設定成
-        // 預設值」在型別上不同（命令列參數要能覆蓋，所以預設留到更後面才解析）。
-        // 範例把它們明寫出來正是它的用途，比對前歸零，其餘欄位照比。
+        // `core.option`／`core.update` 的欄位與 `keybind` 是 Option，「未設定」
+        // 與「設定成預設值」在型別上不同（命令列參數要能覆蓋，所以預設留到更
+        // 後面才解析）。範例把它們明寫出來正是它的用途，比對前歸零，其餘欄位
+        // 照比。
         actual.core.option = CoreOptionConfig::default();
+        actual.core.update = CoreUpdateConfig::default();
+        actual.keybind = None;
+        assert_eq!(actual, Config::default());
+    }
+
+    /// `assets/default-config.toml` 是首次啟動寫給使用者的那份檔案，跟
+    /// 上面那個文件範例是同一件事的兩份拷貝（一份給人讀文件、一份給程式
+    /// 內嵌），值必須同步——這條測試就是防漂移的機制：兩者各自 parse
+    /// 成 `Config` 後逐欄位比對，不比原始文字（註解、排版本來就不同）。
+    #[test]
+    fn default_config_asset_matches_documented_example() {
+        let doc = include_str!("../docs/src/configurations/config-file-format.md");
+        let example = doc
+            .split("```toml\n")
+            .nth(1)
+            .and_then(|s| s.split("```").next())
+            .expect("設定檔格式文件裡找不到 ```toml 範例區塊");
+        let doc_config: Config = toml::from_str::<OptionalConfig>(example).unwrap().into();
+
+        let asset = include_str!("../assets/default-config.toml");
+        let asset_config: Config = toml::from_str::<OptionalConfig>(asset).unwrap().into();
+
+        assert_eq!(asset_config, doc_config);
+    }
+
+    /// `assets/default-config.toml` 本身也要通過 schema 檢查——它是首次
+    /// 啟動就會寫到使用者磁碟上的檔案，死鍵在這裡比在文件範例裡更嚴重
+    /// （文件錯了只是誤導讀者，這個錯了是實際寫進使用者設定檔）。
+    #[test]
+    fn default_config_asset_keys_are_declared_in_schema() {
+        let asset = include_str!("../assets/default-config.toml");
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../config.schema.json")).unwrap();
+        let table: toml::Table = toml::from_str(asset)
+            .unwrap_or_else(|e| panic!("assets/default-config.toml 不是合法 TOML: {e}"));
+        assert_keys_declared_in_schema(&table, &schema, "");
+    }
+
+    /// `assets/default-config.toml` 裡明寫出來的值（`core.option`／
+    /// `core.update` 除外，理由同 `documented_example_config_is_valid_...`）
+    /// 必須真的是 `Config::default()`——這是它作為「首次啟動範本」的存在
+    /// 意義：使用者看到的第一份設定檔，內容要跟沒有這份檔案時的行為一致。
+    #[test]
+    fn default_config_asset_shows_real_defaults() {
+        let asset = include_str!("../assets/default-config.toml");
+        let parsed: OptionalConfig = toml::from_str(asset).unwrap();
+        let mut actual = Config::from(parsed);
+        actual.core.option = CoreOptionConfig::default();
+        actual.core.update = CoreUpdateConfig::default();
         actual.keybind = None;
         assert_eq!(actual, Config::default());
     }
@@ -821,6 +942,68 @@ mod tests {
             .collect();
 
         let mut accepted: Vec<String> = CompactType::value_variants()
+            .iter()
+            .flat_map(|variant| {
+                variant
+                    .to_possible_value()
+                    .expect("每個變體都該有對應的命令列值")
+                    .get_name_and_aliases()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+
+        declared.sort();
+        accepted.sort();
+        assert_eq!(declared, accepted);
+    }
+
+    #[test]
+    fn update_mode_schema_enum_matches_every_accepted_cli_value() {
+        use clap::ValueEnum;
+
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../config.schema.json")).unwrap();
+        let mut declared: Vec<String> = schema["properties"]["core"]["properties"]["update"]
+            ["properties"]["mode"]["enum"]
+            .as_array()
+            .expect("config.schema.json 裡的 core.update.mode 沒有 enum")
+            .iter()
+            .map(|v| v.as_str().expect("enum 值不是字串").to_string())
+            .collect();
+
+        let mut accepted: Vec<String> = UpdateMode::value_variants()
+            .iter()
+            .flat_map(|variant| {
+                variant
+                    .to_possible_value()
+                    .expect("每個變體都該有對應的命令列值")
+                    .get_name_and_aliases()
+                    .map(str::to_string)
+                    .collect::<Vec<_>>()
+            })
+            .collect();
+
+        declared.sort();
+        accepted.sort();
+        assert_eq!(declared, accepted);
+    }
+
+    #[test]
+    fn auto_restart_schema_enum_matches_every_accepted_cli_value() {
+        use clap::ValueEnum;
+
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../config.schema.json")).unwrap();
+        let mut declared: Vec<String> = schema["properties"]["core"]["properties"]["update"]
+            ["properties"]["auto_restart"]["enum"]
+            .as_array()
+            .expect("config.schema.json 裡的 core.update.auto_restart 沒有 enum")
+            .iter()
+            .map(|v| v.as_str().expect("enum 值不是字串").to_string())
+            .collect();
+
+        let mut accepted: Vec<String> = AutoRestart::value_variants()
             .iter()
             .flat_map(|variant| {
                 variant
@@ -906,5 +1089,42 @@ mod tests {
                 commands: vec!["xclip".into(), "-selection".into(), "clipboard".into()]
             }
         );
+    }
+
+    #[test]
+    fn update_interval_hours_zero_fails_validation() {
+        let update = CoreUpdateConfig {
+            mode: None,
+            interval_hours: Some(0),
+            auto_restart: None,
+        };
+        assert!(update.validate().is_err());
+    }
+
+    #[test]
+    fn update_interval_hours_above_max_fails_validation() {
+        let update = CoreUpdateConfig {
+            mode: None,
+            interval_hours: Some(MAX_INTERVAL_HOURS + 1),
+            auto_restart: None,
+        };
+        assert!(update.validate().is_err());
+    }
+
+    #[test]
+    fn update_interval_hours_within_range_passes_validation() {
+        let update = CoreUpdateConfig {
+            mode: None,
+            interval_hours: Some(MIN_INTERVAL_HOURS),
+            auto_restart: None,
+        };
+        assert!(update.validate().is_ok());
+    }
+
+    #[test]
+    fn update_interval_hours_unset_passes_validation() {
+        // None＝沒設定，garde 對 Option<T> 的 range 是 None 放行、Some 才驗。
+        let update = CoreUpdateConfig::default();
+        assert!(update.validate().is_ok());
     }
 }

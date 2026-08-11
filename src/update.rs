@@ -11,11 +11,16 @@ use std::{
     env, fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
-    sync::atomic::{AtomicBool, Ordering},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        OnceLock,
+    },
     time::{Duration, SystemTime},
 };
 
+use clap::ValueEnum;
 use semver::Version;
+use serde::Deserialize;
 
 use crate::event::{AppEvent, EventController};
 
@@ -24,25 +29,127 @@ const CHECKSUMS_URL: &str = concat!(
     env!("CARGO_PKG_REPOSITORY"),
     "/releases/latest/download/checksum.txt"
 );
-const CHECK_INTERVAL: Duration = Duration::from_secs(24 * 60 * 60);
-const MARKER_FILE_NAME: &str = "update_check";
+const MARKER_FILE_NAME: &str = ".ysgit.update_check";
 
-/// 檢查並視需要開啟更新提示。啟動時的自動檢查與 `U` 鍵／`-U` 共用這個入口，
+/// 自動更新檢查模式。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum UpdateMode {
+    // 完全不檢查——連手動的 `U`／`-U` 都不受它影響，那是使用者當下的明確
+    // 意圖，跟「程式自作主張背景檢查」是兩回事。
+    //
+    // 用一般註解而非 `///`：clap 的 `ValueEnum` derive 會把 doc comment
+    // 當成每個變體的說明文字塞進 `--help`（長格式），但 `-h`（短格式）
+    // 不會展開它——一旦某個 enum 的變體有 doc comment，兩者就不再逐字
+    // 相同，會撞上 `tests/help_flag.rs` 釘住的
+    // `short_and_long_help_are_byte_identical_and_exit_zero`。
+    Off,
+    #[default]
+    Check,
+    Auto,
+}
+
+/// 更新完成後是否自動重啟（TUI）／開啟新版（CLI），不再詢問。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum AutoRestart {
+    #[default]
+    Off,
+    On,
+}
+
+/// 檢查間隔的合法範圍（小時）；CLI／設定檔／精靈三處都要用同一組數字。
+pub const MIN_INTERVAL_HOURS: u64 = 1;
+pub const MAX_INTERVAL_HOURS: u64 = 48;
+pub const DEFAULT_INTERVAL_HOURS: u64 = 6;
+
+/// CLI 與設定檔合併後的自動更新設定，`run()`／`run_self_update` 只算一次、
+/// 之後所有地方（`AppContext`、`-U` 的兩個 confirm、背景檢查 thread）都吃
+/// 這個值，不各自再 `.or()` 一遍。
+#[derive(Debug, Clone, Copy)]
+pub struct UpdateSettings {
+    pub mode: UpdateMode,
+    pub interval: Duration,
+    pub auto_restart: bool,
+}
+
+impl Default for UpdateSettings {
+    /// 給測試 fixture 用（真正的合併入口是 `resolve()`，`run()` 一律走它）。
+    /// 手寫而非 derive：`Duration` 的 derive 預設是 0 秒，套進
+    /// `should_check_on_startup` 會讓每次呼叫都判定「早就該查了」，測試
+    /// 用到這個預設值時看起來會像巧合通過，不是邏輯真的對。
+    fn default() -> Self {
+        Self {
+            mode: UpdateMode::default(),
+            interval: Duration::from_secs(DEFAULT_INTERVAL_HOURS * 3600),
+            auto_restart: false,
+        }
+    }
+}
+
+/// `resolve()` 的一組來源（CLI 或設定檔）。三個欄位型別兩兩相同
+/// （`Option<UpdateMode>`、`Option<u64>`、`Option<AutoRestart>`），拆開寫
+/// 成 6 個位置參數時 CLI 側跟設定檔側寫反編譯器抓不到——包成同一個具名
+/// 型別、呼叫端用欄位名字建構，才擋得住這種手滑。
+#[derive(Debug, Clone, Copy, Default)]
+pub struct UpdateOverrides {
+    pub mode: Option<UpdateMode>,
+    pub interval_hours: Option<u64>,
+    pub auto_restart: Option<AutoRestart>,
+}
+
+/// 唯一的合併入口：CLI > 設定檔 > 內建預設。`YSGIT_NO_UPDATE_CHECK` 在這裡
+/// 壓成 `mode = Off`——原本散在 `should_check_on_startup` 裡的另一個閘門，
+/// 併過來後全程只剩 `mode` 一個判斷點。
+///
+/// 收純值而非整個 `&Args`／`&CoreConfig`：不必為了讀三個欄位就讓這個模組
+/// 認得 `Args` 的私有欄位，呼叫端（`lib.rs::run()`）在自己的模組裡解構
+/// 一次即可，這個函式本身也因此是純函式，好測。
+pub fn resolve(cli: UpdateOverrides, config: UpdateOverrides) -> UpdateSettings {
+    let mode = if env::var_os("YSGIT_NO_UPDATE_CHECK").is_some() {
+        UpdateMode::Off
+    } else {
+        cli.mode.or(config.mode).unwrap_or_default()
+    };
+    let interval_hours = cli
+        .interval_hours
+        .or(config.interval_hours)
+        .unwrap_or(DEFAULT_INTERVAL_HOURS);
+    let auto_restart =
+        cli.auto_restart.or(config.auto_restart).unwrap_or_default() == AutoRestart::On;
+    UpdateSettings {
+        mode,
+        interval: Duration::from_secs(interval_hours * 3600),
+        auto_restart,
+    }
+}
+
+/// 檢查並視需要開啟更新提示。啟動時的自動檢查與 `U` 鍵共用這個入口，
 /// 差異只在 `manual`：
-/// - 自動（`manual = false`）：沒開 config 旋鈕給這件事，節流未到期就整個
-///   不檢查；已是最新或出錯（沒裝 curl、沒網路）一律靜默，不能在啟動時噴錯。
-/// - 手動：繞過節流，任何結果都要吭聲。
+/// - 自動（`manual = false`）：`mode = Off` 或節流未到期就整個不檢查；
+///   已是最新或出錯（沒裝 curl、沒網路）一律靜默，不能在啟動時噴錯。
+/// - 手動：繞過節流與 `mode = Off`（使用者當下的明確意圖，跟「程式自作
+///   主張背景檢查」是兩回事），任何結果都要吭聲。
+///
+/// `mode = Auto` 時（不論手動或自動觸發）查到新版直接下載替換，不彈 y/n
+/// 提示——跟 `-U` 在 `mode = Auto` 下跳過 confirm 是同一個承諾，不因為
+/// 觸發來源是背景 thread 還是使用者按鍵而有兩套行為。
 ///
 /// 兩種情況都會標記「已檢查」，手動觸發後下次啟動不會馬上又問一次。
-pub fn spawn_check(ec: &EventController, manual: bool) {
-    if !manual && !should_check_on_startup() {
+pub fn spawn_check(ec: &EventController, manual: bool, settings: UpdateSettings) {
+    if !manual && (settings.mode == UpdateMode::Off || !should_check_now(settings.interval)) {
         return;
     }
     let tx = ec.sender();
+    let auto_download = settings.mode == UpdateMode::Auto;
     std::thread::spawn(move || {
         let result = check_for_update();
         mark_checked();
         match result {
+            Ok(Some(tag)) if auto_download => match download_and_replace(&tag) {
+                Ok(exe) => tx.send(AppEvent::UpdateInstalled { tag, exe }),
+                Err(e) => tx.send(AppEvent::NotifyError(e)),
+            },
             Ok(Some(tag)) => tx.send(AppEvent::OpenUpdatePrompt { tag }),
             Ok(None) if manual => tx.send(AppEvent::NotifyInfo(format!(
                 "Already up to date (v{})",
@@ -131,9 +238,8 @@ pub fn download_and_replace(tag: &str) -> Result<PathBuf, String> {
 /// 進入時先把 stdout flush 掉：`println!` 是 LineWriter，重導向到檔案時是
 /// block-buffered，`exec` 換掉 process image 的瞬間緩衝區內容會直接消失。
 ///
-/// `argv[0]` 預期是程式名（`Args::to_argv` 的輸出就長這樣，也是給
-/// `wizard::format_equivalent_command` 顯示用的），這裡跳過它——`exec`
-/// 本身就會帶入新 process 的 argv[0]，不需要呼叫端另外去頭。
+/// `argv[0]` 預期是程式名（`Args::to_argv` 的輸出就長這樣），這裡跳過
+/// 它——`exec` 本身就會帶入新 process 的 argv[0]，不需要呼叫端另外去頭。
 pub fn exec_replacing_self(exe: &Path, argv: &[String]) -> Result<(), String> {
     use std::io::Write;
     let _ = std::io::stdout().flush();
@@ -178,6 +284,14 @@ static UPDATE_RUNNING: AtomicBool = AtomicBool::new(false);
 /// 手上的執行檔內容就已經跟磁碟上的不是同一份了。
 static UPDATE_INSTALLED: AtomicBool = AtomicBool::new(false);
 
+/// 本 process 這輩子有沒有成功替換過一次執行檔——週期檢查用它決定要不要
+/// 停止重新武裝（見 `AppEvent::PeriodicUpdateCheck` 的處理）。裝好但還沒
+/// 重啟時再查下去沒有意義：`download_and_replace` 一定會被上面那個守衛
+/// 擋下回 Err，`Auto` 模式又是靜默失敗，只會白白每個 interval 打一次網路。
+pub fn is_update_installed() -> bool {
+    UPDATE_INSTALLED.load(Ordering::SeqCst)
+}
+
 struct UpdateGuard;
 
 impl Drop for UpdateGuard {
@@ -187,34 +301,117 @@ impl Drop for UpdateGuard {
 }
 
 // ── 節流：一個 0-byte 檔，只看 mtime ──
+//
+// 兩層路徑：優先跟著執行檔走（`exe_dir()`），寫不進去（例如裝在
+// `/usr/local/bin` 這種唯讀目錄）就退到系統暫存目錄。只保護「寫不寫得
+// 進去」，不處理多使用者共用暫存目錄可能撞名——marker 內容只有 mtime，
+// 撞名的後果最多是誤判節流時機，不是安全問題，犯不著為它另外做隔離。
 
-fn marker_path() -> Option<PathBuf> {
-    crate::config::config_dir().map(|dir| dir.join(MARKER_FILE_NAME))
+fn primary_marker_path() -> Option<PathBuf> {
+    exe_dir().map(|dir| dir.join(MARKER_FILE_NAME))
 }
 
-fn should_check_on_startup() -> bool {
-    if env::var_os("YSGIT_NO_UPDATE_CHECK").is_some() {
-        return false;
-    }
-    let Some(path) = marker_path() else {
+fn fallback_marker_path() -> PathBuf {
+    env::temp_dir().join(MARKER_FILE_NAME)
+}
+
+/// 讀取用：兩個位置誰有檔就用誰，優先層先看。都沒有就當作「從沒檢查過」。
+fn existing_marker_path() -> Option<PathBuf> {
+    primary_marker_path()
+        .filter(|p| p.exists())
+        .or_else(|| Some(fallback_marker_path()).filter(|p| p.exists()))
+}
+
+/// 距上次檢查是否已經超過 `interval`——純函式，供啟動檢查與週期檢查共用
+/// 判斷。`YSGIT_NO_UPDATE_CHECK` 不在這裡判斷：那個閘門已經併進 `resolve()`
+/// 壓成 `mode = Off`，`spawn_check` 用 `mode` 一個判斷點就夠。
+fn check_due(last_checked: SystemTime, now: SystemTime, interval: Duration) -> bool {
+    now.duration_since(last_checked)
+        .is_ok_and(|elapsed| elapsed >= interval)
+}
+
+/// 啟動檢查與週期檢查共用同一個節流判斷——名字不叫 `on_startup` 是因為
+/// `spawn_check(manual = false)` 兩種觸發時機都會走到這裡。
+fn should_check_now(interval: Duration) -> bool {
+    let Some(path) = existing_marker_path() else {
         return true;
     };
     let Ok(modified) = fs::metadata(&path).and_then(|m| m.modified()) else {
         return true;
     };
-    SystemTime::now()
-        .duration_since(modified)
-        .is_ok_and(|elapsed| elapsed >= CHECK_INTERVAL)
+    check_due(modified, SystemTime::now(), interval)
 }
 
+/// 寫入用：先試優先層，寫失敗（唯讀目錄）才退到暫存目錄。
 pub fn mark_checked() {
-    let Some(path) = marker_path() else {
-        return;
-    };
+    if let Some(primary) = primary_marker_path() {
+        if touch(&primary) {
+            return;
+        }
+    }
+    touch(&fallback_marker_path());
+}
+
+fn touch(path: &Path) -> bool {
     if let Some(dir) = path.parent() {
         let _ = fs::create_dir_all(dir);
     }
-    let _ = fs::File::create(&path);
+    fs::File::create(path).is_ok()
+}
+
+// ── 殘檔清掃：process 被砍掉（SIGKILL、斷電）時來不及跑到
+// `download_and_replace` 結尾的 `fs::remove_file`，留下 `.{exe}.new.{pid}`。
+//
+// 判準只看 mtime 夠不夠舊，不比對 pid 是不是自己的：pid 會被 OS 重用，
+// 「pid 跟我不同就刪」會誤殺另一個真的正在下載的 ysgit 實例手上的暫存檔
+// （它才剛建立，遠比一次下載的逾時新），害它之後 `fs::rename` 撞
+// ENOENT。下載逾時（`curl --max-time`）是幾百秒等級，用遠大於它的門檻
+// 就足夠安全地把「早就沒有 process 在管」的殘檔篩出來。
+
+const STALE_TMP_FILE_AGE: Duration = Duration::from_secs(24 * 3600);
+
+/// 啟動時掃一次執行檔目錄，清掉早就沒人管的自我更新暫存檔。跟更新設定
+/// （`UpdateMode`）無關——`mode = Off` 的這次啟動一樣可能有上次啟動
+/// （那時還沒關）留下的殘檔要清，不能因為這次沒在檢查更新就跳過。
+pub fn cleanup_stale_temp_files() {
+    let Some(dir) = exe_dir() else {
+        return;
+    };
+    let Ok(entries) = fs::read_dir(dir) else {
+        return;
+    };
+    let now = SystemTime::now();
+    for entry in entries.flatten() {
+        let Some(name) = entry.file_name().to_str().map(str::to_string) else {
+            continue;
+        };
+        if !is_stale_tmp_name(&name) {
+            continue;
+        }
+        let is_old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .is_ok_and(|modified| {
+                now.duration_since(modified)
+                    .is_ok_and(|age| age >= STALE_TMP_FILE_AGE)
+            });
+        if is_old {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
+/// `download_and_replace` 產生的暫存檔名固定是 `.{原檔名}.new.{pid}`——
+/// 認 `.new.` 這個中段加上結尾是純數字（pid），不比對確切的執行檔名稱：
+/// 不同平台的原檔名不一樣（Windows 帶 `.exe`），沒必要在這裡重算一次。
+fn is_stale_tmp_name(name: &str) -> bool {
+    if !name.starts_with('.') {
+        return false;
+    }
+    let Some((_, pid)) = name.rsplit_once(".new.") else {
+        return false;
+    };
+    !pid.is_empty() && pid.bytes().all(|b| b.is_ascii_digit())
 }
 
 // ── 純函式 ──
@@ -362,6 +559,23 @@ fn current_exe_checked() -> Result<PathBuf, String> {
     Ok(exe)
 }
 
+/// 執行檔所在目錄，啟動早期算一次後永久快取。自我更新的 `fs::rename` 會讓
+/// Linux 上 `current_exe()` 在同一個 process 裡回傳帶 `(deleted)` 的路徑
+/// （見 `current_exe_checked` 的註解）——不快取的話，下載完成後同一個
+/// process 任何再次呼叫（marker、設定檔讀寫）都會突然失敗。設定檔的位置
+/// （`config::default_config_file_path`）也共用這個函式，不在那邊另外算
+/// 一次 `current_exe()`。
+pub(crate) fn exe_dir() -> Option<&'static Path> {
+    static EXE_DIR: OnceLock<Option<PathBuf>> = OnceLock::new();
+    EXE_DIR
+        .get_or_init(|| {
+            current_exe_checked()
+                .ok()
+                .and_then(|p| p.parent().map(Path::to_path_buf))
+        })
+        .as_deref()
+}
+
 fn curl_spawn_error(e: &std::io::Error) -> String {
     if e.kind() == std::io::ErrorKind::NotFound {
         "找不到 curl，請先安裝".to_string()
@@ -453,5 +667,123 @@ ca0a1ac34d2e1138b9308820e3a53b6822552268907e87a11a1350b98f1a6ada  ysgit_2.4.1-ma
     #[test]
     fn newer_than_current_older_version_is_none() {
         assert!(newer_than_current("2.3.0", "2.4.1").is_none());
+    }
+
+    // ── resolve()：CLI > 設定檔 > 內建預設 ──
+    //
+    // 不測 YSGIT_NO_UPDATE_CHECK 那條分支：`cargo test` 預設多執行緒跑同一個
+    // process，`env::set_var` 會是跨測試共用的全域可變狀態，這個專案沒有
+    // `serial_test` 之類的依賴能安全隔離它。那條分支是單行 if，用人工驗證
+    // （README／docs 的驗證清單）覆蓋，不值得為了測它引入新依賴或測試順序
+    // 依賴。
+
+    #[test]
+    fn resolve_cli_wins_over_config_and_default() {
+        let settings = resolve(
+            UpdateOverrides {
+                mode: Some(UpdateMode::Auto),
+                interval_hours: Some(2),
+                auto_restart: Some(AutoRestart::On),
+            },
+            UpdateOverrides {
+                mode: Some(UpdateMode::Off),
+                interval_hours: Some(20),
+                auto_restart: Some(AutoRestart::Off),
+            },
+        );
+        assert_eq!(settings.mode, UpdateMode::Auto);
+        assert_eq!(settings.interval, Duration::from_secs(2 * 3600));
+        assert!(settings.auto_restart);
+    }
+
+    #[test]
+    fn resolve_falls_back_to_config_when_cli_unset() {
+        let settings = resolve(
+            UpdateOverrides::default(),
+            UpdateOverrides {
+                mode: Some(UpdateMode::Off),
+                interval_hours: Some(20),
+                auto_restart: Some(AutoRestart::On),
+            },
+        );
+        assert_eq!(settings.mode, UpdateMode::Off);
+        assert_eq!(settings.interval, Duration::from_secs(20 * 3600));
+        assert!(settings.auto_restart);
+    }
+
+    #[test]
+    fn resolve_falls_back_to_builtin_default_when_nothing_set() {
+        let settings = resolve(UpdateOverrides::default(), UpdateOverrides::default());
+        assert_eq!(settings.mode, UpdateMode::Check);
+        assert_eq!(
+            settings.interval,
+            Duration::from_secs(DEFAULT_INTERVAL_HOURS * 3600)
+        );
+        assert!(!settings.auto_restart);
+    }
+
+    // ── check_due()：邊界 ──
+
+    #[test]
+    fn check_due_exactly_at_interval_is_due() {
+        let last = SystemTime::UNIX_EPOCH;
+        let now = last + Duration::from_secs(3600);
+        assert!(check_due(last, now, Duration::from_secs(3600)));
+    }
+
+    #[test]
+    fn check_due_just_under_interval_is_not_due() {
+        let last = SystemTime::UNIX_EPOCH;
+        let now = last + Duration::from_secs(3599);
+        assert!(!check_due(last, now, Duration::from_secs(3600)));
+    }
+
+    #[test]
+    fn check_due_well_past_interval_is_due() {
+        let last = SystemTime::UNIX_EPOCH;
+        let now = last + Duration::from_secs(3600 * 100);
+        assert!(check_due(last, now, Duration::from_secs(3600)));
+    }
+
+    #[test]
+    fn check_due_clock_went_backwards_is_not_due() {
+        // duration_since 在 now < last 時回 Err——不是「早就該查了」，是
+        // 系統時鐘被調過去，寧可保守不查。
+        let last = SystemTime::UNIX_EPOCH + Duration::from_secs(100);
+        let now = SystemTime::UNIX_EPOCH;
+        assert!(!check_due(last, now, Duration::from_secs(3600)));
+    }
+
+    // ── is_stale_tmp_name() ──
+
+    #[test]
+    fn is_stale_tmp_name_matches_unix_style_name() {
+        assert!(is_stale_tmp_name(".ysgit.new.12345"));
+    }
+
+    #[test]
+    fn is_stale_tmp_name_matches_windows_style_name() {
+        assert!(is_stale_tmp_name(".ysgit.exe.new.12345"));
+    }
+
+    #[test]
+    fn is_stale_tmp_name_rejects_missing_leading_dot() {
+        assert!(!is_stale_tmp_name("ysgit.new.12345"));
+    }
+
+    #[test]
+    fn is_stale_tmp_name_rejects_non_numeric_suffix() {
+        assert!(!is_stale_tmp_name(".ysgit.new.abc"));
+    }
+
+    #[test]
+    fn is_stale_tmp_name_rejects_empty_suffix() {
+        assert!(!is_stale_tmp_name(".ysgit.new."));
+    }
+
+    #[test]
+    fn is_stale_tmp_name_rejects_unrelated_dotfile() {
+        assert!(!is_stale_tmp_name(".ysgit.toml"));
+        assert!(!is_stale_tmp_name(".ysgit.update_check"));
     }
 }

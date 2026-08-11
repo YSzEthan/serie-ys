@@ -103,6 +103,9 @@ Options:
   -c, --compact <TYPE>            緊湊模式：commit 文字貼齊該列 graph 實際畫到的最右邊，不保留固定留白 [default: auto] [possible values: auto, on, off]
   -s, --graph-style <TYPE>        Commit 圖形邊線風格 [default: rounded] [possible values: rounded, angular, ascii]
   -i, --initial-selection <TYPE>  初始選取的 commit [default: latest] [possible values: latest, head]
+      --update-mode <MODE>        自動更新檢查模式 [default: check] [possible values: off, check, auto]
+      --update-interval <HOURS>   自動更新的檢查間隔，單位小時 [default: 6]
+      --auto-restart <TYPE>       更新完成後自動重啟（TUI）／開啟新版（CLI），不再詢問 [default: off] [possible values: off, on]
   -h, --help                      顯示說明
   -V, --version                   顯示版本
   -U, --update                    檢查 GitHub Release 並更新執行檔本身
@@ -110,8 +113,10 @@ Options:
 
 > **`-h` 上面寫的「顯示說明」只是非 TTY（管線、CI）下的行為。** 在真人終端機直接執行
 > `ysgit -h`／`--help` 會跳出互動式啟動精靈：上下鍵（或 `k`／`j`）在選項間移動，左右鍵
-> （或 `h`／`l`）原地輪迴切換該選項的值，`Enter` 直接用選好的組合啟動，也可以先請它印出
-> 等效的指令字串。`Esc`／`Ctrl-C`／`Ctrl-D` 放棄，跟原本 `--help` 一樣 exit 0。
+> （或 `h`／`l`）原地輪迴切換該選項的值，`Enter` 直接用選好的組合啟動。
+> `Esc`／`Ctrl-C`／`Ctrl-D` 放棄，跟原本 `--help` 一樣 exit 0，不會啟動也不會存檔。
+>
+> 除了 `[PATH]` 以外，每一項調整按 `Enter` 啟動時都會寫回設定檔，下次啟動不用再調一次。
 >
 > 精靈裡的 `[PATH]` 那一列用的就是 `-p` 的目錄瀏覽器，兩者共用同一份實作。
 
@@ -131,8 +136,9 @@ Options:
 
 - `$SERIE_CONFIG_FILE`
   - 若已設定 `$SERIE_CONFIG_FILE` 但檔案不存在，將會產生錯誤。
-- `$XDG_CONFIG_HOME/serie/config.toml`
-  - 若未設定 `$XDG_CONFIG_HOME`，則使用 `~/.config/`。
+- `<執行檔所在目錄>/.ysgit.toml`
+  - 跟著執行檔走的隱藏檔，首次啟動會自動生成一份含所有選項與說明的預設檔。
+  - 自我更新只會替換執行檔本身，不會動到這個檔案。
 
 沒設到的項目一律用預設值，不管是整份設定檔不存在，還是檔案裡漏了某幾項。
 
