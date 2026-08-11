@@ -161,12 +161,9 @@ pub struct GitHubData {
 
 // ── CLI 包裝 ──
 
-fn run_gh(path: &Path, args: &[&str], force_tty: bool) -> Result<String, String> {
+fn run_gh(path: &Path, args: &[&str]) -> Result<String, String> {
     let mut cmd = Command::new("gh");
     cmd.args(args).current_dir(path).stdin(Stdio::null());
-    if force_tty {
-        cmd.env("GH_FORCE_TTY", "200");
-    }
 
     let output = cmd
         .output()
@@ -219,7 +216,7 @@ pub fn list_issues(
         args.push("-f");
         args.push(&after_f);
     }
-    let json = run_gh(path, &args, false)?;
+    let json = run_gh(path, &args)?;
     parse_issues_graphql(&json)
 }
 
@@ -234,7 +231,6 @@ fn fetch_repo_name_with_owner(path: &Path) -> Result<(String, String), String> {
             "--jq",
             ".nameWithOwner",
         ],
-        false,
     )?;
     let s = out.trim();
     let (owner, name) = s
@@ -378,7 +374,7 @@ pub fn list_pull_requests(
         args.push("-f");
         args.push(&after_f);
     }
-    let json = run_gh(path, &args, false)?;
+    let json = run_gh(path, &args)?;
     parse_prs_graphql(&json)
 }
 
@@ -588,7 +584,7 @@ pub fn get_timeline(
         args.push("-f");
         args.push(&after_f);
     }
-    let json = run_gh(path, &args, false)?;
+    let json = run_gh(path, &args)?;
     parse_timeline_graphql(&json, kind)
 }
 
@@ -668,7 +664,6 @@ pub fn get_body(path: &Path, number: u64, kind: GhItemKind) -> Result<String, St
             "--jq",
             ".body",
         ],
-        false,
     )
 }
 
@@ -830,11 +825,7 @@ pub fn set_item_state(
     number: u64,
     action: StateAction,
 ) -> Result<(), String> {
-    run_gh(
-        path,
-        &[kind.as_str(), action.verb(), &number.to_string()],
-        false,
-    )?;
+    run_gh(path, &[kind.as_str(), action.verb(), &number.to_string()])?;
     Ok(())
 }
 
@@ -871,7 +862,7 @@ pub fn merge_pr(path: &Path, number: u64, method: &str, delete_branch: bool) -> 
     if delete_branch {
         args.push("--delete-branch");
     }
-    run_gh(path, &args, false)?;
+    run_gh(path, &args)?;
     Ok(())
 }
 
@@ -935,7 +926,7 @@ pub fn set_pr_draft(path: &Path, number: u64, action: PrDraftAction) -> Result<(
     if action.result_is_draft() {
         args.push("--undo");
     }
-    run_gh(path, &args, false)?;
+    run_gh(path, &args)?;
     Ok(())
 }
 
