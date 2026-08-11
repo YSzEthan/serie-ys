@@ -1,7 +1,7 @@
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::{mpsc, LazyLock, Mutex};
+use std::sync::{mpsc, LazyLock, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
 use rustc_hash::FxHashMap;
@@ -168,12 +168,8 @@ pub struct GitHubData {
 const GH_TIMEOUT: Duration = Duration::from_secs(20);
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 
-/// 把 pipe 讀到底丟進 channel。子行程被 kill 或自己結束都會讓 pipe 收到
-/// EOF，`read_to_end` 才會返回——但如果孫行程繼承了同一個寫端還活著，
-/// EOF 永遠不會來。呼叫端因此不能 `join` 這條 thread，只能用
-/// `recv_timeout` 有界地等，逾時就當空輸出，thread 留著讓它自生自滅
-/// （pipe 最終關閉時它自然結束；就算沒有，代價是一條閒置 thread，
-/// 不是一個廢掉的呼叫）。
+/// 把 pipe 讀到底丟進 channel；呼叫端只能用 `recv_timeout` 有界地等，
+/// 不能 `join`（理由見 `run_with_timeout`）。
 fn spawn_reader<R: Read + Send + 'static>(mut pipe: R) -> mpsc::Receiver<Vec<u8>> {
     let (tx, rx) = mpsc::channel();
     std::thread::spawn(move || {
@@ -229,25 +225,22 @@ fn run_with_timeout(
 
     let deadline = Instant::now() + timeout;
     let status = loop {
-        match child.try_wait() {
+        let failure = match child.try_wait() {
             Ok(Some(status)) => break status,
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(POLL_INTERVAL),
-            Ok(None) => {
-                let _ = child.kill();
-                let _ = child.wait(); // reap，不留 zombie；不等 reader thread
-                return Err(format!(
-                    "{program} command timed out after {}s (network issue?)",
-                    timeout.as_secs()
-                ));
+            Ok(None) if Instant::now() < deadline => {
+                std::thread::sleep(POLL_INTERVAL);
+                continue;
             }
-            Err(e) => {
-                // try_wait 本身失敗（極罕見）也要走同一條收尾：kill+reap，
-                // 不留下沒清理的子行程。
-                let _ = child.kill();
-                let _ = child.wait();
-                return Err(format!("Failed to wait for {program}: {e}"));
-            }
-        }
+            Ok(None) => format!(
+                "{program} command timed out after {}s (network issue?)",
+                timeout.as_secs()
+            ),
+            // try_wait 本身失敗（極罕見）也走同一條收尾。
+            Err(e) => format!("Failed to wait for {program}: {e}"),
+        };
+        let _ = child.kill();
+        let _ = child.wait(); // reap，不留 zombie；不等 reader thread
+        return Err(failure);
     };
 
     // 子行程自己結束了（不是被我們 kill），但孫行程可能仍握著 pipe 寫端
@@ -343,30 +336,21 @@ pub fn list_issues(
 static REPO_NAME_CACHE: LazyLock<Mutex<FxHashMap<PathBuf, (String, String)>>> =
     LazyLock::new(|| Mutex::new(FxHashMap::default()));
 
-/// 鎖只圈住 HashMap 存取，**絕不橫跨 `run_gh`**：`run_gh` 現在最長會跑滿
-/// `GH_TIMEOUT`（20 秒），持鎖跑它的話網路死掉時第二個 caller 要先等
-/// 20 秒拿鎖、再跑自己的 20 秒，最壞情況直接翻倍——這個函式存在的目的
-/// 就是不讓等待時間被放大。而且 `get_timeline`（使用者按進 issue 詳情
-/// 的同步路徑）會被排到背景 refresh 的死網路後面，那是明確的回歸。
-///
-/// 代價：process 生命週期內最多一次多餘的 `gh repo view`（只有兩條
-/// thread 剛好同時第一次進來才發生，而且它們是併發的，wall clock 不變）。
-/// 用一次 API 額度換「任何 caller 都不會被別人的網路卡住」，划算。
-///
-/// 已知取捨：快取在 process 生命週期內永不失效——使用者中途跑
-/// `gh repo set-default` 或 `git remote set-url` 改掉 base repo，會拿到
-/// 舊值直到重啟。這是罕見動作，可接受。
-///
-/// `lock()` 用 `unwrap_or_else(|e| e.into_inner())` 而不是 `expect`：
-/// 快取不需要 poisoning 語意，毒化了照樣可以用。用 `expect` 的話，
-/// 任何一次 panic 都會讓這個 process 之後每一次 GitHub 呼叫都 panic，
-/// GitHub 功能永久壞掉還看起來像網路問題。
+/// 不用 `expect`：快取不需要 poisoning 語意，毒化了照樣可以用。用
+/// `expect` 的話，任何一次 panic 都會讓這個 process 之後每一次 GitHub
+/// 呼叫都 panic，GitHub 功能永久壞掉還看起來像網路問題。
+fn repo_name_cache() -> MutexGuard<'static, FxHashMap<PathBuf, (String, String)>> {
+    REPO_NAME_CACHE.lock().unwrap_or_else(|e| e.into_inner())
+}
+
+/// **絕不持鎖橫跨 `run_gh`**：`run_gh` 現在最長會跑滿 `GH_TIMEOUT`
+/// （20 秒），持鎖跑它的話網路死掉時第二個 caller 要先等 20 秒拿鎖、
+/// 再跑自己的 20 秒，最壞情況直接翻倍——這個函式存在的目的就是不讓
+/// 等待時間被放大。代價：process 生命週期內最多一次多餘的
+/// `gh repo view`；快取在 process 生命週期內不失效（中途改 base repo
+/// 要重啟才生效，罕見動作，可接受）。
 fn fetch_repo_name_with_owner(path: &Path) -> Result<(String, String), String> {
-    if let Some(hit) = REPO_NAME_CACHE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .get(path)
-    {
+    if let Some(hit) = repo_name_cache().get(path) {
         return Ok(hit.clone());
     }
 
@@ -385,13 +369,10 @@ fn fetch_repo_name_with_owner(path: &Path) -> Result<(String, String), String> {
     let (owner, name) = s
         .split_once('/')
         .ok_or_else(|| format!("Unexpected nameWithOwner: {s}"))?;
-    let (owner, name) = (owner.to_string(), name.to_string());
+    let entry = (owner.to_string(), name.to_string());
 
-    REPO_NAME_CACHE
-        .lock()
-        .unwrap_or_else(|e| e.into_inner())
-        .insert(path.to_path_buf(), (owner.clone(), name.clone()));
-    Ok((owner, name))
+    repo_name_cache().insert(path.to_path_buf(), entry.clone());
+    Ok(entry)
 }
 
 fn parse_issues_graphql(json: &str) -> Result<GhPage<GhIssue>, String> {
