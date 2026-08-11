@@ -1,9 +1,10 @@
 use std::io::{Read, Write};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Output, Stdio};
-use std::sync::mpsc;
+use std::sync::{mpsc, LazyLock, Mutex};
 use std::time::{Duration, Instant};
 
+use rustc_hash::FxHashMap;
 use serde::{Deserialize, Deserializer};
 
 /// 反序列化時就把 emoji shortcode 展開。掛在欄位定義上而不是在 `into_gh_*` 裡逐處
@@ -332,7 +333,43 @@ pub fn list_issues(
     parse_issues_graphql(&json)
 }
 
+/// key 是 repo path，value 是 `(owner, name)`。只快取成功結果——第一次
+/// 因為沒網路失敗時不能把失敗記起來，否則這個 process 之後再也不會重試。
+///
+/// 用 map 而不是 `OnceLock`：實務上這個 process 只服務一個 repo
+/// （`lib.rs` 只 `Repository::load` 一次），但 `path` 是這個函式的參數，
+/// 用 `OnceLock` 等於對簽名說謊——哪天真的有第二個 path 進來會安靜地
+/// 回錯的值。
+static REPO_NAME_CACHE: LazyLock<Mutex<FxHashMap<PathBuf, (String, String)>>> =
+    LazyLock::new(|| Mutex::new(FxHashMap::default()));
+
+/// 鎖只圈住 HashMap 存取，**絕不橫跨 `run_gh`**：`run_gh` 現在最長會跑滿
+/// `GH_TIMEOUT`（20 秒），持鎖跑它的話網路死掉時第二個 caller 要先等
+/// 20 秒拿鎖、再跑自己的 20 秒，最壞情況直接翻倍——這個函式存在的目的
+/// 就是不讓等待時間被放大。而且 `get_timeline`（使用者按進 issue 詳情
+/// 的同步路徑）會被排到背景 refresh 的死網路後面，那是明確的回歸。
+///
+/// 代價：process 生命週期內最多一次多餘的 `gh repo view`（只有兩條
+/// thread 剛好同時第一次進來才發生，而且它們是併發的，wall clock 不變）。
+/// 用一次 API 額度換「任何 caller 都不會被別人的網路卡住」，划算。
+///
+/// 已知取捨：快取在 process 生命週期內永不失效——使用者中途跑
+/// `gh repo set-default` 或 `git remote set-url` 改掉 base repo，會拿到
+/// 舊值直到重啟。這是罕見動作，可接受。
+///
+/// `lock()` 用 `unwrap_or_else(|e| e.into_inner())` 而不是 `expect`：
+/// 快取不需要 poisoning 語意，毒化了照樣可以用。用 `expect` 的話，
+/// 任何一次 panic 都會讓這個 process 之後每一次 GitHub 呼叫都 panic，
+/// GitHub 功能永久壞掉還看起來像網路問題。
 fn fetch_repo_name_with_owner(path: &Path) -> Result<(String, String), String> {
+    if let Some(hit) = REPO_NAME_CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get(path)
+    {
+        return Ok(hit.clone());
+    }
+
     let out = run_gh(
         path,
         &[
@@ -348,7 +385,13 @@ fn fetch_repo_name_with_owner(path: &Path) -> Result<(String, String), String> {
     let (owner, name) = s
         .split_once('/')
         .ok_or_else(|| format!("Unexpected nameWithOwner: {s}"))?;
-    Ok((owner.to_string(), name.to_string()))
+    let (owner, name) = (owner.to_string(), name.to_string());
+
+    REPO_NAME_CACHE
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(path.to_path_buf(), (owner.clone(), name.clone()));
+    Ok((owner, name))
 }
 
 fn parse_issues_graphql(json: &str) -> Result<GhPage<GhIssue>, String> {
