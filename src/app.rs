@@ -1970,7 +1970,7 @@ fn build_external_command_parameters<'a>(
 
     let area_width = view_area.width.saturating_sub(4); // 扣掉左右 padding
     let area_height = (view_area.height.saturating_sub(1))
-        .min(ctx.ui_config.user_command.height)
+        .min(ctx.ui_config.pane_height.user_command)
         .saturating_sub(1); // 扣掉上邊框
     Ok(ExternalCommandParameters {
         command,

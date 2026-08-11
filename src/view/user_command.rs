@@ -146,7 +146,8 @@ impl<'a> UserCommandView<'a> {
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect) {
-        let user_command_height = (area.height - 1).min(self.ctx.ui_config.user_command.height);
+        let user_command_height =
+            (area.height - 1).min(self.ctx.ui_config.pane_height.user_command);
         let [list_area, user_command_area] =
             Layout::vertical([Constraint::Min(0), Constraint::Length(user_command_height)])
                 .areas(area);

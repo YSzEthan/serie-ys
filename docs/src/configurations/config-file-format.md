@@ -25,8 +25,14 @@ tab_width = 4
 [core.external]
 clipboard = "Auto"
 
-[ui.common]
+[ui]
 cursor_type = "Native"
+refs_width = 26
+
+[ui.pane_height]
+detail = 20
+diff = 20
+user_command = 20
 
 [ui.list]
 columns = ["graph", "marker", "subject", "date", "name", "hash"]
@@ -37,28 +43,8 @@ date_local = true
 name_width = 20
 
 [ui.detail]
-height = 20
 date_format = "%Y-%m-%d %H:%M:%S %z"
 date_local = true
-
-[ui.diff]
-height = 20
-
-[ui.user_command]
-height = 20
-
-[ui.refs]
-width = 26
-
-[graph.color]
-branches = [
-  "#E06C76",
-  "#98C379",
-  "#E5C07B",
-  "#61AFEF",
-  "#C678DD",
-  "#56B6C2",
-]
 
 [color]
 fg = "reset"
@@ -104,6 +90,16 @@ status_success_fg = "green"
 status_warn_fg = "yellow"
 status_error_fg = "red"
 divider_fg = "dark-gray"
+
+[color.graph]
+branches = [
+  "#E06C76",
+  "#98C379",
+  "#E5C07B",
+  "#61AFEF",
+  "#C678DD",
+  "#56B6C2",
+]
 
 [keybind]
 # 詳見另一節「自訂快捷鍵」。
@@ -286,7 +282,7 @@ Commit 圖形的邊線風格。
 - tmux：3.3 以後 `allow-passthrough` 預設關閉，需要在 `~/.tmux.conf` 加上 `set -g allow-passthrough on`。若你已經設了 `set -g set-clipboard on`，tmux 會自行處理 OSC 52，不需要 passthrough。
 - 不支援的終端機會靜默忽略這個序列（不會有錯誤訊息），但這仍然好過以往那種複製到錯誤主機剪貼簿的行為。
 
-### `ui.common.cursor_type`
+### `ui.cursor_type`
 
 輸入欄位中游標的顯示方式。
 
@@ -296,6 +292,35 @@ Commit 圖形的邊線風格。
   - `Native`：使用終端機原生游標。
   - `{ Virtual = "|" }`：使用指定字串當作虛擬游標。
     - 值：`string` —— 用來顯示虛擬游標的字串。
+
+### `ui.refs_width`
+
+Refs 清單區域的寬度。
+
+- 型別：`u16`
+- 預設值：`26`
+
+### `ui.pane_height.detail`
+
+Commit 詳情區域的高度。
+
+- 型別：`u16`
+- 預設值：`20`
+
+### `ui.pane_height.diff`
+
+Commit 詳情中，選取檔案後底部單一檔案 diff 區域的高度。詳情請參閱另一節
+[在 Detail view 中檢視檔案 diff](../features/file-diff.md)。
+
+- 型別：`u16`
+- 預設值：`20`
+
+### `ui.pane_height.user_command`
+
+使用者自訂指令區域的高度。
+
+- 型別：`u16`
+- 預設值：`20`
 
 ### `ui.list.columns`
 
@@ -349,13 +374,6 @@ Commit 清單中 author name 的寬度。
 - 型別：`u16`
 - 預設值：`20`
 
-### `ui.detail.height`
-
-Commit 詳情區域的高度。
-
-- 型別：`u16`
-- 預設值：`20`
-
 ### `ui.detail.date_format`
 
 Commit 詳情中 author／committer date 的日期格式。
@@ -373,29 +391,25 @@ Commit 詳情中的 author／committer date 是否以本地時區顯示。
 - 型別：`boolean`
 - 預設值：`true`
 
-### `ui.diff.height`
+### `color`
 
-Commit 詳情中，選取檔案後底部單一檔案 diff 區域的高度。詳情請參閱另一節
-[在 Detail view 中檢視檔案 diff](../features/file-diff.md)。
+應用程式各元素的顏色。
 
-- 型別：`u16`
-- 預設值：`20`
+註：圖形的顏色是用 `[color.graph]` 指定的（見下一節）。
 
-### `ui.user_command.height`
+- 型別：`string`
+- 預設值：見上方範例
 
-使用者自訂指令區域的高度。
+顏色可以用以下任一種格式指定：
 
-- 型別：`u16`
-- 預設值：`20`
+- ANSI 顏色名稱
+  - `"red"`、`"bright-blue"`、`"light-red"`、`"reset"` 等
+- 8-bit（256 色）索引值
+  - `"34"`、`"128"`、`"255"` 等
+- 24-bit true color 十六進位碼
+  - `"#abcdef"` 等
 
-### `ui.refs.width`
-
-Refs 清單區域的寬度。
-
-- 型別：`u16`
-- 預設值：`26`
-
-### `graph.color.branches`
+### `color.graph.branches`
 
 Commit 圖形使用的顏色陣列。
 
@@ -410,25 +424,7 @@ Commit 圖形使用的顏色陣列。
 
 顏色須以 `#RRGGBB` 或 `#RRGGBBAA` 格式指定。`AA`（alpha）仍會做 hex 格式檢查，但數值會被丟棄 —— 圖形改用文字繪製後就沒有任何消費者需要 alpha 了。
 
-> `graph.color` 底下**只有** `branches` 一個鍵。舊版的 `edge` 與 `background` 已隨圖片渲染路徑一起移除，留在設定檔裡會被 schema 判定為非法。
-
-### `color`
-
-應用程式各元素的顏色。
-
-註：圖形的顏色是用 `[graph.color]` 指定的。
-
-- 型別：`string`
-- 預設值：見上方範例
-
-顏色可以用以下任一種格式指定：
-
-- ANSI 顏色名稱
-  - `"red"`、`"bright-blue"`、`"light-red"`、`"reset"` 等
-- 8-bit（256 色）索引值
-  - `"34"`、`"128"`、`"255"` 等
-- 24-bit true color 十六進位碼
-  - `"#abcdef"` 等
+> `color.graph` 底下**只有** `branches` 一個鍵。舊版的 `edge` 與 `background` 已隨圖片渲染路徑一起移除，留在設定檔裡會被 schema 判定為非法。
 
 ### `keybind`
 

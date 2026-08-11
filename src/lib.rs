@@ -434,7 +434,7 @@ pub fn run() -> Result<()> {
         return run_self_update(&args);
     }
 
-    let (core_config, ui_config, graph_config, color_theme, keybind_patch) = config::load()?;
+    let (core_config, ui_config, color_theme, keybind_patch) = config::load()?;
     let keybind = keybind::KeyBind::new(keybind_patch);
 
     let max_count = args.max_count.or(core_config.option.max_count);
@@ -462,7 +462,7 @@ pub fn run() -> Result<()> {
         },
     );
 
-    let graph_color_set = color::GraphColorSet::new(&graph_config.color);
+    let graph_color_set = color::GraphColorSet::new(&color_theme.graph);
 
     // -p：互動式目錄瀏覽器選 path。要在 EventController::init()（下面）之前跑，
     // 否則會有兩邊搶讀 stdin 的問題。Esc 只是放棄挑選，`args.path` 維持原樣

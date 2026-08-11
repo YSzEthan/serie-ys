@@ -813,8 +813,22 @@ fn write_touched_settings(state: &WizardState) -> Result<(), String> {
         return Ok(());
     };
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
-    let updated = apply_touched_settings(state, &existing)?;
+    let updated = migrate_and_apply_touched_settings(state, &existing)?;
     std::fs::write(&path, updated).map_err(|e| format!("寫入設定檔失敗：{e}"))
+}
+
+/// 純函式：`migrate_legacy_toml` + `apply_touched_settings` 的組合，抽出來
+/// 讓測試能直接呼叫這個組合本身，而不是自己重抄一份呼叫順序——重抄的話，
+/// 這裡萬一漏接 `migrate_legacy_toml`，測試不會發現。這是唯一真的把舊格式
+/// 寫回磁碟變成新結構的地方——`config::load()` 只在記憶體裡轉換，不碰檔案
+/// （理由見 `config::migrate_legacy_toml` 的 doc comment）。`write_touched_settings`
+/// 本來就要覆寫整份檔案，順手轉掉不會多一份風險。
+fn migrate_and_apply_touched_settings(
+    state: &WizardState,
+    existing: &str,
+) -> Result<String, String> {
+    let migrated = config::migrate_legacy_toml(existing);
+    apply_touched_settings(state, &migrated)
 }
 
 /// 純函式：把 `state` 裡本次 session 被使用者改過的欄位套進既有的 TOML
@@ -1375,6 +1389,24 @@ mod tests {
             !updated.contains("max_count"),
             "沒碰過的鍵不該出現：{updated}"
         );
+    }
+
+    #[test]
+    fn write_touched_settings_upgrades_legacy_toml_before_applying_touched_keys() {
+        // 呼叫 `write_touched_settings()` 實際會用的那個組合函式本身，不是
+        // 自己重抄一份呼叫順序——重抄的話，`migrate_and_apply_touched_settings`
+        // 裡萬一漏接 `migrate_legacy_toml`，這條測試不會發現。
+        let mut s = test_state();
+        let idx = row_of_field(&s.rows, FieldKind::Order);
+        move_to_row(&mut s, idx);
+        s.on_key(key(KeyCode::Right)); // order = Some(Topo)
+
+        let legacy = "[ui.refs]\nwidth = 40\n";
+        let updated = migrate_and_apply_touched_settings(&s, legacy).unwrap();
+
+        assert!(updated.contains("refs_width = 40"), "{updated}");
+        assert!(!updated.contains("[ui.refs]"), "{updated}");
+        assert!(updated.contains("order = \"topo\""), "{updated}");
     }
 
     #[test]

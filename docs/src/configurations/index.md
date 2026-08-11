@@ -24,6 +24,17 @@
 
 死鍵不會讓程式起不來，但也不會有任何效果，建議直接刪掉。
 
+## 舊版 `[ui.*]`／`[graph.color]` 區塊自動升級
+
+`[ui.common]`、`[ui.detail].height`、`[ui.diff].height`、`[ui.user_command].height`、
+`[ui.refs].width`，以及獨立的 `[graph.color]` 區塊，併進了新結構
+（見[設定檔格式](./config-file-format.md)）。這些不是死鍵——讀取設定檔時會在記憶體裡
+自動轉換成新路徑，值不會遺失，也不需要手動改。
+
+編輯器吃 `config.schema.json` 的話，這些舊路徑一樣會標紅（跟死鍵外觀相同，但性質不同：
+死鍵改了也沒用，這些是「值還有效，只是路徑舊了」）。進一次互動式精靈（`-h`）存檔，
+就會把整份設定檔寫回新結構，標紅一併清掉。
+
 ----
 
 - [設定檔格式](./config-file-format.md)
