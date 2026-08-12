@@ -1,0 +1,25 @@
+name: PR Title
+
+# squash merge 時，PR 有多個 commit 的話 subject 取自 PR 標題（repo 的
+# `squash_merge_commit_title` 是 `COMMIT_OR_PR_TITLE`），而那個 subject 決定
+# 版號。lefthook 的 commit-msg hook 只看得到本機 commit，看不到 PR 標題——
+# 這條 workflow 就是補那個缺口，讓格式錯誤死在 merge 之前（改標題一秒的事），
+# 而不是落到 main 上才發現漏發版。
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+concurrency:
+  group: pr-title-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check PR title
+        env:
+          # 經環境變數傳入，不要直接內插進 shell —— 標題是使用者可控字串。
+          TITLE: ${{ github.event.pull_request.title }}
+        run: python3 .github/scripts/check_subject.py --text "$TITLE"

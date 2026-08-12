@@ -1,0 +1,25 @@
+# 本機 git hooks。安裝：`lefthook install`（見 CONTRIBUTING.md）。
+#
+# 只做「快到不會讓人想跳過」的檢查。fmt／clippy／test 留給 CI 跑完整版——
+# 在 commit 階段跑編譯會讓每次 commit 等好幾秒，結果就是大家開始用
+# `--no-verify`，等於沒有 hook。
+
+commit-msg:
+  commands:
+    conventional-commit:
+      # {1} 是 git 傳進來的 COMMIT_EDITMSG 路徑，要加引號——worktree 情境下
+      # 那是絕對路徑，repo 路徑含空白時沒引號會被拆成兩個參數。
+      run: python3 .github/scripts/check_subject.py "{1}"
+
+pre-push:
+  commands:
+    # 推之前先預覽這批 commit 會發出什麼版本，順便讓「一個都不會升版號」
+    # 浮出來。只提示不擋推：NO_BUMP 本來就是合法結果，而預覽的是 branch
+    # 全部 commit，squash 後真正決定版號的是 PR 標題，兩者不一定相同。
+    #
+    # 只在「還沒有任何 tag」時安靜跳過（git describe 會失敗）；腳本自己
+    # 壞掉要讓它出聲，不然這個預覽壞了也沒人知道。
+    release-preview:
+      run: |
+        LAST_TAG=$(git describe --tags --abbrev=0 2>/dev/null) || exit 0
+        python3 .github/scripts/prepare_release.py --from "$LAST_TAG" --dry-run

@@ -25,6 +25,16 @@ jobs:
         run: |
           MSRV=$(grep '^rust-version' Cargo.toml | cut -d '"' -f 2)
           echo "msrv=$MSRV" >> $GITHUB_OUTPUT
+
+  # 發版腳本的邏輯（版號等級、subject 格式）決定了 tag 出不出得來，跟
+  # Rust 那邊無關，所以獨立成一個 job，不用等 toolchain 裝完。
+  release-script:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Test release script
+        run: python3 .github/scripts/test_prepare_release.py
+
   lint:
     needs: prepare
     strategy:
