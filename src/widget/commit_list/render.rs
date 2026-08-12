@@ -172,7 +172,13 @@ struct VisibleRow<'b> {
     /// `render_graph` 在 compact 分支要接手畫多寬。
     text_x: u16,
     content: RowContent<'b>,
-    graph: RowGraph,
+    /// 這一列的圖形 —— virtual row 也是（它沒有 hash 可查，cells 由
+    /// `build_visible_rows` 就地合成）。
+    cells: Vec<TextCell>,
+    /// HEAD 的實心圓要在渲染時換成空心圓並加粗，而 `TextCell` 沒有
+    /// modifier 欄位，只能另外帶著走。
+    is_head: bool,
+    marker_color: Color,
 }
 
 enum RowContent<'b> {
@@ -183,41 +189,12 @@ enum RowContent<'b> {
     },
 }
 
-enum RowGraph {
-    /// virtual row：只有一顆 dot，畫在 HEAD 欄位（fallback 次序見
-    /// `build_visible_rows`）。
-    Dot(usize),
-    Cells {
-        cells: Vec<TextCell>,
-        is_head: bool,
-        /// 排在 HEAD 前面、virtual row 又可見時，HEAD 欄位上合成的向上
-        /// 連接線（原本 `render_graph` 的 `head_line_col` 那段邏輯）。
-        synthetic_connector: Option<usize>,
-    },
-}
-
-impl RowGraph {
-    /// 這一列圖形實際延伸到第幾格（不含）—— 緊湊模式下 `text_x` 的來源。
-    /// 用 `cells` 本身最後一個非 Blank 格是不夠的：合成的連接線畫在
-    /// Blank 格上，藏在 `cells` 的內容之外，兩者要取 max。
-    fn extent(&self) -> u16 {
-        match self {
-            RowGraph::Dot(col) => *col as u16 + 1,
-            RowGraph::Cells {
-                cells,
-                synthetic_connector,
-                ..
-            } => {
-                let cells_end = cells
-                    .iter()
-                    .rposition(|c| c.glyph != Glyph::Blank)
-                    .map(|i| i as u16 + 1)
-                    .unwrap_or(0);
-                let connector_end = synthetic_connector.map(|c| c as u16 + 1).unwrap_or(0);
-                cells_end.max(connector_end)
-            }
-        }
-    }
+/// 這一列圖形實際延伸到第幾格（不含）—— 緊湊模式下 `text_x` 的來源。
+fn cells_extent(cells: &[TextCell]) -> u16 {
+    cells
+        .iter()
+        .rposition(|c| c.glyph != Glyph::Blank)
+        .map_or(0, |i| i as u16 + 1)
 }
 
 impl CommitList<'_> {
@@ -254,7 +231,9 @@ impl CommitList<'_> {
         let head_hash = state.head_commit_hash.as_ref();
         let head_col = head_hash.and_then(|h| self.graph_text_head_col(state, h));
         let virtual_row_visible = state.has_virtual_row() && state.offset == 0;
-        let head_line_col = head_col.filter(|_| virtual_row_visible);
+        // 走過 HEAD 之後就設回 None —— 它同時是「這條連接線畫在哪一欄」
+        // 和「還要不要畫」。
+        let mut head_line_col = head_col.filter(|_| virtual_row_visible);
 
         let mut rows = Vec::new();
 
@@ -266,43 +245,50 @@ impl CommitList<'_> {
                     .and_then(|h| self.graph_text_head_col(state, h))
                     .unwrap_or(0)
             });
-            let graph = RowGraph::Dot(dot_col);
-            let text_x = if compact { graph.extent() } else { 0 };
+            // virtual row 不對應任何 commit，沒有 hash 可以查 cells ——
+            // 就地合成一列，讓它跟其他列走同一條渲染路徑。
+            let mut cells = vec![TextCell::BLANK; dot_col + 1];
+            cells[dot_col] = TextCell {
+                glyph: Glyph::HeadDot,
+                color: VIRTUAL_ROW_COLOR,
+            };
+            let text_x = if compact { cells_extent(&cells) } else { 0 };
             rows.push(VisibleRow {
                 y: 0,
                 is_selected: state.selected == 0,
                 text_x,
                 content: RowContent::Virtual,
-                graph,
+                cells,
+                is_head: false,
+                marker_color: VIRTUAL_ROW_COLOR,
             });
         }
 
-        let mut seen_head = false;
         for (display_i, raw, info) in self.rendering_commit_info_iter(state) {
             let hash = &info.commit.commit_hash;
             // 這裡的 `None` 只代表一種情況：`hash` 不在
             // `current_graph().commit_pos_map` 裡 —— 也就是 graph 跟
             // commit list 不同步了。因為 text cell 是隨需計算的，已經沒有
             // 「還沒 preload」這種情況存在了。
-            let Some(cells) = state.text_cells_for_hash(hash) else {
+            let Some(mut cells) = state.text_cells_for_hash(hash) else {
                 continue;
             };
             let is_head = head_hash == Some(hash);
-            let synthetic_connector = if !seen_head && !is_head {
-                head_line_col.filter(|&hc| cells.get(hc).is_some_and(|c| c.glyph == Glyph::Blank))
-            } else {
-                None
-            };
+            // 排在 HEAD 前面、virtual row 又可見時，HEAD 欄位上要有一條
+            // 向上的連接線，virtual row 的 ◯ 看起來才會連到 HEAD。寫進
+            // cells，`cells_extent` 與 spacer 才看得到它。
             if is_head {
-                seen_head = true;
+                head_line_col = None;
+            } else if let Some(hc) =
+                head_line_col.filter(|&hc| cells.get(hc).is_some_and(|c| c.glyph == Glyph::Blank))
+            {
+                cells[hc] = TextCell {
+                    glyph: Glyph::Vert,
+                    color: VIRTUAL_ROW_COLOR,
+                };
             }
 
-            let graph = RowGraph::Cells {
-                cells,
-                is_head,
-                synthetic_connector,
-            };
-            let text_x = if compact { graph.extent() } else { 0 };
+            let text_x = if compact { cells_extent(&cells) } else { 0 };
             let y_offset = if gap > 0 && display_i > state.selected {
                 gap
             } else {
@@ -313,7 +299,9 @@ impl CommitList<'_> {
                 is_selected: display_i == state.selected,
                 text_x,
                 content: RowContent::Commit { raw, info },
-                graph,
+                cells,
+                is_head,
+                marker_color: state.marker_color(info),
             });
         }
 
@@ -336,60 +324,27 @@ impl CommitList<'_> {
             if y >= area.bottom() {
                 continue;
             }
-            match &row.graph {
-                RowGraph::Dot(col) => {
-                    self.put_text_cell(buf, area, y, *col, Glyph::HeadDot, VIRTUAL_ROW_COLOR);
-                }
-                RowGraph::Cells {
-                    cells,
-                    is_head,
-                    synthetic_connector,
-                } => {
-                    self.put_text_cells(buf, area, y, cells, *is_head);
-                    if let Some(hc) = synthetic_connector {
-                        self.put_text_cell(buf, area, y, *hc, Glyph::Vert, VIRTUAL_ROW_COLOR);
-                    }
-                }
-            }
+            self.put_text_cells(buf, area, y, &row.cells, row.is_head);
             if row.is_selected {
                 apply_row_bg(buf, area, y, selected_bg);
             }
         }
-        self.draw_graph_spacer(buf, area, state);
+        self.draw_graph_spacer(buf, area, state.inline_detail_height, rows);
     }
 
     /// Spacer rows（inline detail 的間隔列）：把選取列的線往下延伸接住。
-    /// gap 一定緊接在選取列後面，跟 `rows` 的內容無關，所以獨立算，不用
-    /// 塞進 `VisibleRow`。
-    fn draw_graph_spacer(&self, buf: &mut Buffer, area: Rect, state: &CommitListState<'_>) {
-        let gap = state.inline_detail_height;
-        if gap == 0 {
-            return;
-        }
-        let spacer_hash = if state.is_virtual_row_selected() {
-            state.first_visible_commit_hash().cloned()
-        } else {
-            Some(
-                state
-                    .commit(state.current_selected_raw())
-                    .commit
-                    .commit_hash
-                    .clone(),
-            )
-        };
-        let Some(hash) = spacer_hash else {
+    /// 來源是選取列自己的 cells，別無其他 —— spacer 畫什麼完全取決於
+    /// 選取列畫了什麼，另外算一份的下場見 issue #66。
+    fn draw_graph_spacer(&self, buf: &mut Buffer, area: Rect, gap: u16, rows: &[VisibleRow<'_>]) {
+        let Some(row) = rows.iter().find(|r| r.is_selected) else {
             return;
         };
-        let Some(cells) = state.text_cells_for_hash(&hash) else {
-            return;
-        };
-        let gray = state.is_virtual_row_selected();
         for gap_row in 0..gap {
-            let y = area.top() + state.selected as u16 + 1 + gap_row;
+            let y = area.top() + row.y + 1 + gap_row;
             if y >= area.bottom() {
                 break;
             }
-            self.put_text_spacer(buf, area, y, &cells, gray);
+            self.put_text_spacer(buf, area, y, &row.cells);
         }
     }
 
@@ -428,14 +383,7 @@ impl CommitList<'_> {
         }
     }
 
-    fn put_text_spacer(
-        &self,
-        buf: &mut Buffer,
-        area: Rect,
-        y: u16,
-        cells: &[TextCell],
-        gray: bool,
-    ) {
+    fn put_text_spacer(&self, buf: &mut Buffer, area: Rect, y: u16, cells: &[TextCell]) {
         let glyphs = self.glyphs();
         for (i, cell) in cells.iter().enumerate() {
             let x = area.left() + i as u16;
@@ -449,31 +397,11 @@ impl CommitList<'_> {
             if !cell.glyph.extends_downward() {
                 continue;
             }
-            let color = if gray { VIRTUAL_ROW_COLOR } else { cell.color };
             let s = glyphs.resolve(Glyph::Vert);
             buf[(x, y)]
                 .set_symbol(s)
-                .set_style(Style::default().fg(color));
+                .set_style(Style::default().fg(cell.color));
         }
-    }
-
-    fn put_text_cell(
-        &self,
-        buf: &mut Buffer,
-        area: Rect,
-        y: u16,
-        col: usize,
-        glyph: Glyph,
-        color: Color,
-    ) {
-        let x = area.left() + col as u16;
-        if x >= area.right() {
-            return;
-        }
-        let s = self.glyphs().resolve(glyph);
-        buf[(x, y)]
-            .set_symbol(s)
-            .set_style(Style::default().fg(color));
     }
 
     fn render_marker(
@@ -493,41 +421,31 @@ impl CommitList<'_> {
             if y >= area.bottom() {
                 continue;
             }
-            let color = match &row.content {
-                RowContent::Virtual => VIRTUAL_ROW_COLOR,
-                RowContent::Commit { info, .. } => state.marker_color(info),
-            };
             buf[(area.left(), y)]
                 .set_symbol(vert)
-                .set_style(Style::default().fg(color));
+                .set_style(Style::default().fg(row.marker_color));
             if row.is_selected {
                 apply_row_bg(buf, area, y, selected_bg);
             }
         }
-        self.draw_marker_spacer(buf, area, state);
+        self.draw_marker_spacer(buf, area, state.inline_detail_height, rows);
     }
 
     /// Marker 欄在 spacer rows（inline detail 間隔列）上也要延續同一條
-    /// `│`，顏色跟 `draw_graph_spacer` 一樣取自選取列。
-    fn draw_marker_spacer(&self, buf: &mut Buffer, area: Rect, state: &CommitListState<'_>) {
-        let gap = state.inline_detail_height;
-        if gap == 0 {
+    /// `│`，跟 `draw_graph_spacer` 一樣只讀選取列。
+    fn draw_marker_spacer(&self, buf: &mut Buffer, area: Rect, gap: u16, rows: &[VisibleRow<'_>]) {
+        let Some(row) = rows.iter().find(|r| r.is_selected) else {
             return;
-        }
-        let vert = self.glyphs().vert;
-        let color = if state.is_virtual_row_selected() {
-            VIRTUAL_ROW_COLOR
-        } else {
-            state.marker_color(state.commit(state.current_selected_raw()))
         };
+        let vert = self.glyphs().vert;
         for gap_row in 0..gap {
-            let y = area.top() + state.selected as u16 + 1 + gap_row;
+            let y = area.top() + row.y + 1 + gap_row;
             if y >= area.bottom() {
                 break;
             }
             buf[(area.left(), y)]
                 .set_symbol(vert)
-                .set_style(Style::default().fg(color));
+                .set_style(Style::default().fg(row.marker_color));
         }
     }
 
@@ -1483,7 +1401,7 @@ mod tests {
 
         #[test]
         fn render_graph_uses_ascii_style() {
-            // 只有這個測試會走 AppContext -> glyphs() -> put_text_cell 這條路；
+            // 只有這個測試會走 AppContext -> glyphs() -> put_text_cells 這條路；
             // tests/graph.rs 是直接呼叫 GlyphSet::resolve()，從不會跑到這條
             // 串接，所以這是「-s ascii 真的會改變畫面內容」唯一的 end-to-end
             // 涵蓋。
@@ -1650,11 +1568,19 @@ mod tests {
 
             // 灰色 spacer row（virtual row 被選中 + gap=1）先出現，在第 2 列
             // —— `y_offset` 會在 spacer 本身之前，把每個排在 `state.selected`
-            // （0，virtual row）之後的 commit 往下推 `gap` 格。凡是有重繪的
-            // cell 都必須用 VIRTUAL_ROW_COLOR，不能用自己的顏色。
+            // （0，virtual row）之後的 commit 往下推 `gap` 格。
+            //
+            // spacer 只延續 virtual row 自己畫出來的東西，也就是 idx2 那顆
+            // ◯。idx0 在 virtual row 上是空白 —— 底下 c0 那一列雖然有一條
+            // Vertical，但那是 c0 的線，不是從這裡下來的。issue #66：以前
+            // spacer 讀的是 c0 的 cells，於是每一條 c0 往下的線都在這裡
+            // 憑空多長出一截。
             let spacer_y = 2u16;
-            assert_eq!(buf[(0, spacer_y)].symbol(), "│");
-            assert_eq!(buf[(0, spacer_y)].fg, Color::Gray);
+            assert_eq!(
+                buf[(0, spacer_y)].symbol(),
+                " ",
+                "virtual row has nothing at idx0, so the spacer must not either"
+            );
             assert_eq!(buf[(2, spacer_y)].symbol(), "│");
             assert_eq!(buf[(2, spacer_y)].fg, Color::Gray);
 
@@ -1672,7 +1598,7 @@ mod tests {
             // 專用的 2-commit graph，重複使用 `text_graph_commits()` 的前兩個：
             // c0 完全沒有 edge（它的 column-0 cell 是空的），c1（HEAD）
             // 落在欄位 0。virtual row 的 dot 會落在 HEAD 的欄位上；
-            // render_graph_text 必須在 c0 的空白 cell 上打出一個灰色的
+            // build_visible_rows 必須在 c0 的空白 cell 上寫進一個灰色的
             // 連接線，這條線看起來才會是連續的。
             let all_commits = text_graph_commits();
             let commits = &all_commits[..2];
@@ -1894,8 +1820,8 @@ mod tests {
 
             // virtual row 的 dot 畫在 cell index 2（見
             // virtual_row_draws_gray_head_dot_at_top 對同一個 fixture 的
-            // 斷言），`RowGraph::Dot` 存的就是這個 cell index，text_x =
-            // 2+1 = 3；"Uncommitted..." 的 U 貼在 x=4。
+            // 斷言），合成那列 cells 只有這一格非 Blank，text_x =
+            // cells_extent = 2+1 = 3；"Uncommitted..." 的 U 貼在 x=4。
             assert_eq!(buf[(4, 1)].symbol(), "U");
         }
 
@@ -1913,18 +1839,16 @@ mod tests {
             let buf = render_commit_list_compact(&mut state, 10, GraphWidthType::Double);
 
             // 跟 spacer_row_extends_only_vertical_columns 同一個 fixture／
-            // 斷言，只是加上緊湊模式 —— spacer 是獨立算的
-            // （draw_graph_spacer），不吃 VisibleRow 的 text_x，緊湊與否
-            // 不該讓它消失。
+            // 斷言，只是加上緊湊模式 —— spacer 讀的是選取列的 cells，不吃
+            // 它的 text_x，緊湊與否不該讓它消失。
             assert_eq!(buf[(2, 2)].symbol(), "│");
         }
 
-        /// HEAD 不是第一列時，`render_graph` 會在排在它前面、`cells[hc]`
-        /// 是 Blank 的列上合成一條向上連接線（`hc` = HEAD 自己的 dot
-        /// 欄）。`text_x` 若只看 `cells` 本身最後一個非 Blank 格（不管
-        /// 這條合成線），會算出太小的值，讓 subject 的文字直接畫過去、
-        /// 蓋掉這條線 —— 這是 `RowGraph::extent()` 要 `max(cells_end,
-        /// connector_end)` 的原因。
+        /// HEAD 不是第一列時，`build_visible_rows` 會在排在它前面、
+        /// `cells[hc]` 是 Blank 的列上合成一條向上連接線（`hc` = HEAD
+        /// 自己的 dot 欄）。這條線寫進 `cells` 而不是渲染時另外補畫，
+        /// `cells_extent` 才看得到它 —— 否則 `text_x` 會算得太小，讓
+        /// subject 的文字直接畫過去把它蓋掉。
         fn head_not_first_graph(commits: &[Commit]) -> Graph {
             Graph {
                 commit_hashes: commits.iter().map(|c| c.commit_hash.clone()).collect(),
@@ -1962,6 +1886,38 @@ mod tests {
                 "HEAD 上方那條合成連接線沒被緊湊模式的文字蓋掉"
             );
             assert_eq!(buf[(6, 2)].fg, Color::Gray, "VIRTUAL_ROW_COLOR");
+        }
+
+        /// 合成的向上連接線跟其他線一樣要穿過 spacer row —— 它就住在選取列的
+        /// `cells` 裡，`put_text_spacer` 自然接得住。以前它是渲染時另外補畫
+        /// 的，spacer 讀不到，這條線會在 inline detail 的間隔中斷掉。
+        #[test]
+        fn head_connector_extends_through_the_spacer() {
+            let commits = text_graph_commits();
+            let mut state = build_state(
+                &commits,
+                head_not_first_graph(&commits),
+                Opts {
+                    head_hash: Some(1), // c1 是 HEAD，顯示上排在 c0 下面
+                    working_changes: true,
+                    inline_detail_height: 1,
+                    ..Default::default()
+                },
+            );
+            // 第一次 render 只是為了讓 `height` 就位，`select_next` 才不是 no-op。
+            render_commit_list(&mut state, 10);
+            state.select_next(); // virtual row -> c0
+            let buf = render_commit_list(&mut state, 10);
+
+            // c0（選取列，y=2）在欄 6 是合成的灰 │：HEAD（c1，pos_x=3）的
+            // dot 欄在 double-width 下是 cell index 6，而 c0 那一列本來是 Blank。
+            assert_eq!(buf[(6, 2)].symbol(), "│");
+            assert_eq!(buf[(6, 2)].fg, Color::Gray);
+            // gap=1 的 spacer 在 y=3。
+            assert_eq!(buf[(6, 3)].symbol(), "│", "合成連接線要穿過 spacer row");
+            assert_eq!(buf[(6, 3)].fg, Color::Gray);
+            // HEAD 自己被 gap 往下推一格，落在 y=4。
+            assert_eq!(buf[(6, 4)].symbol(), "◯");
         }
 
         #[test]
