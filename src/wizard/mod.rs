@@ -1,5 +1,7 @@
 pub(crate) mod path_browser;
 
+use std::collections::BTreeMap;
+
 use clap::{Parser, ValueEnum};
 use ratatui::{
     crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
@@ -54,50 +56,25 @@ fn wizard_loop(
                 // 就直接離開；寫失敗把原因留在畫面上，continue 迴圈讓使用者
                 // 看得到，不強行啟動一個「以為存了、其實沒存」的 session。
                 state.write_error = None;
-                match write_touched_settings(&state) {
-                    Ok(()) => return Ok(Some(state.draft)),
+                match write_touched_settings(&state.draft) {
+                    Ok(()) => return Ok(Some(state.draft.args)),
                     Err(e) => state.write_error = Some(e),
                 }
             }
-            Flow::OpenPath => {
-                let start = path_browser::start_dir(&state.draft.path);
+            Flow::OpenEditor(Dialog::Path) => {
+                let start = path_browser::start_dir(&state.draft.args.path);
                 if let Some(p) = path_browser::run(terminal, &start, theme)? {
-                    state.draft.path = p.to_string_lossy().into_owned();
+                    state.draft.args.path = p.to_string_lossy().into_owned();
                 }
                 terminal.clear()?;
             }
-            Flow::OpenMaxCount => {
-                let current = state.draft.max_count.or(state.defaults.max_count);
-                if let NumberFlow::Committed(v) = run_number_input(
-                    terminal,
-                    current,
-                    theme,
-                    "要渲染的最大 commit 數量",
-                    0,
-                    usize::MAX,
-                )? {
-                    state.draft.max_count = v;
-                    state.max_count_touched = true;
-                }
-                terminal.clear()?;
-            }
-            Flow::OpenUpdateInterval => {
-                let current = Some(
-                    state
-                        .draft
-                        .update_interval
-                        .unwrap_or(state.defaults.update_interval) as usize,
-                );
-                if let NumberFlow::Committed(v) = run_number_input(
-                    terminal,
-                    current,
-                    theme,
-                    "自動更新的檢查間隔（小時，1–48）",
-                    update::MIN_INTERVAL_HOURS as usize,
-                    update::MAX_INTERVAL_HOURS as usize,
-                )? {
-                    state.draft.update_interval = v.map(|n| n as u64);
-                    state.update_interval_touched = true;
+            Flow::OpenEditor(Dialog::Number(field)) => {
+                let spec = field.spec();
+                let current = field.current(&state.draft, &state.defaults);
+                if let NumberFlow::Committed(v) =
+                    run_number_input(terminal, current, theme, spec.title, spec.min, spec.max)?
+                {
+                    field.commit(&mut state.draft, v);
                 }
                 terminal.clear()?;
             }
@@ -237,9 +214,16 @@ impl ResolvedDefaults {
 /// 第一次按不管哪個方向都保證換到一個不一樣的值。
 ///
 /// 七個循環選擇欄位共用同一份算術，只是各自的 `T`／`current` 不同，所以
-/// 抽成吃 `&mut Option<T>` 的自由函式而不是把 `FieldKind` 本身泛型化——後者
+/// 抽成吃 `&mut Option<T>` 的自由函式而不是把 `CycleField` 本身泛型化——後者
 /// 才會讓型別設計變複雜，這裡型別完全由呼叫端推導。
-fn cycle_value<T: ValueEnum + Copy + PartialEq>(slot: &mut Option<T>, current: T, delta: i32) {
+///
+/// 回傳新值的 clap kebab 名稱，也就是要寫進設定檔的那個字串：切到哪個值、
+/// 記什麼字串，由同一次計算產生，`draft.args` 跟 `draft.edits` 不可能漂移。
+fn cycle_value<T: ValueEnum + Copy + PartialEq>(
+    slot: &mut Option<T>,
+    current: T,
+    delta: i32,
+) -> String {
     let variants = T::value_variants();
     let index_of = |v: T| {
         variants
@@ -249,22 +233,31 @@ fn cycle_value<T: ValueEnum + Copy + PartialEq>(slot: &mut Option<T>, current: T
     };
     let idx = index_of(slot.unwrap_or(current)) as i32;
     let next = (idx + delta).rem_euclid(variants.len() as i32);
-    *slot = Some(variants[next as usize]);
+    let value = variants[next as usize];
+    *slot = Some(value);
+    variant_name(&value)
 }
 
-/// (目前有效值的中文說明, 是不是使用者這次 session 主動選的)。未設定時
-/// 顯示的是這個欄位真正的目前值（`ResolvedDefaults`，讀自設定檔），不是
-/// 「使用預設值」這種空話。
-fn resolve_desc<T: Copy>(
-    slot: Option<T>,
-    current: T,
-    desc: fn(T) -> &'static str,
-) -> (&'static str, bool) {
-    (desc(slot.unwrap_or(current)), slot.is_some())
+// ---------------------------------------------------------------------------
+// 可編輯項目。「值要寫到設定檔哪裡」是資料（`ConfigKey`），所以寫回路徑
+// （`apply_touched_settings`）不認識任何欄位，新增項目不用動它，也不用動 `Flow`。
+// ---------------------------------------------------------------------------
+
+/// 設定檔裡的一個鍵：`{ table: &["core", "option"], key: "order" }`。
+/// `table` 是 slice 而不是固定深度的 tuple——顏色要寫的是 `["color"]` 與
+/// `["color", "graph"]`，深度本來就不一樣。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct ConfigKey {
+    table: &'static [&'static str],
+    key: &'static str,
 }
 
+const CORE_OPTION: &[&str] = &["core", "option"];
+const CORE_UPDATE: &[&str] = &["core", "update"];
+
+/// ←/→ 在合法值之間原地輪迴切換的欄位。
 #[derive(Clone, Copy, PartialEq, Eq)]
-enum FieldKind {
+enum CycleField {
     Order,
     GraphWidth,
     Compact,
@@ -274,235 +267,340 @@ enum FieldKind {
     AutoRestart,
 }
 
-impl FieldKind {
+impl CycleField {
+    /// 鍵名跟欄位名並非一律相同（`update_mode` 寫的是 `mode`、
+    /// `update_interval` 寫的是 `interval_hours`），這張表是唯一的真相。
+    fn config_key(self) -> ConfigKey {
+        let (table, key) = match self {
+            CycleField::Order => (CORE_OPTION, "order"),
+            CycleField::GraphWidth => (CORE_OPTION, "graph_width"),
+            CycleField::Compact => (CORE_OPTION, "compact"),
+            CycleField::GraphStyle => (CORE_OPTION, "graph_style"),
+            CycleField::InitialSelection => (CORE_OPTION, "initial_selection"),
+            CycleField::UpdateMode => (CORE_UPDATE, "mode"),
+            CycleField::AutoRestart => (CORE_UPDATE, "auto_restart"),
+        };
+        ConfigKey { table, key }
+    }
+
     fn flags(self) -> &'static str {
         match self {
-            FieldKind::Order => "-o, --order",
-            FieldKind::GraphWidth => "-g, --graph-width",
-            FieldKind::Compact => "-c, --compact",
-            FieldKind::GraphStyle => "-s, --graph-style",
-            FieldKind::InitialSelection => "-i, --initial-selection",
-            FieldKind::UpdateMode => "--update-mode",
-            FieldKind::AutoRestart => "--auto-restart",
+            CycleField::Order => "-o, --order",
+            CycleField::GraphWidth => "-g, --graph-width",
+            CycleField::Compact => "-c, --compact",
+            CycleField::GraphStyle => "-s, --graph-style",
+            CycleField::InitialSelection => "-i, --initial-selection",
+            CycleField::UpdateMode => "--update-mode",
+            CycleField::AutoRestart => "--auto-restart",
         }
     }
 
     fn help(self) -> &'static str {
         match self {
-            FieldKind::Order => "Commit 排序演算法",
-            FieldKind::GraphWidth => "Commit 圖形格子寬度",
-            FieldKind::Compact => "緊湊模式",
-            FieldKind::GraphStyle => "Commit 圖形邊線風格",
-            FieldKind::InitialSelection => "初始選取的 commit",
-            FieldKind::UpdateMode => "自動更新檢查模式",
-            FieldKind::AutoRestart => "更新後自動重啟／開啟新版",
+            CycleField::Order => "Commit 排序演算法",
+            CycleField::GraphWidth => "Commit 圖形格子寬度",
+            CycleField::Compact => "緊湊模式",
+            CycleField::GraphStyle => "Commit 圖形邊線風格",
+            CycleField::InitialSelection => "初始選取的 commit",
+            CycleField::UpdateMode => "自動更新檢查模式",
+            CycleField::AutoRestart => "更新後自動重啟／開啟新版",
         }
     }
 
     /// `delta = 1` 往前一站（→／Enter），`delta = -1` 往後一站（←）。
-    fn cycle(self, draft: &mut Args, defaults: &ResolvedDefaults, delta: i32) {
-        match self {
-            FieldKind::Order => cycle_value(&mut draft.order, defaults.order, delta),
-            FieldKind::GraphWidth => {
-                cycle_value(&mut draft.graph_width, defaults.graph_width, delta)
+    /// `args`（啟動用的型別化值）與 `edits`（存檔用的字串）在這裡一起更新，
+    /// 這是唯一同時寫兩邊的兩個地方之一（另一個是 `NumberField::commit`）。
+    fn cycle(self, draft: &mut Draft, defaults: &ResolvedDefaults, delta: i32) {
+        let args = &mut draft.args;
+        let name = match self {
+            CycleField::Order => cycle_value(&mut args.order, defaults.order, delta),
+            CycleField::GraphWidth => {
+                cycle_value(&mut args.graph_width, defaults.graph_width, delta)
             }
-            FieldKind::Compact => cycle_value(&mut draft.compact, defaults.compact, delta),
-            FieldKind::GraphStyle => {
-                cycle_value(&mut draft.graph_style, defaults.graph_style, delta)
+            CycleField::Compact => cycle_value(&mut args.compact, defaults.compact, delta),
+            CycleField::GraphStyle => {
+                cycle_value(&mut args.graph_style, defaults.graph_style, delta)
             }
-            FieldKind::InitialSelection => cycle_value(
-                &mut draft.initial_selection,
+            CycleField::InitialSelection => cycle_value(
+                &mut args.initial_selection,
                 defaults.initial_selection,
                 delta,
             ),
-            FieldKind::UpdateMode => {
-                cycle_value(&mut draft.update_mode, defaults.update_mode, delta)
+            CycleField::UpdateMode => {
+                cycle_value(&mut args.update_mode, defaults.update_mode, delta)
             }
-            FieldKind::AutoRestart => {
-                cycle_value(&mut draft.auto_restart, defaults.auto_restart, delta)
+            CycleField::AutoRestart => {
+                cycle_value(&mut args.auto_restart, defaults.auto_restart, delta)
             }
-        }
+        };
+        draft.edits.insert(self.config_key(), Some(name.into()));
     }
 
-    fn current(self, draft: &Args, defaults: &ResolvedDefaults) -> (&'static str, bool) {
+    /// 目前有效值的中文說明。未設定時顯示的是這個欄位真正的目前值
+    /// （`ResolvedDefaults`，讀自設定檔），不是「使用預設值」這種空話。
+    fn current_desc(self, draft: &Draft, defaults: &ResolvedDefaults) -> &'static str {
+        let args = &draft.args;
         match self {
-            FieldKind::Order => resolve_desc(draft.order, defaults.order, order_desc),
-            FieldKind::GraphWidth => {
-                resolve_desc(draft.graph_width, defaults.graph_width, graph_width_desc)
+            CycleField::Order => order_desc(args.order.unwrap_or(defaults.order)),
+            CycleField::GraphWidth => {
+                graph_width_desc(args.graph_width.unwrap_or(defaults.graph_width))
             }
-            FieldKind::Compact => resolve_desc(draft.compact, defaults.compact, compact_desc),
-            FieldKind::GraphStyle => {
-                resolve_desc(draft.graph_style, defaults.graph_style, graph_style_desc)
+            CycleField::Compact => compact_desc(args.compact.unwrap_or(defaults.compact)),
+            CycleField::GraphStyle => {
+                graph_style_desc(args.graph_style.unwrap_or(defaults.graph_style))
             }
-            FieldKind::InitialSelection => resolve_desc(
-                draft.initial_selection,
-                defaults.initial_selection,
-                initial_selection_desc,
-            ),
-            FieldKind::UpdateMode => {
-                resolve_desc(draft.update_mode, defaults.update_mode, update_mode_desc)
+            CycleField::InitialSelection => {
+                initial_selection_desc(args.initial_selection.unwrap_or(defaults.initial_selection))
             }
-            FieldKind::AutoRestart => {
-                resolve_desc(draft.auto_restart, defaults.auto_restart, auto_restart_desc)
+            CycleField::UpdateMode => {
+                update_mode_desc(args.update_mode.unwrap_or(defaults.update_mode))
+            }
+            CycleField::AutoRestart => {
+                auto_restart_desc(args.auto_restart.unwrap_or(defaults.auto_restart))
             }
         }
     }
 }
 
-enum TopRowAction {
-    OpenPath,
-    OpenMaxCount,
-    OpenUpdateInterval,
-    Field(FieldKind),
+/// 數字輸入彈窗的參數，跟著欄位走而不是寫死在 `wizard_loop` 裡。
+struct NumberSpec {
+    title: &'static str,
+    min: usize,
+    max: usize,
+}
+
+/// Enter／→ 開數字輸入彈窗的欄位。
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum NumberField {
+    MaxCount,
+    UpdateInterval,
+}
+
+impl NumberField {
+    fn config_key(self) -> ConfigKey {
+        match self {
+            NumberField::MaxCount => ConfigKey {
+                table: CORE_OPTION,
+                key: "max_count",
+            },
+            NumberField::UpdateInterval => ConfigKey {
+                table: CORE_UPDATE,
+                key: "interval_hours",
+            },
+        }
+    }
+
+    fn flags(self) -> &'static str {
+        match self {
+            NumberField::MaxCount => "-n, --max-count <NUMBER>",
+            NumberField::UpdateInterval => "--update-interval <HOURS>",
+        }
+    }
+
+    fn help(self) -> &'static str {
+        match self {
+            NumberField::MaxCount => "要渲染的最大 commit 數量",
+            NumberField::UpdateInterval => "自動更新的檢查間隔",
+        }
+    }
+
+    fn spec(self) -> NumberSpec {
+        match self {
+            NumberField::MaxCount => NumberSpec {
+                title: "要渲染的最大 commit 數量",
+                min: 0,
+                max: usize::MAX,
+            },
+            NumberField::UpdateInterval => NumberSpec {
+                title: "自動更新的檢查間隔（小時，1–48）",
+                min: update::MIN_INTERVAL_HOURS as usize,
+                max: update::MAX_INTERVAL_HOURS as usize,
+            },
+        }
+    }
+
+    /// 目前有效值，也是彈窗開啟時的起始內容。`None` 只有 `max_count` 會發生
+    /// （「不限制」）——`update_interval` 一定解得出一個數字。
+    fn current(self, draft: &Draft, defaults: &ResolvedDefaults) -> Option<usize> {
+        match self {
+            NumberField::MaxCount => draft.args.max_count.or(defaults.max_count),
+            NumberField::UpdateInterval => Some(
+                draft
+                    .args
+                    .update_interval
+                    .unwrap_or(defaults.update_interval) as usize,
+            ),
+        }
+    }
+
+    fn current_label(self, draft: &Draft, defaults: &ResolvedDefaults) -> String {
+        // `current()` 對 UpdateInterval 一定回 `Some`（見該函式），`None` 只有
+        // MaxCount 會發生；不在這裡重算一次 `defaults.update_interval` 這個
+        // 已經在 `current()` 算過的後備值，避免同一條規則兩處真值。
+        let Some(n) = self.current(draft, defaults) else {
+            return "不限制".to_string();
+        };
+        match self {
+            NumberField::MaxCount => n.to_string(),
+            NumberField::UpdateInterval => format!("{n} 小時"),
+        }
+    }
+
+    /// 使用者在彈窗按下 Enter。`None` = 明確清空，寫回時要移除該鍵——這跟
+    /// 「從沒開過這個彈窗」（`edits` 裡根本沒有這個鍵）是兩件不同的事。
+    fn commit(self, draft: &mut Draft, value: Option<usize>) {
+        match self {
+            NumberField::MaxCount => draft.args.max_count = value,
+            NumberField::UpdateInterval => draft.args.update_interval = value.map(|n| n as u64),
+        }
+        draft
+            .edits
+            .insert(self.config_key(), value.map(|n| (n as i64).into()));
+    }
+}
+
+/// 開子畫面的編輯器。顏色與 keybind 之後在這裡加變體，`Flow` 不用跟著長。
+#[derive(Clone, Copy)]
+enum Dialog {
+    Path,
+    Number(NumberField),
+}
+
+/// 一個項目怎麼編輯：原地循環，或開子畫面。
+#[derive(Clone, Copy)]
+enum Editor {
+    Cycle(CycleField),
+    Dialog(Dialog),
+}
+
+impl Editor {
+    fn flags(self) -> &'static str {
+        match self {
+            Editor::Cycle(f) => f.flags(),
+            Editor::Dialog(Dialog::Path) => "[PATH]",
+            Editor::Dialog(Dialog::Number(f)) => f.flags(),
+        }
+    }
+
+    fn help(self) -> &'static str {
+        match self {
+            Editor::Cycle(f) => f.help(),
+            Editor::Dialog(Dialog::Path) => "git 倉庫路徑（僅本次，不存檔）",
+            Editor::Dialog(Dialog::Number(f)) => f.help(),
+        }
+    }
+
+    /// `None` = 只影響本次 session、永遠不進設定檔。目前只有 PATH 是這樣，
+    /// 由型別保證，不靠呼叫端自律。
+    fn config_key(self) -> Option<ConfigKey> {
+        match self {
+            Editor::Cycle(f) => Some(f.config_key()),
+            Editor::Dialog(Dialog::Number(f)) => Some(f.config_key()),
+            Editor::Dialog(Dialog::Path) => None,
+        }
+    }
+
+    /// 目前有效值的顯示字串。循環選擇的欄位用 `< >` 包住，標示「這欄按左右鍵
+    /// 會變」；開子畫面的欄位不包——那是另一種互動，混用會誤導使用者以為也能
+    /// 直接左右切換。
+    fn current_label(self, draft: &Draft, defaults: &ResolvedDefaults) -> String {
+        match self {
+            Editor::Cycle(f) => format!("< {} >", f.current_desc(draft, defaults)),
+            Editor::Dialog(Dialog::Path) => draft.args.path.clone(),
+            Editor::Dialog(Dialog::Number(f)) => f.current_label(draft, defaults),
+        }
+    }
+}
+
+#[derive(Clone, Copy)]
+enum RowAction {
+    Edit(Editor),
     Launch,
 }
 
-struct TopRow {
-    action: TopRowAction,
-    flags: &'static str,
-    help: &'static str,
-}
-
-fn build_top_rows() -> Vec<TopRow> {
-    vec![
-        TopRow {
-            action: TopRowAction::OpenPath,
-            flags: "[PATH]",
-            help: "git 倉庫路徑（僅本次，不存檔）",
-        },
-        TopRow {
-            action: TopRowAction::OpenMaxCount,
-            flags: "-n, --max-count <NUMBER>",
-            help: "要渲染的最大 commit 數量",
-        },
-        TopRow {
-            action: TopRowAction::Field(FieldKind::Order),
-            flags: FieldKind::Order.flags(),
-            help: FieldKind::Order.help(),
-        },
-        TopRow {
-            action: TopRowAction::Field(FieldKind::GraphWidth),
-            flags: FieldKind::GraphWidth.flags(),
-            help: FieldKind::GraphWidth.help(),
-        },
-        TopRow {
-            action: TopRowAction::Field(FieldKind::Compact),
-            flags: FieldKind::Compact.flags(),
-            help: FieldKind::Compact.help(),
-        },
-        TopRow {
-            action: TopRowAction::Field(FieldKind::GraphStyle),
-            flags: FieldKind::GraphStyle.flags(),
-            help: FieldKind::GraphStyle.help(),
-        },
-        TopRow {
-            action: TopRowAction::Field(FieldKind::InitialSelection),
-            flags: FieldKind::InitialSelection.flags(),
-            help: FieldKind::InitialSelection.help(),
-        },
-        TopRow {
-            action: TopRowAction::Field(FieldKind::UpdateMode),
-            flags: FieldKind::UpdateMode.flags(),
-            help: FieldKind::UpdateMode.help(),
-        },
-        TopRow {
-            action: TopRowAction::OpenUpdateInterval,
-            flags: "--update-interval <HOURS>",
-            help: "自動更新的檢查間隔",
-        },
-        TopRow {
-            action: TopRowAction::Field(FieldKind::AutoRestart),
-            flags: FieldKind::AutoRestart.flags(),
-            help: FieldKind::AutoRestart.help(),
-        },
-        TopRow {
-            action: TopRowAction::Launch,
-            flags: "▶ 啟動 ysgit",
-            help: "",
-        },
-    ]
-}
+/// 精靈主選單的完整清單。新增可編輯項目只需要在這裡加一行——`flags`／
+/// `help`／存檔路徑都掛在 `Editor` 上往下委派，不用再手抄一次。
+const ROWS: &[RowAction] = &[
+    RowAction::Edit(Editor::Dialog(Dialog::Path)),
+    RowAction::Edit(Editor::Dialog(Dialog::Number(NumberField::MaxCount))),
+    RowAction::Edit(Editor::Cycle(CycleField::Order)),
+    RowAction::Edit(Editor::Cycle(CycleField::GraphWidth)),
+    RowAction::Edit(Editor::Cycle(CycleField::Compact)),
+    RowAction::Edit(Editor::Cycle(CycleField::GraphStyle)),
+    RowAction::Edit(Editor::Cycle(CycleField::InitialSelection)),
+    RowAction::Edit(Editor::Cycle(CycleField::UpdateMode)),
+    RowAction::Edit(Editor::Dialog(Dialog::Number(NumberField::UpdateInterval))),
+    RowAction::Edit(Editor::Cycle(CycleField::AutoRestart)),
+    RowAction::Launch,
+];
 
 /// 每一列的顯示文字：所有欄位都附上目前有效值（讀設定檔得到的真實值，不是
-/// 硬預設）。循環選擇的欄位（`Field`）額外用 `< >` 包住值，標示「這欄按
-/// 左右鍵會變」；數字輸入的欄位（`OpenMaxCount`／`OpenUpdateInterval`）
-/// 不用 `< >`——那是另一種互動（開子畫面打字），混用會誤導使用者以為也能
-/// 直接左右切換。`✓` 標示這欄本次 session 有被使用者主動改過（Launch 時
-/// 會寫回設定檔）。
-fn top_row_label(row: &TopRow, state: &WizardState) -> String {
-    let draft = &state.draft;
-    let defaults = &state.defaults;
-    let (checked, body) = match row.action {
-        TopRowAction::OpenPath => (
-            false,
-            format!("{}  {}（目前：{}）", row.flags, row.help, draft.path),
-        ),
-        TopRowAction::OpenMaxCount => {
-            let effective = draft.max_count.or(defaults.max_count);
-            (
-                state.max_count_touched,
-                format!(
-                    "{}  {}（目前：{}）",
-                    row.flags,
-                    row.help,
-                    effective
-                        .map(|n| n.to_string())
-                        .unwrap_or_else(|| "不限制".to_string())
-                ),
-            )
-        }
-        TopRowAction::OpenUpdateInterval => (
-            state.update_interval_touched,
-            format!(
-                "{}  {}（目前：{} 小時）",
-                row.flags,
-                row.help,
-                draft.update_interval.unwrap_or(defaults.update_interval)
-            ),
-        ),
-        TopRowAction::Field(field) => {
-            let (desc, touched) = field.current(draft, defaults);
-            // YSGIT_NO_UPDATE_CHECK 會在 `update::resolve()` 把 mode 壓成
-            // Off——這裡只是提醒使用者，不是這一列本身的邏輯改變。
-            let note = if field == FieldKind::UpdateMode
-                && std::env::var_os("YSGIT_NO_UPDATE_CHECK").is_some()
-            {
-                "（目前被 YSGIT_NO_UPDATE_CHECK 壓成 off）"
-            } else {
-                ""
-            };
-            (
-                touched,
-                format!("{}  {}（目前：< {desc} >）{note}", row.flags, row.help),
-            )
-        }
-        TopRowAction::Launch => (false, row.flags.to_string()),
+/// 硬預設）。`✓` 標示這欄本次 session 有被使用者主動改過（Launch 時會寫回
+/// 設定檔）。
+fn top_row_label(row: RowAction, draft: &Draft, defaults: &ResolvedDefaults) -> String {
+    let RowAction::Edit(editor) = row else {
+        return "▶ 啟動 ysgit".to_string();
     };
-    let prefix = if checked { "✓ " } else { "  " };
-    format!("{prefix}{body}")
+    // YSGIT_NO_UPDATE_CHECK 會在 `update::resolve()` 把 mode 壓成 Off——這裡
+    // 只是提醒使用者，不是這一列本身的邏輯改變。
+    let note = if matches!(editor, Editor::Cycle(CycleField::UpdateMode))
+        && std::env::var_os("YSGIT_NO_UPDATE_CHECK").is_some()
+    {
+        "（目前被 YSGIT_NO_UPDATE_CHECK 壓成 off）"
+    } else {
+        ""
+    };
+    let prefix = if draft.is_touched(editor) {
+        "✓ "
+    } else {
+        "  "
+    };
+    format!(
+        "{prefix}{}  {}（目前：{}）{note}",
+        editor.flags(),
+        editor.help(),
+        editor.current_label(draft, defaults)
+    )
 }
 
 enum Flow {
     Continue,
     Abort,
     Launch,
-    OpenPath,
-    OpenMaxCount,
-    OpenUpdateInterval,
+    OpenEditor(Dialog),
+}
+
+/// `Args`（啟動用的型別化真值）＋本次 session 的改動日誌。`edits` 取代
+/// 逐欄位的 touched 旗標：鍵不存在＝沒碰過，`Some(None)`＝明確清空（移除
+/// 該鍵），`Some(Some(v))`＝設成這個值——三態對應三種語意，不用再靠外部
+/// bool 補區別。用 `BTreeMap` 不用 `HashSet`：寫入順序要穩定（`HashSet`
+/// 每次執行的迭代順序不同，同樣的操作會產生不同的檔案 diff），而且值直接
+/// 掛在鍵上，不用「集合 + 逐欄位取值」兩步。
+struct Draft {
+    args: Args,
+    edits: BTreeMap<ConfigKey, Option<toml_edit::Value>>,
+}
+
+impl Draft {
+    fn new() -> Self {
+        Self {
+            args: Args::try_parse_from(["ysgit"]).expect("無參數的 parse 一定要成功"),
+            edits: BTreeMap::new(),
+        }
+    }
+
+    /// PATH 沒有 `ConfigKey`（見 `Editor::config_key`），永遠回傳 `false`。
+    fn is_touched(&self, editor: Editor) -> bool {
+        editor
+            .config_key()
+            .is_some_and(|ck| self.edits.contains_key(&ck))
+    }
 }
 
 struct WizardState {
-    draft: Args,
+    draft: Draft,
     defaults: ResolvedDefaults,
-    rows: Vec<TopRow>,
     list: ListState,
-    /// `max_count`／`update_interval` 是數字輸入，不像循環選擇欄位那樣
-    /// `Some` 就代表「有碰過」——它們的清空手勢（`NumberFlow::Committed(None)`）
-    /// 結果也是 `None`，跟「從沒開過這個對話框」在型別上分不出來。這兩個
-    /// 旗標補上那個區別，Launch 寫回時才知道「要不要把 config 裡原本的
-    /// 值刪掉」跟「乾脆不動這個鍵」是兩件不同的事。
-    max_count_touched: bool,
-    update_interval_touched: bool,
     /// 上一次 Launch 寫回設定檔失敗的原因，顯示在畫面上；成功或還沒按過
     /// Launch 都是 `None`。
     write_error: Option<String>,
@@ -514,16 +612,12 @@ impl WizardState {
     }
 
     fn with_defaults(defaults: ResolvedDefaults) -> Self {
-        let draft = Args::try_parse_from(["ysgit"]).expect("無參數的 parse 一定要成功");
         let mut list = ListState::default();
         list.select(Some(0));
         Self {
-            draft,
+            draft: Draft::new(),
             defaults,
-            rows: build_top_rows(),
             list,
-            max_count_touched: false,
-            update_interval_touched: false,
             write_error: None,
         }
     }
@@ -561,7 +655,7 @@ impl WizardState {
     }
 
     fn move_selection(&mut self, delta: i32) {
-        let len = self.rows.len() as i32;
+        let len = ROWS.len() as i32;
         let current = self.list.selected().unwrap_or(0) as i32;
         let next = (current + delta).clamp(0, len - 1);
         self.list.select(Some(next as usize));
@@ -573,7 +667,7 @@ impl WizardState {
         let Some(row_idx) = self.list.selected() else {
             return;
         };
-        if let TopRowAction::Field(field) = self.rows[row_idx].action {
+        if let RowAction::Edit(Editor::Cycle(field)) = ROWS[row_idx] {
             field.cycle(&mut self.draft, &self.defaults, delta);
         }
     }
@@ -586,12 +680,10 @@ impl WizardState {
         let Some(row_idx) = self.list.selected() else {
             return Flow::Continue;
         };
-        match self.rows[row_idx].action {
-            TopRowAction::OpenPath => Flow::OpenPath,
-            TopRowAction::OpenMaxCount => Flow::OpenMaxCount,
-            TopRowAction::OpenUpdateInterval => Flow::OpenUpdateInterval,
-            TopRowAction::Field(_) => Flow::Continue,
-            TopRowAction::Launch => Flow::Launch,
+        match ROWS[row_idx] {
+            RowAction::Edit(Editor::Dialog(d)) => Flow::OpenEditor(d),
+            RowAction::Edit(Editor::Cycle(_)) => Flow::Continue,
+            RowAction::Launch => Flow::Launch,
         }
     }
 
@@ -603,10 +695,9 @@ impl WizardState {
         ])
         .areas(area);
 
-        let items: Vec<ListItem> = self
-            .rows
+        let items: Vec<ListItem> = ROWS
             .iter()
-            .map(|row| ListItem::new(top_row_label(row, self)))
+            .map(|&row| ListItem::new(top_row_label(row, &self.draft, &self.defaults)))
             .collect();
         f.render_stateful_widget(styled_list(items, theme), list_area, &mut self.list);
 
@@ -805,7 +896,7 @@ fn centered_rect(area: Rect, width: u16, height: u16) -> Rect {
 // 而不是整份 `toml::to_string` 重寫的唯一理由。
 // ---------------------------------------------------------------------------
 
-fn write_touched_settings(state: &WizardState) -> Result<(), String> {
+fn write_touched_settings(draft: &Draft) -> Result<(), String> {
     let Some(path) = config::effective_path() else {
         // 無法決定要寫到哪（`exe_dir()` 解析不出來），安靜放棄，不擋 Launch
         // ——跟 `ensure_config_file()` 同一個哲學：存檔是附加價值，不是
@@ -813,7 +904,7 @@ fn write_touched_settings(state: &WizardState) -> Result<(), String> {
         return Ok(());
     };
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
-    let updated = migrate_and_apply_touched_settings(state, &existing)?;
+    let updated = migrate_and_apply_touched_settings(draft, &existing)?;
     std::fs::write(&path, updated).map_err(|e| format!("寫入設定檔失敗：{e}"))
 }
 
@@ -823,104 +914,42 @@ fn write_touched_settings(state: &WizardState) -> Result<(), String> {
 /// 寫回磁碟變成新結構的地方——`config::load()` 只在記憶體裡轉換，不碰檔案
 /// （理由見 `config::migrate_legacy_toml` 的 doc comment）。`write_touched_settings`
 /// 本來就要覆寫整份檔案，順手轉掉不會多一份風險。
-fn migrate_and_apply_touched_settings(
-    state: &WizardState,
-    existing: &str,
-) -> Result<String, String> {
+fn migrate_and_apply_touched_settings(draft: &Draft, existing: &str) -> Result<String, String> {
     let migrated = config::migrate_legacy_toml(existing);
-    apply_touched_settings(state, &migrated)
+    apply_touched_settings(draft, &migrated)
 }
 
-/// 純函式：把 `state` 裡本次 session 被使用者改過的欄位套進既有的 TOML
-/// 內容，回傳新的檔案內容字串。不碰檔案系統，方便直接測。
+/// 純函式：把 `draft.edits` 裡本次 session 被使用者改過的鍵套進既有的 TOML
+/// 內容，回傳新的檔案內容字串。不碰檔案系統，方便直接測。這個迴圈不認識
+/// 任何欄位——新增可編輯項目只需要讓 `Editor::config_key()` 多回一個
+/// `ConfigKey`，這裡完全不用動。
 ///
 /// `Err` 只有一種原因：`existing` 語法本身就壞了（`toml_edit` 也 parse
 /// 不動）。這裡直接不寫，絕不能 fallback 成「重建一份新文件」——那就是
 /// 把使用者的檔案洗掉。語法合法但值不合法（例如 `graph_style = "asci"`）
 /// 不會走到這條錯誤：`toml_edit` 只在乎語法，不驗語意，外科手術式改寫
 /// 對這種情況是安全的，順便把壞鍵修掉。
-fn apply_touched_settings(state: &WizardState, existing: &str) -> Result<String, String> {
+fn apply_touched_settings(draft: &Draft, existing: &str) -> Result<String, String> {
     let mut doc = existing
         .parse::<toml_edit::DocumentMut>()
         .map_err(|e| format!("設定檔語法錯誤，這次改動不會存檔：{e}"))?;
 
-    let core = table_entry(doc.as_table_mut(), "core")?;
-    let option = table_entry(core, "option")?;
-    set_enum(option, "order", state.draft.order);
-    set_enum(option, "graph_width", state.draft.graph_width);
-    set_enum(option, "compact", state.draft.compact);
-    set_enum(option, "graph_style", state.draft.graph_style);
-    set_enum(option, "initial_selection", state.draft.initial_selection);
-    if state.max_count_touched {
-        set_number(option, "max_count", state.draft.max_count.map(|n| n as i64));
-    }
-
-    // 重新從 `doc` 借一次：上面 `option` 借用的生命週期在這裡已經結束
-    // （最後一次使用是前面的 `set_number`），才能再借出 `core.update`。
-    let core = table_entry(doc.as_table_mut(), "core")?;
-    let update = table_entry(core, "update")?;
-    set_enum(update, "mode", state.draft.update_mode);
-    if state.update_interval_touched {
-        set_number(
-            update,
-            "interval_hours",
-            state.draft.update_interval.map(|n| n as i64),
-        );
-    }
-    set_enum(update, "auto_restart", state.draft.auto_restart);
-
-    Ok(doc.to_string())
-}
-
-/// `Table::entry(key).or_insert(...)` 而不是 `doc["a"]["b"]` 那種鏈式索引：
-/// 後者在 `a` 還不存在時，`Item` 的 `IndexMut` 實作會把它自動生成成
-/// **inline table**（`a = { b = ... }`）而不是一般的 `[a]` 表格區塊——這是
-/// `toml_edit` 為了支援 `doc["a"]["b"]["c"] = value(1)` 這種寫法的既有
-/// 行為（見 `Index for str` 的 `index_mut`：遇到 `Item::None` 直接包一層
-/// `InlineTable` 再繼續索引），不是這裡的臭蟲，但拿來寫巢狀 `[core.option]`
-/// 這種一定要是標準表格區塊的鍵就會生成使用者看不懂的格式。改用
-/// `Table::entry()` 直接操作 `Table`，不經過 `Item` 索引，就不會踩到這個
-/// 自動生成規則。
-///
-/// 鍵已存在但不是表格（例如使用者手寫了 `core = "oops"`）時回錯誤而不是
-/// panic——語法合法但結構跟預期不符，跟語法本身壞掉是同一類「不強行動
-/// 使用者檔案」的情況。
-fn table_entry<'a>(
-    table: &'a mut toml_edit::Table,
-    key: &'static str,
-) -> Result<&'a mut toml_edit::Table, String> {
-    table
-        .entry(key)
-        .or_insert(toml_edit::table())
-        .as_table_mut()
-        .ok_or_else(|| format!("設定檔的 `{key}` 不是表格，這次改動不會存檔"))
-}
-
-/// 循環選擇欄位沒有「清空」手勢，`None` 只代表「沒碰過」，所以這裡永遠是
-/// 「有值才寫，沒值就完全不動這個鍵」——不像 `set_number` 還要分辨「沒碰過」
-/// 跟「明確清空」。
-///
-/// 字串轉換直接重用 `variant_name`（clap 的 kebab-case 名稱）而不是走
-/// `serde` 序列化：這幾個 enum 都是單字變體，clap 的 kebab-case 跟 serde
-/// 的 `rename_all = "lowercase"` 逐字相同（`config.rs` 的
-/// `*_schema_enum_matches_every_accepted_cli_value` 系列測試釘住這個等式），
-/// 沒必要為了同一個字串再繞 `serde_json` 一圈。
-fn set_enum<T: ValueEnum>(table: &mut toml_edit::Table, key: &str, value: Option<T>) {
-    if let Some(v) = value {
-        set_preserving_decor(table, key, variant_name(&v).into());
-    }
-}
-
-/// 呼叫端只在對應的 `*_touched` 旗標為真時才呼叫這個函式（`Some` = 設成
-/// 這個值，`None` = 明確清空，移除該鍵，讓它退回 `config::load()` 的預設
-/// 解析路徑）——「沒碰過」的情況呼叫端根本不會呼叫，不需要在這裡再分支。
-fn set_number(table: &mut toml_edit::Table, key: &str, value: Option<i64>) {
-    match value {
-        Some(n) => set_preserving_decor(table, key, n.into()),
-        None => {
-            table.remove(key);
+    for (ck, value) in &draft.edits {
+        let table = config::ensure_table(doc.as_table_mut(), ck.table).ok_or_else(|| {
+            format!(
+                "設定檔的 `{}` 不是表格，這次改動不會存檔",
+                ck.table.join(".")
+            )
+        })?;
+        match value {
+            Some(v) => set_preserving_decor(table, ck.key, v.clone()),
+            None => {
+                table.remove(ck.key);
+            }
         }
     }
+
+    Ok(doc.to_string())
 }
 
 /// `table[key] = toml_edit::value(v)` 會整個換掉舊的 `Item`，連著它的
@@ -948,16 +977,17 @@ mod tests {
     }
 
     /// 依動作找列索引，取代寫死的數字常數——新增／刪除列時不用逐一改測試。
-    fn row_of(rows: &[TopRow], pred: impl Fn(&TopRowAction) -> bool) -> usize {
-        rows.iter()
-            .position(|r| pred(&r.action))
-            .expect("找不到符合條件的列")
+    fn row_of(pred: impl Fn(&RowAction) -> bool) -> usize {
+        ROWS.iter().position(pred).expect("找不到符合條件的列")
     }
 
-    fn row_of_field(rows: &[TopRow], field: FieldKind) -> usize {
+    fn row_of_field(field: CycleField) -> usize {
+        row_of(move |a| matches!(a, RowAction::Edit(Editor::Cycle(f)) if *f == field))
+    }
+
+    fn row_of_number(field: NumberField) -> usize {
         row_of(
-            rows,
-            move |a| matches!(a, TopRowAction::Field(f) if *f == field),
+            move |a| matches!(a, RowAction::Edit(Editor::Dialog(Dialog::Number(f))) if *f == field),
         )
     }
 
@@ -983,23 +1013,23 @@ mod tests {
     #[test]
     fn right_cycles_forward_through_each_variant_and_wraps() {
         let mut s = test_state();
-        let idx = row_of_field(&s.rows, FieldKind::Order);
+        let idx = row_of_field(CycleField::Order);
         move_to_row(&mut s, idx);
-        assert_eq!(s.draft.order, None, "還沒碰過，維持未設定");
+        assert_eq!(s.draft.args.order, None, "還沒碰過，維持未設定");
 
         s.on_key(key(KeyCode::Right));
         assert_eq!(
-            s.draft.order,
+            s.draft.args.order,
             Some(CommitOrderType::Topo),
             "chrono 是目前值，第一次按 → 要跳過它，直接切到 topo"
         );
 
         s.on_key(key(KeyCode::Right));
-        assert_eq!(s.draft.order, Some(CommitOrderType::Chrono));
+        assert_eq!(s.draft.args.order, Some(CommitOrderType::Chrono));
 
         s.on_key(key(KeyCode::Right));
         assert_eq!(
-            s.draft.order,
+            s.draft.args.order,
             Some(CommitOrderType::Topo),
             "只在兩個真實值之間繞，不會繞回未設定"
         );
@@ -1012,30 +1042,30 @@ mod tests {
     // 換三個值的 `-s`，方向錯了序列才會真的不一樣。
     fn left_cycles_backward_through_each_variant_and_wraps() {
         let mut s = test_state();
-        let idx = row_of_field(&s.rows, FieldKind::GraphStyle);
+        let idx = row_of_field(CycleField::GraphStyle);
         move_to_row(&mut s, idx);
-        assert_eq!(s.draft.graph_style, None);
+        assert_eq!(s.draft.args.graph_style, None);
 
         s.on_key(key(KeyCode::Left));
         assert_eq!(
-            s.draft.graph_style,
+            s.draft.args.graph_style,
             Some(GraphStyle::Ascii),
             "第一次按 ← 要跳過目前值 rounded，往後繞到最後一個值 ascii"
         );
 
         s.on_key(key(KeyCode::Left));
         assert_eq!(
-            s.draft.graph_style,
+            s.draft.args.graph_style,
             Some(GraphStyle::Angular),
             "← 是往後退，不是又往前"
         );
 
         s.on_key(key(KeyCode::Left));
-        assert_eq!(s.draft.graph_style, Some(GraphStyle::Rounded));
+        assert_eq!(s.draft.args.graph_style, Some(GraphStyle::Rounded));
 
         s.on_key(key(KeyCode::Left));
         assert_eq!(
-            s.draft.graph_style,
+            s.draft.args.graph_style,
             Some(GraphStyle::Ascii),
             "只在三個真實值之間繞，不會繞回未設定"
         );
@@ -1047,23 +1077,23 @@ mod tests {
     #[test]
     fn first_press_skips_the_current_variant_in_either_direction() {
         let mut s = test_state();
-        let idx = row_of_field(&s.rows, FieldKind::GraphStyle);
+        let idx = row_of_field(CycleField::GraphStyle);
         move_to_row(&mut s, idx);
-        assert_eq!(s.draft.graph_style, None);
+        assert_eq!(s.draft.args.graph_style, None);
 
         s.on_key(key(KeyCode::Right));
         assert_eq!(
-            s.draft.graph_style,
+            s.draft.args.graph_style,
             Some(GraphStyle::Angular),
             "rounded 是目前值，→ 要跳過它，切到 angular"
         );
 
         let mut s = test_state();
-        let idx = row_of_field(&s.rows, FieldKind::GraphStyle);
+        let idx = row_of_field(CycleField::GraphStyle);
         move_to_row(&mut s, idx);
         s.on_key(key(KeyCode::Left));
         assert_eq!(
-            s.draft.graph_style,
+            s.draft.args.graph_style,
             Some(GraphStyle::Ascii),
             "← 也要跳過 rounded，往另一個方向切到 ascii"
         );
@@ -1072,13 +1102,13 @@ mod tests {
     #[test]
     fn cycling_a_type_field_updates_the_row_label_immediately() {
         let mut s = test_state();
-        let idx = row_of_field(&s.rows, FieldKind::Order);
+        let idx = row_of_field(CycleField::Order);
         move_to_row(&mut s, idx);
         s.on_key(key(KeyCode::Right)); // 跳過目前值，直接切到 topo
 
-        let row = &s.rows[idx];
+        let row = ROWS[idx];
         assert!(
-            top_row_label(row, &s).contains("拓撲序"),
+            top_row_label(row, &s.draft, &s.defaults).contains("拓撲序"),
             "切換完不用離開這一列就看得到新值"
         );
     }
@@ -1086,8 +1116,8 @@ mod tests {
     #[test]
     fn cycle_field_rows_wrap_the_value_in_angle_brackets() {
         let s = test_state();
-        let idx = row_of_field(&s.rows, FieldKind::Order);
-        let label = top_row_label(&s.rows[idx], &s);
+        let idx = row_of_field(CycleField::Order);
+        let label = top_row_label(ROWS[idx], &s.draft, &s.defaults);
         assert!(
             label.contains("< 時間序 >"),
             "循環選擇欄位要用 < > 標示可切換：{label}"
@@ -1099,8 +1129,8 @@ mod tests {
         // `row.flags` 本身含 `<NUMBER>`（CLI 語法），這裡只檢查「目前：」後面
         // 的值沒有被包一層 `< >`，不是整條 label 零角括號。
         let s = test_state();
-        let idx = row_of(&s.rows, |a| matches!(a, TopRowAction::OpenMaxCount));
-        let label = top_row_label(&s.rows[idx], &s);
+        let idx = row_of_number(NumberField::MaxCount);
+        let label = top_row_label(ROWS[idx], &s.draft, &s.defaults);
         let value_part = label.split("目前：").nth(1).expect("label 要含「目前：」");
         assert!(
             !value_part.starts_with('<'),
@@ -1114,14 +1144,14 @@ mod tests {
     #[test]
     fn enter_on_a_type_field_row_is_a_no_op() {
         let mut s = test_state();
-        let idx = row_of_field(&s.rows, FieldKind::Order);
+        let idx = row_of_field(CycleField::Order);
         move_to_row(&mut s, idx);
         s.on_key(key(KeyCode::Right)); // 先切到 topo
-        assert_eq!(s.draft.order, Some(CommitOrderType::Topo));
+        assert_eq!(s.draft.args.order, Some(CommitOrderType::Topo));
 
         assert!(matches!(s.on_key(key(KeyCode::Enter)), Flow::Continue));
         assert_eq!(
-            s.draft.order,
+            s.draft.args.order,
             Some(CommitOrderType::Topo),
             "Enter 在循環選擇列上不觸發任何動作，值維持不變"
         );
@@ -1131,44 +1161,50 @@ mod tests {
     fn left_is_a_no_op_on_the_path_row() {
         let mut s = test_state();
         assert!(matches!(s.on_key(key(KeyCode::Left)), Flow::Continue));
-        assert_eq!(s.draft.path, ".", "PATH 不是可循環的欄位，← 不動它");
+        assert_eq!(s.draft.args.path, ".", "PATH 不是可循環的欄位，← 不動它");
     }
 
     #[test]
     fn enter_on_path_row_requests_path_browser() {
         let mut s = test_state();
-        assert!(matches!(s.on_key(key(KeyCode::Enter)), Flow::OpenPath));
+        assert!(matches!(
+            s.on_key(key(KeyCode::Enter)),
+            Flow::OpenEditor(Dialog::Path)
+        ));
     }
 
     #[test]
     fn enter_on_max_count_row_requests_number_input() {
         let mut s = test_state();
-        let idx = row_of(&s.rows, |a| matches!(a, TopRowAction::OpenMaxCount));
+        let idx = row_of_number(NumberField::MaxCount);
         move_to_row(&mut s, idx);
-        assert!(matches!(s.on_key(key(KeyCode::Enter)), Flow::OpenMaxCount));
+        assert!(matches!(
+            s.on_key(key(KeyCode::Enter)),
+            Flow::OpenEditor(Dialog::Number(NumberField::MaxCount))
+        ));
     }
 
     #[test]
     fn enter_on_update_interval_row_requests_number_input() {
         let mut s = test_state();
-        let idx = row_of(&s.rows, |a| matches!(a, TopRowAction::OpenUpdateInterval));
+        let idx = row_of_number(NumberField::UpdateInterval);
         move_to_row(&mut s, idx);
         assert!(matches!(
             s.on_key(key(KeyCode::Enter)),
-            Flow::OpenUpdateInterval
+            Flow::OpenEditor(Dialog::Number(NumberField::UpdateInterval))
         ));
     }
 
     #[test]
     fn update_mode_row_cycles_and_skips_the_current_variant() {
         let mut s = test_state();
-        let idx = row_of_field(&s.rows, FieldKind::UpdateMode);
+        let idx = row_of_field(CycleField::UpdateMode);
         move_to_row(&mut s, idx);
-        assert_eq!(s.draft.update_mode, None);
+        assert_eq!(s.draft.args.update_mode, None);
 
         s.on_key(key(KeyCode::Right));
         assert_eq!(
-            s.draft.update_mode,
+            s.draft.args.update_mode,
             Some(UpdateMode::Auto),
             "check 是目前值，第一次按 → 跳過它，切到下一個 auto"
         );
@@ -1177,25 +1213,28 @@ mod tests {
     #[test]
     fn auto_restart_row_toggles() {
         let mut s = test_state();
-        let idx = row_of_field(&s.rows, FieldKind::AutoRestart);
+        let idx = row_of_field(CycleField::AutoRestart);
         move_to_row(&mut s, idx);
-        assert_eq!(s.draft.auto_restart, None);
+        assert_eq!(s.draft.args.auto_restart, None);
 
         s.on_key(key(KeyCode::Right));
-        assert_eq!(s.draft.auto_restart, Some(AutoRestart::On));
+        assert_eq!(s.draft.args.auto_restart, Some(AutoRestart::On));
     }
 
     #[test]
     fn right_on_path_row_also_opens_the_browser() {
         let mut s = test_state();
-        assert!(matches!(s.on_key(key(KeyCode::Right)), Flow::OpenPath));
+        assert!(matches!(
+            s.on_key(key(KeyCode::Right)),
+            Flow::OpenEditor(Dialog::Path)
+        ));
     }
 
     #[test]
     fn right_l_and_enter_all_trigger_launch() {
         for trigger in [key(KeyCode::Right), char_key('l'), key(KeyCode::Enter)] {
             let mut s = test_state();
-            let idx = row_of(&s.rows, |a| matches!(a, TopRowAction::Launch));
+            let idx = row_of(|a| matches!(a, RowAction::Launch));
             move_to_row(&mut s, idx);
             assert!(
                 matches!(s.on_key(trigger), Flow::Launch),
@@ -1239,13 +1278,13 @@ mod tests {
     // Ascii 而不是退回 Rounded，斷言才抓得到方向錯誤。
     fn vim_hl_cycle_type_field_same_as_arrow_keys() {
         let mut s = test_state();
-        let idx = row_of_field(&s.rows, FieldKind::GraphStyle);
+        let idx = row_of_field(CycleField::GraphStyle);
         move_to_row(&mut s, idx);
         s.on_key(char_key('l'));
-        assert_eq!(s.draft.graph_style, Some(GraphStyle::Angular));
+        assert_eq!(s.draft.args.graph_style, Some(GraphStyle::Angular));
         s.on_key(char_key('h'));
         assert_eq!(
-            s.draft.graph_style,
+            s.draft.args.graph_style,
             Some(GraphStyle::Rounded),
             "h 要往回退，不是又往前"
         );
@@ -1257,7 +1296,7 @@ mod tests {
         s.on_key(key(KeyCode::Up));
         assert_eq!(s.list.selected(), Some(0), "已在第 0 項，不會變成負數");
 
-        let last = s.rows.len() - 1;
+        let last = ROWS.len() - 1;
         for _ in 0..last + 5 {
             s.on_key(key(KeyCode::Down));
         }
@@ -1267,13 +1306,13 @@ mod tests {
     #[test]
     fn top_row_shows_the_real_default_not_a_vague_placeholder() {
         let s = test_state();
-        let order_idx = row_of_field(&s.rows, FieldKind::Order);
+        let order_idx = row_of_field(CycleField::Order);
         assert!(
-            top_row_label(&s.rows[order_idx], &s).contains("時間序"),
+            top_row_label(ROWS[order_idx], &s.draft, &s.defaults).contains("時間序"),
             "chrono 是真正的目前值"
         );
-        let max_count_idx = row_of(&s.rows, |a| matches!(a, TopRowAction::OpenMaxCount));
-        assert!(top_row_label(&s.rows[max_count_idx], &s).contains("不限制"));
+        let max_count_idx = row_of_number(NumberField::MaxCount);
+        assert!(top_row_label(ROWS[max_count_idx], &s.draft, &s.defaults).contains("不限制"));
     }
 
     /// `ResolvedDefaults` 讀到設定檔真實值時，顯示與循環起點都要反映它，
@@ -1284,16 +1323,16 @@ mod tests {
         core.option.order = Some(CommitOrderType::Topo);
         let mut s = WizardState::with_defaults(ResolvedDefaults::from_core(&core));
 
-        let idx = row_of_field(&s.rows, FieldKind::Order);
+        let idx = row_of_field(CycleField::Order);
         assert!(
-            top_row_label(&s.rows[idx], &s).contains("拓撲序"),
+            top_row_label(ROWS[idx], &s.draft, &s.defaults).contains("拓撲序"),
             "設定檔寫的是 topo，精靈顯示的目前值要跟著是拓撲序，不是硬預設的時間序"
         );
 
         move_to_row(&mut s, idx);
         s.on_key(key(KeyCode::Right));
         assert_eq!(
-            s.draft.order,
+            s.draft.args.order,
             Some(CommitOrderType::Chrono),
             "topo 才是目前值，第一次按 → 要跳過它切到 chrono，不是繞回 topo"
         );
@@ -1375,11 +1414,11 @@ mod tests {
     #[test]
     fn apply_touched_settings_only_writes_touched_keys() {
         let mut s = test_state();
-        let idx = row_of_field(&s.rows, FieldKind::Order);
+        let idx = row_of_field(CycleField::Order);
         move_to_row(&mut s, idx);
         s.on_key(key(KeyCode::Right)); // order = Some(Topo)，其餘欄位沒碰過
 
-        let updated = apply_touched_settings(&s, "").unwrap();
+        let updated = apply_touched_settings(&s.draft, "").unwrap();
         assert!(updated.contains("order = \"topo\""), "{updated}");
         assert!(
             !updated.contains("graph_width"),
@@ -1397,12 +1436,12 @@ mod tests {
         // 自己重抄一份呼叫順序——重抄的話，`migrate_and_apply_touched_settings`
         // 裡萬一漏接 `migrate_legacy_toml`，這條測試不會發現。
         let mut s = test_state();
-        let idx = row_of_field(&s.rows, FieldKind::Order);
+        let idx = row_of_field(CycleField::Order);
         move_to_row(&mut s, idx);
         s.on_key(key(KeyCode::Right)); // order = Some(Topo)
 
         let legacy = "[ui.refs]\nwidth = 40\n";
-        let updated = migrate_and_apply_touched_settings(&s, legacy).unwrap();
+        let updated = migrate_and_apply_touched_settings(&s.draft, legacy).unwrap();
 
         assert!(updated.contains("refs_width = 40"), "{updated}");
         assert!(!updated.contains("[ui.refs]"), "{updated}");
@@ -1412,12 +1451,12 @@ mod tests {
     #[test]
     fn apply_touched_settings_preserves_existing_comments_and_unrelated_keys() {
         let mut s = test_state();
-        let idx = row_of_field(&s.rows, FieldKind::Order);
+        let idx = row_of_field(CycleField::Order);
         move_to_row(&mut s, idx);
         s.on_key(key(KeyCode::Right));
 
         let existing = "# 我的註解\n[core.search]\nfuzzy = true\n";
-        let updated = apply_touched_settings(&s, existing).unwrap();
+        let updated = apply_touched_settings(&s.draft, existing).unwrap();
         assert!(updated.contains("# 我的註解"), "{updated}");
         assert!(updated.contains("fuzzy = true"), "{updated}");
         assert!(updated.contains("order = \"topo\""), "{updated}");
@@ -1428,12 +1467,12 @@ mod tests {
         // assets/default-config.toml 把每個旋鈕的說明都寫成該鍵值後面的行內
         // 註解——改一次那個值，說明不能跟著消失。
         let mut s = test_state();
-        let idx = row_of_field(&s.rows, FieldKind::Order);
+        let idx = row_of_field(CycleField::Order);
         move_to_row(&mut s, idx);
         s.on_key(key(KeyCode::Right));
 
         let existing = "[core.option]\norder = \"chrono\"  # commit 排序\n";
-        let updated = apply_touched_settings(&s, existing).unwrap();
+        let updated = apply_touched_settings(&s.draft, existing).unwrap();
         assert!(
             updated.contains("order = \"topo\"  # commit 排序"),
             "{updated}"
@@ -1444,7 +1483,7 @@ mod tests {
     fn apply_touched_settings_rejects_syntax_broken_existing_file() {
         let s = test_state();
         let broken = "[core.option\norder = chrono"; // 缺右中括號
-        assert!(apply_touched_settings(&s, broken).is_err());
+        assert!(apply_touched_settings(&s.draft, broken).is_err());
     }
 
     #[test]
@@ -1453,21 +1492,20 @@ mod tests {
         // 洗掉。這裡驗證錯誤發生前檔案內容完全沒被讀取進 doc 重寫。
         let s = test_state();
         let broken = "not valid = = toml [[[";
-        let err = apply_touched_settings(&s, broken).unwrap_err();
+        let err = apply_touched_settings(&s.draft, broken).unwrap_err();
         assert!(err.contains("語法錯誤"), "{err}");
     }
 
     #[test]
     fn apply_touched_settings_removes_max_count_key_when_cleared() {
         let mut s = test_state();
-        s.draft.max_count = Some(100);
-        s.max_count_touched = true;
+        NumberField::MaxCount.commit(&mut s.draft, Some(100));
         let existing = "[core.option]\nmax_count = 100\n";
-        let updated = apply_touched_settings(&s, existing).unwrap();
+        let updated = apply_touched_settings(&s.draft, existing).unwrap();
         assert!(updated.contains("max_count = 100"), "{updated}");
 
-        s.draft.max_count = None; // 明確清空（NumberFlow::Committed(None)）
-        let updated2 = apply_touched_settings(&s, &updated).unwrap();
+        NumberField::MaxCount.commit(&mut s.draft, None); // 明確清空（NumberFlow::Committed(None)）
+        let updated2 = apply_touched_settings(&s.draft, &updated).unwrap();
         assert!(
             !updated2.contains("max_count"),
             "清空要移除這個鍵，不是寫 0：{updated2}"
@@ -1476,13 +1514,15 @@ mod tests {
 
     #[test]
     fn apply_touched_settings_leaves_max_count_alone_when_never_opened() {
-        // max_count_touched 為 false（對話框從沒開過）時，即使 draft.max_count
-        // 剛好是 None，也不該去動設定檔裡原本的值——「沒碰過」跟「明確清空」
-        // 型別上分不出來，touched 旗標就是為了補上這個區別。
+        // 這個鍵不在 `edits` 裡（對話框從沒開過）時，即使 `draft.args.max_count`
+        // 剛好是 `None`，也不該去動設定檔裡原本的值——「沒碰過」跟「明確清空」
+        // 型別上分不出來，`edits` 就是為了補上這個區別。
         let s = test_state();
-        assert!(!s.max_count_touched);
+        assert!(!s
+            .draft
+            .is_touched(Editor::Dialog(Dialog::Number(NumberField::MaxCount))));
         let existing = "[core.option]\nmax_count = 100\n";
-        let updated = apply_touched_settings(&s, existing).unwrap();
+        let updated = apply_touched_settings(&s.draft, existing).unwrap();
         assert!(
             updated.contains("max_count = 100"),
             "沒開過對話框，原本的值要原封不動：{updated}"
@@ -1492,11 +1532,76 @@ mod tests {
     #[test]
     fn apply_touched_settings_writes_update_settings_too() {
         let mut s = test_state();
-        let idx = row_of_field(&s.rows, FieldKind::AutoRestart);
+        let idx = row_of_field(CycleField::AutoRestart);
         move_to_row(&mut s, idx);
         s.on_key(key(KeyCode::Right)); // auto_restart = Some(On)
 
-        let updated = apply_touched_settings(&s, "").unwrap();
+        let updated = apply_touched_settings(&s.draft, "").unwrap();
         assert!(updated.contains("auto_restart = \"on\""), "{updated}");
+    }
+
+    // ── 新架構釘住的不變式：ConfigKey 對應表、空 edits、PATH 的隔離 ──
+
+    /// 9 個項目全部碰過一遍，寫回、再用真正的設定檔 parser（不是自己重抄一份
+    /// 反序列化邏輯）讀回來逐欄位比對。這條測試同時證明 9 條表路徑、9 個鍵名
+    /// （`update_mode` 寫的是 `mode`、`update_interval` 寫的是 `interval_hours`，
+    /// 兩個鍵名跟欄位名不同，最容易打錯）、9 個字串值全對——`toml_edit` 只認
+    /// 語法不認語意，鍵名寫錯不會有任何編譯期或執行期警訊，只有真的讀回來
+    /// 比對值才抓得到。
+    #[test]
+    fn every_field_round_trips_through_the_real_config_parser() {
+        let mut s = test_state();
+        for field in [
+            CycleField::Order,
+            CycleField::GraphWidth,
+            CycleField::Compact,
+            CycleField::GraphStyle,
+            CycleField::InitialSelection,
+            CycleField::UpdateMode,
+            CycleField::AutoRestart,
+        ] {
+            field.cycle(&mut s.draft, &s.defaults, 1);
+        }
+        NumberField::MaxCount.commit(&mut s.draft, Some(123));
+        NumberField::UpdateInterval.commit(&mut s.draft, Some(12));
+
+        let updated = apply_touched_settings(&s.draft, "").unwrap();
+        let core = config::parse_core(&updated).unwrap();
+
+        assert_eq!(core.option.order, s.draft.args.order);
+        assert_eq!(core.option.graph_width, s.draft.args.graph_width);
+        assert_eq!(core.option.compact, s.draft.args.compact);
+        assert_eq!(core.option.graph_style, s.draft.args.graph_style);
+        assert_eq!(
+            core.option.initial_selection,
+            s.draft.args.initial_selection
+        );
+        assert_eq!(core.option.max_count, s.draft.args.max_count);
+        assert_eq!(core.update.mode, s.draft.args.update_mode);
+        assert_eq!(core.update.interval_hours, s.draft.args.update_interval);
+        assert_eq!(core.update.auto_restart, s.draft.args.auto_restart);
+    }
+
+    /// 新架構才有的保證：`edits` 是空的，`apply_touched_settings` 一次
+    /// `ensure_table` 都不跑。舊版無條件跑 `table_entry(core)/(option)/(update)`，
+    /// 就算沒有任何欄位被 touched，也會在缺這些區塊的設定檔裡憑空印出
+    /// `[core]`\n\n`[core.option]`\n\n`[core.update]`——這是本次重構刻意改變
+    /// 的行為，不是意外。
+    #[test]
+    fn untouched_wizard_rewrites_the_file_verbatim() {
+        let s = test_state();
+        let existing = "# 使用者的檔案\n[core.search]\nfuzzy = true\n";
+        let updated = apply_touched_settings(&s.draft, existing).unwrap();
+        assert_eq!(updated, existing, "什麼都沒改，輸出要逐字等於輸入");
+    }
+
+    /// PATH 沒有 `ConfigKey`（`Editor::config_key` 對 `Dialog::Path` 回 `None`）
+    /// ——「只影響本次 session、永遠不進設定檔」由型別保證，這裡釘住結果。
+    #[test]
+    fn path_never_reaches_the_config_file() {
+        let mut s = test_state();
+        s.draft.args.path = "/some/very/specific/repo".to_string();
+        let updated = apply_touched_settings(&s.draft, "").unwrap();
+        assert!(!updated.contains("some/very/specific/repo"), "{updated}");
     }
 }

@@ -105,9 +105,21 @@ fn default_config_file_path() -> Option<PathBuf> {
 
 fn read_config_from_path(path: &Path) -> Result<Config> {
     let content = std::fs::read_to_string(path)?;
-    let content = migrate_legacy_toml(&content);
+    parse_config(&content)
+}
+
+fn parse_config(content: &str) -> Result<Config> {
+    let content = migrate_legacy_toml(content);
     let config: OptionalConfig = toml::from_str(&content)?;
     Ok(config.into())
+}
+
+/// 只給測試用：wizard 的往返測試要驗證「寫回去的字串，用真正的設定檔
+/// parser 讀回來，欄位值對不對」——不能自己重抄一份反序列化邏輯，
+/// 不然 `parse_config` 漏掉的錯誤這裡也漏掉，等於沒測。
+#[cfg(test)]
+pub(crate) fn parse_core(content: &str) -> Result<CoreConfig> {
+    Ok(parse_config(content)?.core)
 }
 
 #[optional(derives = [Deserialize])]
@@ -516,11 +528,19 @@ fn navigate<'a>(
     Some(table)
 }
 
-/// 沿著 `path` 逐層找子表，不存在就建立（跟 `wizard::table_entry` 同一套
-/// `Table::entry().or_insert(toml_edit::table())` 寫法，不用 `doc["a"]["b"]`
-/// 鏈式索引，理由見該函式的註解——那種寫法在中間層不存在時會生成
-/// inline table）。中途任何一段已經是非表格值就回 `None`。
-fn ensure_table<'a>(
+/// 沿著 `path` 逐層找子表，不存在就建立。用 `Table::entry().or_insert(toml_edit::table())`
+/// 而不是 `doc["a"]["b"]` 那種鏈式索引：後者在 `a` 還不存在時，`Item` 的
+/// `IndexMut` 實作會把它自動生成成 **inline table**（`a = { b = ... }`）而不是
+/// 一般的 `[a]` 表格區塊——這是 `toml_edit` 為了支援 `doc["a"]["b"]["c"] = value(1)`
+/// 這種寫法的既有行為（見 `Index for str` 的 `index_mut`：遇到 `Item::None`
+/// 直接包一層 `InlineTable` 再繼續索引），不是這裡的臭蟲，但拿來寫巢狀
+/// `[core.option]` 這種一定要是標準表格區塊的鍵就會生成使用者看不懂的格式。
+/// 改用 `Table::entry()` 直接操作 `Table`，不經過 `Item` 索引，就不會踩到這個
+/// 自動生成規則。中途任何一段已經是非表格值就回 `None`。
+///
+/// `pub(crate)`：`wizard::apply_touched_settings` 沿著 `ConfigKey::table` 走
+/// 任意深度的表格路徑，跟這裡遷移舊鍵用的是同一套需求，不重寫第二份。
+pub(crate) fn ensure_table<'a>(
     mut table: &'a mut toml_edit::Table,
     path: &[&str],
 ) -> Option<&'a mut toml_edit::Table> {
