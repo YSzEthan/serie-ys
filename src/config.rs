@@ -122,6 +122,14 @@ pub(crate) fn parse_core(content: &str) -> Result<CoreConfig> {
     Ok(parse_config(content)?.core)
 }
 
+/// 只給測試用：顏色編輯器的往返測試同一個理由——用真正的 parser 讀回來，
+/// 不自己重抄反序列化邏輯。注意 `parse_config` 不呼叫 `validate()`，這條
+/// 驗不到 garde 約束（例如 `[color.graph].branches` 的 pattern／長度）。
+#[cfg(test)]
+pub(crate) fn parse_color(content: &str) -> Result<ColorTheme> {
+    Ok(parse_config(content)?.color)
+}
+
 #[optional(derives = [Deserialize])]
 #[derive(Debug, Default, Clone, PartialEq, Eq, Validate)]
 struct Config {

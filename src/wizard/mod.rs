@@ -1,3 +1,4 @@
+mod color_editor;
 pub(crate) mod path_browser;
 
 use std::collections::BTreeMap;
@@ -76,6 +77,10 @@ fn wizard_loop(
                 {
                     field.commit(&mut state.draft, v);
                 }
+                terminal.clear()?;
+            }
+            Flow::OpenEditor(Dialog::ColorMenu) => {
+                color_editor::run(terminal, &mut state.draft, &state.defaults, theme)?;
                 terminal.clear()?;
             }
         }
@@ -167,10 +172,21 @@ struct ResolvedDefaults {
     update_mode: UpdateMode,
     update_interval: u64,
     auto_restart: AutoRestart,
+    /// 顏色編輯器的預覽基準（使用者實際設定，不是 `wizard::run()` 固定用
+    /// 的畫面 chrome）。
+    theme: ColorTheme,
+    /// `true` = 設定檔載入失敗（讀不到／解析失敗／garde 驗證不過），`theme`
+    /// 是內建硬預設，不是使用者的真實設定——顏色編輯器要據此在畫面上講
+    /// 清楚，不能默默顯示 43 個預設色並宣稱那是使用者的設定。
+    theme_is_fallback: bool,
 }
 
 impl ResolvedDefaults {
     fn from_core(core: &config::CoreConfig) -> Self {
+        Self::from_parts(core, ColorTheme::default())
+    }
+
+    fn from_parts(core: &config::CoreConfig, theme: ColorTheme) -> Self {
         Self {
             order: core.option.order.unwrap_or(CommitOrderType::Chrono),
             graph_width: core.option.graph_width.unwrap_or(GraphWidthType::Auto),
@@ -187,14 +203,22 @@ impl ResolvedDefaults {
                 .interval_hours
                 .unwrap_or(update::DEFAULT_INTERVAL_HOURS),
             auto_restart: core.update.auto_restart.unwrap_or_default(),
+            theme,
+            theme_is_fallback: false,
         }
     }
 
     /// 設定檔壞掉、讀不到、解析失敗——任何 `config::load()` 失敗的原因都一律
     /// 退回內建硬預設，精靈仍然開得起來。這條路徑不能用 `?`。
     fn load() -> Self {
-        let core = config::load().map(|(core, ..)| core).unwrap_or_default();
-        Self::from_core(&core)
+        match config::load() {
+            Ok((core, _ui, theme, _keybind)) => Self::from_parts(&core, theme),
+            Err(_) => {
+                let mut defaults = Self::from_core(&config::CoreConfig::default());
+                defaults.theme_is_fallback = true;
+                defaults
+            }
+        }
     }
 }
 
@@ -254,6 +278,7 @@ struct ConfigKey {
 
 const CORE_OPTION: &[&str] = &["core", "option"];
 const CORE_UPDATE: &[&str] = &["core", "update"];
+const COLOR: &[&str] = &["color"];
 
 /// ←/→ 在合法值之間原地輪迴切換的欄位。
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -459,11 +484,12 @@ impl NumberField {
     }
 }
 
-/// 開子畫面的編輯器。顏色與 keybind 之後在這裡加變體，`Flow` 不用跟著長。
+/// 開子畫面的編輯器。keybind 之後在這裡加變體，`Flow` 不用跟著長。
 #[derive(Clone, Copy)]
 enum Dialog {
     Path,
     Number(NumberField),
+    ColorMenu,
 }
 
 /// 一個項目怎麼編輯：原地循環，或開子畫面。
@@ -479,6 +505,7 @@ impl Editor {
             Editor::Cycle(f) => f.flags(),
             Editor::Dialog(Dialog::Path) => "[PATH]",
             Editor::Dialog(Dialog::Number(f)) => f.flags(),
+            Editor::Dialog(Dialog::ColorMenu) => "[COLOR]",
         }
     }
 
@@ -487,16 +514,29 @@ impl Editor {
             Editor::Cycle(f) => f.help(),
             Editor::Dialog(Dialog::Path) => "git 倉庫路徑（僅本次，不存檔）",
             Editor::Dialog(Dialog::Number(f)) => f.help(),
+            Editor::Dialog(Dialog::ColorMenu) => "介面配色（43 色）",
         }
     }
 
-    /// `None` = 只影響本次 session、永遠不進設定檔。目前只有 PATH 是這樣，
-    /// 由型別保證，不靠呼叫端自律。
-    fn config_key(self) -> Option<ConfigKey> {
+    /// 這個 editor 目前有幾個鍵被使用者改過。單鍵項目（Cycle／Number）是
+    /// 0 或 1；PATH 永遠是 0——「只影響本次 session、永遠不進設定檔」由
+    /// 型別保證：沒有任何程式路徑會為 PATH 建構 `ConfigKey`（`path_browser`
+    /// 只寫 `draft.args.path`），不是靠這裡回傳 0 保證的。COLOR 一列管
+    /// `["color"]` 整張表（含巢狀的 `["color","graph"]`），可能是
+    /// 0..44——用 `starts_with` 而不是相等比較，否則 `[color.graph].branches`
+    /// 不會被算進去，使用者只改分支色盤時 `[COLOR]` 那列不會亮 `✓`。
+    fn touched_count(self, draft: &Draft) -> usize {
         match self {
-            Editor::Cycle(f) => Some(f.config_key()),
-            Editor::Dialog(Dialog::Number(f)) => Some(f.config_key()),
-            Editor::Dialog(Dialog::Path) => None,
+            Editor::Cycle(f) => usize::from(draft.edits.contains_key(&f.config_key())),
+            Editor::Dialog(Dialog::Number(f)) => {
+                usize::from(draft.edits.contains_key(&f.config_key()))
+            }
+            Editor::Dialog(Dialog::Path) => 0,
+            Editor::Dialog(Dialog::ColorMenu) => draft
+                .edits
+                .keys()
+                .filter(|ck| ck.table.starts_with(COLOR))
+                .count(),
         }
     }
 
@@ -508,6 +548,10 @@ impl Editor {
             Editor::Cycle(f) => format!("< {} >", f.current_desc(draft, defaults)),
             Editor::Dialog(Dialog::Path) => draft.args.path.clone(),
             Editor::Dialog(Dialog::Number(f)) => f.current_label(draft, defaults),
+            Editor::Dialog(Dialog::ColorMenu) => match self.touched_count(draft) {
+                0 => "未修改".to_string(),
+                n => format!("{n} 項已改"),
+            },
         }
     }
 }
@@ -531,6 +575,7 @@ const ROWS: &[RowAction] = &[
     RowAction::Edit(Editor::Cycle(CycleField::UpdateMode)),
     RowAction::Edit(Editor::Dialog(Dialog::Number(NumberField::UpdateInterval))),
     RowAction::Edit(Editor::Cycle(CycleField::AutoRestart)),
+    RowAction::Edit(Editor::Dialog(Dialog::ColorMenu)),
     RowAction::Launch,
 ];
 
@@ -589,11 +634,8 @@ impl Draft {
         }
     }
 
-    /// PATH 沒有 `ConfigKey`（見 `Editor::config_key`），永遠回傳 `false`。
     fn is_touched(&self, editor: Editor) -> bool {
-        editor
-            .config_key()
-            .is_some_and(|ck| self.edits.contains_key(&ck))
+        editor.touched_count(self) > 0
     }
 }
 
@@ -970,6 +1012,8 @@ fn set_preserving_decor(table: &mut toml_edit::Table, key: &str, new_value: toml
 
 #[cfg(test)]
 mod tests {
+    use ratatui::style::Color as RatatuiColor;
+
     use super::*;
 
     fn test_state() -> WizardState {
@@ -1595,13 +1639,92 @@ mod tests {
         assert_eq!(updated, existing, "什麼都沒改，輸出要逐字等於輸入");
     }
 
-    /// PATH 沒有 `ConfigKey`（`Editor::config_key` 對 `Dialog::Path` 回 `None`）
-    /// ——「只影響本次 session、永遠不進設定檔」由型別保證，這裡釘住結果。
+    /// PATH 沒有 `ConfigKey` 可以被塞進 `edits`（`Editor::touched_count` 對
+    /// `Dialog::Path` 固定回 `0`，因為沒有任何程式路徑會為它建構
+    /// `ConfigKey`）——「只影響本次 session、永遠不進設定檔」由型別保證，
+    /// 這裡釘住結果。
     #[test]
     fn path_never_reaches_the_config_file() {
         let mut s = test_state();
         s.draft.args.path = "/some/very/specific/repo".to_string();
         let updated = apply_touched_settings(&s.draft, "").unwrap();
         assert!(!updated.contains("some/very/specific/repo"), "{updated}");
+    }
+
+    // ── 顏色（#69）：43 個平面色鍵的寫回路徑 ──
+
+    /// 43 欄各設互不相同的值，寫回、用真正的設定檔 parser（不是自己重抄
+    /// 一份反序列化邏輯）讀回來，再透過 `FlatColors`（已經被
+    /// `flat_colors_round_trips_through_color_theme` 證明無損）逐欄位比對。
+    /// 一次證明 43 個鍵名全對，也順便釘住「值必須寫成 TOML String」——寫成
+    /// 整數的話 `Color::deserialize` 的兩條 untagged 分支都會失敗。
+    #[test]
+    fn every_color_field_round_trips_through_the_real_config_parser() {
+        let mut s = test_state();
+        for (i, key) in crate::color::COLOR_KEYS.iter().enumerate() {
+            let value = crate::color::color_to_config_string(RatatuiColor::Indexed(i as u8));
+            s.draft
+                .edits
+                .insert(ConfigKey { table: COLOR, key }, Some(value.into()));
+        }
+
+        let updated = apply_touched_settings(&s.draft, "").unwrap();
+        let theme = config::parse_color(&updated).unwrap();
+        let flat = crate::color::FlatColors::from(&theme);
+
+        for (i, value) in flat.values.iter().enumerate() {
+            assert_eq!(*value, RatatuiColor::Indexed(i as u8), "index {i}");
+        }
+    }
+
+    #[test]
+    fn editing_one_color_leaves_the_other_42_lines_verbatim() {
+        let mut s = test_state();
+        let asset = include_str!("../../assets/default-config.toml");
+        s.draft.edits.insert(
+            ConfigKey {
+                table: COLOR,
+                key: "list_hash_fg",
+            },
+            Some(crate::color::color_to_config_string(RatatuiColor::Indexed(208)).into()),
+        );
+
+        let updated = apply_touched_settings(&s.draft, asset).unwrap();
+        assert!(updated.contains("list_hash_fg = \"208\""), "{updated}");
+
+        for line in asset.lines() {
+            if line.starts_with("list_hash_fg") {
+                continue;
+            }
+            assert!(updated.contains(line), "遺失了這一行：{line}");
+        }
+    }
+
+    /// `[COLOR]` 那列的「N 項已改」直接反映 `edits` 裡屬於 `["color"]` 這棵
+    /// 子樹的筆數——含巢狀的 `["color","graph"]`。用 `starts_with` 而不是
+    /// 相等比較：使用者只改 `[color.graph].branches` 時，這一列一樣要亮。
+    #[test]
+    fn color_row_shows_the_touched_count() {
+        let mut s = test_state();
+        let editor = Editor::Dialog(Dialog::ColorMenu);
+        assert_eq!(editor.current_label(&s.draft, &s.defaults), "未修改");
+
+        s.draft.edits.insert(
+            ConfigKey {
+                table: COLOR,
+                key: "fg",
+            },
+            Some(crate::color::color_to_config_string(RatatuiColor::Red).into()),
+        );
+        assert_eq!(editor.current_label(&s.draft, &s.defaults), "1 項已改");
+
+        s.draft.edits.insert(
+            ConfigKey {
+                table: &["color", "graph"],
+                key: "branches",
+            },
+            Some(toml_edit::Value::from("dummy")),
+        );
+        assert_eq!(editor.current_label(&s.draft, &s.defaults), "2 項已改");
     }
 }
