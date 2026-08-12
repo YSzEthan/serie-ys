@@ -25,12 +25,26 @@ CARGO_LOCK = REPO_ROOT / "Cargo.lock"
 CHANGELOG = REPO_ROOT / "CHANGELOG.md"
 
 # commit type -> (CHANGELOG section 標題, bump 等級)。等級為 None 代表該
-# type 有專屬 CHANGELOG 區塊，但本身不觸發版號變動（例如 refactor）。
+# type 有專屬 CHANGELOG 區塊，但本身不觸發版號變動。
+#
+# 判準是「這個 commit 有沒有改到使用者下載的那個執行檔」：有就至少 patch，
+# 沒有就只列 CHANGELOG。所以 refactor／style／build／revert 都算 patch
+# （原始碼或相依變了，產出的 binary 就不是同一個），而 docs／test／ci／
+# chore 不算（純文件、測試、CI 設定、雜務不會進 binary）。
+#
+# 改這張表要同步更新 CONTRIBUTING.md 的對照表——那是給貢獻者看的第二份。
 TYPE_TABLE = {
     "feat": ("Features", "minor"),
     "fix": ("Bug Fixes", "patch"),
     "perf": ("Performance", "patch"),
-    "refactor": ("Refactors", None),
+    "refactor": ("Refactors", "patch"),
+    "revert": ("Reverts", "patch"),
+    "build": ("Build System", "patch"),
+    "style": ("Styles", "patch"),
+    "docs": ("Documentation", None),
+    "test": ("Tests", None),
+    "ci": ("CI", None),
+    "chore": ("Chores", None),
 }
 # CHANGELOG section 順序沿用 TYPE_TABLE 的宣告順序，不手抄第二份——新增
 # commit type 時只要改上面那張表，這裡自動跟著變，不會漏同步。
@@ -103,6 +117,35 @@ def build_pr_map(base: str) -> dict[str, int]:
     return pr_map
 
 
+def warn(message: str) -> None:
+    """留一則警告。在 GitHub Actions 上是 annotation，本機是普通 stderr。
+
+    一律走 stderr：runner 兩條串流都會解析 workflow command，而 stdout 有
+    別的用途——`--print-section` 的輸出會被重導向成 GitHub Release 內文
+    （見 `release.yml` 的 upload job），警告混進去就會出現在發版說明裡。
+    """
+    prefix = "::warning::" if os.environ.get("GITHUB_ACTIONS") else "warning: "
+    print(f"{prefix}{message}", file=sys.stderr)
+
+
+def subject_problem(subject: str) -> str | None:
+    """回傳 subject 不符規範的原因，符合就回 `None`。
+
+    純函式、不碰 git，`test_prepare_release.py` 直接餵字串測。
+
+    這是規範的唯一定義，三個呼叫端共用：lefthook 的 commit-msg hook 與
+    PR 標題 lint（兩者經 `check_subject.py`）在 merge 前擋，`classify()`
+    則只是補一則警告——擋在那裡沒有用，commit 已經在 main 上了。
+    """
+    m = SUBJECT_RE.match(subject)
+    if not m:
+        return "缺少 conventional commit 前綴（`type: 描述`）"
+    ctype = m.group("type")
+    if ctype not in TYPE_TABLE:
+        return f"`{ctype}` 不是認得的 commit type"
+    return None
+
+
 def classify(
     commits: list[Commit],
 ) -> tuple[str | None, dict[str, list[tuple[Commit, str]]], list[tuple[Commit, str]]]:
@@ -112,10 +155,16 @@ def classify(
     breaking: list[tuple[Commit, str]] = []
 
     for c in commits:
+        # 格式不合只警告不中止，理由見 subject_problem()。
         m = SUBJECT_RE.match(c.subject)
-        if not m:
+        entry = TYPE_TABLE.get(m.group("type")) if m else None
+        if entry is None:
+            warn(
+                f"{c.hash[:7]} {c.subject} ↳ {subject_problem(c.subject)}"
+                "（不列入 CHANGELOG 與版號計算）"
+            )
             continue
-        ctype = m.group("type")
+
         desc = m.group("desc").strip()
         is_breaking = bool(m.group("breaking"))
 
@@ -128,10 +177,8 @@ def classify(
         elif is_breaking:
             breaking.append((c, desc))
 
-        entry = TYPE_TABLE.get(ctype)
-        section, own_level = entry if entry else (None, None)
-        if section:
-            sections[section].append((c, desc))
+        section, own_level = entry
+        sections[section].append((c, desc))
 
         level = "major" if is_breaking else own_level
         if BUMP_RANK[level] > BUMP_RANK[bump]:
@@ -305,6 +352,13 @@ def main() -> int:
     bump, sections, breaking = classify(commits)
 
     if bump is None:
+        # 沒有這則警告，「發版」與「漏發版」在 run 頁面上長得一模一樣，
+        # 都是綠燈——只能等有人發現 tag 沒出來。
+        quiet = "／".join(t for t, (_, level) in TYPE_TABLE.items() if level is None)
+        warn(
+            f"這次 push 沒有觸發發版：{args.base}..HEAD 的 {len(commits)} 個 commit "
+            f"沒有任何一個會升版號（只有 {quiet} 這類，或格式不合被略過）。"
+        )
         print("NO_BUMP")
         return 0
 
