@@ -166,7 +166,7 @@ impl GraphColorSet {
     }
 }
 
-fn parse_rgba_color(s: &str) -> Option<GraphColor> {
+pub(crate) fn parse_rgba_color(s: &str) -> Option<GraphColor> {
     if !s.starts_with('#') {
         return None;
     }

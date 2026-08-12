@@ -9,8 +9,8 @@ use ratatui::{
 use tui_input::backend::crossterm::EventHandler;
 
 use crate::color::{
-    color_to_config_string, preview_block, ColorTheme, FlatColors, PreviewBlock, COLOR_KEYS,
-    NAMED_COLORS,
+    color_to_config_string, parse_rgba_color, preview_block, ColorTheme, FlatColors, GraphColor,
+    PreviewBlock, COLOR_KEYS, NAMED_COLORS,
 };
 
 use super::{ConfigKey, Draft, ResolvedDefaults, COLOR};
@@ -169,12 +169,62 @@ pub(crate) struct ColorEditorState {
     base: FlatColors,
     /// 編輯中的草稿，起點＝`base`。
     colors: FlatColors,
+    /// Fields 清單，43 個平面色鍵 + 第 44 列（`[color.graph].branches` 入口）。
     list: ListState,
-    /// `Some` = 正在編輯 `list.selected()` 那一欄。
+    /// `Some` = 正在編輯 `list.selected()` 那一欄（只在 `list` 選到 0..43
+    /// 範圍內的平面色鍵時才會是 `Some`；第 44 列按 Enter 開的是
+    /// `branches`，不是這個）。
     edit: Option<ColorEdit>,
+    /// `Some` = 在 `[color.graph].branches` 子畫面。分支色是純字串（8 位
+    /// hex 的 alpha 位元組 `RatatuiColor` 表示不了），跟 `ColorEdit` 的
+    /// Named/Indexed/Hex 三態不是同一種東西，所以自成一套獨立狀態，不跟
+    /// `list`／`edit` 混用。
+    branches: Option<BranchesEditor>,
     /// `true` = 設定檔載入失敗，`base`/`colors` 是內建硬預設，不是使用者的
     /// 真實設定——`render` 要據此在預覽區上方講清楚。
     theme_is_fallback: bool,
+}
+
+/// `[color.graph].branches` 子畫面自己的清單與編輯狀態。
+struct BranchesEditor {
+    /// 編輯中的草稿。每次 `a`／`d`／cell 編輯確認後立刻同步進
+    /// `ColorEditorState.colors.graph.branches` 與 `draft.edits`——不像
+    /// 平面色欄位那樣要按 Enter 才落地，因為這裡沒有「打到一半」的整陣列
+    /// 概念，`a`／`d` 本身就是離散、已完成的動作。
+    values: Vec<String>,
+    list: ListState,
+    /// `Some` = 正在編輯選到的那一格：原始 hex 字串，不經過 `RatatuiColor`
+    /// （8 位 alpha `RatatuiColor` 表示不了，見必讀事實 5）。
+    edit: Option<tui_input::Input>,
+}
+
+impl BranchesEditor {
+    fn move_selection(&mut self, delta: i32) {
+        let len = self.values.len() as i32;
+        let current = self.list.selected().unwrap_or(0) as i32;
+        let next = (current + delta).clamp(0, len - 1);
+        self.list.select(Some(next as usize));
+    }
+}
+
+/// garde 的 pattern 是 `^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$`；這裡只驗語法，
+/// 不經過 `RatatuiColor`（alpha 會被砍掉）。回傳統一成大寫的 `#XXXXXX`／
+/// `#XXXXXXXX`，跟範本的拼法一致。
+fn valid_branch_hex(s: &str) -> Option<String> {
+    let len = s.len();
+    if (len == 6 || len == 8) && s.chars().all(|c| c.is_ascii_hexdigit()) {
+        Some(format!("#{}", s.to_uppercase()))
+    } else {
+        None
+    }
+}
+
+/// 分支色清單裡每一格的色塊。解析失敗（理論上不會，garde 已經擋在前面）
+/// 就顯示 `DarkGray`，不 panic。
+fn branch_swatch_color(hex: &str) -> RatatuiColor {
+    parse_rgba_color(hex)
+        .map(GraphColor::to_ratatui_color)
+        .unwrap_or(RatatuiColor::DarkGray)
 }
 
 impl ColorEditorState {
@@ -186,6 +236,7 @@ impl ColorEditorState {
             colors: FlatColors::from(&defaults.theme),
             list,
             edit: None,
+            branches: None,
             theme_is_fallback: defaults.theme_is_fallback,
         }
     }
@@ -195,6 +246,10 @@ impl ColorEditorState {
     pub fn on_key(&mut self, key: KeyEvent, draft: &mut Draft) -> Flow {
         if key.kind != KeyEventKind::Press {
             return Flow::Continue;
+        }
+
+        if self.branches.is_some() {
+            return self.on_branches_key(key, draft);
         }
 
         if self.edit.is_some() {
@@ -216,8 +271,8 @@ impl ColorEditorState {
                 self.move_selection(1);
                 Flow::Continue
             }
-            // `on_key` 是零 I/O 純函式，拿不到 viewport 高度；43 列分四頁
-            // 多，固定步長夠用，不值得為它在 render 時回存高度。
+            // `on_key` 是零 I/O 純函式，拿不到 viewport 高度；43+1 列分
+            // 四頁多，固定步長夠用，不值得為它在 render 時回存高度。
             KeyCode::PageUp => {
                 self.move_selection(-10);
                 Flow::Continue
@@ -231,22 +286,187 @@ impl ColorEditorState {
                 Flow::Continue
             }
             KeyCode::End => {
-                self.list.select(Some(COLOR_KEYS.len() - 1));
+                self.list.select(Some(COLOR_KEYS.len()));
                 Flow::Continue
             }
             KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
                 let idx = self.list.selected().unwrap_or(0);
-                self.edit = Some(ColorEdit::from_current(self.colors.values[idx]));
+                if idx == COLOR_KEYS.len() {
+                    self.open_branches();
+                } else {
+                    self.edit = Some(ColorEdit::from_current(self.colors.values[idx]));
+                }
                 Flow::Continue
             }
             // 43 個欄位配一個手打 hex 的輸入框，誤按是必然的，而 `edits`
-            // 對顏色沒有其他移除路徑。
+            // 對顏色沒有其他移除路徑。第 44 列（branches 入口）沒有單一
+            // 「原值」可還原，這裡直接跳過。
             KeyCode::Char('r') => {
-                self.revert_selected(draft);
+                let idx = self.list.selected().unwrap_or(0);
+                if idx < COLOR_KEYS.len() {
+                    self.revert_selected(draft);
+                }
                 Flow::Continue
             }
             _ => Flow::Continue,
         }
+    }
+
+    fn open_branches(&mut self) {
+        let mut list = ListState::default();
+        list.select(Some(0));
+        self.branches = Some(BranchesEditor {
+            values: self.colors.graph.branches.clone(),
+            list,
+            edit: None,
+        });
+    }
+
+    /// `[color.graph].branches` 子畫面的按鍵處理。巢狀的「正在編輯某一格」
+    /// 交給 `on_branch_cell_key`，這裡只管清單層級的導覽與 a/d。
+    fn on_branches_key(&mut self, key: KeyEvent, draft: &mut Draft) -> Flow {
+        let editing_cell = self.branches.as_ref().is_some_and(|b| b.edit.is_some());
+        if editing_cell {
+            self.on_branch_cell_key(key, draft);
+            return Flow::Continue;
+        }
+
+        // ctrl-c / ctrl-d：跟 Esc 一樣退一層（離開 branches 子畫面），不是
+        // 離開整個顏色編輯器。
+        if super::is_abort_key(&key) {
+            self.branches = None;
+            return Flow::Continue;
+        }
+
+        match key.code {
+            KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => {
+                self.branches = None;
+            }
+            KeyCode::Up | KeyCode::Char('k') => {
+                if let Some(b) = &mut self.branches {
+                    b.move_selection(-1);
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') => {
+                if let Some(b) = &mut self.branches {
+                    b.move_selection(1);
+                }
+            }
+            KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
+                if let Some(b) = &mut self.branches {
+                    let idx = b.list.selected().unwrap_or(0);
+                    let current = b.values[idx].trim_start_matches('#').to_string();
+                    b.edit = Some(tui_input::Input::new(current));
+                }
+            }
+            KeyCode::Char('a') => {
+                if let Some(b) = &mut self.branches {
+                    let idx = b.list.selected().unwrap_or(0);
+                    let clone = b.values[idx].clone();
+                    b.values.insert(idx + 1, clone);
+                    b.list.select(Some(idx + 1));
+                }
+                self.sync_branches(draft);
+            }
+            KeyCode::Char('d') => {
+                // 刪到剩 1 格要拒絕：garde 是 `length(min = 1)`，空陣列會讓
+                // 整份設定檔載入失敗，`GraphColorSet::get()` 對空 Vec 直接
+                // panic。這條路徑不跑 garde（`set_color` 那條 serde 路徑
+                // 只在 `From` 之後才 validate），wizard 必須自己擋。
+                let deleted = if let Some(b) = &mut self.branches {
+                    if b.values.len() > 1 {
+                        let idx = b.list.selected().unwrap_or(0);
+                        b.values.remove(idx);
+                        let new_idx = idx.min(b.values.len() - 1);
+                        b.list.select(Some(new_idx));
+                        true
+                    } else {
+                        false
+                    }
+                } else {
+                    false
+                };
+                if deleted {
+                    self.sync_branches(draft);
+                }
+            }
+            _ => {}
+        }
+        Flow::Continue
+    }
+
+    fn on_branch_cell_key(&mut self, key: KeyEvent, draft: &mut Draft) {
+        if super::is_abort_key(&key) {
+            if let Some(b) = &mut self.branches {
+                b.edit = None;
+            }
+            return;
+        }
+
+        match key.code {
+            KeyCode::Esc => {
+                if let Some(b) = &mut self.branches {
+                    b.edit = None;
+                }
+            }
+            KeyCode::Enter => {
+                let committed = self
+                    .branches
+                    .as_ref()
+                    .and_then(|b| b.edit.as_ref())
+                    .and_then(|input| valid_branch_hex(input.value()));
+                if let Some(hex) = committed {
+                    if let Some(b) = &mut self.branches {
+                        let idx = b.list.selected().unwrap_or(0);
+                        b.values[idx] = hex;
+                        b.edit = None;
+                    }
+                    self.sync_branches(draft);
+                }
+                // 缺什麼由對話框的訊息行顯示，留在原地。
+            }
+            KeyCode::Char(c) if c.is_ascii_hexdigit() => {
+                // Hex 模式下 a-f 是合法輸入字元，不能當導覽鍵；也不能被
+                // ctrl 修飾字誤觸——`ctrl-f` 不該被當成輸入 'f'。
+                let plain = key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT;
+                if plain {
+                    if let Some(b) = &mut self.branches {
+                        if let Some(input) = &mut b.edit {
+                            if input.value().len() < 8 {
+                                input.handle_event(&Event::Key(key));
+                            }
+                        }
+                    }
+                }
+            }
+            KeyCode::Backspace => {
+                if let Some(b) = &mut self.branches {
+                    if let Some(input) = &mut b.edit {
+                        input.handle_event(&Event::Key(key));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// 把 branches 子畫面的草稿同步進 `colors.graph.branches`（清單頁與
+    /// 預覽讀的是這份）與 `draft.edits`（寫回設定檔）。`a`／`d`／cell 編輯
+    /// 確認後都要呼叫——每個動作本身就是已完成的變更，沒有「打到一半」
+    /// 的整陣列概念，不需要像平面色欄位那樣另外等一個 Enter。
+    fn sync_branches(&mut self, draft: &mut Draft) {
+        let Some(branches) = &self.branches else {
+            return;
+        };
+        let values = branches.values.clone();
+        self.colors.graph.branches = values.clone();
+        let key = ConfigKey {
+            table: super::COLOR_GRAPH,
+            key: "branches",
+        };
+        draft
+            .edits
+            .insert(key, Some(super::string_array(&values, true)));
     }
 
     fn on_edit_key(&mut self, key: KeyEvent, draft: &mut Draft) {
@@ -302,7 +522,8 @@ impl ColorEditorState {
     }
 
     fn move_selection(&mut self, delta: i32) {
-        let len = COLOR_KEYS.len() as i32;
+        // +1 為第 44 列（`[color.graph].branches` 入口）。
+        let len = (COLOR_KEYS.len() + 1) as i32;
         let current = self.list.selected().unwrap_or(0) as i32;
         let next = (current + delta).clamp(0, len - 1);
         self.list.select(Some(next as usize));
@@ -331,6 +552,11 @@ impl ColorEditorState {
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect, chrome: &ColorTheme) {
+        if let Some(branches) = &mut self.branches {
+            render_branches(f, area, branches, chrome);
+            return;
+        }
+
         let [main_area, hint_area] =
             Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
         let [list_area, preview_area] =
@@ -338,6 +564,7 @@ impl ColorEditorState {
                 .areas(main_area);
 
         let selected = self.list.selected().unwrap_or(0);
+        let total = COLOR_KEYS.len() + 1;
 
         let items: Vec<ListItem> = COLOR_KEYS
             .iter()
@@ -353,31 +580,48 @@ impl ColorEditorState {
                     Span::raw(color_to_config_string(color)),
                 ]))
             })
+            .chain(std::iter::once(branches_row_item(
+                &self.colors.graph.branches,
+                &self.base.graph.branches,
+            )))
             .collect();
         let list = super::styled_list(items, chrome).block(
             Block::default()
-                .title(format!(" 顏色 [{}/{}] ", selected + 1, COLOR_KEYS.len()))
+                .title(format!(" 顏色 [{}/{}] ", selected + 1, total))
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(chrome.divider_fg)),
         );
         f.render_stateful_widget(list, list_area, &mut self.list);
 
-        // 選中欄位若正在編輯，預覽要即時反映輸入到一半的值——`self.colors`
-        // 本身直到 Enter 才會被寫入，這裡只在預覽用的副本上覆蓋，不動草稿。
-        let mut preview_values = self.colors.values.clone();
-        preview_values[selected] = self.live_value(selected);
-        let preview_colors = FlatColors {
-            values: preview_values,
-            graph: self.colors.graph.clone(),
-        };
-
-        let focus = preview_block(COLOR_KEYS[selected]);
         let mut preview_text: Vec<Line> = Vec::new();
         if self.theme_is_fallback {
             preview_text
                 .push(Line::raw("設定檔載入失敗，以下是內建預設").fg(chrome.status_warn_fg));
         }
-        preview_text.extend(preview_lines(&preview_colors, focus));
+        if selected < COLOR_KEYS.len() {
+            // 選中欄位若正在編輯，預覽要即時反映輸入到一半的值——
+            // `self.colors` 本身直到 Enter 才會被寫入，這裡只在預覽用的
+            // 副本上覆蓋，不動草稿。
+            let mut preview_values = self.colors.values.clone();
+            preview_values[selected] = self.live_value(selected);
+            let preview_colors = FlatColors {
+                values: preview_values,
+                graph: self.colors.graph.clone(),
+            };
+            let focus = preview_block(COLOR_KEYS[selected]);
+            preview_text.extend(preview_lines(&preview_colors, focus));
+        } else {
+            preview_text.push(Line::raw("[color.graph].branches"));
+            preview_text.push(Line::from(
+                self.colors
+                    .graph
+                    .branches
+                    .iter()
+                    .map(|hex| Span::styled("■ ", Style::default().fg(branch_swatch_color(hex))))
+                    .collect::<Vec<_>>(),
+            ));
+            preview_text.push(Line::raw("Enter 進入編輯"));
+        }
         f.render_widget(
             Paragraph::new(preview_text).block(
                 Block::default()
@@ -405,6 +649,121 @@ impl ColorEditorState {
             render_edit_dialog(f, area, COLOR_KEYS[selected], edit, chrome);
         }
     }
+}
+
+fn branches_row_item(current: &[String], base: &[String]) -> ListItem<'static> {
+    let touched = current != base;
+    let marker = if touched { "✓ " } else { "  " };
+    ListItem::new(Line::raw(format!(
+        "{marker}[color.graph].branches  ({} 色)",
+        current.len()
+    )))
+}
+
+fn render_branches(f: &mut Frame, area: Rect, branches: &mut BranchesEditor, chrome: &ColorTheme) {
+    let [list_area, hint_area] =
+        Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
+
+    let items: Vec<ListItem> = branches
+        .values
+        .iter()
+        .enumerate()
+        .map(|(i, hex)| {
+            ListItem::new(Line::from(vec![
+                Span::raw(format!("{:>2}  ", i + 1)),
+                Span::styled("■ ", Style::default().fg(branch_swatch_color(hex))),
+                Span::raw(hex.clone()),
+            ]))
+        })
+        .collect();
+    let title = format!(
+        " [color.graph].branches [{}/{}] ",
+        branches.list.selected().unwrap_or(0) + 1,
+        branches.values.len()
+    );
+    let list = super::styled_list(items, chrome).block(
+        Block::default()
+            .title(title)
+            .borders(Borders::ALL)
+            .border_style(Style::default().fg(chrome.divider_fg)),
+    );
+    f.render_stateful_widget(list, list_area, &mut branches.list);
+
+    // 常駐約束，不是事件訊息：刪到剩最後一格時提示會自動變，不需要另外
+    // 存一個「剛才被拒絕」的旗標、也不需要清除規則。
+    let delete_hint: &str = if branches.values.len() == 1 {
+        "至少保留 1 色"
+    } else {
+        "刪除"
+    };
+    let hint = crate::widget::hint_line(
+        chrome,
+        &[
+            ("Enter/l".into(), "編輯"),
+            ("a".into(), "新增"),
+            ("d".into(), delete_hint),
+            ("Esc/h".into(), "返回"),
+        ],
+        chrome.help_key_fg,
+    );
+    f.render_widget(Paragraph::new(hint), hint_area);
+
+    if let Some(edit) = &branches.edit {
+        let idx = branches.list.selected().unwrap_or(0);
+        render_branch_edit_dialog(f, area, idx, edit, chrome);
+    }
+}
+
+fn render_branch_edit_dialog(
+    f: &mut Frame,
+    area: Rect,
+    index: usize,
+    edit: &tui_input::Input,
+    chrome: &ColorTheme,
+) {
+    let value_line = format!("> #{}", edit.value());
+    let message = if valid_branch_hex(edit.value()).is_some() {
+        String::new()
+    } else {
+        format!("需要 6 或 8 碼 hex，目前 {} 碼", edit.value().len())
+    };
+
+    let hint = crate::widget::hint_line(
+        chrome,
+        &[("Enter".into(), "確認"), ("Esc".into(), "取消")],
+        chrome.help_key_fg,
+    );
+
+    let dialog_width = (hint.width() as u16 + 2)
+        .max(30)
+        .min(area.width.saturating_sub(4));
+    let dialog_height = 5u16.min(area.height.saturating_sub(2));
+    let dialog_area = super::centered_rect(area, dialog_width, dialog_height);
+
+    f.render_widget(Clear, dialog_area);
+    let block = Block::default()
+        .title(format!(" branches[{}] ", index + 1))
+        .borders(Borders::ALL)
+        .border_style(Style::default().fg(chrome.divider_fg))
+        .style(Style::default().bg(chrome.bg).fg(chrome.fg));
+    let inner = block.inner(dialog_area);
+    f.render_widget(block, dialog_area);
+
+    let [value_area, message_area, hint_area] = Layout::vertical([
+        Constraint::Length(1),
+        Constraint::Length(1),
+        Constraint::Length(1),
+    ])
+    .areas(inner);
+
+    f.render_widget(Paragraph::new(Line::raw(value_line)), value_area);
+    f.render_widget(
+        Paragraph::new(Line::raw(message)).fg(chrome.status_warn_fg),
+        message_area,
+    );
+    f.render_widget(Paragraph::new(hint), hint_area);
+
+    f.set_cursor_position((value_area.x + 3 + edit.visual_cursor() as u16, value_area.y));
 }
 
 fn preview_lines(colors: &FlatColors, focus: PreviewBlock) -> Vec<Line<'static>> {
@@ -761,5 +1120,159 @@ mod tests {
             "r 是移除這個鍵，不是寫 Some(None)"
         );
         assert_eq!(state.colors.values[0], state.base.values[0]);
+    }
+
+    // ── [color.graph].branches（commit 2） ──
+
+    fn branches_key() -> ConfigKey {
+        ConfigKey {
+            table: super::super::COLOR_GRAPH,
+            key: "branches",
+        }
+    }
+
+    fn enter_branches(state: &mut ColorEditorState, draft: &mut Draft) {
+        state.list.select(Some(COLOR_KEYS.len()));
+        assert!(matches!(
+            state.on_key(key(KeyCode::Enter), draft),
+            Flow::Continue
+        ));
+        assert!(state.branches.is_some(), "應該進了 branches 子畫面");
+    }
+
+    #[test]
+    fn graph_branches_round_trips_and_stays_multiline() {
+        let mut state = ColorEditorState::new(&test_defaults());
+        let mut draft = Draft::new();
+        enter_branches(&mut state, &mut draft);
+
+        state.on_key(key(KeyCode::Enter), &mut draft); // 編輯第 1 格
+        assert!(state.branches.as_ref().unwrap().edit.is_some());
+        // 跟平面色的 HEX 模式一樣，輸入框預填現值（方便微調）——先清空
+        // 再打新值，不是接在後面。
+        for _ in 0..8 {
+            state.on_key(key(KeyCode::Backspace), &mut draft);
+        }
+        for c in "AABBCC".chars() {
+            state.on_key(char_key(c), &mut draft);
+        }
+        state.on_key(key(KeyCode::Enter), &mut draft); // 確認
+
+        assert_eq!(state.branches.as_ref().unwrap().values[0], "#AABBCC");
+
+        let updated = super::super::apply_touched_settings(&draft, "").unwrap();
+        assert!(updated.contains("#AABBCC"), "{updated}");
+        // 每個元素自己一行，不是壓成單行——跟範本的排版一致。
+        assert!(updated.contains("branches = [\n"), "{updated}");
+
+        let theme = crate::config::parse_color(&updated).unwrap();
+        assert_eq!(theme.graph.branches[0], "#AABBCC");
+        assert_eq!(theme.graph.branches.len(), 6);
+    }
+
+    #[test]
+    fn branch_delete_refuses_to_empty_the_list() {
+        let mut state = ColorEditorState::new(&test_defaults());
+        let mut draft = Draft::new();
+        enter_branches(&mut state, &mut draft);
+
+        let default_len = state.branches.as_ref().unwrap().values.len();
+        for _ in 0..default_len + 3 {
+            state.on_key(char_key('d'), &mut draft);
+        }
+        assert_eq!(
+            state.branches.as_ref().unwrap().values.len(),
+            1,
+            "刪到剩 1 格後再按 d 不該繼續刪"
+        );
+        // 空陣列一旦寫回，garde `length(min=1)` 會讓整份設定檔載入失敗——
+        // 這裡順便確認最後一次成功的刪除有同步進 edits。
+        assert!(draft.edits.contains_key(&branches_key()));
+        let updated = super::super::apply_touched_settings(&draft, "").unwrap();
+        let theme = crate::config::parse_color(&updated).unwrap();
+        assert_eq!(theme.graph.branches.len(), 1);
+    }
+
+    #[test]
+    fn branch_edit_is_locked_to_hex() {
+        let mut state = ColorEditorState::new(&test_defaults());
+        let mut draft = Draft::new();
+        enter_branches(&mut state, &mut draft);
+        state.on_key(key(KeyCode::Enter), &mut draft);
+
+        // 輸入框預填現值（"E06C76"）；非 hex 字元（g、z）不該改動它——
+        // 分支色從頭到尾只有一種表示法，沒有 Tab 可以切走。
+        let seeded = state
+            .branches
+            .as_ref()
+            .unwrap()
+            .edit
+            .as_ref()
+            .unwrap()
+            .value()
+            .to_string();
+        state.on_key(char_key('g'), &mut draft);
+        state.on_key(char_key('z'), &mut draft);
+        let input = state.branches.as_ref().unwrap().edit.as_ref().unwrap();
+        assert_eq!(input.value(), seeded, "非 hex 字元不該被接受");
+
+        for _ in 0..8 {
+            state.on_key(key(KeyCode::Backspace), &mut draft);
+        }
+        for c in "aabbcc".chars() {
+            state.on_key(char_key(c), &mut draft);
+        }
+        let input = state.branches.as_ref().unwrap().edit.as_ref().unwrap();
+        assert_eq!(input.value(), "aabbcc");
+    }
+
+    #[test]
+    fn branch_edit_preserves_the_alpha_channel() {
+        let mut state = ColorEditorState::new(&test_defaults());
+        let mut draft = Draft::new();
+        enter_branches(&mut state, &mut draft);
+        state.on_key(key(KeyCode::Enter), &mut draft);
+        // 輸入框預填現值（6 碼），先清空再打 8 碼含 alpha 的新值。
+        for _ in 0..8 {
+            state.on_key(key(KeyCode::Backspace), &mut draft);
+        }
+        for c in "AABBCCDD".chars() {
+            // 8 位含 alpha
+            state.on_key(char_key(c), &mut draft);
+        }
+        state.on_key(key(KeyCode::Enter), &mut draft);
+
+        assert_eq!(
+            state.branches.as_ref().unwrap().values[0],
+            "#AABBCCDD",
+            "8 位 hex 的 alpha 位元組要保留，不能被砍成 6 位——這條路徑不經過 \
+             RatatuiColor（parse_hex_color 只認 7 字元的 #RRGGBB）"
+        );
+    }
+
+    #[test]
+    fn esc_pops_one_screen_at_a_time() {
+        let mut state = ColorEditorState::new(&test_defaults());
+        let mut draft = Draft::new();
+        enter_branches(&mut state, &mut draft);
+        state.on_key(key(KeyCode::Enter), &mut draft); // 進 cell edit
+
+        assert!(matches!(
+            state.on_key(key(KeyCode::Esc), &mut draft),
+            Flow::Continue
+        ));
+        assert!(state.branches.as_ref().unwrap().edit.is_none());
+        assert!(state.branches.is_some(), "第一次 Esc 只離開 cell edit");
+
+        assert!(matches!(
+            state.on_key(key(KeyCode::Esc), &mut draft),
+            Flow::Continue
+        ));
+        assert!(state.branches.is_none(), "第二次 Esc 離開 branches 子畫面");
+
+        assert!(matches!(
+            state.on_key(key(KeyCode::Esc), &mut draft),
+            Flow::Back
+        ));
     }
 }
