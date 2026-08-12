@@ -1,5 +1,17 @@
 # Changelog
 
+## [2.7.3](https://github.com/YSzEthan/serie-ys/compare/v2.7.2...v2.7.3) (2026-08-12)
+
+
+### Refactors
+
+* TOML 架構重整，補漏鍵、合併 [ui.*] 單鍵區塊、[graph.color] 歸位到 [color.graph] (#60) (#64) ([6383bad](https://github.com/YSzEthan/serie-ys/commit/6383badf51deb73f2d2c8d0adb1890b3e8426ec1))
+
+
+### CI
+
+* 版號規範補齊 11 種 type，格式檢查前移到 lefthook 與 PR 標題 (#65) ([7995aa9](https://github.com/YSzEthan/serie-ys/commit/7995aa9941ba2af82ada696441cfec5d8363fd5a))
+
 ## [2.7.2](https://github.com/YSzEthan/serie-ys/compare/v2.7.1...v2.7.2) (2026-08-11)
 
 
