@@ -15,11 +15,9 @@ use crate::{
 pub enum Glyph {
     Blank,
     CommitDot,
-    /// 今天是死的：`build_text_cells` 從不放這個 —— HEAD 的空心圓是渲染時才
-    /// 代換上去的（`put_text_cells` 裡的 `is_head`），並沒有存進 cell。之所以
-    /// 還留成獨立 variant，是因為它就是舊的 `TEXT_HEAD_DOT` 常數直接改名，而且
-    /// `glyph_priority` / `graph_text_head_col` 在這次重構之前就已經帶著同一條
-    /// 死分支了。
+    /// `build_text_cells` 從不放這個 —— commit 列的空心圓是渲染時才代換上去的
+    /// （`put_text_cells` 裡的 `is_head`），並沒有存進 cell。唯一存進 cell 的是
+    /// virtual row 那一列（見 `build_visible_rows`）。
     HeadDot,
     Vert,
     Horiz,
@@ -262,7 +260,7 @@ pub struct TextCell {
 }
 
 impl TextCell {
-    const BLANK: TextCell = TextCell {
+    pub(crate) const BLANK: TextCell = TextCell {
         glyph: Glyph::Blank,
         color: RatatuiColor::Reset,
     };
@@ -581,8 +579,8 @@ fn glyph_priority(glyph: Glyph) -> u8 {
         Glyph::CommitDot | Glyph::HeadDot => 10,
         // 兩個呼叫端都到不了這裡：`place` 看到的是 `halves` 的輸出加上明確的
         // `CommitDot`，`Column::absorb` 傳進來的是單一 edge 的 `merged`，永遠
-        // 不會是 junction。`HeadDot` 是渲染時才代換上去的（`put_text_cells`
-        // 裡的 `is_head`），並沒有存進 cell。列在這裡是為了 exhaustive，排名
+        // 不會是 junction。`HeadDot` 不出自 `build_text_cells`（理由見它的
+        // doc）。列在這裡是為了 exhaustive，排名
         // 也選得讓萬一以後真的用得到時順序依然合理。
         Glyph::TeeDown | Glyph::TeeUp | Glyph::TeeRight | Glyph::TeeLeft | Glyph::Cross => 7,
         Glyph::Vert => 5,
