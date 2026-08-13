@@ -116,6 +116,15 @@ impl KeyBind {
     /// 全部 action，宣告順序（＝ `assets/default-keybind.toml` 的檔案順序，
     /// 該檔案照 `UserEvent` 的宣告順序排列）。wizard 的動作清單直接用這個
     /// 順序，不必另外手抄一份 `UserEvent` 清單。
+    ///
+    /// 這個順序仰賴 `Cargo.toml` 的 `toml = { features = ["preserve_order"] }`
+    /// ——`toml` crate 預設把整份文件的表格鍵收進 `BTreeMap`，反序列化時會
+    /// 照字母排序把它們餵給 `Deserialize`，跟檔案本身的行順序無關（TOML
+    /// **陣列**不受影響，`bindings` 裡每個 event 自己的 `Vec<KeyEvent>`
+    /// 一路都是照檔案排的）。拿掉這個 feature，這個函式的回傳順序會悄悄
+    /// 變成字母序，wizard 的動作清單也會跟著變，且不會有任何編譯期或
+    /// 執行期錯誤——這正是 `every_user_event_has_a_default_binding_entry`
+    /// 之外還需要一條「順序穩定」測試的原因。
     pub fn bindings(&self) -> &[(UserEvent, Vec<KeyEvent>)] {
         &self.bindings
     }
@@ -741,25 +750,52 @@ mod tests {
     #[test]
     fn every_user_event_has_a_default_binding_entry() {
         let keybind = KeyBind::new(None);
-        let event_names: Vec<&'static str> = include_str!("event.rs")
+        let event_names = declared_user_event_names();
+        assert!(!event_names.is_empty());
+
+        for name in &event_names {
+            let found = keybind
+                .bindings()
+                .iter()
+                .any(|(e, _)| format!("{e:?}") == *name);
+            assert!(found, "UserEvent::{name} 沒有出現在 default-keybind.toml");
+        }
+    }
+
+    /// `bindings()` 的順序必須是 `UserEvent` 的宣告順序——這條測試釘住的
+    /// 不是邏輯，是 `Cargo.toml` 裡 `toml = { features = ["preserve_order"] }`
+    /// 這個容易被無感拿掉的開關：拿掉它，`toml::from_str` 反序列化整份
+    /// 表格時會照字母排序餵給 `Deserialize`，這個函式的回傳順序會悄悄
+    /// 變成字母序，wizard 的動作清單會跟著錯，但不會有任何編譯期或執行期
+    /// 錯誤——只有這條測試會紅。
+    #[test]
+    fn bindings_order_matches_user_event_declaration_order() {
+        let keybind = KeyBind::new(None);
+        let expected = declared_user_event_names();
+        let actual: Vec<String> = keybind
+            .bindings()
+            .iter()
+            .map(|(e, _)| format!("{e:?}"))
+            .collect();
+        assert_eq!(actual, expected);
+    }
+
+    /// 掃 `src/event.rs` 的 `UserEvent` enum 原始碼，取宣告順序的變體名稱
+    /// （不含 `UserCommand`／`Unknown`，兩者不在 `assets/default-keybind.toml`
+    /// 裡）。跟 `src/view/help.rs` 的一致性測試同一個手法：這是近似，不是
+    /// 型別保證，但比另外手抄一份清單更不容易漂移。
+    fn declared_user_event_names() -> Vec<String> {
+        include_str!("event.rs")
             .lines()
             .skip_while(|l| !l.trim_start().starts_with("pub enum UserEvent"))
             .skip(1)
             .take_while(|l| !l.trim_start().starts_with('}'))
             .filter_map(|l| {
                 let name = l.trim().trim_end_matches(',').trim_end_matches("(usize)");
-                (!name.is_empty() && name != "Unknown" && name != "UserCommand").then_some(name)
+                (!name.is_empty() && name != "Unknown" && name != "UserCommand")
+                    .then(|| name.to_string())
             })
-            .collect();
-        assert!(!event_names.is_empty());
-
-        for name in event_names {
-            let found = keybind
-                .bindings()
-                .iter()
-                .any(|(e, _)| format!("{e:?}") == name);
-            assert!(found, "UserEvent::{name} 沒有出現在 default-keybind.toml");
-        }
+            .collect()
     }
 
     #[test]

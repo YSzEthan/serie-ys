@@ -1,7 +1,8 @@
 mod color_editor;
+mod keybind_editor;
 pub(crate) mod path_browser;
 
-use std::collections::BTreeMap;
+use std::{borrow::Cow, collections::BTreeMap};
 
 use clap::{Parser, ValueEnum};
 use ratatui::{
@@ -16,7 +17,7 @@ use tui_input::backend::crossterm::EventHandler;
 
 use crate::{
     color::ColorTheme,
-    config,
+    config, keybind,
     update::{self, AutoRestart, UpdateMode},
     Args, CommitOrderType, CompactType, GraphStyle, GraphWidthType, InitialSelection,
 };
@@ -81,6 +82,10 @@ fn wizard_loop(
             }
             Flow::OpenEditor(Dialog::ColorMenu) => {
                 color_editor::run(terminal, &mut state.draft, &state.defaults, theme)?;
+                terminal.clear()?;
+            }
+            Flow::OpenEditor(Dialog::KeyBindMenu) => {
+                keybind_editor::run(terminal, &mut state.draft, &state.defaults, theme)?;
                 terminal.clear()?;
             }
         }
@@ -175,18 +180,38 @@ struct ResolvedDefaults {
     /// 顏色編輯器的預覽基準（使用者實際設定，不是 `wizard::run()` 固定用
     /// 的畫面 chrome）。
     theme: ColorTheme,
-    /// `true` = 設定檔載入失敗（讀不到／解析失敗／garde 驗證不過），`theme`
-    /// 是內建硬預設，不是使用者的真實設定——顏色編輯器要據此在畫面上講
-    /// 清楚，不能默默顯示 43 個預設色並宣稱那是使用者的設定。
-    theme_is_fallback: bool,
+    /// 使用者設定檔 `[keybind]` 段落目前的內容（未套用本次 session 的改動）。
+    /// keybind 編輯器的 `KeyBindEditorState::file_patch` 起點。沒有自訂
+    /// 快捷鍵、或設定檔載入失敗時是 `KeyBind::default()`（空 patch，效果
+    /// 等同「完全用內建預設」）。
+    keybind_patch: keybind::KeyBind,
+    /// `user_command_N` 的顯示名稱，key 是 N。keybind 編輯器用來把
+    /// `UserEvent::UserCommand(n)` 顯示成人看得懂的指令名，不是
+    /// 「user command 3」。
+    user_commands: BTreeMap<usize, String>,
+    /// `true` = 設定檔載入失敗（讀不到／解析失敗／garde 驗證不過），
+    /// `theme`／`keybind_patch` 都是內建硬預設，不是使用者的真實設定——
+    /// 顏色編輯器與 keybind 編輯器都要據此在畫面上講清楚，不能默默顯示
+    /// 預設值並宣稱那是使用者的設定。
+    config_is_fallback: bool,
 }
 
 impl ResolvedDefaults {
     fn from_core(core: &config::CoreConfig) -> Self {
-        Self::from_parts(core, ColorTheme::default())
+        Self::from_parts(core, ColorTheme::default(), None)
     }
 
-    fn from_parts(core: &config::CoreConfig, theme: ColorTheme) -> Self {
+    fn from_parts(
+        core: &config::CoreConfig,
+        theme: ColorTheme,
+        keybind_patch: Option<keybind::KeyBind>,
+    ) -> Self {
+        let user_commands = core
+            .user_command
+            .commands
+            .iter()
+            .filter_map(|(n, c)| n.parse::<usize>().ok().map(|n| (n, c.name.clone())))
+            .collect();
         Self {
             order: core.option.order.unwrap_or(CommitOrderType::Chrono),
             graph_width: core.option.graph_width.unwrap_or(GraphWidthType::Auto),
@@ -204,7 +229,9 @@ impl ResolvedDefaults {
                 .unwrap_or(update::DEFAULT_INTERVAL_HOURS),
             auto_restart: core.update.auto_restart.unwrap_or_default(),
             theme,
-            theme_is_fallback: false,
+            keybind_patch: keybind_patch.unwrap_or_default(),
+            user_commands,
+            config_is_fallback: false,
         }
     }
 
@@ -212,10 +239,10 @@ impl ResolvedDefaults {
     /// 退回內建硬預設，精靈仍然開得起來。這條路徑不能用 `?`。
     fn load() -> Self {
         match config::load() {
-            Ok((core, _ui, theme, _keybind)) => Self::from_parts(&core, theme),
+            Ok((core, _ui, theme, keybind_patch)) => Self::from_parts(&core, theme, keybind_patch),
             Err(_) => {
                 let mut defaults = Self::from_core(&config::CoreConfig::default());
-                defaults.theme_is_fallback = true;
+                defaults.config_is_fallback = true;
                 defaults
             }
         }
@@ -269,17 +296,21 @@ fn cycle_value<T: ValueEnum + Copy + PartialEq>(
 
 /// 設定檔裡的一個鍵：`{ table: &["core", "option"], key: "order" }`。
 /// `table` 是 slice 而不是固定深度的 tuple——顏色要寫的是 `["color"]` 與
-/// `["color", "graph"]`，深度本來就不一樣。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+/// `["color", "graph"]`，深度本來就不一樣。`key` 是 `Cow` 不是 `&'static str`
+/// ——keybind 的鍵名 `user_command_N` 是動態組出來的字串，其餘呼叫端（循環
+/// 欄位、顏色、`[color.graph].branches`）都還是傳字面量，`.into()` 就會是
+/// `Cow::Borrowed`，不多配置。
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
 struct ConfigKey {
     table: &'static [&'static str],
-    key: &'static str,
+    key: Cow<'static, str>,
 }
 
 const CORE_OPTION: &[&str] = &["core", "option"];
 const CORE_UPDATE: &[&str] = &["core", "update"];
 const COLOR: &[&str] = &["color"];
 const COLOR_GRAPH: &[&str] = &["color", "graph"];
+const KEYBIND: &[&str] = &["keybind"];
 
 /// ←/→ 在合法值之間原地輪迴切換的欄位。
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -306,7 +337,10 @@ impl CycleField {
             CycleField::UpdateMode => (CORE_UPDATE, "mode"),
             CycleField::AutoRestart => (CORE_UPDATE, "auto_restart"),
         };
-        ConfigKey { table, key }
+        ConfigKey {
+            table,
+            key: key.into(),
+        }
     }
 
     fn flags(self) -> &'static str {
@@ -407,11 +441,11 @@ impl NumberField {
         match self {
             NumberField::MaxCount => ConfigKey {
                 table: CORE_OPTION,
-                key: "max_count",
+                key: "max_count".into(),
             },
             NumberField::UpdateInterval => ConfigKey {
                 table: CORE_UPDATE,
-                key: "interval_hours",
+                key: "interval_hours".into(),
             },
         }
     }
@@ -485,12 +519,13 @@ impl NumberField {
     }
 }
 
-/// 開子畫面的編輯器。keybind 之後在這裡加變體，`Flow` 不用跟著長。
+/// 開子畫面的編輯器。`Flow` 不用跟著長。
 #[derive(Clone, Copy)]
 enum Dialog {
     Path,
     Number(NumberField),
     ColorMenu,
+    KeyBindMenu,
 }
 
 /// 一個項目怎麼編輯：原地循環，或開子畫面。
@@ -507,6 +542,7 @@ impl Editor {
             Editor::Dialog(Dialog::Path) => "[PATH]",
             Editor::Dialog(Dialog::Number(f)) => f.flags(),
             Editor::Dialog(Dialog::ColorMenu) => "[COLOR]",
+            Editor::Dialog(Dialog::KeyBindMenu) => "[KEYBIND]",
         }
     }
 
@@ -516,16 +552,18 @@ impl Editor {
             Editor::Dialog(Dialog::Path) => "git 倉庫路徑（僅本次，不存檔）",
             Editor::Dialog(Dialog::Number(f)) => f.help(),
             Editor::Dialog(Dialog::ColorMenu) => "介面配色（43 色）",
+            Editor::Dialog(Dialog::KeyBindMenu) => "快捷鍵綁定",
         }
     }
 
     /// 這個 editor 目前有幾個鍵被使用者改過。單鍵項目（Cycle／Number）是
     /// 0 或 1；PATH 永遠是 0——「只影響本次 session、永遠不進設定檔」由
     /// 型別保證：沒有任何程式路徑會為 PATH 建構 `ConfigKey`（`path_browser`
-    /// 只寫 `draft.args.path`），不是靠這裡回傳 0 保證的。COLOR 一列管
-    /// `["color"]` 整張表（含巢狀的 `["color","graph"]`），可能是
-    /// 0..44——用 `starts_with` 而不是相等比較，否則 `[color.graph].branches`
-    /// 不會被算進去，使用者只改分支色盤時 `[COLOR]` 那列不會亮 `✓`。
+    /// 只寫 `draft.args.path`），不是靠這裡回傳 0 保證的。COLOR／KEYBIND 各
+    /// 管 `["color"]`／`["keybind"]` 整張表（COLOR 還含巢狀的
+    /// `["color","graph"]`）——用 `starts_with` 而不是相等比較，否則
+    /// `[color.graph].branches` 不會被算進去，使用者只改分支色盤時
+    /// `[COLOR]` 那列不會亮 `✓`。
     fn touched_count(self, draft: &Draft) -> usize {
         match self {
             Editor::Cycle(f) => usize::from(draft.edits.contains_key(&f.config_key())),
@@ -538,6 +576,11 @@ impl Editor {
                 .keys()
                 .filter(|ck| ck.table.starts_with(COLOR))
                 .count(),
+            Editor::Dialog(Dialog::KeyBindMenu) => draft
+                .edits
+                .keys()
+                .filter(|ck| ck.table.starts_with(KEYBIND))
+                .count(),
         }
     }
 
@@ -549,10 +592,12 @@ impl Editor {
             Editor::Cycle(f) => format!("< {} >", f.current_desc(draft, defaults)),
             Editor::Dialog(Dialog::Path) => draft.args.path.clone(),
             Editor::Dialog(Dialog::Number(f)) => f.current_label(draft, defaults),
-            Editor::Dialog(Dialog::ColorMenu) => match self.touched_count(draft) {
-                0 => "未修改".to_string(),
-                n => format!("{n} 項已改"),
-            },
+            Editor::Dialog(Dialog::ColorMenu | Dialog::KeyBindMenu) => {
+                match self.touched_count(draft) {
+                    0 => "未修改".to_string(),
+                    n => format!("{n} 項已改"),
+                }
+            }
         }
     }
 }
@@ -577,6 +622,7 @@ const ROWS: &[RowAction] = &[
     RowAction::Edit(Editor::Dialog(Dialog::Number(NumberField::UpdateInterval))),
     RowAction::Edit(Editor::Cycle(CycleField::AutoRestart)),
     RowAction::Edit(Editor::Dialog(Dialog::ColorMenu)),
+    RowAction::Edit(Editor::Dialog(Dialog::KeyBindMenu)),
     RowAction::Launch,
 ];
 
@@ -773,6 +819,14 @@ fn styled_list<'a>(items: Vec<ListItem<'a>>, theme: &ColorTheme) -> List<'a> {
             .bg(theme.list_selected_bg)
             .fg(theme.list_selected_fg),
     )
+}
+
+/// `ListState` 的選取項相對移動，夾在 `[0, len-1]`。`color_editor` 與
+/// `keybind_editor` 的清單導覽共用同一條算式。
+fn clamped_move(list: &mut ListState, delta: i32, len: usize) {
+    let current = list.selected().unwrap_or(0) as i32;
+    let next = (current + delta).clamp(0, len as i32 - 1);
+    list.select(Some(next as usize));
 }
 
 // ---------------------------------------------------------------------------
@@ -985,9 +1039,9 @@ fn apply_touched_settings(draft: &Draft, existing: &str) -> Result<String, Strin
             )
         })?;
         match value {
-            Some(v) => set_preserving_decor(table, ck.key, v.clone()),
+            Some(v) => set_preserving_decor(table, &ck.key, v.clone()),
             None => {
-                table.remove(ck.key);
+                table.remove(&ck.key);
             }
         }
     }
@@ -1026,6 +1080,14 @@ fn multiline_string_array(items: &[String]) -> toml_edit::Value {
     array.set_trailing("\n");
     array.set_trailing_comma(true);
     toml_edit::Value::Array(array)
+}
+
+/// TOML 字串陣列，單行——`[keybind]` 的每個 action 在範本裡就是
+/// `quit = ["q"]` 這種單行寫法（`assets/default-keybind.toml` 全部 55 顆
+/// 鍵沒有一行是多行的），跟 `[color.graph].branches` 的多行排版是兩種不同
+/// 資料的兩種既有排版，不要共用一個「該不該多行」的參數把兩者混在一起。
+fn inline_string_array(items: &[String]) -> toml_edit::Value {
+    toml_edit::Value::Array(items.iter().cloned().collect())
 }
 
 #[cfg(test)]
@@ -1681,9 +1743,13 @@ mod tests {
         let mut s = test_state();
         for (i, key) in crate::color::COLOR_KEYS.iter().enumerate() {
             let value = crate::color::color_to_config_string(RatatuiColor::Indexed(i as u8));
-            s.draft
-                .edits
-                .insert(ConfigKey { table: COLOR, key }, Some(value.into()));
+            s.draft.edits.insert(
+                ConfigKey {
+                    table: COLOR,
+                    key: (*key).into(),
+                },
+                Some(value.into()),
+            );
         }
 
         let updated = apply_touched_settings(&s.draft, "").unwrap();
@@ -1702,7 +1768,7 @@ mod tests {
         s.draft.edits.insert(
             ConfigKey {
                 table: COLOR,
-                key: "list_hash_fg",
+                key: "list_hash_fg".into(),
             },
             Some(crate::color::color_to_config_string(RatatuiColor::Indexed(208)).into()),
         );
@@ -1730,7 +1796,7 @@ mod tests {
         s.draft.edits.insert(
             ConfigKey {
                 table: COLOR,
-                key: "fg",
+                key: "fg".into(),
             },
             Some(crate::color::color_to_config_string(RatatuiColor::Red).into()),
         );
@@ -1739,7 +1805,7 @@ mod tests {
         s.draft.edits.insert(
             ConfigKey {
                 table: &["color", "graph"],
-                key: "branches",
+                key: "branches".into(),
             },
             Some(toml_edit::Value::from("dummy")),
         );

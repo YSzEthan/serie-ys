@@ -204,16 +204,8 @@ struct BranchesEditor {
 
 impl BranchesEditor {
     fn move_selection(&mut self, delta: i32) {
-        clamped_move(&mut self.list, delta, self.values.len());
+        super::clamped_move(&mut self.list, delta, self.values.len());
     }
-}
-
-/// `ListState` 的選取項相對移動，夾在 `[0, len-1]`。`ColorEditorState` 與
-/// `BranchesEditor` 的清單導覽共用同一條算式。
-fn clamped_move(list: &mut ListState, delta: i32, len: usize) {
-    let current = list.selected().unwrap_or(0) as i32;
-    let next = (current + delta).clamp(0, len as i32 - 1);
-    list.select(Some(next as usize));
 }
 
 /// garde 的 pattern 是 `^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$`；這裡只驗語法，
@@ -246,7 +238,7 @@ impl ColorEditorState {
             list,
             edit: None,
             branches: None,
-            theme_is_fallback: defaults.theme_is_fallback,
+            theme_is_fallback: defaults.config_is_fallback,
         }
     }
 
@@ -432,7 +424,7 @@ impl ColorEditorState {
         self.colors.graph.branches = values.clone();
         let key = ConfigKey {
             table: super::COLOR_GRAPH,
-            key: "branches",
+            key: "branches".into(),
         };
         draft
             .edits
@@ -493,13 +485,13 @@ impl ColorEditorState {
 
     fn move_selection(&mut self, delta: i32) {
         // +1 為第 44 列（`[color.graph].branches` 入口）。
-        clamped_move(&mut self.list, delta, COLOR_KEYS.len() + 1);
+        super::clamped_move(&mut self.list, delta, COLOR_KEYS.len() + 1);
     }
 
     fn commit_field(&mut self, draft: &mut Draft, idx: usize) {
         let key = ConfigKey {
             table: COLOR,
-            key: COLOR_KEYS[idx],
+            key: COLOR_KEYS[idx].into(),
         };
         let value = color_to_config_string(self.colors.values[idx]);
         draft.edits.insert(key, Some(value.into()));
@@ -512,7 +504,7 @@ impl ColorEditorState {
         let idx = self.list.selected().unwrap_or(0);
         let key = ConfigKey {
             table: COLOR,
-            key: COLOR_KEYS[idx],
+            key: COLOR_KEYS[idx].into(),
         };
         draft.edits.remove(&key);
         self.colors.values[idx] = self.base.values[idx];
@@ -916,7 +908,7 @@ mod tests {
     fn field_key(idx: usize) -> ConfigKey {
         ConfigKey {
             table: COLOR,
-            key: COLOR_KEYS[idx],
+            key: COLOR_KEYS[idx].into(),
         }
     }
 
@@ -1094,7 +1086,7 @@ mod tests {
     fn branches_key() -> ConfigKey {
         ConfigKey {
             table: super::super::COLOR_GRAPH,
-            key: "branches",
+            key: "branches".into(),
         }
     }
 

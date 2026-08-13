@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     ffi::OsStr,
     fmt::{self, Debug, Formatter},
     path::{Component, Path, PathBuf},
@@ -731,7 +732,11 @@ fn path_has_ignored_component(path: &Path, repo_root: &Path, ignored: &FxHashSet
 }
 
 // 由使用者按鍵輸入觸發的事件
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+//
+// `PartialOrd`／`Ord` 是給 wizard 的 keybind 編輯器排序用（`BTreeMap<UserEvent, _>`
+// 記錄本次 session 改過哪些 action）——derive 出來的順序就是這裡的宣告順序，
+// 跟 `assets/default-keybind.toml` 的檔案順序一致，不需要另外定義排序。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum UserEvent {
     ForceQuit,
     Quit,
@@ -845,6 +850,69 @@ impl UserEvent {
             UserEvent::Unknown => return None,
         };
         Some(name.to_string())
+    }
+
+    /// wizard 的 keybind 編輯器用的中文說明——跟 `src/view/help.rs` 的
+    /// `BindingSpec` 不是同一份：後者的粒度是 (view, event)，同一個 event
+    /// 在不同畫面說明不同（`NavigateLeft` 在 help 是「關閉說明」、在 list
+    /// 是「向左移動」），這裡要的是跟畫面無關、獨立成立的單一描述。窮盡
+    /// match：新增事件時這裡不編譯，就不會漏掉。`UserCommand(n)` 沒有固定
+    /// 文字可寫（名稱要查設定檔），交給呼叫端另外組。
+    pub fn description(self) -> Option<Cow<'static, str>> {
+        let s: &'static str = match self {
+            UserEvent::ForceQuit => "強制離開",
+            UserEvent::Quit => "離開（按兩下）",
+            UserEvent::HelpToggle => "開啟／關閉說明",
+            UserEvent::Cancel => "取消",
+            UserEvent::Close => "關閉",
+            UserEvent::NavigateUp => "向上移動",
+            UserEvent::NavigateDown => "向下移動",
+            UserEvent::NavigateRight => "向右移動／顯示詳情",
+            UserEvent::NavigateLeft => "向左移動／關閉詳情",
+            UserEvent::SelectUp => "選取範圍向上擴展",
+            UserEvent::SelectDown => "選取範圍向下擴展",
+            UserEvent::GoToTop => "跳到頂端",
+            UserEvent::GoToBottom => "跳到底端",
+            UserEvent::GoToParent => "選擇 parent commit",
+            UserEvent::GoToHead => "回到 HEAD",
+            UserEvent::ScrollUp => "向上捲動",
+            UserEvent::ScrollDown => "向下捲動",
+            UserEvent::PageUp => "上一頁",
+            UserEvent::PageDown => "下一頁",
+            UserEvent::HalfPageUp => "上半頁",
+            UserEvent::HalfPageDown => "下半頁",
+            UserEvent::GoToNext => "下一個符合項",
+            UserEvent::GoToPrevious => "上一個符合項",
+            UserEvent::Confirm => "確認",
+            UserEvent::RefList => "開啟 refs 清單",
+            UserEvent::Search => "開始搜尋",
+            UserEvent::Filter => "開始過濾",
+            UserEvent::UserCommand(_) => return None,
+            UserEvent::IgnoreCaseToggle => "切換大小寫忽略",
+            UserEvent::FuzzyToggle => "切換模糊比對",
+            UserEvent::Refresh => "重新整理",
+            UserEvent::ShortCopy => "複製 commit short hash",
+            UserEvent::FullCopy => "複製 commit subject",
+            UserEvent::BranchCopy => "複製 branch 名稱（優先 local）",
+            UserEvent::FullBranchCopy => "複製 remote branch 名稱",
+            UserEvent::TagCopy => "複製 tag 名稱",
+            UserEvent::CreateTag => "在 commit 上建立 tag",
+            UserEvent::DeleteTag => "刪除 commit 上的 tag",
+            UserEvent::DeleteRef => "刪除 commit 上的 local branch",
+            UserEvent::RemoteRefsToggle => "切換 remote refs",
+            UserEvent::GitHubToggle => "開啟 GitHub issues/PRs",
+            UserEvent::TaskListToggle => "切換 task 清單",
+            UserEvent::DetailPaneToggle => "切換詳情區塊",
+            UserEvent::Fetch => "fetch 所有 remote",
+            UserEvent::Checkout => "checkout 選取的 commit/ref",
+            UserEvent::MergePr => "合併 PR",
+            UserEvent::ToggleIssueState => "切換 issue 開關狀態",
+            UserEvent::TogglePrDraft => "切換 PR draft 狀態",
+            UserEvent::ToggleCommitLog => "切換 commit log 顯示",
+            UserEvent::CheckUpdate => "檢查更新",
+            UserEvent::Unknown => return None,
+        };
+        Some(Cow::Borrowed(s))
     }
 }
 
