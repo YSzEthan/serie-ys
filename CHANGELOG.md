@@ -1,5 +1,16 @@
 # Changelog
 
+## [3.0.0](https://github.com/YSzEthan/serie-ys/compare/v2.7.3...v3.0.0) (2026-08-13)
+
+
+### ⚠ BREAKING CHANGES
+
+* [keybind] 底下的 action 一旦被使用者設定快捷鍵，會完全 取代它的預設鍵位，不再是疊加。例如 navigate_down = ["ctrl-n"] 之後，預設 的 j/down 不再對 navigate_down 生效；把快捷鍵設成 [] 則是這個規則的特例， 用來明確停用一個 action（過去文件宣稱但沒有實作）。
+
+### Features
+
+* wizard 架構重構 + 顏色／keybind 編輯器 (#61)(#66)(#69)(#70) (#68) ([badd122](https://github.com/YSzEthan/serie-ys/commit/badd12286c2fa4cba4bb6568775554a5885d6980))
+
 ## [2.7.3](https://github.com/YSzEthan/serie-ys/compare/v2.7.2...v2.7.3) (2026-08-12)
 
 
