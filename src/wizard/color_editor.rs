@@ -132,24 +132,28 @@ impl ColorEdit {
                 }
                 _ => {}
             },
-            ColorEdit::Hex(input) => {
-                // Hex 模式下 a-f 是合法輸入字元，不能當導覽鍵（這個變體本來
-                // 就沒有定義任何導覽語意）；也不能被 ctrl 修飾字誤觸——
-                // `ctrl-f` 不該被當成輸入 'f'。
-                let plain = key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT;
-                match key.code {
-                    KeyCode::Char(c) if plain && c.is_ascii_hexdigit() => {
-                        if input.value().len() < 6 {
-                            input.handle_event(&Event::Key(key));
-                        }
-                    }
-                    KeyCode::Backspace => {
-                        input.handle_event(&Event::Key(key));
-                    }
-                    _ => {}
+            ColorEdit::Hex(input) => match key.code {
+                KeyCode::Backspace => {
+                    input.handle_event(&Event::Key(key));
                 }
-            }
+                // a-f 是合法輸入字元，不能當導覽鍵（這個變體本來就沒有定義
+                // 任何導覽語意）。
+                _ => push_hex_digit(input, key, 6),
+            },
         }
+    }
+}
+
+/// Hex 輸入：a-f 是資料不是導覽鍵，且不能被 ctrl 修飾字誤觸——`ctrl-f`
+/// 不該被當成輸入 'f'。`max_len` 讓平面色（6 碼）與分支色（含 alpha，
+/// 8 碼）共用同一條規則。
+fn push_hex_digit(input: &mut tui_input::Input, key: KeyEvent, max_len: usize) {
+    let plain = key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT;
+    let KeyCode::Char(c) = key.code else {
+        return;
+    };
+    if plain && c.is_ascii_hexdigit() && input.value().len() < max_len {
+        input.handle_event(&Event::Key(key));
     }
 }
 
@@ -200,11 +204,16 @@ struct BranchesEditor {
 
 impl BranchesEditor {
     fn move_selection(&mut self, delta: i32) {
-        let len = self.values.len() as i32;
-        let current = self.list.selected().unwrap_or(0) as i32;
-        let next = (current + delta).clamp(0, len - 1);
-        self.list.select(Some(next as usize));
+        clamped_move(&mut self.list, delta, self.values.len());
     }
+}
+
+/// `ListState` 的選取項相對移動，夾在 `[0, len-1]`。`ColorEditorState` 與
+/// `BranchesEditor` 的清單導覽共用同一條算式。
+fn clamped_move(list: &mut ListState, delta: i32, len: usize) {
+    let current = list.selected().unwrap_or(0) as i32;
+    let next = (current + delta).clamp(0, len as i32 - 1);
+    list.select(Some(next as usize));
 }
 
 /// garde 的 pattern 是 `^#([0-9a-fA-F]{6}|[0-9a-fA-F]{8})$`；這裡只驗語法，
@@ -331,122 +340,83 @@ impl ColorEditorState {
             return Flow::Continue;
         }
 
-        // ctrl-c / ctrl-d：跟 Esc 一樣退一層（離開 branches 子畫面），不是
-        // 離開整個顏色編輯器。
-        if super::is_abort_key(&key) {
+        // ctrl-c / ctrl-d / Esc / h / ←：都是退一層（離開 branches 子畫面），
+        // 不是離開整個顏色編輯器。
+        if super::is_abort_key(&key)
+            || matches!(key.code, KeyCode::Esc | KeyCode::Left | KeyCode::Char('h'))
+        {
             self.branches = None;
             return Flow::Continue;
         }
 
+        let Some(b) = &mut self.branches else {
+            return Flow::Continue;
+        };
+        let mut changed = false;
         match key.code {
-            KeyCode::Esc | KeyCode::Left | KeyCode::Char('h') => {
-                self.branches = None;
-            }
-            KeyCode::Up | KeyCode::Char('k') => {
-                if let Some(b) = &mut self.branches {
-                    b.move_selection(-1);
-                }
-            }
-            KeyCode::Down | KeyCode::Char('j') => {
-                if let Some(b) = &mut self.branches {
-                    b.move_selection(1);
-                }
-            }
+            KeyCode::Up | KeyCode::Char('k') => b.move_selection(-1),
+            KeyCode::Down | KeyCode::Char('j') => b.move_selection(1),
             KeyCode::Enter | KeyCode::Right | KeyCode::Char('l') => {
-                if let Some(b) = &mut self.branches {
-                    let idx = b.list.selected().unwrap_or(0);
-                    let current = b.values[idx].trim_start_matches('#').to_string();
-                    b.edit = Some(tui_input::Input::new(current));
-                }
+                let idx = b.list.selected().unwrap_or(0);
+                let current = b.values[idx].trim_start_matches('#').to_string();
+                b.edit = Some(tui_input::Input::new(current));
             }
             KeyCode::Char('a') => {
-                if let Some(b) = &mut self.branches {
-                    let idx = b.list.selected().unwrap_or(0);
-                    let clone = b.values[idx].clone();
-                    b.values.insert(idx + 1, clone);
-                    b.list.select(Some(idx + 1));
-                }
-                self.sync_branches(draft);
+                let idx = b.list.selected().unwrap_or(0);
+                let clone = b.values[idx].clone();
+                b.values.insert(idx + 1, clone);
+                b.list.select(Some(idx + 1));
+                changed = true;
             }
-            KeyCode::Char('d') => {
-                // 刪到剩 1 格要拒絕：garde 是 `length(min = 1)`，空陣列會讓
-                // 整份設定檔載入失敗，`GraphColorSet::get()` 對空 Vec 直接
-                // panic。這條路徑不跑 garde（`set_color` 那條 serde 路徑
-                // 只在 `From` 之後才 validate），wizard 必須自己擋。
-                let deleted = if let Some(b) = &mut self.branches {
-                    if b.values.len() > 1 {
-                        let idx = b.list.selected().unwrap_or(0);
-                        b.values.remove(idx);
-                        let new_idx = idx.min(b.values.len() - 1);
-                        b.list.select(Some(new_idx));
-                        true
-                    } else {
-                        false
-                    }
-                } else {
-                    false
-                };
-                if deleted {
-                    self.sync_branches(draft);
-                }
+            // 刪到剩 1 格要拒絕：garde 是 `length(min = 1)`，空陣列會讓
+            // 整份設定檔載入失敗，`GraphColorSet::get()` 對空 Vec 直接
+            // panic。這條路徑不跑 garde（`set_color` 那條 serde 路徑只在
+            // `From` 之後才 validate），wizard 必須自己擋。
+            KeyCode::Char('d') if b.values.len() > 1 => {
+                let idx = b.list.selected().unwrap_or(0);
+                b.values.remove(idx);
+                b.list.select(Some(idx.min(b.values.len() - 1)));
+                changed = true;
             }
             _ => {}
+        }
+        if changed {
+            self.sync_branches(draft);
         }
         Flow::Continue
     }
 
     fn on_branch_cell_key(&mut self, key: KeyEvent, draft: &mut Draft) {
-        if super::is_abort_key(&key) {
+        if super::is_abort_key(&key) || key.code == KeyCode::Esc {
             if let Some(b) = &mut self.branches {
                 b.edit = None;
             }
             return;
         }
 
+        let Some(b) = &mut self.branches else {
+            return;
+        };
+        let Some(input) = &mut b.edit else {
+            return;
+        };
+
         match key.code {
-            KeyCode::Esc => {
-                if let Some(b) = &mut self.branches {
-                    b.edit = None;
-                }
-            }
             KeyCode::Enter => {
-                let committed = self
-                    .branches
-                    .as_ref()
-                    .and_then(|b| b.edit.as_ref())
-                    .and_then(|input| valid_branch_hex(input.value()));
-                if let Some(hex) = committed {
-                    if let Some(b) = &mut self.branches {
-                        let idx = b.list.selected().unwrap_or(0);
-                        b.values[idx] = hex;
-                        b.edit = None;
-                    }
-                    self.sync_branches(draft);
-                }
                 // 缺什麼由對話框的訊息行顯示，留在原地。
-            }
-            KeyCode::Char(c) if c.is_ascii_hexdigit() => {
-                // Hex 模式下 a-f 是合法輸入字元，不能當導覽鍵；也不能被
-                // ctrl 修飾字誤觸——`ctrl-f` 不該被當成輸入 'f'。
-                let plain = key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT;
-                if plain {
-                    if let Some(b) = &mut self.branches {
-                        if let Some(input) = &mut b.edit {
-                            if input.value().len() < 8 {
-                                input.handle_event(&Event::Key(key));
-                            }
-                        }
-                    }
-                }
+                let Some(hex) = valid_branch_hex(input.value()) else {
+                    return;
+                };
+                let idx = b.list.selected().unwrap_or(0);
+                b.values[idx] = hex;
+                b.edit = None;
+                self.sync_branches(draft);
             }
             KeyCode::Backspace => {
-                if let Some(b) = &mut self.branches {
-                    if let Some(input) = &mut b.edit {
-                        input.handle_event(&Event::Key(key));
-                    }
-                }
+                input.handle_event(&Event::Key(key));
             }
-            _ => {}
+            // Hex 模式下 a-f 是合法輸入字元，上限含 alpha 的 8 碼。
+            _ => push_hex_digit(input, key, 8),
         }
     }
 
@@ -466,7 +436,7 @@ impl ColorEditorState {
         };
         draft
             .edits
-            .insert(key, Some(super::string_array(&values, true)));
+            .insert(key, Some(super::multiline_string_array(&values)));
     }
 
     fn on_edit_key(&mut self, key: KeyEvent, draft: &mut Draft) {
@@ -523,10 +493,7 @@ impl ColorEditorState {
 
     fn move_selection(&mut self, delta: i32) {
         // +1 為第 44 列（`[color.graph].branches` 入口）。
-        let len = (COLOR_KEYS.len() + 1) as i32;
-        let current = self.list.selected().unwrap_or(0) as i32;
-        let next = (current + delta).clamp(0, len - 1);
-        self.list.select(Some(next as usize));
+        clamped_move(&mut self.list, delta, COLOR_KEYS.len() + 1);
     }
 
     fn commit_field(&mut self, draft: &mut Draft, idx: usize) {
@@ -1274,5 +1241,24 @@ mod tests {
             state.on_key(key(KeyCode::Esc), &mut draft),
             Flow::Back
         ));
+    }
+
+    /// `preview_lines` 用一串字串字面值查 `COLOR_KEYS`（`color_at` 找不到
+    /// 就 `expect` panic）。這條測試把整個函式跑過一遍——任何一個鍵名
+    /// 打錯字，這裡就會 panic，不必等到真的打開顏色編輯器才發現。三種
+    /// `PreviewBlock` 都跑一次：目前 `focus` 只影響標記前綴、不影響用到
+    /// 哪些鍵，但這樣測就算未來有人改成 focus 相依的內容，覆蓋率也不會
+    /// 悄悄漏掉。
+    #[test]
+    fn preview_lines_uses_only_real_color_keys() {
+        let colors = FlatColors::from(&ColorTheme::default());
+        for focus in [
+            PreviewBlock::List,
+            PreviewBlock::Detail,
+            PreviewBlock::Status,
+        ] {
+            let lines = preview_lines(&colors, focus);
+            assert!(!lines.is_empty());
+        }
     }
 }

@@ -468,24 +468,17 @@ mod tests {
     /// 存進去的值跟顯示出來的值就不是同一份資料。
     #[test]
     fn flat_colors_round_trips_through_color_theme() {
-        let mut theme = ColorTheme::default();
         // 43 個互不相同的值，任何一個索引搞錯位置都會被抓到。
-        for (i, key) in COLOR_KEYS.iter().enumerate() {
-            let _ = key;
-            let flat = FlatColors::from(&theme);
-            let mut values = flat.values;
-            values[i] = RatatuiColor::Indexed(i as u8);
-            theme = ColorTheme::from(&FlatColors {
-                values,
-                graph: flat.graph,
-            });
+        let mut flat = FlatColors::from(&ColorTheme::default());
+        for (i, v) in flat.values.iter_mut().enumerate() {
+            *v = RatatuiColor::Indexed(i as u8);
         }
 
-        let flat = FlatColors::from(&theme);
-        let roundtrip = ColorTheme::from(&flat);
-        assert_eq!(roundtrip, theme);
+        let theme = ColorTheme::from(&flat);
+        let roundtrip = FlatColors::from(&theme);
+        assert_eq!(ColorTheme::from(&roundtrip), theme);
 
-        for (i, expected) in flat.values.iter().enumerate() {
+        for (i, expected) in roundtrip.values.iter().enumerate() {
             assert_eq!(*expected, RatatuiColor::Indexed(i as u8), "index {i}");
         }
     }

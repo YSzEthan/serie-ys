@@ -1001,28 +1001,6 @@ fn apply_touched_settings(draft: &Draft, existing: &str) -> Result<String, Strin
 /// 直接指派會讓使用者調一次那個值、說明就跟著消失，正好抵銷「含說明的
 /// 預設設定檔」這個賣點。鍵已存在時改成原地覆寫值、保留舊 decor；鍵是
 /// 新建的才用一般的 `insert`（沒有舊 decor 可留）。
-/// TOML 字串陣列。`multiline` 時每個元素自己一行、留尾隨逗號——
-/// `[color.graph].branches` 在範本裡就是這個排版，壓成單行會產生一個
-/// 沒人想看的 diff。keybind（#70）的陣列短（1-3 顆鍵）用單行。
-///
-/// `set_preserving_decor` 保留的是 Item **外圍** decor，陣列**內部**排版
-/// 是這裡新建的 `Array` 決定，兩者管的是不同層次，不會互相踩。
-fn string_array(items: &[String], multiline: bool) -> toml_edit::Value {
-    let mut array = toml_edit::Array::new();
-    for item in items {
-        let mut value: toml_edit::Value = item.clone().into();
-        if multiline {
-            *value.decor_mut() = toml_edit::Decor::new("\n  ", "");
-        }
-        array.push_formatted(value);
-    }
-    if multiline {
-        array.set_trailing("\n");
-        array.set_trailing_comma(true);
-    }
-    toml_edit::Value::Array(array)
-}
-
 fn set_preserving_decor(table: &mut toml_edit::Table, key: &str, new_value: toml_edit::Value) {
     if let Some(old) = table.get_mut(key).and_then(toml_edit::Item::as_value_mut) {
         let decor = old.decor().clone();
@@ -1031,6 +1009,23 @@ fn set_preserving_decor(table: &mut toml_edit::Table, key: &str, new_value: toml
     } else {
         table.insert(key, toml_edit::Item::Value(new_value));
     }
+}
+
+/// TOML 字串陣列，每個元素自己一行、留尾隨逗號——`[color.graph].branches`
+/// 在範本裡就是這個排版，壓成單行會產生一個沒人想看的 diff。
+///
+/// `set_preserving_decor` 保留的是 Item **外圍** decor，陣列**內部**排版
+/// 是這裡新建的 `Array` 決定，兩者管的是不同層次，不會互相踩。
+fn multiline_string_array(items: &[String]) -> toml_edit::Value {
+    let mut array = toml_edit::Array::new();
+    for item in items {
+        let mut value: toml_edit::Value = item.clone().into();
+        *value.decor_mut() = toml_edit::Decor::new("\n  ", "");
+        array.push_formatted(value);
+    }
+    array.set_trailing("\n");
+    array.set_trailing_comma(true);
+    toml_edit::Value::Array(array)
 }
 
 #[cfg(test)]
