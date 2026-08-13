@@ -116,4 +116,5 @@ branches = [
 [keybind]
 # 快捷鍵覆蓋，詳見「自訂快捷鍵」文件；預設鍵位見
 # https://github.com/YSzEthan/serie-ys/blob/main/assets/default-keybind.toml
-# quit = ["q", "ctrl-c"]
+# 設定某個 action 會完全取代它的預設鍵位（不是追加），例：
+# navigate_down = ["ctrl-n"]
