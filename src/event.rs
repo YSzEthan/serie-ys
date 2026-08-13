@@ -1,5 +1,4 @@
 use std::{
-    borrow::Cow,
     ffi::OsStr,
     fmt::{self, Debug, Formatter},
     path::{Component, Path, PathBuf},
@@ -858,7 +857,7 @@ impl UserEvent {
     /// 是「向左移動」），這裡要的是跟畫面無關、獨立成立的單一描述。窮盡
     /// match：新增事件時這裡不編譯，就不會漏掉。`UserCommand(n)` 沒有固定
     /// 文字可寫（名稱要查設定檔），交給呼叫端另外組。
-    pub fn description(self) -> Option<Cow<'static, str>> {
+    pub fn description(self) -> Option<&'static str> {
         let s: &'static str = match self {
             UserEvent::ForceQuit => "強制離開",
             UserEvent::Quit => "離開（按兩下）",
@@ -912,7 +911,7 @@ impl UserEvent {
             UserEvent::CheckUpdate => "檢查更新",
             UserEvent::Unknown => return None,
         };
-        Some(Cow::Borrowed(s))
+        Some(s)
     }
 }
 

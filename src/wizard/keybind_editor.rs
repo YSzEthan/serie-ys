@@ -9,6 +9,8 @@ use ratatui::{
     DefaultTerminal, Frame,
 };
 
+use unicode_width::UnicodeWidthStr;
+
 use crate::{
     color::ColorTheme,
     event::UserEvent,
@@ -89,15 +91,12 @@ fn build_actions(user_commands: &BTreeMap<usize, String>) -> Vec<UserEvent> {
 /// `UserCommand(n)` 沒有固定文字，改查 `user_commands`（來自
 /// `[user_command.commands]`）取使用者自己取的名稱。
 fn describe(action: UserEvent, user_commands: &BTreeMap<usize, String>) -> Cow<'static, str> {
-    if let Some(d) = action.description() {
-        return d;
-    }
     match action {
         UserEvent::UserCommand(n) => match user_commands.get(&n) {
             Some(name) => Cow::Owned(format!("執行 user command：{name}")),
             None => Cow::Borrowed("（設定檔裡找不到這個 user command）"),
         },
-        _ => Cow::Borrowed(""),
+        _ => Cow::Borrowed(action.description().unwrap_or_default()),
     }
 }
 
@@ -222,7 +221,8 @@ impl KeyBindEditorState {
         if let CaptureState::Conflict { key: pending, .. } = &capture.state {
             let pending = *pending;
             if key.code == KeyCode::Char('y') && key.modifiers.is_empty() {
-                self.commit_capture(target, mode, pending, draft);
+                let effective = self.effective();
+                self.commit_capture(target, mode, pending, &effective, draft);
             } else {
                 self.capture = None;
             }
@@ -249,16 +249,17 @@ impl KeyBindEditorState {
             return Flow::Continue;
         }
 
+        let effective = self.effective();
+
         // 追加模式下鍵已經是這個 action 自己的：不是衝突，也不用再寫一次
         // （寫了會在陣列裡產生重複項目，下次啟動時會被當成同一顆鍵綁給
         // 同一個 event 兩次，載入直接失敗）。當作已完成，退出捕捉。
-        if matches!(mode, Mode::Append) && self.effective().key_events(target).contains(&normalized)
-        {
+        if matches!(mode, Mode::Append) && effective.key_events(target).contains(&normalized) {
             self.capture = None;
             return Flow::Continue;
         }
 
-        match self.effective().get(&normalized).copied() {
+        match effective.get(&normalized).copied() {
             Some(owner) if owner != target => {
                 if let Some(c) = &mut self.capture {
                     c.state = CaptureState::Conflict {
@@ -267,44 +268,49 @@ impl KeyBindEditorState {
                     };
                 }
             }
-            _ => self.commit_capture(target, mode, normalized, draft),
+            _ => self.commit_capture(target, mode, normalized, &effective, draft),
         }
         Flow::Continue
     }
 
     /// 捕捉完成：算出 `target` 的新陣列、指派、寫回 `overrides`／`draft`。
+    ///
     /// 這顆鍵如果搶自另一個「已經在 `current_patch` 裡有明確 entry」的
     /// action（使用者自己的檔案或這個 session 設過的），那個 action 的
     /// 陣列也要一起更新——不寫的話同一顆鍵在檔案裡會出現兩次，下次啟動
     /// 直接載入失敗。搶自純內建預設的 action 不用寫：`current_patch` 本來
     /// 就不含它的 entry，`assign` 的效果在下次啟動時会由同一套邏輯自動
-    /// 重算出來。
-    fn commit_capture(&mut self, target: UserEvent, mode: Mode, key: KeyEvent, draft: &mut Draft) {
+    /// 重算出來。受害者最多一個——`current_patch` 內部無衝突（不變式），
+    /// 一顆鍵在裡面只可能有一個 owner，`current.get(&key)` 直接查得到，
+    /// 不需要整份 `bindings()` 快照再逐條 diff。
+    fn commit_capture(
+        &mut self,
+        target: UserEvent,
+        mode: Mode,
+        key: KeyEvent,
+        effective: &KeyBind,
+        draft: &mut Draft,
+    ) {
         let new_keys = match mode {
             Mode::Replace => vec![key],
             Mode::Append => {
-                let mut keys = self.effective().key_events(target).to_vec();
+                let mut keys = effective.key_events(target).to_vec();
                 keys.push(key);
                 keys
             }
         };
 
         let mut current = self.current_patch();
-        let before = current.bindings().to_vec();
+        let victim = current.get(&key).copied().filter(|v| *v != target);
         current.assign(target, new_keys.clone());
 
         self.overrides.insert(target, Some(new_keys));
         self.sync(target, draft);
 
-        for (event, keys) in current.bindings() {
-            if *event == target {
-                continue;
-            }
-            let before_keys = before.iter().find(|(e, _)| e == event).map(|(_, k)| k);
-            if before_keys != Some(keys) {
-                self.overrides.insert(*event, Some(keys.clone()));
-                self.sync(*event, draft);
-            }
+        if let Some(victim) = victim {
+            self.overrides
+                .insert(victim, Some(current.key_events(victim).to_vec()));
+            self.sync(victim, draft);
         }
 
         self.capture = None;
@@ -381,7 +387,7 @@ impl KeyBindEditorState {
                         format!("{keys_display:<22}"),
                         Style::default().fg(chrome.help_key_fg),
                     ),
-                    Span::raw(desc.into_owned()),
+                    Span::raw(desc),
                 ]))
             })
             .collect();
@@ -465,7 +471,13 @@ fn render_capture_dialog(
         chrome.help_key_fg,
     );
 
-    let dialog_width = (message.chars().count() as u16 + 4)
+    // `chars().count()` 低估中文字寬——CJK 字元佔 2 個終端格，卻只算 1 個
+    // char。`message` 幾乎全是中文（衝突提示尤其），量錯的話對話框會窄到
+    // 把字擠出邊框外。`UnicodeWidthStr::width()` 照終端實際佔用的格數算，
+    // 跟 `hint.width()`（ratatui 自己也是這樣量）用同一套標準。
+    let dialog_width = (message.width() as u16 + 4)
+        .max(mode_label.width() as u16 + 4)
+        .max(current_line.width() as u16 + 4)
         .max(hint.width() as u16 + 2)
         .max(30)
         .min(area.width.saturating_sub(4));

@@ -383,14 +383,8 @@ pub fn key_event_to_config_string(key_event: KeyEvent) -> Option<String> {
         return round_trip_checked(key_event, "space".to_string());
     }
 
-    let is_shift_letter = match key_event.code {
-        KeyCode::Char(c) => {
-            c.is_ascii_uppercase() || key_event.modifiers.contains(KeyModifiers::SHIFT)
-        }
-        _ => false,
-    };
-    if is_shift_letter {
-        if let KeyCode::Char(c) = key_event.code {
+    if let KeyCode::Char(c) = key_event.code {
+        if c.is_ascii_uppercase() || key_event.modifiers.contains(KeyModifiers::SHIFT) {
             // `parse_key_event` 用 `to_ascii_lowercase()` 剝大小寫，這裡跟它
             // 對稱；`c.to_ascii_lowercase()` 對非 ASCII 是 no-op，所以非
             // ASCII 大寫字元（例如 `Ä`）不會被這條分支誤殺，交給最後的
