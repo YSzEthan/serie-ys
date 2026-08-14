@@ -36,8 +36,17 @@ pub(super) struct TimelineEntry {
     pub(super) rev: u64,
 }
 
+/// timeline 攤平後的一個可渲染區塊：同一個 section 底下連續出現的
+/// item（一整組 commit、單一則留言、或單一則狀態提示）。分隔線只畫在
+/// block 與 block 之間，所以同一個 commit block 裡的每一筆 commit 都
+/// 緊貼著彼此，不會像逐 item 判斷時那樣被切成一條一條。
+pub(super) struct TimelineBlock<'a> {
+    pub(super) section: Section,
+    pub(super) items: Vec<TimelineItem<'a>>,
+}
+
 /// 把 `TimelineEntry` 可能處於的每種狀態——pending、failed、loaded（空或
-/// 非空）、分頁中——攤平成一份可渲染列的清單。走訪結果的渲染迴圈本身
+/// 非空）、分頁中——攤平成一份可渲染 block 的清單。走訪結果的渲染迴圈本身
 /// 沒有任何分支：「我現在是什麼狀態」這個問題只在這裡回答一次。
 ///
 /// 回傳借用的項目而非 owned 複本，所以 `None`/`NotRequested` 這種
@@ -46,60 +55,89 @@ pub(super) struct TimelineEntry {
 pub(super) fn build_timeline(
     entry: Option<&TimelineEntry>,
     expand_commits: bool,
-) -> Vec<TimelineItem<'_>> {
+) -> Vec<TimelineBlock<'_>> {
     let Some(entry) = entry else {
-        return vec![TimelineItem::notice("(loading comments…)", Color::DarkGray)];
+        return vec![notice_block("(loading comments…)", Color::DarkGray)];
     };
 
     match &entry.state {
         TimelineLoad::NotRequested | TimelineLoad::Loading => {
-            vec![TimelineItem::notice("(loading comments…)", Color::DarkGray)]
+            vec![notice_block("(loading comments…)", Color::DarkGray)]
         }
-        TimelineLoad::Error(e) => vec![TimelineItem::notice(
-            format!("(comments failed: {e})"),
-            Color::Red,
-        )],
+        TimelineLoad::Error(e) => {
+            vec![notice_block(format!("(comments failed: {e})"), Color::Red)]
+        }
         TimelineLoad::Loaded => {
-            let mut items: Vec<TimelineItem<'_>> = entry
+            let (commits, comments): (Vec<_>, Vec<_>) = entry
                 .items
                 .iter()
                 .filter_map(TimelineItem::from_gh)
-                .collect();
-            if !expand_commits {
-                items = collapse_commits(items);
+                .partition(|item| matches!(item, TimelineItem::Commit { .. }));
+
+            let mut blocks = Vec::new();
+            if !commits.is_empty() {
+                let items = if expand_commits {
+                    commits
+                } else {
+                    vec![TimelineItem::CollapsedCommits(commits.len())]
+                };
+                blocks.push(TimelineBlock {
+                    section: Section::Commit,
+                    items,
+                });
             }
-            // 判斷用的是*過濾/收合後*的清單，不是 `entry.items`：一頁全是
-            // `Unknown` 節點時，仍然要 fallback 到提示訊息，而不是渲染出
-            // 零列（也就沒有任何分隔線）——而且收合絕不會把非空清單變空。
-            if items.is_empty() {
-                items.push(TimelineItem::notice("(no comments)", Color::DarkGray));
+            blocks.extend(comments.into_iter().map(|item| TimelineBlock {
+                section: Section::Comment,
+                items: vec![item],
+            }));
+
+            // 判斷用的是*過濾/分組後*的 block 清單，不是 `entry.items`：一頁
+            // 全是 `Unknown` 節點時，仍然要 fallback 到提示訊息，而不是渲染
+            // 出零列（也就沒有任何分隔線）。判空主體刻意維持整條 timeline，
+            // 不是只看 comments——`timelineItems` 是一條混合 connection，
+            // 前 100 筆全是 commit、留言落在下一頁的長命 PR 很常見，只看
+            // comments 會在那種情況印出騙人的「沒有留言」。
+            if blocks.is_empty() {
+                blocks.push(notice_block("(no comments)", Color::DarkGray));
             } else if entry.next_cursor.is_some() {
                 let text = if entry.loading_more {
                     "(loading more…)"
                 } else {
                     "(more comments — scroll down to load)"
                 };
-                items.push(TimelineItem::notice(text, Color::DarkGray));
+                // `next_cursor` 代表「還有 timelineItems」，不是「還有留言」
+                // ——文案沿用舊字樣，即使下一頁其實是更多 commit 也一樣，
+                // 避免為了措辭精確而長出第二種 footer。
+                blocks.push(notice_block(text, Color::DarkGray));
             }
-            items
+            blocks
         }
     }
 }
 
-/// 把每一筆獨立的 `Commit` 列取代成一行摘要，放在 timeline 最前面、留言
-/// 之前——對應網頁版 UI 的「N commits」收合檢視，而不是在每個 commit
-/// 原本所在的位置留下空隙。
-fn collapse_commits(mut items: Vec<TimelineItem<'_>>) -> Vec<TimelineItem<'_>> {
-    let mut commit_count = 0;
-    items.retain(|item| {
-        let is_commit = matches!(item, TimelineItem::Commit { .. });
-        commit_count += usize::from(is_commit);
-        !is_commit
-    });
-    if commit_count > 0 {
-        items.insert(0, TimelineItem::CollapsedCommits(commit_count));
+fn notice_block(text: impl Into<String>, color: Color) -> TimelineBlock<'static> {
+    TimelineBlock {
+        section: Section::Comment,
+        items: vec![TimelineItem::notice(text, color)],
     }
-    items
+}
+
+/// commit block 在 timeline 裡佔的視覺行數：沒有 commit 就是 0（不畫這個
+/// block，也不畫它前面那條分隔線）；否則是 1 條分隔線，加上展開時每個
+/// commit 各一行、收合時固定一行的收合摘要。`append_timeline_items` 用
+/// 它算分頁載入前後的差值來補償 `preview_offset`——commit block 插在
+/// timeline 最前面，插入的視覺行數必須讓捲動位置跟著往下位移，畫面才不會
+/// 因為視窗上方多出內容而往回跳。
+pub(super) fn commit_block_height(items: &[GhTimelineItem], expand_commits: bool) -> usize {
+    let count = items
+        .iter()
+        .filter(|item| matches!(item, GhTimelineItem::PullRequestCommit { .. }))
+        .count();
+    match (count, expand_commits) {
+        (0, _) => 0,
+        (n, true) => 1 + n,
+        (_, false) => 2,
+    }
 }
 
 /// timeline 的一列可渲染內容：留言、commit、收合後的 commit 數量摘要，
@@ -149,13 +187,6 @@ impl<'a> TimelineItem<'a> {
                     .map(|r| r.state.as_str()),
             }),
             GhTimelineItem::Unknown => None,
-        }
-    }
-
-    pub(super) fn section(&self) -> Section {
-        match self {
-            TimelineItem::Comment { .. } | TimelineItem::Notice(_) => Section::Comment,
-            TimelineItem::Commit { .. } | TimelineItem::CollapsedCommits(_) => Section::Commit,
         }
     }
 
