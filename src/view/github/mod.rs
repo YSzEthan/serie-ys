@@ -555,6 +555,7 @@ impl<'a> GitHubView<'a> {
                 if self.selected_has_related() {
                     hints.push(h(&[UserEvent::DetailPaneToggle], "related"));
                 }
+                hints.push(h(&[UserEvent::Refresh], "refresh"));
                 hints
             }
             GitHubFocus::List => {
@@ -1782,5 +1783,45 @@ mod tests {
 
         view.handle_list_event(UserEvent::ToggleCommitLog, 1);
         assert!(view.expand_commits);
+    }
+
+    /// `r` 在 List 跟 Preview 兩個 focus 都要能觸發同一個刷新動作——
+    /// Preview 之前完全沒有接 `UserEvent::Refresh`，在 gh 的 detail
+    /// （PR/Issue 詳情，含留言）裡按 r 沒有任何反應。
+    #[test]
+    fn refresh_triggers_from_both_list_and_preview_focus() {
+        let (mut view, rx) = view_with_body_and_rx("body".to_string());
+
+        view.handle_preview_event(UserEvent::Refresh, 1);
+        assert!(matches!(view.load_state, LoadState::Loading));
+        let sent = rx.try_recv();
+        assert!(
+            matches!(sent, Ok(AppEvent::RefreshGitHub { .. })),
+            "preview focus must send RefreshGitHub, got: {sent:?}"
+        );
+
+        view.load_state = LoadState::Idle;
+        view.handle_list_event(UserEvent::Refresh, 1);
+        assert!(matches!(view.load_state, LoadState::Loading));
+        let sent = rx.try_recv();
+        assert!(
+            matches!(sent, Ok(AppEvent::RefreshGitHub { .. })),
+            "list focus must keep sending RefreshGitHub, got: {sent:?}"
+        );
+    }
+
+    /// Preview 的狀態列必須把 `refresh` 提示出來，使用者才知道 r 在這裡
+    /// 有作用，不用去猜或翻說明頁。
+    #[test]
+    fn preview_status_hints_include_refresh() {
+        let mut view = view_with_body("body".to_string());
+        view.focus = GitHubFocus::Preview;
+        assert!(
+            view.status_hints()
+                .iter()
+                .any(|(events, _)| events.contains(&UserEvent::Refresh)),
+            "got: {:?}",
+            view.status_hints()
+        );
     }
 }
