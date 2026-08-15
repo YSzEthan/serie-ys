@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.1.0](https://github.com/YSzEthan/serie-ys/compare/v3.0.0...v3.1.0) (2026-08-15)
+
+
+### Features
+
+* gh detail commit 集中成一區，簡化分隔線邏輯 (#71) (#72) ([c1db811](https://github.com/YSzEthan/serie-ys/commit/c1db811717be6bcbe35d7a80a94dd6cebb32d43a))
+
 ## [3.0.0](https://github.com/YSzEthan/serie-ys/compare/v2.7.3...v3.0.0) (2026-08-13)
 
 
