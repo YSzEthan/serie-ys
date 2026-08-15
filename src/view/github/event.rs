@@ -138,6 +138,9 @@ impl<'a> GitHubView<'a> {
             UserEvent::ToggleCommitLog if matches!(self.active_tab, GitHubTab::PullRequests) => {
                 self.toggle_commit_log();
             }
+            UserEvent::Refresh => {
+                self.dispatch_refresh();
+            }
             _ => {}
         }
     }
@@ -225,17 +228,11 @@ impl<'a> GitHubView<'a> {
                 self.selected_index = 0;
                 self.offset = 0;
                 self.preview_offset = 0;
-                self.load_state = LoadState::Loading;
                 self.bump_generation();
-                self.tx.send(AppEvent::RefreshGitHub {
-                    state: self.state_filter,
-                });
+                self.dispatch_refresh();
             }
             UserEvent::Refresh => {
-                self.load_state = LoadState::Loading;
-                self.tx.send(AppEvent::RefreshGitHub {
-                    state: self.state_filter,
-                });
+                self.dispatch_refresh();
             }
             UserEvent::ShortCopy => {
                 let kind = self.active_tab.kind();
@@ -272,6 +269,15 @@ impl<'a> GitHubView<'a> {
             }
             _ => {}
         }
+    }
+
+    /// 重抓整份 GitHub 資料；資料沒變時 `update_data` 的 early-return
+    /// 分支會順帶重抓選取項目的 timeline。
+    fn dispatch_refresh(&mut self) {
+        self.load_state = LoadState::Loading;
+        self.tx.send(AppEvent::RefreshGitHub {
+            state: self.state_filter,
+        });
     }
 
     fn try_merge_selected_pr(&mut self) {

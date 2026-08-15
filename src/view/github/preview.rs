@@ -106,11 +106,12 @@ pub(super) fn append_comment_lines(
     width: usize,
 ) {
     let mut prev = Section::Body;
-    for item in build_timeline(entry, expand_commits) {
-        let section = item.section();
+    for block in build_timeline(entry, expand_commits) {
         lines.push(prev.divider(width));
-        item.render(lines, width);
-        prev = section;
+        for item in block.items {
+            item.render(lines, width);
+        }
+        prev = block.section;
     }
 }
 

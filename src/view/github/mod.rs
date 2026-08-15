@@ -453,7 +453,16 @@ impl<'a> GitHubView<'a> {
         after: Option<String>,
         page: GhTimelinePage,
     ) {
+        // commit block 畫在 timeline 最前面（見 `timeline::build_timeline`），
+        // 所以「載入更多」把新 commit 插進正在檢視的項目時，等於在使用者
+        // 視窗上方塞進新內容。只補償這個情況——首頁替換／背景刷新不移動
+        // 既有內容的相對位置，`preview_offset` 不用動。
+        let track_scroll =
+            after.is_some() && self.selected_number_and_kind() == Some((number, kind));
+
         let entry = self.timeline.entry((kind, number)).or_default();
+        let before_height =
+            track_scroll.then(|| timeline::commit_block_height(&entry.items, self.expand_commits));
         if after.is_none() {
             entry.items.clear();
         }
@@ -464,6 +473,13 @@ impl<'a> GitHubView<'a> {
         entry.loading_more = false;
         entry.refreshing = false;
         entry.rev = entry.rev.wrapping_add(1);
+
+        if let Some(before_height) = before_height {
+            let after_height = timeline::commit_block_height(&entry.items, self.expand_commits);
+            self.preview_offset = self
+                .preview_offset
+                .saturating_add(after_height.saturating_sub(before_height));
+        }
     }
 
     pub fn set_timeline_error(&mut self, number: u64, kind: GhItemKind, error: String) {
@@ -539,6 +555,7 @@ impl<'a> GitHubView<'a> {
                 if self.selected_has_related() {
                     hints.push(h(&[UserEvent::DetailPaneToggle], "related"));
                 }
+                hints.push(h(&[UserEvent::Refresh], "refresh"));
                 hints
             }
             GitHubFocus::List => {
@@ -1287,6 +1304,71 @@ mod tests {
         assert_eq!(entry.rev, 3);
     }
 
+    /// commit block 畫在 timeline 最前面。載入更多把新 commit 插進正在
+    /// 檢視的項目時，等於在使用者視窗上方塞進新內容——`preview_offset`
+    /// 必須跟著位移，畫面才不會因為視窗上方多出內容而往回跳。
+    #[test]
+    fn loading_more_commits_shifts_preview_offset_to_keep_scroll_position() {
+        let mut view = view_with_body("body".to_string());
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            timeline_page(
+                vec![timeline_comment("a", "one")],
+                Some("cursor".to_string()),
+            ),
+        );
+
+        view.preview_offset = 5;
+
+        // 續接第二頁，這頁帶了兩個新 commit——commit block 從無到有，
+        // 佔掉 1 條分隔線 + 2 行 commit（展開模式）。
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            Some("cursor".to_string()),
+            timeline_page(
+                vec![
+                    timeline_commit("aaaaaaa", "SUCCESS"),
+                    timeline_commit("bbbbbbb", "SUCCESS"),
+                ],
+                None,
+            ),
+        );
+
+        assert_eq!(view.preview_offset, 5 + 3);
+    }
+
+    /// 首頁替換（`after: None`，刷新或切換選取）不移動既有內容的相對
+    /// 位置，`preview_offset` 不該被這個補償邏輯動到。
+    #[test]
+    fn refreshing_first_page_does_not_shift_preview_offset() {
+        let mut view = view_with_body("body".to_string());
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            timeline_page(vec![timeline_comment("a", "one")], None),
+        );
+        view.preview_offset = 5;
+
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            timeline_page(
+                vec![
+                    timeline_commit("aaaaaaa", "SUCCESS"),
+                    timeline_comment("a", "one"),
+                ],
+                None,
+            ),
+        );
+
+        assert_eq!(view.preview_offset, 5);
+    }
+
     /// `item_count`／`mergeable` 都沒變，只有 CI 狀態換了——沒有 `rev`
     /// 欄位，`PreviewKey` 會判定「跟上次一樣」，直接命中舊 cache，畫面
     /// 紋風不動。這裡刻意走 `render_to_string`（進到
@@ -1386,8 +1468,9 @@ mod tests {
             timeline_page(
                 vec![
                     timeline_commit("aaaaaaa", "SUCCESS"),
-                    timeline_comment("a", "one"),
                     timeline_commit("bbbbbbb", "SUCCESS"),
+                    timeline_comment("a", "one"),
+                    timeline_comment("b", "two"),
                 ],
                 None,
             ),
@@ -1411,14 +1494,80 @@ mod tests {
             vec![
                 // meta → body：markdown 自己的灰色，維持不變
                 ('─', Some(Color::DarkGray)),
-                // body → 第一個 commit
+                // body → commit block（兩個 commit 集中在一起）
                 ('─', Some(Section::Body.color())),
-                // commit → comment
+                // commit block → 第一則留言
                 ('─', Some(Section::Commit.color())),
-                // comment → commit
+                // 第一則留言 → 第二則留言
                 ('─', Some(Section::Comment.color())),
             ],
         );
+    }
+
+    /// commit 集中成一個區塊：即使 API 回傳的時間序是 commit/comment 交錯，
+    /// 展開模式下所有 commit 仍緊貼著彼此排在第一則留言之前，中間沒有
+    /// 分隔線把它們切開。
+    #[test]
+    fn commits_are_grouped_together_before_the_first_comment() {
+        let mut view = view_with_body("body".to_string());
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            timeline_page(
+                vec![
+                    timeline_commit("aaaaaaa", "SUCCESS"),
+                    timeline_comment("a", "one"),
+                    timeline_commit("bbbbbbb", "SUCCESS"),
+                    timeline_commit("ccccccc", "SUCCESS"),
+                ],
+                None,
+            ),
+        );
+
+        let (lines, _) = build_preview_content(&view.preview_input(40));
+        let texts: Vec<String> = lines
+            .iter()
+            .map(|l| l.spans.iter().map(|s| s.content.to_string()).collect())
+            .collect();
+
+        let commit_positions: Vec<usize> = texts
+            .iter()
+            .enumerate()
+            .filter(|(_, t)| {
+                t.contains("aaaaaaa") || t.contains("bbbbbbb") || t.contains("ccccccc")
+            })
+            .map(|(i, _)| i)
+            .collect();
+        assert_eq!(commit_positions.len(), 3, "got: {texts:?}");
+        // 三個 commit 緊貼彼此：中間沒有其他列（分隔線或留言）插進來。
+        assert!(
+            commit_positions.windows(2).all(|w| w[1] == w[0] + 1),
+            "commits must be contiguous, got: {texts:?}"
+        );
+
+        let comment_index = texts.iter().position(|t| t.contains("one")).unwrap();
+        assert!(
+            commit_positions.iter().all(|&i| i < comment_index),
+            "all commits must come before the comment, got: {texts:?}"
+        );
+    }
+
+    /// 只有 commit、沒有留言的 PR 不該顯示「沒有留言」——那是專門為「整條
+    /// timeline 都沒有可渲染內容」保留的訊息。commit block 本身就是內容，
+    /// 而且 timelineItems 是混合 connection，留言完全有可能落在下一頁。
+    #[test]
+    fn commits_without_comments_do_not_show_no_comments_notice() {
+        let mut view = view_with_body("body".to_string());
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            timeline_page(vec![timeline_commit("aaaaaaa", "SUCCESS")], None),
+        );
+
+        let screen = render_to_string(&mut view);
+        assert!(!screen.contains("no comments"), "got:\n{screen}");
     }
 
     #[test]
@@ -1634,5 +1783,45 @@ mod tests {
 
         view.handle_list_event(UserEvent::ToggleCommitLog, 1);
         assert!(view.expand_commits);
+    }
+
+    /// `r` 在 List 跟 Preview 兩個 focus 都要能觸發同一個刷新動作——
+    /// Preview 之前完全沒有接 `UserEvent::Refresh`，在 gh 的 detail
+    /// （PR/Issue 詳情，含留言）裡按 r 沒有任何反應。
+    #[test]
+    fn refresh_triggers_from_both_list_and_preview_focus() {
+        let (mut view, rx) = view_with_body_and_rx("body".to_string());
+
+        view.handle_preview_event(UserEvent::Refresh, 1);
+        assert!(matches!(view.load_state, LoadState::Loading));
+        let sent = rx.try_recv();
+        assert!(
+            matches!(sent, Ok(AppEvent::RefreshGitHub { .. })),
+            "preview focus must send RefreshGitHub, got: {sent:?}"
+        );
+
+        view.load_state = LoadState::Idle;
+        view.handle_list_event(UserEvent::Refresh, 1);
+        assert!(matches!(view.load_state, LoadState::Loading));
+        let sent = rx.try_recv();
+        assert!(
+            matches!(sent, Ok(AppEvent::RefreshGitHub { .. })),
+            "list focus must keep sending RefreshGitHub, got: {sent:?}"
+        );
+    }
+
+    /// Preview 的狀態列必須把 `refresh` 提示出來，使用者才知道 r 在這裡
+    /// 有作用，不用去猜或翻說明頁。
+    #[test]
+    fn preview_status_hints_include_refresh() {
+        let mut view = view_with_body("body".to_string());
+        view.focus = GitHubFocus::Preview;
+        assert!(
+            view.status_hints()
+                .iter()
+                .any(|(events, _)| events.contains(&UserEvent::Refresh)),
+            "got: {:?}",
+            view.status_hints()
+        );
     }
 }
