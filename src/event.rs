@@ -199,7 +199,9 @@ pub enum AppEvent {
     OpenUpdatePrompt {
         tag: String,
     },
-    /// 使用者在更新提示按下確認。
+    /// 開始下載＋替換執行檔。兩個觸發來源：使用者在更新提示按下確認，或
+    /// `mode = Auto` 查到新版直接送（跳過詢問）。理由與守衛見
+    /// `update::spawn_check` 和處理端 `app.rs::spawn_update_download`。
     UpdateRequested {
         tag: String,
     },

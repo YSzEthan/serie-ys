@@ -680,7 +680,19 @@ impl App<'_> {
                     self.maybe_open_update_prompt(tag);
                 }
                 AppEvent::UpdateRequested { tag } => {
-                    spawn_update_download(self.ec, tag);
+                    // `spawn_update_download` 一啟動就蓋全螢幕 pending overlay、
+                    // 凍結鍵盤（`handle_key` 對 `pending_message.is_some()` 的
+                    // 處理）。手動確認這條路徑一定過得了這個守衛——
+                    // `handle_yes_no_prompt_key` 送這個事件前已經
+                    // `mem::take` 清空 `status_line_state`，`can_interrupt()`
+                    // 這時必為真；真正靠這個守衛擋下的是 `mode = Auto` 背景
+                    // 觸發的那一路，避免使用者在輸入框打字打到一半被憑空
+                    // 凍結。沒過就靜默跳過，等下一個 interval——跟
+                    // `maybe_open_update_prompt` 守衛沒過就不開提示同一套
+                    // 哲學。
+                    if self.can_interrupt() {
+                        spawn_update_download(self.ec, tag);
+                    }
                 }
                 AppEvent::UpdateInstalled { tag, exe } => {
                     // auto_restart 開著時不問，但仍要走 can_interrupt()
