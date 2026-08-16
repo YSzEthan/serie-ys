@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.3.0](https://github.com/YSzEthan/serie-ys/compare/v3.2.0...v3.3.0) (2026-08-16)
+
+
+### Features
+
+* Release Notes 內文限制閱讀寬度並水平置中 (#75) (#76) ([f82ab98](https://github.com/YSzEthan/serie-ys/commit/f82ab98dc0d692a7ce7667e854490bab765126e3))
+
 ## [3.2.0](https://github.com/YSzEthan/serie-ys/compare/v3.1.0...v3.2.0) (2026-08-16)
 
 
