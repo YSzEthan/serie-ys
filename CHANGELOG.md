@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.3.1](https://github.com/YSzEthan/serie-ys/compare/v3.3.0...v3.3.1) (2026-08-16)
+
+
+### Bug Fixes
+
+* 自動更新加上下載中提示，並避免凍結使用者輸入 (#77) (#78) ([c2c42c5](https://github.com/YSzEthan/serie-ys/commit/c2c42c5385f985deeae0289ce96c9e98ae9bf885))
+
 ## [3.3.0](https://github.com/YSzEthan/serie-ys/compare/v3.2.0...v3.3.0) (2026-08-16)
 
 
