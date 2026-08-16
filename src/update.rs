@@ -167,9 +167,15 @@ pub fn resolve(cli: UpdateOverrides, config: UpdateOverrides) -> UpdateSettings 
 /// - 手動：繞過節流與 `mode = Off`（使用者當下的明確意圖，跟「程式自作
 ///   主張背景檢查」是兩回事），任何結果都要吭聲——包括執行檔已被替換。
 ///
-/// `mode = Auto` 時（不論手動或自動觸發）查到新版直接下載替換，不彈 y/n
-/// 提示——跟 `-U` 在 `mode = Auto` 下跳過 confirm 是同一個承諾，不因為
-/// 觸發來源是背景 thread 還是使用者按鍵而有兩套行為。
+/// `mode = Auto` 時（不論手動或自動觸發）查到新版直接送
+/// `AppEvent::UpdateRequested`，不彈 y/n 提示——跟 `-U` 在 `mode = Auto`
+/// 下跳過 confirm 是同一個承諾，不因為觸發來源是背景 thread 還是使用者
+/// 按鍵而有兩套行為。送事件而不在這裡直接呼叫 `download_and_replace`：
+/// 處理端 `app.rs::spawn_update_download` 會顯示「Downloading {tag}...」，
+/// 讓使用者知道正在下載＋替換執行檔，不能因為沒經過詢問就悄悄裝完。
+/// 那個處理端會蓋全螢幕遮罩並凍結鍵盤，所以背景觸發要先過
+/// `App::can_interrupt()` 這一關（見 `app.rs` 對 `UpdateRequested` 的
+/// 處理）才會真的開始下載，不能在使用者打字打到一半憑空搶走鍵盤。
 ///
 /// 兩種情況都會標記「已檢查」，手動觸發後下次啟動不會馬上又問一次。
 pub fn spawn_check(ec: &EventController, manual: bool, settings: UpdateSettings) {
@@ -191,10 +197,7 @@ pub fn spawn_check(ec: &EventController, manual: bool, settings: UpdateSettings)
         let result = check_for_update();
         mark_checked();
         match result {
-            Ok(Some(tag)) if auto_download => match download_and_replace(&tag) {
-                Ok(exe) => tx.send(AppEvent::UpdateInstalled { tag, exe }),
-                Err(e) => tx.send(AppEvent::NotifyError(e)),
-            },
+            Ok(Some(tag)) if auto_download => tx.send(AppEvent::UpdateRequested { tag }),
             Ok(Some(tag)) => tx.send(AppEvent::OpenUpdatePrompt { tag }),
             Ok(None) if manual => tx.send(AppEvent::NotifyInfo(format!(
                 "Already up to date (v{})",
