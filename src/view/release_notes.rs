@@ -14,6 +14,10 @@ use crate::{
     view::View,
 };
 
+/// 內文的最大閱讀寬度，超出的部分留白置中——寬螢幕下一行拉到 200 字元
+/// 會很難讀，CHANGELOG 條目又是短句而非需要利用寬螢幕排版的長文。
+const READING_WIDTH: u16 = 100;
+
 /// 更新後（或全新安裝）第一次啟動時跳出的 overlay，內容是這一版
 /// `CHANGELOG.md` 的區塊（`update::extract_release_notes` 抽出來的）。
 /// 結構照 `HelpView`：持有 `before` 供 Esc/q 關閉時展開回去。
@@ -107,22 +111,31 @@ impl<'a> ReleaseNotesView<'a> {
             .title_top(" Release Notes ");
         let inner = block.inner(area);
         self.height = inner.height as usize;
+        f.render_widget(block, area);
 
-        let lines = super::markdown::render(self.body, inner.width as usize);
+        // 邊框／標題吃滿整個寬度，內文限制在一個閱讀寬度內水平置中——寬
+        // 螢幕下整行拉到底邊緣會很難讀。窄螢幕（inner.width 本身就小於
+        // READING_WIDTH）自然退化成滿版，不必特判。
+        let content_width = inner.width.min(READING_WIDTH);
+        let margin = (inner.width - content_width) / 2;
+        let content_area = Rect {
+            x: inner.x + margin,
+            y: inner.y,
+            width: content_width,
+            height: inner.height,
+        };
+
+        let lines = super::markdown::render(self.body, content_width as usize);
         let paragraph = Paragraph::new(lines)
             .style(Style::default().fg(self.ctx.color_theme.fg))
             .wrap(Wrap { trim: false });
 
-        // 折行後的視覺行數要在掛 `block` 之前量：`line_count` 會把 block
-        // 的 vertical space（這裡是 `Borders::TOP` 那一列）算進去，用同一個
-        // Paragraph 掛完 block 再量會多算一列。
         let max_offset = paragraph
-            .line_count(inner.width)
+            .line_count(content_width)
             .saturating_sub(self.height)
             .min(u16::MAX as usize);
         self.offset = self.offset.min(max_offset);
 
-        let paragraph = paragraph.block(block).scroll((self.offset as u16, 0));
-        f.render_widget(paragraph, area);
+        f.render_widget(paragraph.scroll((self.offset as u16, 0)), content_area);
     }
 }
