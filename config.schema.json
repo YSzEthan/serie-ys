@@ -96,6 +96,15 @@
                 "on"
               ],
               "default": "off"
+            },
+            "release_notes": {
+              "type": "string",
+              "description": "Whether to automatically show this version's release notes the first time it's launched after an update (or a fresh install). Reads the embedded CHANGELOG.md, no network involved. The value specified in the command line argument takes precedence.",
+              "enum": [
+                "off",
+                "on"
+              ],
+              "default": "on"
             }
           },
           "additionalProperties": false

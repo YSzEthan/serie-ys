@@ -55,6 +55,7 @@ enum HelpBlock {
     DeleteTag,
     DeleteRef,
     UserCommand,
+    ReleaseNotes,
 }
 
 impl HelpBlock {
@@ -70,6 +71,7 @@ impl HelpBlock {
             HelpBlock::DeleteTag => "Delete Tag",
             HelpBlock::DeleteRef => "Delete Ref",
             HelpBlock::UserCommand => "User Command",
+            HelpBlock::ReleaseNotes => "Release Notes",
         }
     }
 
@@ -94,6 +96,7 @@ impl HelpBlock {
             HelpBlock::DeleteTag => &["src/view/delete_tag.rs"],
             HelpBlock::DeleteRef => &["src/view/delete_ref.rs"],
             HelpBlock::UserCommand => &["src/view/user_command.rs"],
+            HelpBlock::ReleaseNotes => &["src/view/release_notes.rs"],
         }
     }
 }
@@ -413,17 +416,30 @@ fn help_blocks(
     list.extend(user_command_items.iter().cloned());
     user_command.extend(user_command_items);
 
+    let release_notes = vec![
+        b(vec![UserEvent::Quit], "離開（按兩下）", "Quit (press twice)"),
+        b(vec![UserEvent::Cancel, UserEvent::Close, UserEvent::NavigateLeft],
+            "關閉 release notes", "Close release notes"),
+        b(vec![UserEvent::NavigateDown, UserEvent::SelectDown], "向下捲動", "Scroll down"),
+        b(vec![UserEvent::NavigateUp,   UserEvent::SelectUp],   "向上捲動", "Scroll up"),
+        b(vec![UserEvent::PageDown],     "向下一頁", "Scroll page down"),
+        b(vec![UserEvent::PageUp],       "向上一頁", "Scroll page up"),
+        b(vec![UserEvent::HalfPageDown], "向下半頁", "Scroll half page down"),
+        b(vec![UserEvent::HalfPageUp],   "向上半頁", "Scroll half page up"),
+    ];
+
     vec![
-        (HelpBlock::Common,      common),
-        (HelpBlock::Help,        help),
-        (HelpBlock::List,        list),
-        (HelpBlock::Detail,      detail),
-        (HelpBlock::Refs,        refs),
-        (HelpBlock::GitHub,      github),
-        (HelpBlock::CreateTag,   create_tag),
-        (HelpBlock::DeleteTag,   delete_tag),
-        (HelpBlock::DeleteRef,   delete_ref),
-        (HelpBlock::UserCommand, user_command),
+        (HelpBlock::Common,       common),
+        (HelpBlock::Help,         help),
+        (HelpBlock::List,         list),
+        (HelpBlock::Detail,       detail),
+        (HelpBlock::Refs,         refs),
+        (HelpBlock::GitHub,       github),
+        (HelpBlock::CreateTag,    create_tag),
+        (HelpBlock::DeleteTag,    delete_tag),
+        (HelpBlock::DeleteRef,    delete_ref),
+        (HelpBlock::UserCommand,  user_command),
+        (HelpBlock::ReleaseNotes, release_notes),
     ]
 }
 

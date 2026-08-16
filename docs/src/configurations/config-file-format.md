@@ -14,6 +14,7 @@ initial_selection = "latest"
 mode = "check"
 interval_hours = 6
 auto_restart = "off"
+release_notes = "on"
 
 [core.search]
 ignore_case = false
@@ -210,6 +211,20 @@ Commit 圖形的邊線風格。
 
 - 型別：`string`（enum）
 - 預設值：`off`
+- 可選值：
+  - `off`
+  - `on`
+
+命令列參數指定的值優先。
+
+### `core.update.release_notes`
+
+版本變了（或全新安裝）、第一次啟動時是否自動跳出該版的 release notes。
+內容取自內嵌的 `CHANGELOG.md`，不連網、不受 `YSGIT_NO_UPDATE_CHECK`
+影響。`--whats-new` 可以隨時手動查看目前版本的內容，不受這個設定限制。
+
+- 型別：`string`（enum）
+- 預設值：`on`
 - 可選值：
   - `off`
   - `on`

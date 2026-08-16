@@ -16,10 +16,11 @@ initial_selection = "latest"  # 啟動時初始選取：latest｜head
 # max_count = 1000
 
 [core.update]
-# 自動更新設定，對應 --update-mode/--update-interval/--auto-restart。
+# 自動更新設定，對應 --update-mode/--update-interval/--auto-restart/--release-notes。
 mode = "check"          # off（完全不自動檢查）｜check（查到問 y/n）｜auto（查到直接裝）
 interval_hours = 6      # 檢查間隔（小時），範圍 1-48；啟動查一次，之後持續運作期間每隔這個時間再查
 auto_restart = "off"    # off｜on——on 的話更新完不再詢問，TUI 直接重啟、CLI（-U）直接開啟
+release_notes = "on"    # off｜on——版本變了第一次啟動要不要自動跳出 release notes；--whats-new 隨時可手動查看
 
 [core.search]
 ignore_case = false  # 是否預設忽略大小寫

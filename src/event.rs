@@ -57,6 +57,13 @@ pub enum AppEvent {
     CloseHelp,
     OpenGitHub,
     CloseGitHub,
+    /// 更新後（或全新安裝）第一次啟動時該顯示的 release notes——見
+    /// `update::pending_release_notes`。`body` 是編譯期常數
+    /// （`include_str!` 讀 `CHANGELOG.md`），不必轉成 `String`。
+    OpenReleaseNotes {
+        body: &'static str,
+    },
+    CloseReleaseNotes,
     RefreshGitHub {
         state: crate::github::StateFilter,
     },

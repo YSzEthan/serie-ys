@@ -18,7 +18,7 @@ use tui_input::backend::crossterm::EventHandler;
 use crate::{
     color::ColorTheme,
     config, keybind,
-    update::{self, AutoRestart, UpdateMode},
+    update::{self, AutoRestart, ReleaseNotes, UpdateMode},
     Args, CommitOrderType, CompactType, GraphStyle, GraphWidthType, InitialSelection,
 };
 
@@ -157,6 +157,13 @@ fn auto_restart_desc(v: AutoRestart) -> &'static str {
     }
 }
 
+fn release_notes_desc(v: ReleaseNotes) -> &'static str {
+    match v {
+        ReleaseNotes::Off => "關閉",
+        ReleaseNotes::On => "開啟",
+    }
+}
+
 /// 精靈顯示「目前值」與循環切換起點用的參考點。跟 `src/lib.rs` 的 `run()`
 /// 裡 `args.field.or(core_config.option.field)` 那條合併鏈讀的是同一份
 /// 設定檔，語意也一樣（沒被使用者這次 session 動過的欄位，最終生效的值
@@ -177,6 +184,7 @@ struct ResolvedDefaults {
     update_mode: UpdateMode,
     update_interval: u64,
     auto_restart: AutoRestart,
+    release_notes: ReleaseNotes,
     /// 顏色編輯器的預覽基準（使用者實際設定，不是 `wizard::run()` 固定用
     /// 的畫面 chrome）。
     theme: ColorTheme,
@@ -228,6 +236,7 @@ impl ResolvedDefaults {
                 .interval_hours
                 .unwrap_or(update::DEFAULT_INTERVAL_HOURS),
             auto_restart: core.update.auto_restart.unwrap_or_default(),
+            release_notes: core.update.release_notes.unwrap_or_default(),
             theme,
             keybind_patch: keybind_patch.unwrap_or_default(),
             user_commands,
@@ -322,6 +331,7 @@ enum CycleField {
     InitialSelection,
     UpdateMode,
     AutoRestart,
+    ReleaseNotes,
 }
 
 impl CycleField {
@@ -336,6 +346,7 @@ impl CycleField {
             CycleField::InitialSelection => (CORE_OPTION, "initial_selection"),
             CycleField::UpdateMode => (CORE_UPDATE, "mode"),
             CycleField::AutoRestart => (CORE_UPDATE, "auto_restart"),
+            CycleField::ReleaseNotes => (CORE_UPDATE, "release_notes"),
         };
         ConfigKey {
             table,
@@ -352,6 +363,7 @@ impl CycleField {
             CycleField::InitialSelection => "-i, --initial-selection",
             CycleField::UpdateMode => "--update-mode",
             CycleField::AutoRestart => "--auto-restart",
+            CycleField::ReleaseNotes => "--release-notes",
         }
     }
 
@@ -364,6 +376,7 @@ impl CycleField {
             CycleField::InitialSelection => "初始選取的 commit",
             CycleField::UpdateMode => "自動更新檢查模式",
             CycleField::AutoRestart => "更新後自動重啟／開啟新版",
+            CycleField::ReleaseNotes => "更新後跳出 release notes",
         }
     }
 
@@ -392,6 +405,9 @@ impl CycleField {
             CycleField::AutoRestart => {
                 cycle_value(&mut args.auto_restart, defaults.auto_restart, delta)
             }
+            CycleField::ReleaseNotes => {
+                cycle_value(&mut args.release_notes, defaults.release_notes, delta)
+            }
         };
         draft.edits.insert(self.config_key(), Some(name.into()));
     }
@@ -417,6 +433,9 @@ impl CycleField {
             }
             CycleField::AutoRestart => {
                 auto_restart_desc(args.auto_restart.unwrap_or(defaults.auto_restart))
+            }
+            CycleField::ReleaseNotes => {
+                release_notes_desc(args.release_notes.unwrap_or(defaults.release_notes))
             }
         }
     }
@@ -621,6 +640,7 @@ const ROWS: &[RowAction] = &[
     RowAction::Edit(Editor::Cycle(CycleField::UpdateMode)),
     RowAction::Edit(Editor::Dialog(Dialog::Number(NumberField::UpdateInterval))),
     RowAction::Edit(Editor::Cycle(CycleField::AutoRestart)),
+    RowAction::Edit(Editor::Cycle(CycleField::ReleaseNotes)),
     RowAction::Edit(Editor::Dialog(Dialog::ColorMenu)),
     RowAction::Edit(Editor::Dialog(Dialog::KeyBindMenu)),
     RowAction::Launch,
@@ -1346,6 +1366,21 @@ mod tests {
     }
 
     #[test]
+    fn release_notes_row_toggles() {
+        let mut s = test_state();
+        let idx = row_of_field(CycleField::ReleaseNotes);
+        move_to_row(&mut s, idx);
+        assert_eq!(s.draft.args.release_notes, None);
+
+        s.on_key(key(KeyCode::Right));
+        assert_eq!(
+            s.draft.args.release_notes,
+            Some(ReleaseNotes::Off),
+            "on 是目前值，第一次按 → 跳過它，切到下一個 off"
+        );
+    }
+
+    #[test]
     fn right_on_path_row_also_opens_the_browser() {
         let mut s = test_state();
         assert!(matches!(
@@ -1666,12 +1701,12 @@ mod tests {
 
     // ── 新架構釘住的不變式：ConfigKey 對應表、空 edits、PATH 的隔離 ──
 
-    /// 9 個項目全部碰過一遍，寫回、再用真正的設定檔 parser（不是自己重抄一份
-    /// 反序列化邏輯）讀回來逐欄位比對。這條測試同時證明 9 條表路徑、9 個鍵名
-    /// （`update_mode` 寫的是 `mode`、`update_interval` 寫的是 `interval_hours`，
-    /// 兩個鍵名跟欄位名不同，最容易打錯）、9 個字串值全對——`toml_edit` 只認
-    /// 語法不認語意，鍵名寫錯不會有任何編譯期或執行期警訊，只有真的讀回來
-    /// 比對值才抓得到。
+    /// 10 個項目全部碰過一遍，寫回、再用真正的設定檔 parser（不是自己重抄
+    /// 一份反序列化邏輯）讀回來逐欄位比對。這條測試同時證明 10 條表路徑、
+    /// 10 個鍵名（`update_mode` 寫的是 `mode`、`update_interval` 寫的是
+    /// `interval_hours`，兩個鍵名跟欄位名不同，最容易打錯）、10 個字串值
+    /// 全對——`toml_edit` 只認語法不認語意，鍵名寫錯不會有任何編譯期或
+    /// 執行期警訊，只有真的讀回來比對值才抓得到。
     #[test]
     fn every_field_round_trips_through_the_real_config_parser() {
         let mut s = test_state();
@@ -1683,6 +1718,7 @@ mod tests {
             CycleField::InitialSelection,
             CycleField::UpdateMode,
             CycleField::AutoRestart,
+            CycleField::ReleaseNotes,
         ] {
             field.cycle(&mut s.draft, &s.defaults, 1);
         }
@@ -1704,6 +1740,7 @@ mod tests {
         assert_eq!(core.update.mode, s.draft.args.update_mode);
         assert_eq!(core.update.interval_hours, s.draft.args.update_interval);
         assert_eq!(core.update.auto_restart, s.draft.args.auto_restart);
+        assert_eq!(core.update.release_notes, s.draft.args.release_notes);
     }
 
     /// 新架構才有的保證：`edits` 是空的，`apply_touched_settings` 一次

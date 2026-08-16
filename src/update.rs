@@ -29,7 +29,15 @@ const CHECKSUMS_URL: &str = concat!(
     env!("CARGO_PKG_REPOSITORY"),
     "/releases/latest/download/checksum.txt"
 );
-const MARKER_FILE_NAME: &str = ".ysgit.update_check";
+const UPDATE_CHECK_MARKER_FILE_NAME: &str = ".ysgit.update_check";
+const SEEN_VERSION_MARKER_FILE_NAME: &str = ".ysgit.seen_version";
+
+/// release.yml 的 upload job 把 `CHANGELOG.md` 裡當次版本的區塊原封不動當
+/// GitHub Release 的 body（見 `prepare_release.py::extract_changelog_section`）。
+/// `prepare` job 先 commit CHANGELOG＋打 tag，`build` job 才 checkout 該 tag
+/// 編譯，所以編譯進這個 binary 的 CHANGELOG.md 必然已經含當前版本的區塊——
+/// 不必打 GitHub API 就能在本機重現同一份內容，離線也能顯示。
+const CHANGELOG: &str = include_str!("../CHANGELOG.md");
 
 /// 自動更新檢查模式。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum, Deserialize)]
@@ -58,6 +66,15 @@ pub enum AutoRestart {
     On,
 }
 
+/// 版本變了、第一次啟動時是否自動跳出該版的 release notes。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ReleaseNotes {
+    Off,
+    #[default]
+    On,
+}
+
 /// 檢查間隔的合法範圍（小時）；CLI／設定檔／精靈三處都要用同一組數字。
 pub const MIN_INTERVAL_HOURS: u64 = 1;
 pub const MAX_INTERVAL_HOURS: u64 = 48;
@@ -66,11 +83,18 @@ pub const DEFAULT_INTERVAL_HOURS: u64 = 6;
 /// CLI 與設定檔合併後的自動更新設定，`run()`／`run_self_update` 只算一次、
 /// 之後所有地方（`AppContext`、`-U` 的兩個 confirm、背景檢查 thread）都吃
 /// 這個值，不各自再 `.or()` 一遍。
+///
+/// `release_notes` 嚴格說不是「更新檢查」的一部分（它甚至不連網），但跟
+/// `auto_restart` 一樣是「更新之後的行為」，歸在同一組設定裡自洽。代價是
+/// 這個欄位會跟著整個 `UpdateSettings` 被塞進 `AppContext.update` 給所有
+/// view 看得到，也會傳進從不讀它的 `spawn_check`——只有 `run()` 開頭
+/// `update::pending_release_notes()` 那一次讀它。
 #[derive(Debug, Clone, Copy)]
 pub struct UpdateSettings {
     pub mode: UpdateMode,
     pub interval: Duration,
     pub auto_restart: bool,
+    pub release_notes: bool,
 }
 
 impl Default for UpdateSettings {
@@ -83,26 +107,31 @@ impl Default for UpdateSettings {
             mode: UpdateMode::default(),
             interval: Duration::from_secs(DEFAULT_INTERVAL_HOURS * 3600),
             auto_restart: false,
+            release_notes: true,
         }
     }
 }
 
-/// `resolve()` 的一組來源（CLI 或設定檔）。三個欄位型別兩兩相同
-/// （`Option<UpdateMode>`、`Option<u64>`、`Option<AutoRestart>`），拆開寫
-/// 成 6 個位置參數時 CLI 側跟設定檔側寫反編譯器抓不到——包成同一個具名
-/// 型別、呼叫端用欄位名字建構，才擋得住這種手滑。
+/// `resolve()` 的一組來源（CLI 或設定檔）。四個欄位型別兩兩相同
+/// （`Option<UpdateMode>`、`Option<u64>`、`Option<AutoRestart>`、
+/// `Option<ReleaseNotes>`），拆開寫成位置參數時 CLI 側跟設定檔側寫反編譯器
+/// 抓不到——包成同一個具名型別、呼叫端用欄位名字建構，才擋得住這種手滑。
 #[derive(Debug, Clone, Copy, Default)]
 pub struct UpdateOverrides {
     pub mode: Option<UpdateMode>,
     pub interval_hours: Option<u64>,
     pub auto_restart: Option<AutoRestart>,
+    pub release_notes: Option<ReleaseNotes>,
 }
 
 /// 唯一的合併入口：CLI > 設定檔 > 內建預設。`YSGIT_NO_UPDATE_CHECK` 在這裡
 /// 壓成 `mode = Off`——原本散在 `should_check_on_startup` 裡的另一個閘門，
-/// 併過來後全程只剩 `mode` 一個判斷點。
+/// 併過來後全程只剩 `mode` 一個判斷點。這個 env var **不影響**
+/// `release_notes`：它管的是「不要背景連網」，release notes 完全讀本機
+/// 內嵌的 `CHANGELOG.md`、不連網，兩者是不同的閘門——要關 release notes
+/// 請用 `--release-notes off` 或設定檔。
 ///
-/// 收純值而非整個 `&Args`／`&CoreConfig`：不必為了讀三個欄位就讓這個模組
+/// 收純值而非整個 `&Args`／`&CoreConfig`：不必為了讀四個欄位就讓這個模組
 /// 認得 `Args` 的私有欄位，呼叫端（`lib.rs::run()`）在自己的模組裡解構
 /// 一次即可，這個函式本身也因此是純函式，好測。
 pub fn resolve(cli: UpdateOverrides, config: UpdateOverrides) -> UpdateSettings {
@@ -117,10 +146,16 @@ pub fn resolve(cli: UpdateOverrides, config: UpdateOverrides) -> UpdateSettings 
         .unwrap_or(DEFAULT_INTERVAL_HOURS);
     let auto_restart =
         cli.auto_restart.or(config.auto_restart).unwrap_or_default() == AutoRestart::On;
+    let release_notes = cli
+        .release_notes
+        .or(config.release_notes)
+        .unwrap_or_default()
+        == ReleaseNotes::On;
     UpdateSettings {
         mode,
         interval: Duration::from_secs(interval_hours * 3600),
         auto_restart,
+        release_notes,
     }
 }
 
@@ -404,27 +439,52 @@ impl Drop for UpdateGuard {
     }
 }
 
-// ── 節流：一個 0-byte 檔，只看 mtime ──
+// ── marker 檔共用路徑邏輯 ──
 //
 // 兩層路徑：優先跟著執行檔走（`exe_dir()`），寫不進去（例如裝在
 // `/usr/local/bin` 這種唯讀目錄）就退到系統暫存目錄。只保護「寫不寫得
-// 進去」，不處理多使用者共用暫存目錄可能撞名——marker 內容只有 mtime，
-// 撞名的後果最多是誤判節流時機，不是安全問題，犯不著為它另外做隔離。
+// 進去」，不處理多使用者共用暫存目錄可能撞名——`.ysgit.update_check` 撞名
+// 的後果最多是誤判節流時機，`.ysgit.seen_version` 撞名最多是誤判有沒有
+// 看過某一版，都不是安全問題，犯不著為它另外做隔離。
+//
+// 兩個 marker（節流用的 `.ysgit.update_check`、記版本用的
+// `.ysgit.seen_version`）共用同一套「試優先層、失敗退暫存層」的路徑邏輯，
+// 差別只在檔名跟內容，所以收成一組帶 `name` 參數的函式，不重複寫兩份。
 
-fn primary_marker_path() -> Option<PathBuf> {
-    exe_dir().map(|dir| dir.join(MARKER_FILE_NAME))
+fn primary_marker_path(name: &str) -> Option<PathBuf> {
+    exe_dir().map(|dir| dir.join(name))
 }
 
-fn fallback_marker_path() -> PathBuf {
-    env::temp_dir().join(MARKER_FILE_NAME)
+fn fallback_marker_path(name: &str) -> PathBuf {
+    env::temp_dir().join(name)
 }
 
-/// 讀取用：兩個位置誰有檔就用誰，優先層先看。都沒有就當作「從沒檢查過」。
-fn existing_marker_path() -> Option<PathBuf> {
-    primary_marker_path()
+/// 讀取用：兩個位置誰有檔就用誰，優先層先看。都沒有就當作「從沒寫過」。
+fn existing_marker_path(name: &str) -> Option<PathBuf> {
+    primary_marker_path(name)
         .filter(|p| p.exists())
-        .or_else(|| Some(fallback_marker_path()).filter(|p| p.exists()))
+        .or_else(|| Some(fallback_marker_path(name)).filter(|p| p.exists()))
 }
+
+/// 寫入用：先試優先層，寫失敗（唯讀目錄）才退到暫存目錄。`.ysgit.update_check`
+/// 只在意 mtime，內容留空；`.ysgit.seen_version` 內容是版本字串。
+fn write_marker(name: &str, content: &str) {
+    if let Some(primary) = primary_marker_path(name) {
+        if write_marker_file(&primary, content) {
+            return;
+        }
+    }
+    write_marker_file(&fallback_marker_path(name), content);
+}
+
+fn write_marker_file(path: &Path, content: &str) -> bool {
+    if let Some(dir) = path.parent() {
+        let _ = fs::create_dir_all(dir);
+    }
+    fs::write(path, content).is_ok()
+}
+
+// ── 節流：一個 0-byte 檔，只看 mtime ──
 
 /// 距上次檢查是否已經超過 `interval`——純函式，供啟動檢查與週期檢查共用
 /// 判斷。`YSGIT_NO_UPDATE_CHECK` 不在這裡判斷：那個閘門已經併進 `resolve()`
@@ -437,7 +497,7 @@ fn check_due(last_checked: SystemTime, now: SystemTime, interval: Duration) -> b
 /// 啟動檢查與週期檢查共用同一個節流判斷——名字不叫 `on_startup` 是因為
 /// `spawn_check(manual = false)` 兩種觸發時機都會走到這裡。
 fn should_check_now(interval: Duration) -> bool {
-    let Some(path) = existing_marker_path() else {
+    let Some(path) = existing_marker_path(UPDATE_CHECK_MARKER_FILE_NAME) else {
         return true;
     };
     let Ok(modified) = fs::metadata(&path).and_then(|m| m.modified()) else {
@@ -446,21 +506,75 @@ fn should_check_now(interval: Duration) -> bool {
     check_due(modified, SystemTime::now(), interval)
 }
 
-/// 寫入用：先試優先層，寫失敗（唯讀目錄）才退到暫存目錄。
 pub fn mark_checked() {
-    if let Some(primary) = primary_marker_path() {
-        if touch(&primary) {
-            return;
-        }
-    }
-    touch(&fallback_marker_path());
+    write_marker(UPDATE_CHECK_MARKER_FILE_NAME, "");
 }
 
-fn touch(path: &Path) -> bool {
-    if let Some(dir) = path.parent() {
-        let _ = fs::create_dir_all(dir);
+// ── Release notes：版本變了、第一次啟動時跳出當版 CHANGELOG 區塊 ──
+//
+// marker 兩層路徑的既有毛病在這裡症狀較重：`existing_marker_path` 讀取時
+// 只要優先層存在就用它。若優先層存在但事後變成不可寫，寫入會退到暫存層、
+// 讀取卻仍讀到優先層的舊版號，導致每次啟動都誤判成「沒看過新版」而重跳。
+// `.ysgit.update_check` 有同一個毛病，但後果只是多查幾次更新；這裡的後果
+// 是使用者每次啟動都被擋一下，嚴重度差一個量級——場景仍然罕見（需要優先
+// 層先寫成功、之後才變唯讀），不特別處理，但不能跟 `.ysgit.update_check`
+// 混為一談。
+
+/// 抽出 `## [version]` 那一節（含標題行），起點與終點都 anchor 到行首。
+/// 跟 `.github/scripts/prepare_release.py::extract_changelog_section` 是
+/// 同一條規則的 Rust 版——這裡比 python 版更嚴謹（那邊起點沒 anchor）：
+/// 不 anchor 起點的話，commit 訊息內文剛好出現 `## [1.0.0]` 這種字串會被
+/// 誤切，TUI 顯示的內容就會跟 GitHub Release 實際的 body 不一致。
+fn extract_release_notes(changelog: &'static str, version: &str) -> Option<&'static str> {
+    let marker = format!("\n## [{version}]");
+    let marker_pos = changelog.find(&marker)?;
+    let start = marker_pos + 1; // 跳過 anchor 用的換行，區塊本身從 `##` 開始
+    let rest = &changelog[start..];
+    let end = rest.find("\n## [").unwrap_or(rest.len());
+    let section = rest[..end].trim();
+    (!section.is_empty()).then_some(section)
+}
+
+/// marker 檔可能被 `echo` 或編輯器補上結尾換行，不 trim 會讓已看過的版本
+/// 每次啟動都被誤判成「沒看過」而重跳。
+fn should_show(seen: Option<&str>, current: &str) -> bool {
+    seen.map(str::trim) != Some(current)
+}
+
+fn read_seen_version() -> Option<String> {
+    let path = existing_marker_path(SEEN_VERSION_MARKER_FILE_NAME)?;
+    fs::read_to_string(path).ok()
+}
+
+/// `app.rs::open_release_notes()` 專用：release notes view 真的建出來、
+/// 下一幀就會畫出來的當下才算「看過」。
+pub fn mark_version_seen() {
+    write_marker(SEEN_VERSION_MARKER_FILE_NAME, env!("CARGO_PKG_VERSION"));
+}
+
+/// 這次啟動該顯示的 release notes，沒有就 `None`。**不寫 marker**——寫入
+/// 時機在 `mark_version_seen()`，故意跟這個函式分開：`lib.rs::run()` 呼叫
+/// 這裡之後還有 `git::Repository::load(...)?` 這類會早退的路徑，若在這裡
+/// 就寫 marker，非 git 目錄啟動會讓 marker 寫下去但畫面從沒出現過，這一版
+/// 的 notes 就永遠看不到了。
+///
+/// debug build 不自動跳：`cargo clean` 後每次 `cargo run` 都會被擋在
+/// commit list 前面，跟 `download_and_replace` 的 `cfg!(debug_assertions)`
+/// 早退同一個先例。`--whats-new` 不受這個限制，隨時能手動看。
+pub fn pending_release_notes(settings: UpdateSettings) -> Option<&'static str> {
+    if cfg!(debug_assertions) || !settings.release_notes {
+        return None;
     }
-    fs::File::create(path).is_ok()
+    if !should_show(read_seen_version().as_deref(), env!("CARGO_PKG_VERSION")) {
+        return None;
+    }
+    current_release_notes()
+}
+
+/// 目前這一版的 release notes，跟版本設定、marker 都無關——`--whats-new`
+/// 用它隨時手動查看，不受 `pending_release_notes()` 那些節流／開關限制。
+pub fn current_release_notes() -> Option<&'static str> {
+    extract_release_notes(CHANGELOG, env!("CARGO_PKG_VERSION"))
 }
 
 // ── 殘檔清掃：process 被砍掉（SIGKILL、斷電）時來不及跑到
@@ -819,16 +933,19 @@ ca0a1ac34d2e1138b9308820e3a53b6822552268907e87a11a1350b98f1a6ada  ysgit_2.4.1-ma
                 mode: Some(UpdateMode::Auto),
                 interval_hours: Some(2),
                 auto_restart: Some(AutoRestart::On),
+                release_notes: Some(ReleaseNotes::Off),
             },
             UpdateOverrides {
                 mode: Some(UpdateMode::Off),
                 interval_hours: Some(20),
                 auto_restart: Some(AutoRestart::Off),
+                release_notes: Some(ReleaseNotes::On),
             },
         );
         assert_eq!(settings.mode, UpdateMode::Auto);
         assert_eq!(settings.interval, Duration::from_secs(2 * 3600));
         assert!(settings.auto_restart);
+        assert!(!settings.release_notes);
     }
 
     #[test]
@@ -839,11 +956,13 @@ ca0a1ac34d2e1138b9308820e3a53b6822552268907e87a11a1350b98f1a6ada  ysgit_2.4.1-ma
                 mode: Some(UpdateMode::Off),
                 interval_hours: Some(20),
                 auto_restart: Some(AutoRestart::On),
+                release_notes: Some(ReleaseNotes::Off),
             },
         );
         assert_eq!(settings.mode, UpdateMode::Off);
         assert_eq!(settings.interval, Duration::from_secs(20 * 3600));
         assert!(settings.auto_restart);
+        assert!(!settings.release_notes);
     }
 
     #[test]
@@ -855,6 +974,101 @@ ca0a1ac34d2e1138b9308820e3a53b6822552268907e87a11a1350b98f1a6ada  ysgit_2.4.1-ma
             Duration::from_secs(DEFAULT_INTERVAL_HOURS * 3600)
         );
         assert!(!settings.auto_restart);
+        assert!(settings.release_notes);
+    }
+
+    // ── extract_release_notes()：CHANGELOG 區塊切割 ──
+
+    const TEST_CHANGELOG: &str = "\
+# Changelog
+
+## [3.0.0](url) (2026-08-13)
+
+### Features
+
+* first (abc)
+
+## [2.7.3](url) (2026-08-12)
+
+### Refactors
+
+* second (def)
+
+## [2.7.2](url) (2026-08-11)
+
+### Bug Fixes
+
+* third (ghi)
+";
+
+    #[test]
+    fn extract_release_notes_first_section() {
+        let section = extract_release_notes(TEST_CHANGELOG, "3.0.0").unwrap();
+        assert!(section.starts_with("## [3.0.0]"));
+        assert!(section.contains("first (abc)"));
+    }
+
+    #[test]
+    fn extract_release_notes_middle_section() {
+        let section = extract_release_notes(TEST_CHANGELOG, "2.7.3").unwrap();
+        assert!(section.starts_with("## [2.7.3]"));
+        assert!(section.contains("second (def)"));
+    }
+
+    #[test]
+    fn extract_release_notes_last_section() {
+        let section = extract_release_notes(TEST_CHANGELOG, "2.7.2").unwrap();
+        assert!(section.starts_with("## [2.7.2]"));
+        assert!(section.contains("third (ghi)"));
+    }
+
+    #[test]
+    fn extract_release_notes_missing_version_is_none() {
+        assert!(extract_release_notes(TEST_CHANGELOG, "9.9.9").is_none());
+    }
+
+    #[test]
+    fn extract_release_notes_does_not_bleed_into_next_section() {
+        let section = extract_release_notes(TEST_CHANGELOG, "3.0.0").unwrap();
+        assert!(!section.contains("second (def)"));
+        assert!(!section.contains("## [2.7.3]"));
+    }
+
+    #[test]
+    fn current_version_has_a_changelog_section() {
+        // 唯一一條會抓到真問題的測試：Cargo.toml 版號跟 CHANGELOG.md 脫節
+        // （忘了在 release 流程外手動改版號、或 CHANGELOG 沒同步）時直接紅燈。
+        assert!(current_release_notes().is_some());
+    }
+
+    // ── should_show()：marker 記錄的版本 vs 目前版本 ──
+
+    #[test]
+    fn should_show_no_marker_is_true() {
+        assert!(should_show(None, "3.0.0"));
+    }
+
+    #[test]
+    fn should_show_same_version_is_false() {
+        assert!(!should_show(Some("3.0.0"), "3.0.0"));
+    }
+
+    #[test]
+    fn should_show_trims_trailing_newline() {
+        // marker 檔可能被 `echo`（而非 `printf`）或編輯器補上結尾換行。
+        assert!(!should_show(Some("3.0.0\n"), "3.0.0"));
+    }
+
+    #[test]
+    fn should_show_upgraded_version_is_true() {
+        assert!(should_show(Some("2.0.0"), "3.0.0"));
+    }
+
+    #[test]
+    fn should_show_downgraded_version_is_true() {
+        // 刻意不用 semver 比大小：rollback 後也該看得到自己實際在跑的版本
+        // 說明，不是「只有升版才顯示」。
+        assert!(should_show(Some("3.0.0"), "2.0.0"));
     }
 
     // ── check_due()：邊界 ──

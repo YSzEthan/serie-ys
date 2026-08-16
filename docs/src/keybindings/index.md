@@ -177,6 +177,19 @@
 | <kbd>Enter</kbd> <kbd>y</kbd> | 顯示 commit 詳情 | `confirm` |
 | <kbd>F1</kbd> <kbd>?</kbd> | 開啟說明 | `help_toggle` |
 
+### Release Notes
+
+| 按鍵 | 說明 | 設定鍵名 |
+| --- | --- | --- |
+| <kbd>q</kbd> | 離開（按兩下） | `quit` |
+| <kbd>n</kbd> <kbd>Esc</kbd> <kbd>Backspace</kbd> <kbd>Left</kbd> <kbd>h</kbd> | 關閉 release notes | `cancel` `close` `navigate_left` |
+| <kbd>Down</kbd> <kbd>j</kbd> <kbd>J</kbd> | 向下捲動 | `navigate_down` `select_down` |
+| <kbd>Up</kbd> <kbd>k</kbd> <kbd>K</kbd> | 向上捲動 | `navigate_up` `select_up` |
+| <kbd>PageDown</kbd> <kbd>Ctrl-f</kbd> | 向下一頁 | `page_down` |
+| <kbd>PageUp</kbd> <kbd>Ctrl-b</kbd> | 向上一頁 | `page_up` |
+| <kbd>Ctrl-d</kbd> | 向下半頁 | `half_page_down` |
+| <kbd>Ctrl-u</kbd> | 向上半頁 | `half_page_up` |
+
 ## 寫死的按鍵
 
 以下按鍵無法透過設定檔變更，因為它們屬於一次性的提示互動，不歸任何 view 的 keymap 管。
