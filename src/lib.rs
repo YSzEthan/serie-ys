@@ -28,7 +28,7 @@ use clap::{CommandFactory, Parser, ValueEnum};
 use graph::Graph;
 use rustc_hash::FxHashSet;
 use serde::Deserialize;
-use update::{AutoRestart, UpdateMode};
+use update::{AutoRestart, ReleaseNotes, UpdateMode};
 
 /// ysgit - Git Graph in Terminal
 #[derive(Parser)]
@@ -93,6 +93,10 @@ struct Args {
     #[arg(long, value_name = "TYPE")]
     auto_restart: Option<AutoRestart>,
 
+    /// 版本變了、第一次啟動時是否自動跳出該版的 release notes [default: on]
+    #[arg(long, value_name = "TYPE")]
+    release_notes: Option<ReleaseNotes>,
+
     /// 顯示說明
     #[arg(short = 'h', long, action = clap::ArgAction::Help)]
     help: Option<bool>,
@@ -104,6 +108,10 @@ struct Args {
     /// 檢查 GitHub Release 並更新執行檔本身
     #[arg(short = 'U', long)]
     update: bool,
+
+    /// 顯示目前這一版的 release notes 並離開，不進 TUI
+    #[arg(long)]
+    whats_new: bool,
 }
 
 impl Args {
@@ -133,9 +141,13 @@ impl Args {
             update_mode,
             update_interval,
             auto_restart,
+            release_notes,
             help: _,
             version: _,
             update: _,
+            // 一次性動作旗標：印完 release notes 就離開，跟 `-U` 同一類——
+            // 重啟不該再把使用者導回這個早退路徑。
+            whats_new: _,
         } = self;
 
         let mut argv = vec!["ysgit".to_string()];
@@ -154,6 +166,10 @@ impl Args {
             (
                 "--auto-restart",
                 auto_restart.as_ref().map(wizard::variant_name),
+            ),
+            (
+                "--release-notes",
+                release_notes.as_ref().map(wizard::variant_name),
             ),
         ] {
             if let Some(value) = value {
@@ -434,6 +450,17 @@ pub fn run() -> Result<()> {
         return run_self_update(&args);
     }
 
+    // 同樣不進 TUI、不用讀 config：純粹把目前這一版的 CHANGELOG 區塊印到
+    // stdout，可以 pipe 給 `less`。跟 `--release-notes <on|off>`（開關）
+    // 刻意用不同名字，避免打錯字互相踩到。
+    if args.whats_new {
+        match update::current_release_notes() {
+            Some(notes) => println!("{notes}"),
+            None => println!("這個版本沒有對應的 CHANGELOG 區塊。"),
+        }
+        return Ok(());
+    }
+
     let (core_config, ui_config, color_theme, keybind_patch) = config::load()?;
     let keybind = keybind::KeyBind::new(keybind_patch);
 
@@ -454,11 +481,13 @@ pub fn run() -> Result<()> {
             mode: args.update_mode,
             interval_hours: args.update_interval,
             auto_restart: args.auto_restart,
+            release_notes: args.release_notes,
         },
         update::UpdateOverrides {
             mode: core_config.update.mode,
             interval_hours: core_config.update.interval_hours,
             auto_restart: core_config.update.auto_restart,
+            release_notes: core_config.update.release_notes,
         },
     );
 
@@ -503,6 +532,12 @@ pub fn run() -> Result<()> {
     // 清掃上次啟動可能留下的自我更新殘檔——跟這次的 `mode` 無關（上次啟動
     // 沒關閉時留下的殘檔，不能因為這次關了就不清），背景執行不擋啟動。
     std::thread::spawn(update::cleanup_stale_temp_files);
+    // 同樣只在整個 process 生命週期跑一次——放進 `App::run()` 迴圈的話，
+    // `Ret::Refresh` 重建 `App` 時會重跳。決定完不代表「看過了」：真正的
+    // marker 寫入時機在 `app::open_release_notes()`，這裡只負責判斷。
+    if let Some(body) = update::pending_release_notes(update_settings) {
+        ec.sender().send(event::AppEvent::OpenReleaseNotes { body });
+    }
     let mut refresh_view_context = None;
     let mut terminal = None;
 
@@ -673,11 +708,13 @@ fn run_self_update(args: &Args) -> Result<()> {
             mode: args.update_mode,
             interval_hours: args.update_interval,
             auto_restart: args.auto_restart,
+            release_notes: args.release_notes,
         },
         update::UpdateOverrides {
             mode: core_update.mode,
             interval_hours: core_update.interval_hours,
             auto_restart: core_update.auto_restart,
+            release_notes: core_update.release_notes,
         },
     );
 
@@ -766,6 +803,8 @@ mod tests {
             "12",
             "--auto-restart",
             "on",
+            "--release-notes",
+            "off",
             "/some/repo",
         ])
         .unwrap();
@@ -782,6 +821,7 @@ mod tests {
         assert_eq!(reparsed.update_mode, args.update_mode);
         assert_eq!(reparsed.update_interval, args.update_interval);
         assert_eq!(reparsed.auto_restart, args.auto_restart);
+        assert_eq!(reparsed.release_notes, args.release_notes);
         assert_eq!(reparsed.path, args.path);
     }
 

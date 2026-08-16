@@ -15,7 +15,7 @@ use umbra::optional;
 use crate::{
     color::{ColorTheme, OptionalColorTheme},
     keybind::KeyBind,
-    update::{AutoRestart, UpdateMode, MAX_INTERVAL_HOURS, MIN_INTERVAL_HOURS},
+    update::{AutoRestart, ReleaseNotes, UpdateMode, MAX_INTERVAL_HOURS, MIN_INTERVAL_HOURS},
     CommitOrderType, CompactType, GraphStyle, GraphWidthType, InitialSelection, Result,
 };
 
@@ -178,11 +178,11 @@ pub struct CoreOptionConfig {
     pub max_count: Option<usize>,
 }
 
-/// 自動更新設定，三個欄位對應 `-U`／背景檢查／重啟提示。`interval_hours`
-/// 要驗證範圍：設 0 會讓週期檢查退化成無限打網路，沒有上限則
-/// `hours * 3600` 在 release build 會 wrapping、繞回極小值，回到同一個熱
-/// 迴圈——兩者都要在載入時就擋掉，不能靠程式裡默默 clamp（那會讓使用者
-/// 以為設定生效了）。
+/// 自動更新設定，四個欄位對應 `-U`／背景檢查／重啟提示／更新後跳
+/// release notes。`interval_hours` 要驗證範圍：設 0 會讓週期檢查退化成
+/// 無限打網路，沒有上限則 `hours * 3600` 在 release build 會 wrapping、
+/// 繞回極小值，回到同一個熱迴圈——兩者都要在載入時就擋掉，不能靠程式裡
+/// 默默 clamp（那會讓使用者以為設定生效了）。
 #[optional(derives = [Deserialize])]
 #[derive(Debug, Clone, PartialEq, Eq, SmartDefault, Validate)]
 pub struct CoreUpdateConfig {
@@ -192,6 +192,8 @@ pub struct CoreUpdateConfig {
     pub interval_hours: Option<u64>,
     #[garde(skip)]
     pub auto_restart: Option<AutoRestart>,
+    #[garde(skip)]
+    pub release_notes: Option<ReleaseNotes>,
 }
 
 #[optional(derives = [Deserialize])]
@@ -709,6 +711,7 @@ mod tests {
                     mode: None,
                     interval_hours: None,
                     auto_restart: None,
+                    release_notes: None,
                 },
                 search: CoreSearchConfig {
                     ignore_case: false,
@@ -807,6 +810,7 @@ mod tests {
                     mode: None,
                     interval_hours: None,
                     auto_restart: None,
+                    release_notes: None,
                 },
                 search: CoreSearchConfig {
                     ignore_case: true,
@@ -1094,28 +1098,39 @@ mod tests {
         );
     }
 
-    /// `graph_width` 的可選值散在四個地方：`GraphWidthType` 的 derive、
-    /// `config.schema.json` 的 enum、還有兩份文件的清單。上面那個測試只比
-    /// 「鍵」有沒有宣告，值漂移它一律放行 —— 可選值增減時這道檢查是唯一
+    /// enum 型欄位的可選值散在四個地方：`ValueEnum` 的 derive、
+    /// `config.schema.json` 的 enum、還有兩份文件的清單。「鍵有沒有宣告」
+    /// 已經有別的測試比對，值漂移它一律放行——可選值增減時這道檢查是唯一
     /// 會響的。
     ///
     /// 比的是 clap 認得的全部字串（canonical 加別名），所以 schema 少列
     /// 別名、或留著已經拿掉的值，兩種方向都會被抓到。
-    #[test]
-    fn graph_width_schema_enum_matches_every_accepted_cli_value() {
-        use clap::ValueEnum;
-
+    ///
+    /// `field_path` 是從 `core` 底下開始數的 schema 路徑（例如
+    /// `["update", "auto_restart"]` 對應 `core.update.auto_restart`），
+    /// 每個 enum 型欄位各自呼叫一次，不重複寫五份幾乎逐字相同的比對。
+    fn assert_schema_enum_matches_every_accepted_cli_value<T: clap::ValueEnum>(
+        field_path: &[&str],
+    ) {
         let schema: serde_json::Value =
             serde_json::from_str(include_str!("../config.schema.json")).unwrap();
-        let mut declared: Vec<String> = schema["properties"]["core"]["properties"]["option"]
-            ["properties"]["graph_width"]["enum"]
+        let mut node = &schema["properties"]["core"];
+        for segment in field_path {
+            node = &node["properties"][*segment];
+        }
+        let mut declared: Vec<String> = node["enum"]
             .as_array()
-            .expect("config.schema.json 裡的 graph_width 沒有 enum")
+            .unwrap_or_else(|| {
+                panic!(
+                    "config.schema.json 裡的 core.{} 沒有 enum",
+                    field_path.join(".")
+                )
+            })
             .iter()
             .map(|v| v.as_str().expect("enum 值不是字串").to_string())
             .collect();
 
-        let mut accepted: Vec<String> = GraphWidthType::value_variants()
+        let mut accepted: Vec<String> = T::value_variants()
             .iter()
             .flat_map(|variant| {
                 variant
@@ -1129,100 +1144,41 @@ mod tests {
 
         declared.sort();
         accepted.sort();
-        assert_eq!(declared, accepted);
+        assert_eq!(declared, accepted, "core.{}", field_path.join("."));
+    }
+
+    #[test]
+    fn graph_width_schema_enum_matches_every_accepted_cli_value() {
+        assert_schema_enum_matches_every_accepted_cli_value::<GraphWidthType>(&[
+            "option",
+            "graph_width",
+        ]);
     }
 
     #[test]
     fn compact_schema_enum_matches_every_accepted_cli_value() {
-        use clap::ValueEnum;
-
-        let schema: serde_json::Value =
-            serde_json::from_str(include_str!("../config.schema.json")).unwrap();
-        let mut declared: Vec<String> = schema["properties"]["core"]["properties"]["option"]
-            ["properties"]["compact"]["enum"]
-            .as_array()
-            .expect("config.schema.json 裡的 compact 沒有 enum")
-            .iter()
-            .map(|v| v.as_str().expect("enum 值不是字串").to_string())
-            .collect();
-
-        let mut accepted: Vec<String> = CompactType::value_variants()
-            .iter()
-            .flat_map(|variant| {
-                variant
-                    .to_possible_value()
-                    .expect("每個變體都該有對應的命令列值")
-                    .get_name_and_aliases()
-                    .map(str::to_string)
-                    .collect::<Vec<_>>()
-            })
-            .collect();
-
-        declared.sort();
-        accepted.sort();
-        assert_eq!(declared, accepted);
+        assert_schema_enum_matches_every_accepted_cli_value::<CompactType>(&["option", "compact"]);
     }
 
     #[test]
     fn update_mode_schema_enum_matches_every_accepted_cli_value() {
-        use clap::ValueEnum;
-
-        let schema: serde_json::Value =
-            serde_json::from_str(include_str!("../config.schema.json")).unwrap();
-        let mut declared: Vec<String> = schema["properties"]["core"]["properties"]["update"]
-            ["properties"]["mode"]["enum"]
-            .as_array()
-            .expect("config.schema.json 裡的 core.update.mode 沒有 enum")
-            .iter()
-            .map(|v| v.as_str().expect("enum 值不是字串").to_string())
-            .collect();
-
-        let mut accepted: Vec<String> = UpdateMode::value_variants()
-            .iter()
-            .flat_map(|variant| {
-                variant
-                    .to_possible_value()
-                    .expect("每個變體都該有對應的命令列值")
-                    .get_name_and_aliases()
-                    .map(str::to_string)
-                    .collect::<Vec<_>>()
-            })
-            .collect();
-
-        declared.sort();
-        accepted.sort();
-        assert_eq!(declared, accepted);
+        assert_schema_enum_matches_every_accepted_cli_value::<UpdateMode>(&["update", "mode"]);
     }
 
     #[test]
     fn auto_restart_schema_enum_matches_every_accepted_cli_value() {
-        use clap::ValueEnum;
+        assert_schema_enum_matches_every_accepted_cli_value::<AutoRestart>(&[
+            "update",
+            "auto_restart",
+        ]);
+    }
 
-        let schema: serde_json::Value =
-            serde_json::from_str(include_str!("../config.schema.json")).unwrap();
-        let mut declared: Vec<String> = schema["properties"]["core"]["properties"]["update"]
-            ["properties"]["auto_restart"]["enum"]
-            .as_array()
-            .expect("config.schema.json 裡的 core.update.auto_restart 沒有 enum")
-            .iter()
-            .map(|v| v.as_str().expect("enum 值不是字串").to_string())
-            .collect();
-
-        let mut accepted: Vec<String> = AutoRestart::value_variants()
-            .iter()
-            .flat_map(|variant| {
-                variant
-                    .to_possible_value()
-                    .expect("每個變體都該有對應的命令列值")
-                    .get_name_and_aliases()
-                    .map(str::to_string)
-                    .collect::<Vec<_>>()
-            })
-            .collect();
-
-        declared.sort();
-        accepted.sort();
-        assert_eq!(declared, accepted);
+    #[test]
+    fn release_notes_schema_enum_matches_every_accepted_cli_value() {
+        assert_schema_enum_matches_every_accepted_cli_value::<ReleaseNotes>(&[
+            "update",
+            "release_notes",
+        ]);
     }
 
     #[test]
@@ -1302,6 +1258,7 @@ mod tests {
             mode: None,
             interval_hours: Some(0),
             auto_restart: None,
+            release_notes: None,
         };
         assert!(update.validate().is_err());
     }
@@ -1312,6 +1269,7 @@ mod tests {
             mode: None,
             interval_hours: Some(MAX_INTERVAL_HOURS + 1),
             auto_restart: None,
+            release_notes: None,
         };
         assert!(update.validate().is_err());
     }
@@ -1322,6 +1280,7 @@ mod tests {
             mode: None,
             interval_hours: Some(MIN_INTERVAL_HOURS),
             auto_restart: None,
+            release_notes: None,
         };
         assert!(update.validate().is_ok());
     }

@@ -9,7 +9,7 @@ use crate::{
     view::{
         create_tag::CreateTagView, delete_ref::DeleteRefView, delete_tag::DeleteTagView,
         detail::DetailView, github::GitHubView, help::HelpView, list::ListView, refs::RefsView,
-        user_command::UserCommandView, RefsOrigin,
+        release_notes::ReleaseNotesView, user_command::UserCommandView, RefsOrigin,
     },
     widget::{commit_list::CommitListState, ref_list::RefListState},
 };
@@ -27,6 +27,7 @@ pub enum View<'a> {
     DeleteRef(Box<DeleteRefView<'a>>),
     Help(Box<HelpView<'a>>),
     GitHub(Box<GitHubView<'a>>),
+    ReleaseNotes(Box<ReleaseNotesView<'a>>),
 }
 
 impl<'a> View<'a> {
@@ -42,6 +43,7 @@ impl<'a> View<'a> {
             View::DeleteRef(view) => view.handle_event(event_with_count, key_event),
             View::Help(view) => view.handle_event(event_with_count, key_event),
             View::GitHub(view) => view.handle_event(event_with_count, key_event),
+            View::ReleaseNotes(view) => view.handle_event(event_with_count, key_event),
         }
     }
 
@@ -57,6 +59,7 @@ impl<'a> View<'a> {
             View::DeleteRef(view) => view.render(f, area),
             View::Help(view) => view.render(f, area),
             View::GitHub(view) => view.render(f, area, marquee_frame),
+            View::ReleaseNotes(view) => view.render(f, area),
         }
     }
 
@@ -107,7 +110,8 @@ impl<'a> View<'a> {
             | View::DeleteTag(_)
             | View::DeleteRef(_)
             | View::Help(_)
-            | View::GitHub(_) => false,
+            | View::GitHub(_)
+            | View::ReleaseNotes(_) => false,
         }
     }
 
@@ -271,6 +275,15 @@ impl<'a> View<'a> {
         View::GitHub(Box::new(GitHubView::new(before, data, tx)))
     }
 
+    pub fn of_release_notes(
+        before: View<'a>,
+        body: &'static str,
+        ctx: Rc<AppContext>,
+        tx: Sender,
+    ) -> Self {
+        View::ReleaseNotes(Box::new(ReleaseNotesView::new(before, body, ctx, tx)))
+    }
+
     pub fn refresh(&mut self) {
         match self {
             View::Default => {}
@@ -283,6 +296,7 @@ impl<'a> View<'a> {
             View::DeleteRef(view) => view.refresh(),
             View::Help(_) => {}
             View::GitHub(_) => {}
+            View::ReleaseNotes(_) => {}
         }
     }
 
@@ -301,6 +315,7 @@ impl<'a> View<'a> {
                 // take_before_view 會留下 View::Default，但無妨，因為 `v` 接著就會被 drop。
                 View::Help(mut v) => v.take_before_view(),
                 View::GitHub(mut v) => v.take_before_view(),
+                View::ReleaseNotes(mut v) => v.take_before_view(),
                 View::Default => unreachable!("no View::Default at runtime"),
             };
         }

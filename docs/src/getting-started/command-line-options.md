@@ -186,6 +186,27 @@ _可選值：_ `off`、`on`
 
 設定檔對應鍵是 `core.update.auto_restart`，命令列參數指定的值優先。
 
+## --release-notes \<TYPE\>
+
+版本變了（或全新安裝）、第一次啟動時是否自動跳出該版的 release notes。
+
+_可選值：_ `off`、`on`
+
+內容取自內嵌的 `CHANGELOG.md`，不連網、不受 `YSGIT_NO_UPDATE_CHECK` 影響。
+想略過這個設定隨時手動查看，見下方 [`--whats-new`](#--whats-new)。
+
+設定檔對應鍵是 `core.update.release_notes`，命令列參數指定的值優先。
+
+## --whats-new
+
+顯示目前這一版的 release notes 並離開，不進 TUI，不受 `--release-notes` 開關
+限制。內容取自內嵌的 `CHANGELOG.md`，可以 pipe 給 `less` 之類的工具閱讀。
+
+```sh
+ysgit --whats-new
+ysgit --whats-new | less
+```
+
 ## -U, --update
 
 檢查 GitHub Release 是否有新版，有就下載對應這台機器的執行檔並就地替換。

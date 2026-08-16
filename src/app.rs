@@ -399,6 +399,13 @@ impl App<'_> {
                 AppEvent::CloseGitHub => {
                     self.close_github();
                 }
+                AppEvent::OpenReleaseNotes { body } => {
+                    self.open_release_notes(body);
+                }
+                AppEvent::CloseReleaseNotes => {
+                    terminal.clear()?;
+                    self.close_release_notes();
+                }
                 AppEvent::RefreshGitHub { state } => {
                     self.refresh_github(state);
                 }
@@ -1210,6 +1217,24 @@ impl App<'_> {
 
     fn close_help(&mut self) {
         if let View::Help(ref mut view) = self.view {
+            self.view = view.take_before_view();
+            self.view.request_graph_clear();
+        }
+    }
+
+    /// 這裡才是「看過」這一版 release notes 的認定時機——不是
+    /// `update::pending_release_notes()` 決定要跳的那一刻。view 真的建出
+    /// 來、下一幀就會畫出來，才算數；`lib.rs::run()` 決定完之後還有
+    /// `git::Repository::load(...)?` 這類會早退的路徑，早退的話畫面根本
+    /// 沒出現過，這一版的 notes 不該被記成已看過。
+    fn open_release_notes(&mut self, body: &'static str) {
+        crate::update::mark_version_seen();
+        let before_view = std::mem::take(&mut self.view);
+        self.view = View::of_release_notes(before_view, body, self.ctx.clone(), self.ec.sender());
+    }
+
+    fn close_release_notes(&mut self) {
+        if let View::ReleaseNotes(ref mut view) = self.view {
             self.view = view.take_before_view();
             self.view.request_graph_clear();
         }

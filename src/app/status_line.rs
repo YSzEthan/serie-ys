@@ -82,6 +82,12 @@ fn build_hotkey_hints(view: &View, ctx: &AppContext) -> Line<'static> {
             h(&[UserEvent::Close], "close"),
         ],
         View::GitHub(ref view) => view.status_hints(),
+        View::ReleaseNotes(_) => vec![
+            h(&[UserEvent::NavigateDown, UserEvent::NavigateUp], "scroll"),
+            h(&[UserEvent::HalfPageDown], "half"),
+            h(&[UserEvent::PageDown], "page"),
+            h(&[UserEvent::Close], "close"),
+        ],
         // 窮舉而非 `_`：新增一個 view 時要在這裡被編譯器叫住，
         // 而不是靜默得到一條空提示列。
         View::Default => vec![],
