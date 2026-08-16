@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.2.0](https://github.com/YSzEthan/serie-ys/compare/v3.1.0...v3.2.0) (2026-08-16)
+
+
+### Features
+
+* 更新後首次啟動自動顯示 Release Notes (#73) (#74) ([fa3e8f0](https://github.com/YSzEthan/serie-ys/commit/fa3e8f0375a7eacd63ed299ce7876321b5a9327d))
+
 ## [3.1.0](https://github.com/YSzEthan/serie-ys/compare/v3.0.0...v3.1.0) (2026-08-15)
 
 
