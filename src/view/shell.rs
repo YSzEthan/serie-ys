@@ -270,6 +270,13 @@ impl<'a> ShellView<'a> {
             return;
         }
 
+        // 輸出面板從無到有才要清：不論等下執行成功或參數展開失敗顯示錯誤，
+        // before_area（含圖表）都會被壓縮，不清會留殘影（跟 `app::open_shell`
+        // 第一次壓縮同一個道理）；面板已經開著時版面不變，不必再清一次。
+        if self.output_lines.is_empty() {
+            self.request_graph_clear();
+        }
+
         let params = self.commit.as_ref().map(|commit| {
             external_command_parameters(&[], commit, &self.refs, self.area_width, self.area_height)
         });

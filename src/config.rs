@@ -371,7 +371,7 @@ pub struct CoreShellConfig {
     /// 最後一個元素必須是「接受一段指令字串」的旗標（POSIX shell 是
     /// `-c`）——`["zsh"]` 這種缺旗標的設定不會被這裡擋下，會在執行時
     /// 靜靜跑出空輸出。
-    #[garde(length(min = 1))]
+    #[garde(length(min = 1), inner(inner(length(min = 1))))]
     pub command: Option<Vec<String>>,
 }
 

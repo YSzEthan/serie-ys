@@ -5,6 +5,7 @@ use std::{
     io::{self, Read, Write},
     process::Command,
     sync::{Arc, Mutex},
+    thread,
 };
 
 use arboard::Clipboard;
@@ -425,7 +426,7 @@ fn shell_quote(v: &str) -> Result<String, String> {
 /// 才需要引號的話就加雙引號；純字母數字原樣返回。
 #[cfg(target_os = "windows")]
 fn shell_quote(v: &str) -> Result<String, String> {
-    const DANGEROUS: &[char] = &['"', '%', '^', '&', '|', '<', '>'];
+    const DANGEROUS: &[char] = &['"', '%', '^', '&', '|', '<', '>', '(', ')', '!'];
     if v.chars().any(|c| DANGEROUS.contains(&c)) {
         return Err(format!(
             "無法在 Windows 上安全代入含 {DANGEROUS:?} 的值：{v:?}"
@@ -567,23 +568,39 @@ pub fn exec_shell_command(
         .spawn()
         .map_err(|e| format!("Failed to run {prog}: {e}"))?;
     let mut stdout = child.stdout.take().expect("stdout is piped");
-    let mut stderr = child.stderr.take();
+    let stderr = child.stderr.take();
 
     *child_slot.lock().unwrap() = Some(child);
+
+    // 非 POSIX shell 路徑（Windows 的 `cmd /C`、fish、nushell……）stdout／
+    // stderr 各自獨立 pipe，依序讀會死鎖：子行程寫滿其中一邊的 OS pipe
+    // buffer 後卡住等讀者，這條 thread 卻還卡在讀另一邊——兩邊互等，直到
+    // 使用者手動關閉 shell 才會被砍掉。開一條 thread 併行讀 stderr，跟
+    // stdout 在目前這條 thread 同時進行，就不會有誰等誰的問題。
+    let stderr_thread =
+        stderr.map(|mut stderr| thread::spawn(move || read_capped(&mut stderr, MAX_OUTPUT_BYTES)));
 
     let (out_buf, out_truncated) = read_capped(&mut stdout, MAX_OUTPUT_BYTES);
     let mut text = String::from_utf8_lossy(&out_buf).into_owned();
 
-    let mut truncated = out_truncated;
-    if let Some(stderr) = stderr.as_mut() {
-        let (err_buf, err_truncated) = read_capped(stderr, MAX_OUTPUT_BYTES);
-        text.push_str(&String::from_utf8_lossy(&err_buf));
-        truncated |= err_truncated;
+    // stdout 讀滿上限代表不會再讀了——child 若還在寫 stdout（pipe 滿）會
+    // 卡住，不再往 stderr 寫也不會結束，下面 join stderr thread 就永遠
+    // 等不到 EOF。這裡先砍掉 child 讓它解套，join 才回得來。
+    if out_truncated {
+        if let Some(child) = child_slot.lock().unwrap().as_mut() {
+            let _ = child.kill();
+        }
     }
 
+    let (err_buf, err_truncated) = stderr_thread
+        .and_then(|t| t.join().ok())
+        .unwrap_or_default();
+    text.push_str(&String::from_utf8_lossy(&err_buf));
+
+    let truncated = out_truncated || err_truncated;
     if truncated {
-        // 讀滿上限就砍掉 child——不然背景 job（`cmd &`）或 `yes` 這類
-        // 持續輸出的指令會讓這條 thread 一直卡在後續的 `wait()`。
+        // child 可能還沒被上面那次 kill 砍到（例如只有 stderr 端截斷）——
+        // 對已經死掉的 child 再 kill 一次是無害的 no-op。
         if let Some(child) = child_slot.lock().unwrap().as_mut() {
             let _ = child.kill();
         }
