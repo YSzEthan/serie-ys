@@ -55,6 +55,7 @@ enum HelpBlock {
     DeleteTag,
     DeleteRef,
     UserCommand,
+    Shell,
     ReleaseNotes,
 }
 
@@ -71,6 +72,7 @@ impl HelpBlock {
             HelpBlock::DeleteTag => "Delete Tag",
             HelpBlock::DeleteRef => "Delete Ref",
             HelpBlock::UserCommand => "User Command",
+            HelpBlock::Shell => "Shell 命令列",
             HelpBlock::ReleaseNotes => "Release Notes",
         }
     }
@@ -96,6 +98,7 @@ impl HelpBlock {
             HelpBlock::DeleteTag => &["src/view/delete_tag.rs"],
             HelpBlock::DeleteRef => &["src/view/delete_ref.rs"],
             HelpBlock::UserCommand => &["src/view/user_command.rs"],
+            HelpBlock::Shell => &["src/view/shell.rs"],
             HelpBlock::ReleaseNotes => &["src/view/release_notes.rs"],
         }
     }
@@ -307,6 +310,7 @@ fn help_blocks(
         b(vec![UserEvent::Fetch],                                 "fetch 所有 remote",   "Fetch all remotes"),
         b(vec![UserEvent::Checkout],                              "checkout 選取的 commit/ref", "Checkout selected commit/ref"),
         b(vec![UserEvent::Refresh],                               "重新整理",            "Refresh"),
+        b(vec![UserEvent::ShellToggle],                           "開啟命令列",          "Open shell"),
     ];
 
     let detail = vec![
@@ -337,6 +341,7 @@ fn help_blocks(
         b(vec![UserEvent::GitHubToggle],                                 "開啟 GitHub issues/PRs", "Open GitHub issues/PRs"),
         b(vec![UserEvent::HelpToggle],                                   "開啟說明",          "Open help"),
         b(vec![UserEvent::Refresh],                                      "重新整理",          "Refresh"),
+        b(vec![UserEvent::ShellToggle],                                  "開啟命令列",        "Open shell"),
     ];
 
     let refs = vec![
@@ -416,6 +421,11 @@ fn help_blocks(
     list.extend(user_command_items.iter().cloned());
     user_command.extend(user_command_items);
 
+    let shell = vec![
+        b(vec![UserEvent::Confirm], "執行指令",   "Run command"),
+        b(vec![UserEvent::Cancel],  "關閉命令列", "Close shell"),
+    ];
+
     let release_notes = vec![
         b(vec![UserEvent::Quit], "離開（按兩下）", "Quit (press twice)"),
         b(vec![UserEvent::Cancel, UserEvent::Close, UserEvent::NavigateLeft],
@@ -439,6 +449,7 @@ fn help_blocks(
         (HelpBlock::DeleteTag,    delete_tag),
         (HelpBlock::DeleteRef,    delete_ref),
         (HelpBlock::UserCommand,  user_command),
+        (HelpBlock::Shell,        shell),
         (HelpBlock::ReleaseNotes, release_notes),
     ]
 }
@@ -704,6 +715,8 @@ mod tests {
 | <kbd>f</kbd> | 刪除 branch 確認 | 強制刪除 |
 | <kbd>Tab</kbd> <kbd>Shift-Tab</kbd> | Create tag 對話框 | 在欄位間移動 |
 | <kbd>Space</kbd> | Create tag 對話框（核取方塊） | 切換核取狀態 |
+| <kbd>↑</kbd> <kbd>↓</kbd> | Shell 命令列 | 瀏覽指令歷史 |
+| <kbd>PageUp</kbd> <kbd>PageDown</kbd> | Shell 命令列 | 捲動輸出面板 |
 ";
 
     fn render_doc(keybind: &KeyBind, core_config: &CoreConfig) -> String {

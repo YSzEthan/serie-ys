@@ -221,6 +221,20 @@
             }
           },
           "additionalProperties": false
+        },
+        "shell": {
+          "type": "object",
+          "description": "Shell command settings for the inline command line (`/`).",
+          "properties": {
+            "command": {
+              "type": "array",
+              "description": "The `[program, flags...]` used to run commands, e.g. [\"zsh\", \"-i\", \"-c\"]. Unset auto-detects per platform / $SHELL: POSIX shells (sh/bash/zsh/dash/ksh/mksh/ash) get an extra \"-i\" so the command line can see aliases/functions defined in shell rc files; Windows uses [\"cmd\", \"/C\"]. If set, the last element must be a flag that accepts a command string (\"-c\" for POSIX shells).",
+              "items": {
+                "type": "string"
+              }
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

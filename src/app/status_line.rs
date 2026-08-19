@@ -77,6 +77,24 @@ fn build_hotkey_hints(view: &View, ctx: &AppContext) -> Line<'static> {
             h(&[UserEvent::Cancel], "cancel"),
         ],
         View::UserCommand(_) => crate::view::user_command::status_hints(),
+        // Up/Down／PageUp/PageDown 不經過 `KeyBind`（見
+        // `view::shell::resolve` 的文件註解），沒有 `UserEvent` 可以掛，早
+        // return 手動補上這兩組固定提示——其餘 view 都走尾端共用的
+        // `keybind_hint_line` 入口，不必為了這一個特例把它拆開。
+        View::Shell(_) => {
+            let mut pairs = hint_pairs(
+                &ctx.keybind,
+                &[
+                    h(&[UserEvent::Confirm], "run"),
+                    h(&[UserEvent::Cancel], "close"),
+                ],
+            );
+            pairs.extend([
+                ("↑↓".to_string(), "history"),
+                ("PgUp/PgDn".to_string(), "scroll"),
+            ]);
+            return hint_line(&ctx.color_theme, &pairs, ctx.color_theme.help_key_fg);
+        }
         View::Help(_) => vec![
             h(&[UserEvent::NavigateDown, UserEvent::NavigateUp], "scroll"),
             h(&[UserEvent::Close], "close"),
@@ -913,6 +931,7 @@ mod tests {
             graph_width: None,
             compact: None,
             update: crate::update::UpdateSettings::default(),
+            shell_command: Vec::new(),
         })
     }
 

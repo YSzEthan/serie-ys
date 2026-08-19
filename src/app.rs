@@ -13,10 +13,11 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{
     color::{ColorTheme, GraphColorSet},
-    config::{CoreConfig, UiConfig, UserCommand, UserCommandType},
+    config::{CoreConfig, CoreShellConfig, UiConfig, UserCommand, UserCommandType},
     event::{AppEvent, EventController, UserEvent, UserEventWithCount},
     external::{
-        copy_to_clipboard, exec_user_command, exec_user_command_suspend, ExternalCommandParameters,
+        copy_to_clipboard, exec_user_command, exec_user_command_suspend, is_posix_shell,
+        ExternalCommandParameters,
     },
     git::{Commit, CommitHash, FileChange, Head, Ref, RefType, Repository},
     github::{
@@ -73,6 +74,43 @@ pub struct AppContext {
     /// 已合併 CLI／設定檔的自動更新設定，`update::spawn_check` 與
     /// `auto_restart` 的中斷判斷共用同一份，不各自再 `.or()` 一遍。
     pub update: UpdateSettings,
+    /// 內嵌命令列（`/`）執行指令用的 `[程式, 旗標...]`——已解析完成的
+    /// 最終值，不同於 `core_config.shell.command` 那個可能是 `None` 的
+    /// 原始設定，見 `resolve_shell_command`。
+    pub shell_command: Vec<String>,
+}
+
+/// `AppContext.shell_command` 的解析邏輯：設定檔的原始值到 `resolve_shell_command`
+/// 這裡就結束了，這是已經決定好「開什麼、帶什麼旗標」的最終值。`shell_env`
+/// 由呼叫端傳入（而不是內部呼叫 `env::var`），純函式，方便測試決定性。
+pub(crate) fn resolve_shell_command(cfg: &CoreShellConfig, shell_env: Option<&str>) -> Vec<String> {
+    if let Some(command) = &cfg.command {
+        return command.clone();
+    }
+    default_shell_command(shell_env)
+}
+
+#[cfg(target_os = "windows")]
+fn default_shell_command(_shell_env: Option<&str>) -> Vec<String> {
+    vec!["cmd".to_string(), "/C".to_string()]
+}
+
+/// 非 Windows 平台的自動判斷：`$SHELL`（沒有就退回 `sh`）——POSIX shell
+/// （`is_posix_shell` 的 basename allowlist）額外帶 `-i`，讓內嵌命令列吃得
+/// 到 `~/.zshrc`／`~/.bashrc` 定義的 alias／function（非互動 shell 只讀
+/// `~/.zshenv` 這類極簡設定檔，讀不到）；fish、nushell 這些不在表內的
+/// shell 不冒然加只有 POSIX shell 才認得的旗標。
+#[cfg(not(target_os = "windows"))]
+fn default_shell_command(shell_env: Option<&str>) -> Vec<String> {
+    let shell = shell_env
+        .filter(|s| !s.is_empty())
+        .unwrap_or("sh")
+        .to_string();
+    if is_posix_shell(&shell) {
+        vec![shell, "-i".to_string(), "-c".to_string()]
+    } else {
+        vec![shell, "-c".to_string()]
+    }
 }
 
 /// `q` 雙擊退出的判定結果。
@@ -398,6 +436,15 @@ impl App<'_> {
                 }
                 AppEvent::CloseGitHub => {
                     self.close_github();
+                }
+                AppEvent::OpenShell => {
+                    self.open_shell();
+                }
+                AppEvent::CloseShell => {
+                    self.close_shell();
+                }
+                AppEvent::ShellOutputReady => {
+                    self.view.poll_shell_output();
                 }
                 AppEvent::OpenReleaseNotes { body } => {
                     self.open_release_notes(body);
@@ -844,7 +891,8 @@ impl App<'_> {
     }
 
     fn is_input_mode(&self) -> bool {
-        self.status_line_state.is_input_mode_variant() || matches!(self.view, View::CreateTag(_))
+        self.status_line_state.is_input_mode_variant()
+            || matches!(self.view, View::CreateTag(_) | View::Shell(_))
     }
 
     fn current_list_refresh_context(&self) -> crate::view::ListRefreshViewContext {
@@ -1230,6 +1278,56 @@ impl App<'_> {
     fn close_help(&mut self) {
         if let View::Help(ref mut view) = self.view {
             self.view = view.take_before_view();
+            self.view.request_graph_clear();
+        }
+    }
+
+    fn open_shell(&mut self) {
+        let commit_list_state = match self.view {
+            View::List(ref mut view) => view.as_list_state(),
+            View::Detail(ref mut view) => view.as_list_state(),
+            _ => return,
+        };
+        // Working changes（virtual row）沒有真正的 commit，`selected_commit_hash`
+        // 會 fallback 回第一個 commit——`commit` 傳 `None`，`{{target_hash}}`
+        // 系列 marker 交給 `ShellView::run()` 判斷指令有沒有真的用到，用到
+        // 才報錯；`git status` 這類不含 marker 的指令照樣能在這一列跑。
+        let (commit, refs) = if commit_list_state.is_virtual_row_selected() {
+            (None, Vec::new())
+        } else {
+            let (commit, _, refs) = selected_commit_details(self.repository, commit_list_state);
+            (Some(commit), refs)
+        };
+        let area_width = self.view_area.width.saturating_sub(4); // 扣掉左右 padding
+        let area_height =
+            crate::view::shell::output_pane_height(self.view_area.height).saturating_sub(1); // 扣掉上邊框，跟 render() 用同一條公式
+        let repo_path = self.repository.path().to_path_buf();
+        // 在 `mem::take` 之前對還沒被包住的 List/Detail 設旗標——list/detail
+        // 底下多擠出一行輸入列，graph 是用終端圖形協定畫的，區域縮小不清
+        // 一次會留殘影。旗標設在這裡、`terminal.clear()` 由主迴圈的
+        // `take_graph_clear()` 統一執行（見 `View::Shell` 對它的委派），
+        // 不在這個 event arm 裡另外呼叫，才不會重複清兩次。
+        self.view.request_graph_clear();
+        let before_view = std::mem::take(&mut self.view);
+        self.view = View::of_shell(
+            before_view,
+            commit,
+            refs,
+            area_width,
+            area_height,
+            repo_path,
+            self.ctx.clone(),
+            self.ec.sender(),
+        );
+    }
+
+    fn close_shell(&mut self) {
+        if let View::Shell(ref mut view) = self.view {
+            let refresh_pending = view.take_refresh_pending();
+            self.view = view.take_before_view();
+            if refresh_pending {
+                self.view.refresh();
+            }
             self.view.request_graph_clear();
         }
     }
@@ -1972,14 +2070,17 @@ fn build_external_command_parameters_and_exec_command(
         .and_then(exec_user_command)
 }
 
-fn build_external_command_parameters<'a>(
+/// 兩條路徑共用的核心：把 `Commit` + `Ref` 分類成 `ExternalCommandParameters`
+/// 的各個 marker 欄位。`command` 與面積數字由呼叫端決定——user command 走
+/// 設定檔查表 + `pane_height.user_command`，shell 沒有查表、面積用自己的
+/// 輸出面板高度，兩者不該共用同一個公式（沿用對方的會給錯的數字）。
+pub(crate) fn external_command_parameters<'a>(
+    command: &'a [String],
     commit: &'a Commit,
     refs: &'a [Ref],
-    user_command_number: usize,
-    view_area: Rect,
-    ctx: &'a AppContext,
-) -> Result<ExternalCommandParameters<'a>, String> {
-    let command = &extract_user_command_by_number(user_command_number, ctx)?.commands;
+    area_width: u16,
+    area_height: u16,
+) -> ExternalCommandParameters<'a> {
     let target_hash = commit.commit_hash.as_str();
     let parent_hashes = commit
         .parent_commit_hashes
@@ -2005,11 +2106,7 @@ fn build_external_command_parameters<'a>(
         all_refs.push(r.name());
     }
 
-    let area_width = view_area.width.saturating_sub(4); // 扣掉左右 padding
-    let area_height = (view_area.height.saturating_sub(1))
-        .min(ctx.ui_config.pane_height.user_command)
-        .saturating_sub(1); // 扣掉上邊框
-    Ok(ExternalCommandParameters {
+    ExternalCommandParameters {
         command,
         target_hash,
         parent_hashes,
@@ -2020,7 +2117,28 @@ fn build_external_command_parameters<'a>(
         stash,
         area_width,
         area_height,
-    })
+    }
+}
+
+fn build_external_command_parameters<'a>(
+    commit: &'a Commit,
+    refs: &'a [Ref],
+    user_command_number: usize,
+    view_area: Rect,
+    ctx: &'a AppContext,
+) -> Result<ExternalCommandParameters<'a>, String> {
+    let command = &extract_user_command_by_number(user_command_number, ctx)?.commands;
+    let area_width = view_area.width.saturating_sub(4); // 扣掉左右 padding
+    let area_height = (view_area.height.saturating_sub(1))
+        .min(ctx.ui_config.pane_height.user_command)
+        .saturating_sub(1); // 扣掉上邊框
+    Ok(external_command_parameters(
+        command,
+        commit,
+        refs,
+        area_width,
+        area_height,
+    ))
 }
 
 #[cfg(test)]
@@ -2229,5 +2347,46 @@ mod tests {
         ks.reset_quit_press();
         let decision = ks.register_quit_press(t0 + Duration::from_millis(100));
         assert_eq!(decision, QuitDecision::First, "reset 之後視窗不該還算數");
+    }
+
+    #[test]
+    fn resolve_shell_command_prefers_explicit_config() {
+        let cfg = CoreShellConfig {
+            command: Some(vec!["fish".to_string(), "-c".to_string()]),
+        };
+        assert_eq!(
+            resolve_shell_command(&cfg, Some("zsh")),
+            vec!["fish".to_string(), "-c".to_string()]
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn resolve_shell_command_posix_shell_env_gets_interactive_flag() {
+        let cfg = CoreShellConfig { command: None };
+        assert_eq!(
+            resolve_shell_command(&cfg, Some("/bin/zsh")),
+            vec!["/bin/zsh".to_string(), "-i".to_string(), "-c".to_string()]
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn resolve_shell_command_non_posix_shell_env_skips_interactive_flag() {
+        let cfg = CoreShellConfig { command: None };
+        assert_eq!(
+            resolve_shell_command(&cfg, Some("fish")),
+            vec!["fish".to_string(), "-c".to_string()]
+        );
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn resolve_shell_command_missing_shell_env_falls_back_to_sh() {
+        let cfg = CoreShellConfig { command: None };
+        assert_eq!(
+            resolve_shell_command(&cfg, None),
+            vec!["sh".to_string(), "-i".to_string(), "-c".to_string()]
+        );
     }
 }

@@ -2,14 +2,33 @@ use std::{
     cell::RefCell,
     env,
     fs::OpenOptions,
-    io::{self, Write},
+    io::{self, Read, Write},
     process::Command,
+    sync::{Arc, Mutex},
 };
 
 use arboard::Clipboard;
 use base64::{engine::general_purpose::STANDARD, Engine};
 
 use crate::config::ClipboardConfig;
+
+#[cfg(unix)]
+use std::os::unix::process::CommandExt;
+
+// 手動宣告，不為了一個 syscall 拉整個 `libc` crate 進來——`exec_shell_command`
+// 用它讓 spawn 出來的 shell 跟 serie 的控制終端機斷開，見那裡的說明。
+#[cfg(unix)]
+extern "C" {
+    fn setsid() -> i32;
+}
+
+#[cfg(unix)]
+fn libc_setsid() -> i32 {
+    // SAFETY：`setsid()` 是無參數、不觸碰記憶體的簡單 syscall wrapper，
+    // 只在 `pre_exec` 的 fork 後子行程情境呼叫，符合它 async-signal-safe
+    // 的要求。
+    unsafe { setsid() }
+}
 
 const USER_COMMAND_MARKER_PREFIX: &str = "{{";
 const USER_COMMAND_TARGET_HASH_MARKER: &str = "{{target_hash}}";
@@ -295,29 +314,296 @@ fn build_user_command(params: &ExternalCommandParameters) -> Vec<String> {
     command
 }
 
-fn replace_command_arg(s: &str, params: &ExternalCommandParameters) -> String {
-    let sep = " ";
-    let target_hash = params.target_hash;
-    let first_parent_hash = &params.parent_hashes.first().cloned().unwrap_or_default();
-    let parent_hashes = &params.parent_hashes.join(sep);
-    let all_refs = &params.all_refs.join(sep);
-    let branches = &params.branches.join(sep);
-    let remote_branches = &params.remote_branches.join(sep);
-    let tags = &params.tags.join(sep);
-    let stash = params.stash.unwrap_or_default();
-    let area_width = &params.area_width.to_string();
-    let area_height = &params.area_height.to_string();
+/// 需要選到真正 commit 才有值的 marker——Working changes（virtual row）
+/// 沒有這些，字串裡含其中之一而 `params` 是 `None` 就該報錯，不能靜默展開
+/// 成空字串（`git show {{target_hash}}` 會變成 `git show `，代入了使用者
+/// 沒選的內容）。`{{area_width}}`/`{{area_height}}` 不算，來自面板尺寸，
+/// 跟有沒有選到 commit 無關，見 `replace_markers` 最後兩行。
+const COMMIT_MARKERS: &[&str] = &[
+    USER_COMMAND_TARGET_HASH_MARKER,
+    USER_COMMAND_FIRST_PARENT_HASH_MARKER,
+    USER_COMMAND_PARENT_HASHES_MARKER,
+    USER_COMMAND_REFS_MARKER,
+    USER_COMMAND_BRANCHES_MARKER,
+    USER_COMMAND_REMOTE_BRANCHES_MARKER,
+    USER_COMMAND_TAGS_MARKER,
+    USER_COMMAND_STASH_MARKER,
+];
 
-    s.replace(USER_COMMAND_TARGET_HASH_MARKER, target_hash)
-        .replace(USER_COMMAND_FIRST_PARENT_HASH_MARKER, first_parent_hash)
-        .replace(USER_COMMAND_PARENT_HASHES_MARKER, parent_hashes)
-        .replace(USER_COMMAND_REFS_MARKER, all_refs)
-        .replace(USER_COMMAND_BRANCHES_MARKER, branches)
-        .replace(USER_COMMAND_REMOTE_BRANCHES_MARKER, remote_branches)
-        .replace(USER_COMMAND_TAGS_MARKER, tags)
-        .replace(USER_COMMAND_STASH_MARKER, stash)
-        .replace(USER_COMMAND_AREA_WIDTH_MARKER, area_width)
-        .replace(USER_COMMAND_AREA_HEIGHT_MARKER, area_height)
+/// `marker` 必須是 `COMMIT_MARKERS` 裡的一個，否則 panic——呼叫端已經用
+/// `COMMIT_MARKERS` 篩過，這裡拿不到值代表兩份表對不上，是程式錯誤。
+/// `Single(v)` 等價於單元素的 `join`，不需要一個 enum 描述這兩種形狀。
+fn commit_marker_value(
+    marker: &str,
+    params: &ExternalCommandParameters,
+    esc: &impl Fn(&str) -> Result<String, String>,
+) -> Result<String, String> {
+    let join = |vs: &[&str]| -> Result<String, String> {
+        Ok(vs
+            .iter()
+            .copied()
+            .map(esc)
+            .collect::<Result<Vec<_>, _>>()?
+            .join(" "))
+    };
+    match marker {
+        USER_COMMAND_TARGET_HASH_MARKER => esc(params.target_hash),
+        USER_COMMAND_FIRST_PARENT_HASH_MARKER => {
+            esc(params.parent_hashes.first().copied().unwrap_or(""))
+        }
+        USER_COMMAND_PARENT_HASHES_MARKER => join(&params.parent_hashes),
+        USER_COMMAND_REFS_MARKER => join(&params.all_refs),
+        USER_COMMAND_BRANCHES_MARKER => join(&params.branches),
+        USER_COMMAND_REMOTE_BRANCHES_MARKER => join(&params.remote_branches),
+        USER_COMMAND_TAGS_MARKER => join(&params.tags),
+        USER_COMMAND_STASH_MARKER => esc(params.stash.unwrap_or("")),
+        _ => unreachable!("{marker} 不在 COMMIT_MARKERS 裡"),
+    }
+}
+
+/// 把 `s` 裡的 `{{marker}}` 換成值——`replace_command_arg`（逐字元代入，給
+/// argv 元素用）與 `expand_shell_command_line`（shell quote 後代入，給整段
+/// shell 指令字串用）共用同一份 marker 表，差異只在 `esc`。
+///
+/// 只在字串真的含某個 marker 時才求值／轉義：`{{stash}}` 不出現在指令裡
+/// 就不用管有沒有選到 stash，`params` 是 `None`（Working changes 列）時
+/// 也一樣——真正該報錯的只有「字串含 commit marker 但沒有 commit 可代」。
+///
+/// `esc` 回傳 `Result` 是為了 Windows shell quoting：某些字元在 `cmd /C`
+/// 底下沒有安全的轉義方式，那條路要能回傳 `Err` 而不是悄悄產出壞字串。
+/// `replace_command_arg` 用的 identity esc 永遠不會走到 `Err` 分支。
+fn replace_markers(
+    s: &str,
+    params: Option<&ExternalCommandParameters>,
+    area_width: u16,
+    area_height: u16,
+    esc: impl Fn(&str) -> Result<String, String>,
+) -> Result<String, String> {
+    let mut result = s.to_string();
+
+    for &marker in COMMIT_MARKERS {
+        if !result.contains(marker) {
+            continue;
+        }
+        let Some(params) = params else {
+            return Err(format!("沒有選到 commit，無法代入 {marker}"));
+        };
+        let value = commit_marker_value(marker, params, &esc)?;
+        result = result.replace(marker, &value);
+    }
+
+    if result.contains(USER_COMMAND_AREA_WIDTH_MARKER) {
+        result = result.replace(USER_COMMAND_AREA_WIDTH_MARKER, &area_width.to_string());
+    }
+    if result.contains(USER_COMMAND_AREA_HEIGHT_MARKER) {
+        result = result.replace(USER_COMMAND_AREA_HEIGHT_MARKER, &area_height.to_string());
+    }
+
+    Ok(result)
+}
+
+fn replace_command_arg(s: &str, params: &ExternalCommandParameters) -> String {
+    replace_markers(
+        s,
+        Some(params),
+        params.area_width,
+        params.area_height,
+        |v| Ok(v.to_string()),
+    )
+    .expect("完整 params + identity esc 永遠不會回 Err")
+}
+
+/// POSIX：任何值都能安全地用單引號包起來，內部單引號轉成 `'\''`
+/// （先結束引號、插入一個跳脫過的單引號、再開新引號）。
+#[cfg(not(target_os = "windows"))]
+fn shell_quote(v: &str) -> Result<String, String> {
+    Ok(format!("'{}'", v.replace('\'', r"'\''")))
+}
+
+/// Windows：`cmd /C` 沒有跟 POSIX 單引號等價的萬用轉義規則，含這些字元
+/// 的值直接報錯，不要靜靜產出可能被 cmd 另行解釋的字串。沒有特殊字元時
+/// 才需要引號的話就加雙引號；純字母數字原樣返回。
+#[cfg(target_os = "windows")]
+fn shell_quote(v: &str) -> Result<String, String> {
+    const DANGEROUS: &[char] = &['"', '%', '^', '&', '|', '<', '>'];
+    if v.chars().any(|c| DANGEROUS.contains(&c)) {
+        return Err(format!(
+            "無法在 Windows 上安全代入含 {DANGEROUS:?} 的值：{v:?}"
+        ));
+    }
+    if v.contains(char::is_whitespace) {
+        Ok(format!("\"{v}\""))
+    } else {
+        Ok(v.to_string())
+    }
+}
+
+/// 把使用者在命令列輸入的整段字串裡的 marker 換成目前選取 commit 的值，
+/// 每個值各自 shell-quote 後再代入——`{{branches}}` 展開成 `'main' 'dev'`
+/// 仍是兩個獨立參數，且 ref 名稱裡的單引號不會逃逸出去執行別的指令。
+///
+/// `params` 是 `None`：目前選取的是 Working changes（virtual row），沒有
+/// 真正的 commit。`{{area_width}}`/`{{area_height}}` 這兩個不吃 `params`，
+/// 一樣可以代入；含其餘 commit marker 就回 `Err`。
+///
+/// **巢狀 quote 無解**：marker 自己已經帶引號，使用者不該再手動包一層
+/// （`--grep="{{target_hash}}"` 會展開成 `--grep="'abc'"`，單引號變字面值）。
+pub fn expand_shell_command_line(
+    command_line: &str,
+    params: Option<&ExternalCommandParameters>,
+    area_width: u16,
+    area_height: u16,
+) -> Result<String, String> {
+    replace_markers(command_line, params, area_width, area_height, shell_quote)
+}
+
+/// POSIX shell 的 basename allowlist——決定 `exec_shell_command` 要不要加
+/// `-i`（讀 rc 檔的 alias／function）、要不要用 `exec 2>&1; ` 把 rc 初始化
+/// 噪音濾掉。用 basename 比對，不管呼叫端給的是完整路徑（`/bin/zsh`）還是
+/// 裸命令（`zsh`）；不在表內的（fish、nushell、Windows 的 `cmd`、使用者
+/// 自訂的怪 shell）一律當非 POSIX 處理，不冒然加只有這幾種 shell 才認得
+/// 的旗標／語法。
+pub(crate) fn is_posix_shell(prog: &str) -> bool {
+    const POSIX_SHELLS: &[&str] = &["sh", "bash", "zsh", "dash", "ksh", "mksh", "ash"];
+    let basename = std::path::Path::new(prog)
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .unwrap_or(prog);
+    POSIX_SHELLS.contains(&basename)
+}
+
+/// 讀取階段的記憶體上限——`yes`、`find /` 這類指令的輸出可以無限長，
+/// 這裡是真正接住的防線（不是事後對已經讀進記憶體的字串 truncate）。
+const MAX_OUTPUT_BYTES: usize = 5 * 1024 * 1024;
+
+/// 讀 `reader` 直到 EOF 或 `cap` bytes，回傳 `(內容, 是否被截斷)`。多讀
+/// 一個 byte 來判斷「剛好等於 cap」跟「超過 cap」的差別，超過時把多讀的
+/// 那個 byte 丟掉。
+fn read_capped(reader: &mut impl Read, cap: usize) -> (Vec<u8>, bool) {
+    let mut buf = Vec::new();
+    let _ = reader.take(cap as u64 + 1).read_to_end(&mut buf);
+    let truncated = buf.len() > cap;
+    if truncated {
+        buf.truncate(cap);
+    }
+    (buf, truncated)
+}
+
+/// 在 `repo_path` 底下經由 `shell` 執行 `command_line`，回傳合併後的
+/// stdout+stderr——非零 exit 一樣回傳輸出（附一行狀態），不當成 `Err`：
+/// 命令本身的錯誤訊息就是使用者要看的東西。`Err` 只保留給「連 shell 都
+/// 沒能啟動」這種真正例外的情況。
+///
+/// `shell` 是 `[程式, 旗標...]`（例如 `["zsh", "-i", "-c"]`），`command_line`
+/// 會當成最後一個引數接在後面——來源見 `app::resolve_shell_command` 或
+/// `core.shell.command` 設定。
+///
+/// POSIX shell（`is_posix_shell`）額外做兩件事：
+/// - 指令前面接 `exec 2>&1; `，把 shell 自己 rc 初始化階段的 stderr 噪音
+///   （例如 oh-my-zsh／powerlevel10k 的警告）留在 `exec` 之前、隨
+///   `stderr(Stdio::null())` 丟棄；`exec` 之後使用者指令的 stderr 併入
+///   stdout pipe，兩者交錯順序也因此是對的（不會像「stdout 全部接在前面 +
+///   stderr 全部接在後面」那樣把 `git fetch` 的進度整團排到最後）。
+/// - 帶 `SERIE_SHELL=1` 環境變數，讓使用者可以在 rc 檔開頭偵測它、
+///   early return 跳過主題／外掛，把每次執行都要付的 shell 初始化成本
+///   從約 1 秒降到接近 0（見 `docs/src/configurations/config-file-format.md`
+///   的 `[core.shell]` 說明）。
+///
+/// `child_slot`：spawn 出來的 child 會先存進這裡再開始讀——讓
+/// `ShellView` 能在使用者中途關閉（Esc）或整個 app 結束時砍掉還在跑的
+/// 指令（見 `view::shell::ShellView` 的 `Drop`），不留孤兒程序握著 pipe。
+pub fn exec_shell_command(
+    command_line: &str,
+    repo_path: &std::path::Path,
+    shell: &[String],
+    child_slot: &Arc<Mutex<Option<std::process::Child>>>,
+) -> Result<String, String> {
+    let Some((prog, flags)) = shell.split_first() else {
+        return Err("core.shell.command 不能是空陣列".to_string());
+    };
+    let posix = is_posix_shell(prog);
+    let full_command = if posix {
+        format!("exec 2>&1; {command_line}")
+    } else {
+        command_line.to_string()
+    };
+
+    let mut cmd = Command::new(prog);
+    cmd.args(flags)
+        .arg(&full_command)
+        .current_dir(repo_path)
+        .env("SERIE_SHELL", "1")
+        // 指令不該能讀鍵盤——`Stdio::null()` 是承重牆，不要為了互動指令拿掉。
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::piped())
+        .stderr(if posix {
+            std::process::Stdio::null()
+        } else {
+            std::process::Stdio::piped()
+        });
+
+    // zsh 帶 `-i` 的 job control 初始化會經由 `/dev/tty`（不是繼承的 fd 0，
+    // 那個是 `/dev/tty` 永遠解析到的「目前這個 session 的控制終端機」，跟
+    // fd 0 有沒有被 redirect 無關）去搶 serie 自己的控制終端機。實測：不
+    // detach 的話，即使 zsh 印出「can't change option: monitor」放棄
+    // monitor mode，它中途仍可能已經 `tcsetpgrp` 過一次——這裡把它
+    // SIGKILL 掉（`ShellView::Drop`）時它來不及還原，serie 自己讀鍵盤的
+    // thread 就此讀不到終端輸入，`event::EventController` 的 watchdog 偵測
+    // 到停滯後會在約 2 秒內把整個 app 關掉（`AppEvent::Quit` 的
+    // watchdog fallback）。`setsid()` 讓子 process 進到一個全新、沒有控制
+    // 終端機的 session——`/dev/tty` 直接打不開，job control 初始化在
+    // *更早* 的地方就會安分失敗，不會碰到 serie 的終端。
+    #[cfg(unix)]
+    unsafe {
+        cmd.pre_exec(|| {
+            if libc_setsid() < 0 {
+                return Err(std::io::Error::last_os_error());
+            }
+            Ok(())
+        });
+    }
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to run {prog}: {e}"))?;
+    let mut stdout = child.stdout.take().expect("stdout is piped");
+    let mut stderr = child.stderr.take();
+
+    *child_slot.lock().unwrap() = Some(child);
+
+    let (out_buf, out_truncated) = read_capped(&mut stdout, MAX_OUTPUT_BYTES);
+    let mut text = String::from_utf8_lossy(&out_buf).into_owned();
+
+    let mut truncated = out_truncated;
+    if let Some(stderr) = stderr.as_mut() {
+        let (err_buf, err_truncated) = read_capped(stderr, MAX_OUTPUT_BYTES);
+        text.push_str(&String::from_utf8_lossy(&err_buf));
+        truncated |= err_truncated;
+    }
+
+    if truncated {
+        // 讀滿上限就砍掉 child——不然背景 job（`cmd &`）或 `yes` 這類
+        // 持續輸出的指令會讓這條 thread 一直卡在後續的 `wait()`。
+        if let Some(child) = child_slot.lock().unwrap().as_mut() {
+            let _ = child.kill();
+        }
+        text.push_str(&format!("\n… 輸出過長，已在 {MAX_OUTPUT_BYTES} bytes 截斷"));
+    }
+
+    // 先把 child 從鎖裡取出來再 wait——`child_slot.lock().unwrap().as_mut()`
+    // 這種寫法的暫存 `MutexGuard` 活到整個語句結束，會讓 `wait()` 全程握著
+    // 鎖：使用者這時按 Esc，主執行緒 `ShellView::Drop` 的 `self.child.lock()`
+    // 就會被卡住（指令背景化、關掉 stdout 但自己還沒結束時最容易踩到）。
+    // 拆成兩個語句，鎖在 `.take()` 那行結束就放掉，`wait()` 操作的是已經
+    // 拿出來的本地變數，不再需要鎖。
+    let child = child_slot.lock().unwrap().take();
+    let status = child.and_then(|mut c| c.wait().ok());
+    if let Some(status) = status {
+        if !status.success() {
+            text.push_str(&format!("\n[exit status: {status}]"));
+        }
+    }
+    Ok(text)
 }
 
 #[cfg(test)]
@@ -398,5 +684,168 @@ mod tests {
         let command = ["echo".to_string(), "[{{stash}}]".to_string()];
         let params = params_with_stash(&command, None);
         assert_eq!(build_user_command(&params), vec!["echo", "[]"]);
+    }
+
+    /// `replace_command_arg` 的 identity esc 不該轉義任何東西——argv 元素
+    /// 直接傳給 `Command::args()`，不經過 shell，加引號反而是錯的。
+    #[test]
+    fn replace_command_arg_identity_esc_does_not_quote() {
+        let command: [String; 0] = [];
+        let params = ExternalCommandParameters {
+            command: &command,
+            target_hash: "abc123",
+            parent_hashes: vec![],
+            all_refs: vec![],
+            branches: vec!["it's-a-branch"],
+            remote_branches: vec![],
+            tags: vec![],
+            stash: None,
+            area_width: 80,
+            area_height: 30,
+        };
+        assert_eq!(
+            replace_command_arg("{{target_hash}} {{branches}}", &params),
+            "abc123 it's-a-branch"
+        );
+    }
+
+    #[test]
+    fn expand_shell_command_line_quotes_each_branch_separately() {
+        let command: [String; 0] = [];
+        let params = ExternalCommandParameters {
+            command: &command,
+            target_hash: "abc123",
+            parent_hashes: vec![],
+            all_refs: vec![],
+            branches: vec!["main", "dev"],
+            remote_branches: vec![],
+            tags: vec![],
+            stash: None,
+            area_width: 80,
+            area_height: 30,
+        };
+        let expanded =
+            expand_shell_command_line("git log {{branches}}", Some(&params), 80, 30).unwrap();
+        assert_eq!(expanded, "git log 'main' 'dev'");
+    }
+
+    #[test]
+    fn expand_shell_command_line_escapes_single_quote_in_value() {
+        let command: [String; 0] = [];
+        let params = ExternalCommandParameters {
+            command: &command,
+            target_hash: "abc123",
+            parent_hashes: vec![],
+            all_refs: vec![],
+            branches: vec!["it's-a-branch"],
+            remote_branches: vec![],
+            tags: vec![],
+            stash: None,
+            area_width: 80,
+            area_height: 30,
+        };
+        // ref 名稱含單引號時，展開後仍是安全的單一 shell token——
+        // 不會逃逸出去變成「執行別的指令」。
+        let expanded =
+            expand_shell_command_line("git log {{branches}}", Some(&params), 80, 30).unwrap();
+        assert_eq!(expanded, r"git log 'it'\''s-a-branch'");
+    }
+
+    #[test]
+    fn expand_shell_command_line_interpolates_target_hash_mid_string() {
+        let command: [String; 0] = [];
+        let params = ExternalCommandParameters {
+            command: &command,
+            target_hash: "deadbeef",
+            parent_hashes: vec![],
+            all_refs: vec![],
+            branches: vec![],
+            remote_branches: vec![],
+            tags: vec![],
+            stash: None,
+            area_width: 80,
+            area_height: 30,
+        };
+        let expanded =
+            expand_shell_command_line("git log --grep={{target_hash}} -1", Some(&params), 80, 30)
+                .unwrap();
+        assert_eq!(expanded, "git log --grep='deadbeef' -1");
+    }
+
+    #[test]
+    fn expand_shell_command_line_without_commit_errors_on_commit_marker() {
+        // Working changes 列（virtual row）沒有真正的 commit——`params`
+        // 傳 `None`，錯誤訊息要點名是哪一個 marker，不能靜默展開成空字串。
+        let err = expand_shell_command_line("git show {{target_hash}}", None, 80, 30).unwrap_err();
+        assert!(
+            err.contains("{{target_hash}}"),
+            "錯誤訊息要點名 marker: {err}"
+        );
+    }
+
+    #[test]
+    fn expand_shell_command_line_without_commit_allows_area_markers() {
+        // {{area_width}}/{{area_height}} 來自面板尺寸，跟有沒有選到 commit
+        // 無關，Working changes 列一樣要能用。
+        let expanded =
+            expand_shell_command_line("echo {{area_width}}x{{area_height}}", None, 120, 40)
+                .unwrap();
+        assert_eq!(expanded, "echo 120x40");
+    }
+
+    #[test]
+    fn expand_shell_command_line_without_commit_passes_through_when_no_marker() {
+        // 沒有 marker 的指令（`git status` 這類）在 Working changes 列
+        // 要能原樣執行，不該因為沒有 commit 就被擋下。
+        let expanded = expand_shell_command_line("git status", None, 80, 30).unwrap();
+        assert_eq!(expanded, "git status");
+    }
+
+    #[test]
+    fn is_posix_shell_matches_by_basename() {
+        assert!(is_posix_shell("zsh"));
+        assert!(is_posix_shell("/bin/zsh"));
+        assert!(is_posix_shell("/usr/local/bin/bash"));
+        assert!(!is_posix_shell("fish"));
+        assert!(!is_posix_shell("cmd"));
+        assert!(!is_posix_shell(""));
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn exec_shell_command_merges_stdout_and_stderr_in_order() {
+        // POSIX 路徑：`exec 2>&1; ` 讓兩個串流併成一個 pipe，順序要跟
+        // 指令本身寫的順序一致，不是「stdout 全部 + stderr 全部」。
+        let shell = vec!["sh".to_string(), "-c".to_string()];
+        let child_slot = Arc::new(Mutex::new(None));
+        let output = exec_shell_command(
+            "echo out1; echo err1 >&2; echo out2",
+            &env::temp_dir(),
+            &shell,
+            &child_slot,
+        )
+        .unwrap();
+        assert_eq!(output.trim_end(), "out1\nerr1\nout2");
+    }
+
+    #[cfg(not(target_os = "windows"))]
+    #[test]
+    fn exec_shell_command_appends_exit_status_on_failure() {
+        let shell = vec!["sh".to_string(), "-c".to_string()];
+        let child_slot = Arc::new(Mutex::new(None));
+        let output = exec_shell_command("exit 3", &env::temp_dir(), &shell, &child_slot).unwrap();
+        assert!(
+            output.contains("[exit status:"),
+            "非零 exit 要附上狀態: {output}"
+        );
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn shell_quote_rejects_dangerous_characters_on_windows() {
+        assert!(shell_quote("safe-value").is_ok());
+        assert!(shell_quote("has space").unwrap().starts_with('"'));
+        assert!(shell_quote("dangerous & value").is_err());
+        assert!(shell_quote("quoted\"value").is_err());
     }
 }

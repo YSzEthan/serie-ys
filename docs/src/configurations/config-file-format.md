@@ -26,6 +26,31 @@ tab_width = 4
 [core.external]
 clipboard = "Auto"
 
+[core.shell]
+# 不設就自動判斷：非 Windows 用 `$SHELL`（沒有就退回 `sh`），POSIX shell
+# （sh/bash/zsh/dash/ksh/mksh/ash）額外帶 `-i` 讓內嵌命令列（`/`）吃得到
+# `~/.zshrc`、`~/.bashrc` 裡定義的 alias／function；Windows 用 `cmd /C`。
+# 若要自訂，最後一個元素必須是「接受一段指令字串」的旗標（POSIX 是
+# `-c`）——`["zsh"]` 這種缺旗標的設定不會被驗證擋下，只會在執行時靜靜跑出
+# 空輸出。
+# command = ["zsh", "-i", "-c"]
+#
+# `-i` 會讓每次執行都重新跑一次 shell 的初始化（oh-my-zsh、powerlevel10k
+# 這類框架實測約 0.6～1.2 秒），輸入列會顯示「running…」直到跑完。若要
+# 加速，可以在 rc 檔開頭偵測 `SERIE_SHELL` 環境變數（內嵌命令列執行時一律
+# 會設這個變數為 `1`）、及早 return 跳過主題／外掛：
+#
+#   if [[ -n $SERIE_SHELL ]]; then
+#     source ~/dotfiles/.zsh/aliases/*.zsh
+#     return
+#   fi
+#
+# 限制：指令的 stdin 固定是 `/dev/null`，不支援互動式指令（`git add -p`、
+# `git rebase -i`、不帶 `-m` 的 `git commit`）。輸出也不是連到 tty，git
+# 預設不會上色，要顏色請用 `git -c color.ui=always ...`，或搭配上面的
+# `SERIE_SHELL` 判斷在 rc 裡設 `CLICOLOR_FORCE=1`。背景工作（`cmd &`）會
+# 讓面板等到它結束才收得到輸出。
+
 [ui]
 cursor_type = "Native"
 refs_width = 26

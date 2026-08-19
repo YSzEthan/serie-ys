@@ -503,6 +503,9 @@ pub fn run() -> Result<()> {
         }
     }
 
+    let shell_command =
+        app::resolve_shell_command(&core_config.shell, std::env::var("SHELL").ok().as_deref());
+
     let ctx = Rc::new(app::AppContext {
         keybind,
         core_config,
@@ -512,6 +515,7 @@ pub fn run() -> Result<()> {
         graph_width,
         compact,
         update: update_settings,
+        shell_command,
     });
 
     let mut ec = event::EventController::init();

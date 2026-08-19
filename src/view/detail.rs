@@ -310,6 +310,9 @@ impl<'a> DetailView<'a> {
             UserEvent::RefList => {
                 self.tx.send(AppEvent::OpenRefs);
             }
+            UserEvent::ShellToggle => {
+                self.tx.send(AppEvent::OpenShell);
+            }
             UserEvent::Refresh => {
                 self.refresh();
             }
