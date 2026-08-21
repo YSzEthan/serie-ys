@@ -50,6 +50,7 @@ delete_ref = ["d"]
 
 remote_refs_toggle = ["o"]
 github_toggle = ["g"]
+shell_toggle = ["/"]
 
 # 沒有預設鍵位，理由同 scroll_up/scroll_down。
 task_list_toggle = []

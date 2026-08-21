@@ -164,6 +164,9 @@ pub struct CoreConfig {
     pub external: CoreExternalConfig,
     #[garde(dive)]
     #[nested]
+    pub shell: CoreShellConfig,
+    #[garde(dive)]
+    #[nested]
     pub update: CoreUpdateConfig,
 }
 
@@ -357,6 +360,19 @@ pub struct CoreExternalConfig {
     #[garde(dive)]
     #[default(ClipboardConfig::Auto)]
     pub clipboard: ClipboardConfig,
+}
+
+/// 內嵌命令列（`/`）用什麼 shell 跑指令。`None` 交給執行期依平台／`$SHELL`
+/// 自動判斷（見 `app::resolve_shell_command`）——設定檔的原始值到這裡就
+/// 結束了，已解析出的最終指令放在 `AppContext.shell_command`。
+#[optional(derives = [Deserialize])]
+#[derive(Debug, Clone, PartialEq, Eq, SmartDefault, Validate)]
+pub struct CoreShellConfig {
+    /// 最後一個元素必須是「接受一段指令字串」的旗標（POSIX shell 是
+    /// `-c`）——`["zsh"]` 這種缺旗標的設定不會被這裡擋下，會在執行時
+    /// 靜靜跑出空輸出。
+    #[garde(length(min = 1), inner(inner(length(min = 1))))]
+    pub command: Option<Vec<String>>,
 }
 
 #[optional(derives = [Deserialize])]
@@ -724,6 +740,7 @@ mod tests {
                 external: CoreExternalConfig {
                     clipboard: ClipboardConfig::Auto,
                 },
+                shell: CoreShellConfig { command: None },
             },
             ui: UiConfig {
                 cursor_type: CursorType::Native,
@@ -865,6 +882,7 @@ mod tests {
                 external: CoreExternalConfig {
                     clipboard: ClipboardConfig::Auto,
                 },
+                shell: CoreShellConfig { command: None },
             },
             ui: UiConfig {
                 cursor_type: CursorType::Virtual("|".into()),

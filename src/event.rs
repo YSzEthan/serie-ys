@@ -57,6 +57,11 @@ pub enum AppEvent {
     CloseHelp,
     OpenGitHub,
     CloseGitHub,
+    OpenShell,
+    CloseShell,
+    /// 背景 thread 跑完 shell 指令了——不帶 payload，純喚醒；結果本身走
+    /// `ShellView` 自己持有的 `mpsc::Receiver`。見 `view/shell.rs` 頂端註解。
+    ShellOutputReady,
     /// 更新後（或全新安裝）第一次啟動時該顯示的 release notes——見
     /// `update::pending_release_notes`。`body` 是編譯期常數
     /// （`include_str!` 讀 `CHANGELOG.md`），不必轉成 `String`。
@@ -787,6 +792,7 @@ pub enum UserEvent {
     DeleteRef,
     RemoteRefsToggle,
     GitHubToggle,
+    ShellToggle,
     TaskListToggle,
     DetailPaneToggle,
     Fetch,
@@ -846,6 +852,7 @@ impl UserEvent {
             UserEvent::DeleteRef => "delete_ref",
             UserEvent::RemoteRefsToggle => "remote_refs_toggle",
             UserEvent::GitHubToggle => "github_toggle",
+            UserEvent::ShellToggle => "shell_toggle",
             UserEvent::TaskListToggle => "task_list_toggle",
             UserEvent::DetailPaneToggle => "detail_pane_toggle",
             UserEvent::Fetch => "fetch",
@@ -909,6 +916,7 @@ impl UserEvent {
             UserEvent::DeleteRef => "刪除 commit 上的 local branch",
             UserEvent::RemoteRefsToggle => "切換 remote refs",
             UserEvent::GitHubToggle => "開啟 GitHub issues/PRs",
+            UserEvent::ShellToggle => "開啟命令列",
             UserEvent::TaskListToggle => "切換 task 清單",
             UserEvent::DetailPaneToggle => "切換詳情區塊",
             UserEvent::Fetch => "fetch 所有 remote",
@@ -991,6 +999,7 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "delete_ref" => Ok(UserEvent::DeleteRef),
                         "remote_refs_toggle" => Ok(UserEvent::RemoteRefsToggle),
                         "github_toggle" => Ok(UserEvent::GitHubToggle),
+                        "shell_toggle" => Ok(UserEvent::ShellToggle),
                         "task_list_toggle" => Ok(UserEvent::TaskListToggle),
                         "detail_pane_toggle" => Ok(UserEvent::DetailPaneToggle),
                         "fetch" => Ok(UserEvent::Fetch),

@@ -10,6 +10,7 @@ mod list;
 mod markdown;
 mod refs;
 mod release_notes;
+pub(crate) mod shell;
 pub(crate) mod user_command;
 
 pub use refs::RefsOrigin;

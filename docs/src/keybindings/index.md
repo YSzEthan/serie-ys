@@ -60,6 +60,7 @@
 | <kbd>f</kbd> | fetch 所有 remote | `fetch` |
 | <kbd>Space</kbd> | checkout 選取的 commit/ref | `checkout` |
 | <kbd>r</kbd> | 重新整理 | `refresh` |
+| <kbd>/</kbd> | 開啟命令列 | `shell_toggle` |
 
 ### Commit 詳情
 
@@ -90,6 +91,7 @@
 | <kbd>g</kbd> | 開啟 GitHub issues/PRs | `github_toggle` |
 | <kbd>F1</kbd> <kbd>?</kbd> | 開啟說明 | `help_toggle` |
 | <kbd>r</kbd> | 重新整理 | `refresh` |
+| <kbd>/</kbd> | 開啟命令列 | `shell_toggle` |
 
 ### Refs 清單
 
@@ -177,6 +179,13 @@
 | <kbd>Enter</kbd> <kbd>y</kbd> | 顯示 commit 詳情 | `confirm` |
 | <kbd>F1</kbd> <kbd>?</kbd> | 開啟說明 | `help_toggle` |
 
+### Shell 命令列
+
+| 按鍵 | 說明 | 設定鍵名 |
+| --- | --- | --- |
+| <kbd>Enter</kbd> <kbd>y</kbd> | 執行指令 | `confirm` |
+| <kbd>n</kbd> <kbd>Esc</kbd> | 關閉命令列 | `cancel` |
+
 ### Release Notes
 
 | 按鍵 | 說明 | 設定鍵名 |
@@ -202,3 +211,5 @@
 | <kbd>f</kbd> | 刪除 branch 確認 | 強制刪除 |
 | <kbd>Tab</kbd> <kbd>Shift-Tab</kbd> | Create tag 對話框 | 在欄位間移動 |
 | <kbd>Space</kbd> | Create tag 對話框（核取方塊） | 切換核取狀態 |
+| <kbd>↑</kbd> <kbd>↓</kbd> | Shell 命令列 | 瀏覽指令歷史 |
+| <kbd>PageUp</kbd> <kbd>PageDown</kbd> | Shell 命令列 | 捲動輸出面板 |

@@ -9,7 +9,8 @@ use crate::{
     view::{
         create_tag::CreateTagView, delete_ref::DeleteRefView, delete_tag::DeleteTagView,
         detail::DetailView, github::GitHubView, help::HelpView, list::ListView, refs::RefsView,
-        release_notes::ReleaseNotesView, user_command::UserCommandView, RefsOrigin,
+        release_notes::ReleaseNotesView, shell::ShellView, user_command::UserCommandView,
+        RefsOrigin,
     },
     widget::{commit_list::CommitListState, ref_list::RefListState},
 };
@@ -28,6 +29,7 @@ pub enum View<'a> {
     Help(Box<HelpView<'a>>),
     GitHub(Box<GitHubView<'a>>),
     ReleaseNotes(Box<ReleaseNotesView<'a>>),
+    Shell(Box<ShellView<'a>>),
 }
 
 impl<'a> View<'a> {
@@ -44,6 +46,7 @@ impl<'a> View<'a> {
             View::Help(view) => view.handle_event(event_with_count, key_event),
             View::GitHub(view) => view.handle_event(event_with_count, key_event),
             View::ReleaseNotes(view) => view.handle_event(event_with_count, key_event),
+            View::Shell(view) => view.handle_event(event_with_count, key_event),
         }
     }
 
@@ -60,6 +63,7 @@ impl<'a> View<'a> {
             View::Help(view) => view.render(f, area),
             View::GitHub(view) => view.render(f, area, marquee_frame),
             View::ReleaseNotes(view) => view.render(f, area),
+            View::Shell(view) => view.render(f, area, marquee_frame),
         }
     }
 
@@ -70,6 +74,10 @@ impl<'a> View<'a> {
             View::List(view) => Some(view.as_list_state().selected_commit_hash().as_arc()),
             View::Detail(view) => view.marquee_id(),
             View::GitHub(view) => view.marquee_id(),
+            // `ShellView::render` 畫的是 `before`——不委派的話跑馬燈在命令列
+            // 開著的時候會直接凍結（`marquee_id` 恆為 `None`，`Tick` 那條路
+            // 永遠不會把 `marquee_frame` 往前推）。
+            View::Shell(view) => view.marquee_id(),
             _ => None,
         }
     }
@@ -81,6 +89,7 @@ impl<'a> View<'a> {
             View::List(view) => view.as_list_state().selected_row_overflows.get(),
             View::Detail(view) => view.marquee_needed(),
             View::GitHub(view) => view.marquee_needed(),
+            View::Shell(view) => view.marquee_needed(),
             _ => false,
         }
     }
@@ -89,6 +98,11 @@ impl<'a> View<'a> {
         match self {
             View::List(view) => view.take_graph_clear(),
             View::Detail(view) => view.take_graph_clear(),
+            // `open_shell()` 在包住 `before` 之前就對它呼叫過
+            // `request_graph_clear()`，旗標設在被包住的 List/Detail 身上——
+            // 不委派的話這個旗標永遠取不出來，`terminal.clear()` 也就永遠
+            // 不會執行。
+            View::Shell(view) => view.take_graph_clear(),
             _ => false,
         }
     }
@@ -97,6 +111,7 @@ impl<'a> View<'a> {
         match self {
             View::List(view) => view.request_graph_clear(),
             View::Detail(view) => view.request_graph_clear(),
+            View::Shell(view) => view.request_graph_clear(),
             _ => {}
         }
     }
@@ -111,7 +126,8 @@ impl<'a> View<'a> {
             | View::DeleteRef(_)
             | View::Help(_)
             | View::GitHub(_)
-            | View::ReleaseNotes(_) => false,
+            | View::ReleaseNotes(_)
+            | View::Shell(_) => false,
         }
     }
 
@@ -284,6 +300,28 @@ impl<'a> View<'a> {
         View::ReleaseNotes(Box::new(ReleaseNotesView::new(before, body, ctx, tx)))
     }
 
+    pub fn of_shell(
+        before: View<'a>,
+        commit: Option<Commit>,
+        refs: Vec<Ref>,
+        area_width: u16,
+        area_height: u16,
+        repo_path: PathBuf,
+        ctx: Rc<AppContext>,
+        tx: Sender,
+    ) -> Self {
+        View::Shell(Box::new(ShellView::new(
+            before,
+            commit,
+            refs,
+            area_width,
+            area_height,
+            repo_path,
+            ctx,
+            tx,
+        )))
+    }
+
     pub fn refresh(&mut self) {
         match self {
             View::Default => {}
@@ -297,6 +335,19 @@ impl<'a> View<'a> {
             View::Help(_) => {}
             View::GitHub(_) => {}
             View::ReleaseNotes(_) => {}
+            // 直接送 `AppEvent::Refresh` 會讓 `lib.rs` 整個重建 `App`，把還在
+            // 打字／看輸出的 `ShellView` 一併炸掉——Shell 的 refresh 政策是
+            // 「記個旗標，關閉時才補送」，不是「立刻做」或「什麼都不做」。
+            View::Shell(view) => view.mark_refresh_pending(),
+        }
+    }
+
+    /// `AppEvent::ShellOutputReady` 抵達時呼叫——見
+    /// `ShellView::poll_output` 的文件註解。非 Shell view 什麼都不做，
+    /// 這是正確行為（過期喚醒打到已經換掉的 view）。
+    pub fn poll_shell_output(&mut self) {
+        if let View::Shell(view) = self {
+            view.poll_output();
         }
     }
 
@@ -311,11 +362,12 @@ impl<'a> View<'a> {
                 View::DeleteTag(mut v) => return v.take_list_state().expect("missing state"),
                 View::DeleteRef(mut v) => return v.take_list_state().expect("missing state"),
                 View::UserCommand(mut v) => return v.take_list_state().expect("missing state"),
-                // Help/GitHub 是覆蓋層視圖；要展開回內部包著的 before_view。
+                // Help/GitHub/Shell 是覆蓋層視圖；要展開回內部包著的 before_view。
                 // take_before_view 會留下 View::Default，但無妨，因為 `v` 接著就會被 drop。
                 View::Help(mut v) => v.take_before_view(),
                 View::GitHub(mut v) => v.take_before_view(),
                 View::ReleaseNotes(mut v) => v.take_before_view(),
+                View::Shell(mut v) => v.take_before_view(),
                 View::Default => unreachable!("no View::Default at runtime"),
             };
         }

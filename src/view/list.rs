@@ -170,6 +170,9 @@ impl<'a> ListView<'a> {
             UserEvent::RefList => {
                 self.tx.send(AppEvent::OpenRefs);
             }
+            UserEvent::ShellToggle => {
+                self.tx.send(AppEvent::OpenShell);
+            }
             UserEvent::CreateTag => {
                 self.tx.send(AppEvent::OpenCreateTag);
             }

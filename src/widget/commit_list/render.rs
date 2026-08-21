@@ -964,6 +964,7 @@ mod tests {
                 graph_width: Some(graph_width),
                 compact: Some(CompactType::Off),
                 update: crate::update::UpdateSettings::default(),
+                shell_command: Vec::new(),
             })
         }
 
@@ -1227,6 +1228,7 @@ mod tests {
                 graph_width: Some(graph_width),
                 compact: Some(CompactType::On),
                 update: crate::update::UpdateSettings::default(),
+                shell_command: Vec::new(),
             });
             let area = Rect::new(0, 0, TERM_W, height);
             let mut buf = Buffer::empty(area);
@@ -1778,6 +1780,7 @@ mod tests {
                 graph_width: Some(GraphWidthType::Single),
                 compact: Some(CompactType::On),
                 update: crate::update::UpdateSettings::default(),
+                shell_command: Vec::new(),
             });
             let area = Rect::new(0, 0, TERM_W, 10);
             let mut buf = Buffer::empty(area);
