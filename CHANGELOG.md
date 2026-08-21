@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.4.0](https://github.com/YSzEthan/serie-ys/compare/v3.3.1...v3.4.0) (2026-08-21)
+
+
+### Features
+
+* 新增內嵌命令列，支援 Working changes 列與使用者 shell alias (#79) (#80) ([047dd7c](https://github.com/YSzEthan/serie-ys/commit/047dd7cc1a7c6a47c2c41eee22328bc817f0642c))
+
 ## [3.3.1](https://github.com/YSzEthan/serie-ys/compare/v3.3.0...v3.3.1) (2026-08-16)
 
 
