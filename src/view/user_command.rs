@@ -31,7 +31,10 @@ pub fn status_hints() -> Vec<HintSpec> {
         h(&[UserEvent::PageDown], "page"),
         h(&[UserEvent::GoToTop], "top"),
         h(&[UserEvent::GoToBottom], "bottom"),
-        h(&[UserEvent::GoToParent], "parent"),
+        h(
+            &[UserEvent::GoToParent, UserEvent::GoToChild],
+            "parent/child",
+        ),
         h(&[UserEvent::Confirm], "detail"),
         h(&[UserEvent::Refresh], "refresh"),
         h(&[UserEvent::HelpToggle], "help"),
@@ -121,6 +124,9 @@ impl<'a> UserCommandView<'a> {
             UserEvent::GoToParent => {
                 self.tx.send(AppEvent::SelectParentCommit);
             }
+            UserEvent::GoToChild => {
+                self.tx.send(AppEvent::SelectChildCommit);
+            }
             UserEvent::HelpToggle => {
                 self.tx.send(AppEvent::OpenHelp);
             }
@@ -205,6 +211,17 @@ impl<'a> UserCommandView<'a> {
     ) {
         self.update_selected_commit(repository, view_area, exec_command, |state| {
             state.select_parent()
+        });
+    }
+
+    pub fn select_child_commit(
+        &mut self,
+        repository: &Repository,
+        view_area: Rect,
+        exec_command: ExecCommandFn,
+    ) {
+        self.update_selected_commit(repository, view_area, exec_command, |state| {
+            state.select_child()
         });
     }
 

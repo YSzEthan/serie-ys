@@ -57,7 +57,10 @@ pub fn status_hints_for(pane: DetailPane) -> Vec<HintSpec> {
             &[UserEvent::NavigateLeft, UserEvent::NavigateRight],
             "commit",
         ),
-        h(&[UserEvent::GoToParent], "parent"),
+        h(
+            &[UserEvent::GoToParent, UserEvent::GoToChild],
+            "parent/child",
+        ),
         h(&[UserEvent::ShortCopy], "copy"),
     ]);
     if pane == DetailPane::Files {
@@ -274,6 +277,9 @@ impl<'a> DetailView<'a> {
             }
             UserEvent::GoToParent => {
                 self.tx.send(AppEvent::SelectParentCommit);
+            }
+            UserEvent::GoToChild => {
+                self.tx.send(AppEvent::SelectChildCommit);
             }
             UserEvent::ShortCopy => {
                 self.copy_commit_short_hash();
@@ -504,6 +510,10 @@ impl<'a> DetailView<'a> {
 
     pub fn select_parent_commit(&mut self, repository: &Repository) {
         self.update_selected_commit(repository, |state| state.select_parent());
+    }
+
+    pub fn select_child_commit(&mut self, repository: &Repository) {
+        self.update_selected_commit(repository, |state| state.select_child());
     }
 
     fn update_selected_commit<F>(&mut self, repository: &Repository, update_commit_list_state: F)

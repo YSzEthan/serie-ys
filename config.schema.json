@@ -641,6 +641,9 @@
         "go_to_parent": {
           "$ref": "#/definitions/keybindArray"
         },
+        "go_to_child": {
+          "$ref": "#/definitions/keybindArray"
+        },
         "select_up": {
           "$ref": "#/definitions/keybindArray"
         },

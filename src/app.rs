@@ -542,6 +542,9 @@ impl App<'_> {
                 AppEvent::SelectParentCommit => {
                     self.select_parent_commit();
                 }
+                AppEvent::SelectChildCommit => {
+                    self.select_child_commit();
+                }
                 AppEvent::CopyToClipboard { name, value } => {
                     self.copy_to_clipboard(name, value);
                 }
@@ -1643,6 +1646,18 @@ impl App<'_> {
             view.select_parent_commit(self.repository);
         } else if let View::UserCommand(ref mut view) = self.view {
             view.select_parent_commit(
+                self.repository,
+                self.view_area,
+                build_external_command_parameters_and_exec_command,
+            );
+        }
+    }
+
+    fn select_child_commit(&mut self) {
+        if let View::Detail(ref mut view) = self.view {
+            view.select_child_commit(self.repository);
+        } else if let View::UserCommand(ref mut view) = self.view {
+            view.select_child_commit(
                 self.repository,
                 self.view_area,
                 build_external_command_parameters_and_exec_command,

@@ -133,6 +133,11 @@ impl<'a> ListView<'a> {
                     self.as_mut_list_state().select_parent();
                 }
             }
+            UserEvent::GoToChild => {
+                for _ in 0..count {
+                    self.as_mut_list_state().select_child();
+                }
+            }
             UserEvent::UserCommand(n) => {
                 self.tx.send(AppEvent::OpenUserCommand(n));
             }

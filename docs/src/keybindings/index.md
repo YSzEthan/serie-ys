@@ -38,6 +38,7 @@
 | <kbd>J</kbd> | graph 向下捲動 | `select_down` |
 | <kbd>K</kbd> | graph 向上捲動 | `select_up` |
 | <kbd>m</kbd> | 選擇 parent commit | `go_to_parent` |
+| <kbd>M</kbd> | 選擇 child commit | `go_to_child` |
 | <kbd>Enter</kbd> <kbd>y</kbd> <kbd>Right</kbd> <kbd>l</kbd> | 顯示 commit 詳情 | `confirm` `navigate_right` |
 | <kbd>Tab</kbd> | 開啟 refs 清單 | `ref_list` |
 | <kbd>:</kbd> | 開始搜尋 | `search` |
@@ -81,6 +82,7 @@
 | <kbd>Right</kbd> <kbd>l</kbd> | 選擇較舊 commit | `navigate_right` |
 | <kbd>Left</kbd> <kbd>h</kbd> | 選擇較新 commit | `navigate_left` |
 | <kbd>m</kbd> | 選擇 parent commit | `go_to_parent` |
+| <kbd>M</kbd> | 選擇 child commit | `go_to_child` |
 | <kbd>c</kbd> | 複製 commit short hash | `short_copy` |
 | <kbd>C</kbd> | 複製 commit subject | `full_copy` |
 | <kbd>b</kbd> | 複製 branch 名稱（優先 local） | `branch_copy` |
@@ -175,6 +177,7 @@
 | <kbd>i</kbd> | 跳到頂端 | `go_to_top` |
 | <kbd>G</kbd> | 跳到底端 | `go_to_bottom` |
 | <kbd>m</kbd> | 選擇 parent commit | `go_to_parent` |
+| <kbd>M</kbd> | 選擇 child commit | `go_to_child` |
 | <kbd>r</kbd> | 重新整理 | `refresh` |
 | <kbd>Enter</kbd> <kbd>y</kbd> | 顯示 commit 詳情 | `confirm` |
 | <kbd>F1</kbd> <kbd>?</kbd> | 開啟說明 | `help_toggle` |

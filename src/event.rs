@@ -128,6 +128,7 @@ pub enum AppEvent {
     SelectNewerCommit,
     SelectOlderCommit,
     SelectParentCommit,
+    SelectChildCommit,
     CopyToClipboard {
         name: String,
         value: String,
@@ -765,6 +766,7 @@ pub enum UserEvent {
     GoToTop,
     GoToBottom,
     GoToParent,
+    GoToChild,
     GoToHead,
     ScrollUp,
     ScrollDown,
@@ -825,6 +827,7 @@ impl UserEvent {
             UserEvent::GoToTop => "go_to_top",
             UserEvent::GoToBottom => "go_to_bottom",
             UserEvent::GoToParent => "go_to_parent",
+            UserEvent::GoToChild => "go_to_child",
             UserEvent::GoToHead => "go_to_head",
             UserEvent::ScrollUp => "scroll_up",
             UserEvent::ScrollDown => "scroll_down",
@@ -889,6 +892,7 @@ impl UserEvent {
             UserEvent::GoToTop => "跳到頂端",
             UserEvent::GoToBottom => "跳到底端",
             UserEvent::GoToParent => "選擇 parent commit",
+            UserEvent::GoToChild => "選擇 child commit",
             UserEvent::GoToHead => "回到 HEAD",
             UserEvent::ScrollUp => "向上捲動",
             UserEvent::ScrollDown => "向下捲動",
@@ -973,6 +977,7 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "go_to_top" => Ok(UserEvent::GoToTop),
                         "go_to_bottom" => Ok(UserEvent::GoToBottom),
                         "go_to_parent" => Ok(UserEvent::GoToParent),
+                        "go_to_child" => Ok(UserEvent::GoToChild),
                         "go_to_head" => Ok(UserEvent::GoToHead),
                         "scroll_up" => Ok(UserEvent::ScrollUp),
                         "scroll_down" => Ok(UserEvent::ScrollDown),
@@ -1045,6 +1050,7 @@ impl UserEvent {
                 | UserEvent::ScrollUp
                 | UserEvent::ScrollDown
                 | UserEvent::GoToParent
+                | UserEvent::GoToChild
                 | UserEvent::PageUp
                 | UserEvent::PageDown
                 | UserEvent::HalfPageUp
@@ -1141,6 +1147,7 @@ mod tests {
             UserEvent::GoToTop,
             UserEvent::GoToBottom,
             UserEvent::GoToParent,
+            UserEvent::GoToChild,
             UserEvent::GoToHead,
             UserEvent::ScrollUp,
             UserEvent::ScrollDown,
