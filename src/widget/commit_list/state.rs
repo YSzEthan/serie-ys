@@ -419,15 +419,30 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn select_parent(&mut self) {
-        if self.total == 0 || self.is_virtual_row_selected() {
+        let Some(parent) = self.selected_commit_parent_hash() else {
             return;
+        };
+        let Some(&raw) = self.commit_hash_to_raw.get(parent) else {
+            return;
+        };
+        self.step_to_raw(raw);
+    }
+
+    /// 逐格把游標移到 `raw` 所在的可視列，沿用 select_next / select_prev 的
+    /// scroll margin 行為。`raw` 被 filter 濾掉時靜默不動。迭代次數算好
+    /// 才跑（而非以「游標到了沒」當終止條件），`height == 0` 時
+    /// select_next / select_prev 各自是 no-op，迴圈跑完游標原地不動——
+    /// 不需要額外的早退,也不會有選不到就空轉的風險。
+    fn step_to_raw(&mut self, raw: RawCommitIdx) {
+        let Some(target) = self.raw_to_visible(raw) else {
+            return;
+        };
+        let current = self.current_visible().0;
+        for _ in target.0..current {
+            self.select_prev();
         }
-        if let Some(target_commit) = self.selected_commit_parent_hash().cloned() {
-            if self.commit_hash_to_raw.contains_key(&target_commit) {
-                while target_commit.as_str() != self.selected_commit_hash().as_str() {
-                    self.select_next();
-                }
-            }
+        for _ in current..target.0 {
+            self.select_next();
         }
     }
 
@@ -554,16 +569,7 @@ impl<'a> CommitListState<'a> {
         let Some(&raw) = self.commit_hash_to_raw.get(&head) else {
             return;
         };
-        let Some(target) = self.raw_to_visible(raw) else {
-            return;
-        };
-        // 逐格移動 → 自動沿用 select_next / select_prev 的 scroll margin 行為。
-        while self.current_visible().0 > target.0 {
-            self.select_prev();
-        }
-        while self.current_visible().0 < target.0 {
-            self.select_next();
-        }
+        self.step_to_raw(raw);
     }
 
     fn current_graph(&self) -> &Graph {
@@ -643,6 +649,7 @@ fn compute_selection(target: VisibleIdx, total: usize, height: usize) -> Option<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git::Commit;
 
     // --- 座標系 regression tests ---------------------------------------------
     // 這些 test 聚焦在 pure function（`resolve_*` / `compute_selection`），
@@ -786,5 +793,89 @@ mod tests {
         let (offset, selected) = compute_selection(VisibleIdx(in_filter.0), 234, 50).unwrap();
         assert!(offset + selected < 234);
         assert!(selected < 50);
+    }
+
+    // --- select_parent() / select_child() 回歸測試 ----------------------------
+
+    fn commit_fixture(hash: &str, parents: &[&str]) -> Commit {
+        Commit {
+            commit_hash: hash.into(),
+            parent_commit_hashes: parents.iter().copied().map(CommitHash::from).collect(),
+            ..Default::default()
+        }
+    }
+
+    /// `visible_raw` 指定哪些 raw index 留在 `filtered_indices` 內
+    /// （其餘視為被 filter 藏起來），游標停在第一個可見列。
+    fn build_state_visible_raws<'a>(
+        commits: &'a [Commit],
+        visible_raw: &[usize],
+    ) -> CommitListState<'a> {
+        let infos = commits
+            .iter()
+            .map(|c| CommitInfo::new(c, Vec::new(), Color::Reset))
+            .collect();
+        let graph = Graph {
+            commit_hashes: Vec::new(),
+            commit_pos_map: FxHashMap::default(),
+            edges: Vec::new(),
+            max_pos_x: 0,
+        };
+        let mut state = CommitListState::new(
+            infos,
+            Rc::new(graph),
+            Vec::new(),
+            None,
+            Head::None,
+            FxHashMap::default(),
+            false,
+            false,
+            None,
+            None,
+            FxHashSet::default(),
+            None,
+        );
+        state.filtered_indices = visible_raw.iter().copied().map(RawCommitIdx).collect();
+        state.total = state.filtered_indices.len();
+        state.reset_height(10);
+        state.select_first();
+        state
+    }
+
+    #[test]
+    fn select_parent_hidden_by_filter_does_not_hang_and_leaves_cursor() {
+        // 由新到舊：child(0) -> parent(1) -> grandparent(2)。filter 只留
+        // child 跟 grandparent（raw 1 被藏起來）。
+        let commits = vec![
+            commit_fixture("child", &["parent"]),
+            commit_fixture("parent", &["grandparent"]),
+            commit_fixture("grandparent", &[]),
+        ];
+        let mut state = build_state_visible_raws(&commits, &[0, 2]);
+
+        // 修正前：select_next() 在 filtered total=2 觸底後直接 return，
+        // 但 while 迴圈比對的是全域 commit_hash_to_raw 找到的 hash，永遠
+        // 走不到「parent」→ 無窮迴圈。這裡若卡住，測試本身就會逾時失敗。
+        state.select_parent();
+
+        assert_eq!(
+            state.selected_commit_hash().as_str(),
+            "child",
+            "parent 被 filter 藏起來時，游標應該留在原地"
+        );
+    }
+
+    #[test]
+    fn select_parent_visible_in_filter_moves_cursor() {
+        let commits = vec![
+            commit_fixture("child", &["grandparent"]),
+            commit_fixture("middle", &[]),
+            commit_fixture("grandparent", &[]),
+        ];
+        let mut state = build_state_visible_raws(&commits, &[0, 2]);
+
+        state.select_parent();
+
+        assert_eq!(state.selected_commit_hash().as_str(), "grandparent");
     }
 }
