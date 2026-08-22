@@ -458,14 +458,15 @@ impl<'a> CommitListState<'a> {
 
     /// 跳到目前 commit 的 child —— `select_parent()` 的反向。清單由新到舊
     /// （`--topo-order`，parent 不會出現在 child 之前），所以 child 必在
-    /// 游標上方；從游標往上掃 filtered 座標，取第一個把目前 commit 列進
+    /// 游標上方；從游標往上掃 filtered 座標，收集把目前 commit 列進
     /// `parent_commit_hashes`（不限 first-parent）的可視列。用「任一
     /// parent」而非「只認 first-parent」是刻意的：merge commit 對
     /// second-parent 那條線在主 graph 上也真的畫出來（見
     /// `graph::calc::calc_edges` 的 merge detour），只認 first-parent 會漏掉
-    /// 游標正上方、畫面上看得到線的 merge commit。不追求跟 `select_parent()`
-    /// 嚴格互逆——parent 是單值欄位、child 是多值關係，天生沒有唯一反向。
-    /// 找不到就靜默不動。
+    /// 游標正上方、畫面上看得到線的 merge commit。剛好一個可視 child 才跳；
+    /// 找到兩個以上代表目前 commit 是分支點，沒有依據替使用者猜要去哪一
+    /// 條，寧可不動也不要跳錯。不追求跟 `select_parent()` 嚴格互逆——
+    /// parent 是單值欄位、child 是多值關係，天生沒有唯一反向。
     pub fn select_child(&mut self) {
         if let Some(raw) = self.selected_commit_child_raw() {
             self.step_to_raw(raw);
@@ -479,10 +480,14 @@ impl<'a> CommitListState<'a> {
         let current = self.current_selected_raw();
         let hash = self.commit(current).commit_hash();
         let current_filtered = self.raw_to_filtered(current)?;
-        (0..current_filtered.0)
+        let mut children = (0..current_filtered.0)
             .rev()
             .filter_map(|i| self.filtered_to_raw(FilteredIdx(i)))
-            .find(|&raw| self.commit(raw).commit.parent_commit_hashes.contains(hash))
+            .filter(|&raw| self.commit(raw).commit.parent_commit_hashes.contains(hash));
+        match (children.next(), children.next()) {
+            (Some(only), None) => Some(only),
+            _ => None,
+        }
     }
 
     pub fn select_prev(&mut self) {
@@ -909,9 +914,10 @@ mod tests {
     }
 
     #[test]
-    fn select_child_moves_to_nearest_visible_child() {
+    fn select_child_moves_to_sole_visible_child() {
         // 由新到舊：tip(0) -> merge(1) -> base(2)。hidden(不可見) 的 parent
-        // 也是 merge，用來確認掃描不會誤選一個被 filter 藏起來的列。
+        // 也是 merge，用來確認掃描不會誤選一個被 filter 藏起來的列
+        // （所以 merge 的可視 child 只有 tip 一個，不算分支點）。
         let commits = vec![
             commit_fixture("tip", &["merge"]),
             commit_fixture("hidden", &["merge"]),
@@ -924,6 +930,23 @@ mod tests {
         state.select_child();
 
         assert_eq!(state.selected_commit_hash().as_str(), "tip");
+    }
+
+    #[test]
+    fn select_child_multiple_visible_children_does_not_move() {
+        // fork(2) 有兩個可視 child：branchA(0)、branchB(1) —— 真正的分支
+        // 點，沒有依據替使用者決定要跳去哪一條，所以不動。
+        let commits = vec![
+            commit_fixture("branchA", &["fork"]),
+            commit_fixture("branchB", &["fork"]),
+            commit_fixture("fork", &[]),
+        ];
+        let mut state = build_state_visible_raws(&commits, &[0, 1, 2]);
+        state.select_commit_hash(&CommitHash::from("fork"));
+
+        state.select_child();
+
+        assert_eq!(state.selected_commit_hash().as_str(), "fork");
     }
 
     #[test]
