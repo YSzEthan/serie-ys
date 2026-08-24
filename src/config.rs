@@ -13,6 +13,7 @@ use smart_default::SmartDefault;
 use umbra::optional;
 
 use crate::{
+    auto_fetch::{AutoFetch, MAX_INTERVAL_SECS, MIN_INTERVAL_SECS},
     color::{ColorTheme, OptionalColorTheme},
     keybind::KeyBind,
     update::{AutoRestart, ReleaseNotes, UpdateMode, MAX_INTERVAL_HOURS, MIN_INTERVAL_HOURS},
@@ -168,6 +169,9 @@ pub struct CoreConfig {
     #[garde(dive)]
     #[nested]
     pub update: CoreUpdateConfig,
+    #[garde(dive)]
+    #[nested]
+    pub auto_fetch: CoreAutoFetchConfig,
 }
 
 #[optional(derives = [Deserialize])]
@@ -197,6 +201,18 @@ pub struct CoreUpdateConfig {
     pub auto_restart: Option<AutoRestart>,
     #[garde(skip)]
     pub release_notes: Option<ReleaseNotes>,
+}
+
+/// 自動偵測 git remote 是否有新內容、自動 fetch 的設定，預設關閉。
+/// `interval_secs` 要驗證範圍，理由跟 `CoreUpdateConfig.interval_hours`
+/// 一樣：設 0 會讓輪詢退化成無限打網路的熱迴圈，載入時就要擋掉。
+#[optional(derives = [Deserialize])]
+#[derive(Debug, Clone, PartialEq, Eq, SmartDefault, Validate)]
+pub struct CoreAutoFetchConfig {
+    #[garde(skip)]
+    pub mode: Option<AutoFetch>,
+    #[garde(range(min = MIN_INTERVAL_SECS, max = MAX_INTERVAL_SECS))]
+    pub interval_secs: Option<u64>,
 }
 
 #[optional(derives = [Deserialize])]
@@ -729,6 +745,10 @@ mod tests {
                     auto_restart: None,
                     release_notes: None,
                 },
+                auto_fetch: CoreAutoFetchConfig {
+                    mode: None,
+                    interval_secs: None,
+                },
                 search: CoreSearchConfig {
                     ignore_case: false,
                     fuzzy: false,
@@ -828,6 +848,10 @@ mod tests {
                     interval_hours: None,
                     auto_restart: None,
                     release_notes: None,
+                },
+                auto_fetch: CoreAutoFetchConfig {
+                    mode: None,
+                    interval_secs: None,
                 },
                 search: CoreSearchConfig {
                     ignore_case: true,
@@ -1003,12 +1027,13 @@ mod tests {
 
         let parsed: OptionalConfig = toml::from_str(example).unwrap();
         let mut actual = Config::from(parsed);
-        // `core.option`／`core.update` 的欄位與 `keybind` 是 Option，「未設定」
-        // 與「設定成預設值」在型別上不同（命令列參數要能覆蓋，所以預設留到更
-        // 後面才解析）。範例把它們明寫出來正是它的用途，比對前歸零，其餘欄位
-        // 照比。
+        // `core.option`／`core.update`／`core.auto_fetch` 的欄位與 `keybind`
+        // 是 Option，「未設定」與「設定成預設值」在型別上不同（命令列參數
+        // 要能覆蓋，所以預設留到更後面才解析）。範例把它們明寫出來正是它
+        // 的用途，比對前歸零，其餘欄位照比。
         actual.core.option = CoreOptionConfig::default();
         actual.core.update = CoreUpdateConfig::default();
+        actual.core.auto_fetch = CoreAutoFetchConfig::default();
         actual.keybind = None;
         assert_eq!(actual, Config::default());
     }
@@ -1042,9 +1067,10 @@ mod tests {
     }
 
     /// `assets/default-config.toml` 裡明寫出來的值（`core.option`／
-    /// `core.update` 除外，理由同 `documented_example_config_is_valid_...`）
-    /// 必須真的是 `Config::default()`——這是它作為「首次啟動範本」的存在
-    /// 意義：使用者看到的第一份設定檔，內容要跟沒有這份檔案時的行為一致。
+    /// `core.update`／`core.auto_fetch` 除外，理由同
+    /// `documented_example_config_is_valid_...`）必須真的是
+    /// `Config::default()`——這是它作為「首次啟動範本」的存在意義：使用者
+    /// 看到的第一份設定檔，內容要跟沒有這份檔案時的行為一致。
     #[test]
     fn default_config_asset_shows_real_defaults() {
         let asset = include_str!("../assets/default-config.toml");
@@ -1052,6 +1078,7 @@ mod tests {
         let mut actual = Config::from(parsed);
         actual.core.option = CoreOptionConfig::default();
         actual.core.update = CoreUpdateConfig::default();
+        actual.core.auto_fetch = CoreAutoFetchConfig::default();
         actual.keybind = None;
         assert_eq!(actual, Config::default());
     }
@@ -1192,6 +1219,11 @@ mod tests {
     }
 
     #[test]
+    fn auto_fetch_mode_schema_enum_matches_every_accepted_cli_value() {
+        assert_schema_enum_matches_every_accepted_cli_value::<AutoFetch>(&["auto_fetch", "mode"]);
+    }
+
+    #[test]
     fn release_notes_schema_enum_matches_every_accepted_cli_value() {
         assert_schema_enum_matches_every_accepted_cli_value::<ReleaseNotes>(&[
             "update",
@@ -1308,5 +1340,38 @@ mod tests {
         // None＝沒設定，garde 對 Option<T> 的 range 是 None 放行、Some 才驗。
         let update = CoreUpdateConfig::default();
         assert!(update.validate().is_ok());
+    }
+
+    #[test]
+    fn auto_fetch_interval_secs_zero_fails_validation() {
+        let auto_fetch = CoreAutoFetchConfig {
+            mode: None,
+            interval_secs: Some(0),
+        };
+        assert!(auto_fetch.validate().is_err());
+    }
+
+    #[test]
+    fn auto_fetch_interval_secs_above_max_fails_validation() {
+        let auto_fetch = CoreAutoFetchConfig {
+            mode: None,
+            interval_secs: Some(MAX_INTERVAL_SECS + 1),
+        };
+        assert!(auto_fetch.validate().is_err());
+    }
+
+    #[test]
+    fn auto_fetch_interval_secs_within_range_passes_validation() {
+        let auto_fetch = CoreAutoFetchConfig {
+            mode: None,
+            interval_secs: Some(MIN_INTERVAL_SECS),
+        };
+        assert!(auto_fetch.validate().is_ok());
+    }
+
+    #[test]
+    fn auto_fetch_interval_secs_unset_passes_validation() {
+        let auto_fetch = CoreAutoFetchConfig::default();
+        assert!(auto_fetch.validate().is_ok());
     }
 }

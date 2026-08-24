@@ -25,6 +25,10 @@ const ESC_CANCEL: &str = "(Esc to cancel)";
 /// 守衛沒過時也是同一句，兩處共用同一份字面值不會漂移。
 pub(super) const UPDATE_INSTALLED_HINT: &str = "Updated — restart ysgit to apply";
 
+/// `AppEvent::AutoFetchCompleted` 顯示用的固定文案，唯一生產者是
+/// `app.rs` 的處理端；`auto_fetch` 模組不帶 payload，見該事件的文件。
+pub(super) const AUTO_FETCH_SUCCESS_MSG: &str = "Auto-fetched new commits";
+
 fn picker_digit_index(key: KeyEvent) -> Option<usize> {
     let KeyCode::Char(c) = key.code else {
         return None;
@@ -308,6 +312,14 @@ impl StatusLineState {
                 | StatusLine::NotificationSuccess(_)
                 | StatusLine::NotificationWarn(_)
         )
+    }
+
+    /// 狀態列現在能不能被「背景不請自來」的通知寫入：閒置，或只是壓著
+    /// 另一則通知。picker／prompt 都不算。`is_idle`／`is_showing_notification`
+    /// 各自的語意仍然分開（見上），這裡只是把兩者的 `||` 組合具名化，讓
+    /// `can_interrupt` 與背景通知的守衛共用同一份真值，不要各自手寫一次。
+    pub(super) fn is_idle_or_notification(&self) -> bool {
+        self.is_idle() || self.is_showing_notification()
     }
 
     pub(super) fn clear(&mut self) {
@@ -931,6 +943,7 @@ mod tests {
             graph_width: None,
             compact: None,
             update: crate::update::UpdateSettings::default(),
+            auto_fetch: crate::auto_fetch::AutoFetchSettings::default(),
             shell_command: Vec::new(),
         })
     }

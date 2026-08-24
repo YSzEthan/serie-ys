@@ -1,5 +1,4 @@
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -13,6 +12,7 @@ use ratatui::{
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{
+    auto_fetch,
     color::{ColorTheme, GraphColorSet},
     config::{CoreConfig, CoreShellConfig, UiConfig, UserCommand, UserCommandType},
     event::{AppEvent, EventController, UserEvent, UserEventWithCount},
@@ -20,7 +20,7 @@ use crate::{
         copy_to_clipboard, exec_user_command, exec_user_command_suspend, is_posix_shell,
         ExternalCommandParameters,
     },
-    git::{Commit, CommitHash, FileChange, Head, Ref, RefType, Repository},
+    git::{background_command, Commit, CommitHash, FileChange, Head, Ref, RefType, Repository},
     github::{
         is_merge_conflict_error, merge_pr, set_item_state, set_pr_draft, GhItemKind, MergeMethod,
         PrDraftAction, StateAction, StateFilter,
@@ -76,6 +76,9 @@ pub struct AppContext {
     /// 已合併 CLI／設定檔的自動更新設定，`update::spawn_check` 與
     /// `auto_restart` 的中斷判斷共用同一份，不各自再 `.or()` 一遍。
     pub update: UpdateSettings,
+    /// 已合併 CLI／設定檔的自動 fetch 設定，`AppEvent::AutoFetchPoll` 的
+    /// handler 讀 `interval` 來重新武裝下一輪。
+    pub auto_fetch: auto_fetch::AutoFetchSettings,
     /// 內嵌命令列（`/`）執行指令用的 `[程式, 旗標...]`——已解析完成的
     /// 最終值，不同於 `core_config.shell.command` 那個可能是 `None` 的
     /// 原始設定，見 `resolve_shell_command`。
@@ -585,6 +588,36 @@ impl App<'_> {
                     self.checkout_commit(target);
                 }
                 AppEvent::AutoRefresh => {
+                    self.view.refresh();
+                }
+                AppEvent::AutoFetchPoll { last_fingerprint } => {
+                    if self.pending_message.is_some() {
+                        // 有 blocking overlay：這一輪跳過網路工作，但同一顆
+                        // 指紋要原封不動送下去重新武裝——連跳過都不能連
+                        // 重新武裝一起跳過，否則這條鏈永久死掉。
+                        self.ec.sender().send_after(
+                            AppEvent::AutoFetchPoll { last_fingerprint },
+                            self.ctx.auto_fetch.interval,
+                        );
+                    } else {
+                        auto_fetch::spawn_poll(
+                            self.ec,
+                            self.repository.path(),
+                            last_fingerprint,
+                            self.ctx.auto_fetch.interval,
+                        );
+                    }
+                }
+                AppEvent::AutoFetchCompleted => {
+                    // 使用者正在 picker／輸入框裡的時候不搶 status line；
+                    // refresh 照做，只有要不要出聲用這道守衛。刻意不用
+                    // `can_interrupt()`——它連 GitHub view 都排除，而盯著
+                    // GitHub view 等 PR 被 merge 正是這個功能存在的理由。
+                    if self.status_line_state.is_idle_or_notification() {
+                        self.status_line_state.set_notification_success(
+                            status_line::AUTO_FETCH_SUCCESS_MSG.to_string(),
+                        );
+                    }
                     self.view.refresh();
                 }
                 AppEvent::OpenRefPicker { options, kind } => {
@@ -1735,16 +1768,19 @@ impl App<'_> {
     }
 
     /// 現在能不能打斷使用者：沒有 pending overlay、在三個 browsing view 之一、
-    /// 狀態列閒置或只是顯示一則通知（picker／prompt 都不算）。比
-    /// `maybe_open_update_prompt` 的守衛寬一格——理由見
-    /// `StatusLineState::is_showing_notification`。這是唯一一處判斷「可不可以
-    /// 打斷」，`auto_restart` 的無提示重啟與這裡的重啟提示共用它，兩者不准各自
-    /// 長出一份守衛。
+    /// 狀態列閒置或只是顯示一則通知（picker／prompt 都不算，理由見
+    /// `StatusLineState::is_showing_notification`）。這是唯一一處判斷「可不可以
+    /// 打斷『使用者當下正在看的 view』」，`auto_restart` 的無提示重啟與這裡的
+    /// 重啟提示共用它，兩者不准各自長出一份守衛。
+    ///
+    /// 狀態列那半（閒置或僅顯示通知）另外抽成
+    /// `StatusLineState::is_idle_or_notification`，`AppEvent::AutoFetchCompleted`
+    /// 的守衛也共用同一份——它刻意不要求 `is_browsing_view()`（見該處註解），
+    /// 所以不能直接呼叫這個函式。
     fn can_interrupt(&self) -> bool {
         self.pending_message.is_none()
             && self.view.is_browsing_view()
-            && (self.status_line_state.is_idle()
-                || self.status_line_state.is_showing_notification())
+            && self.status_line_state.is_idle_or_notification()
     }
 
     /// 下載＋替換執行檔完成，問是否要離開並以新版重啟。守衛沒過就退回通知。
@@ -1956,24 +1992,6 @@ const GIT_FETCH_TIMEOUT: Duration = Duration::from_secs(60);
 /// filter）。
 const GIT_CHECKOUT_TIMEOUT: Duration = Duration::from_secs(1800);
 
-/// 背景 git 指令共用的環境設定：`raw mode + alternate screen` 的終端機上，
-/// 沒有可用 credential helper 時 git／ssh 會直接對 controlling tty 寫提示
-/// 把畫面弄爛，子行程卡到逾時才收；`fetch` 又會觸發 `gc --auto`，背景長出
-/// 一個重量級 gc 不是好事。
-///
-/// `-c gc.auto=0` 是全域選項，必須在子指令（`fetch`／`checkout`）之前，
-/// 所以這裡直接建構整個 `Command`，不是事後 `.arg()` 附加——附加在子指令
-/// 之後 git 會把它當成該子指令的位置參數解析，不是全域設定。
-fn background_git_command(repo: &Path, args: &[String]) -> Command {
-    let mut cmd = Command::new("git");
-    cmd.args(["-c", "gc.auto=0"])
-        .args(args)
-        .current_dir(repo)
-        .env("GIT_TERMINAL_PROMPT", "0")
-        .env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
-    cmd
-}
-
 fn spawn_git_task(
     repo: &Path,
     ec: &EventController,
@@ -1996,7 +2014,7 @@ fn spawn_git_task(
     });
 
     std::thread::spawn(move || {
-        let cmd = background_git_command(&repo_path, &args);
+        let cmd = background_command(&repo_path, &args);
         let output = run_with_timeout(cmd, None, timeout);
 
         tx.send(AppEvent::HidePendingOverlay);

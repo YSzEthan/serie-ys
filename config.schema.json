@@ -109,6 +109,29 @@
           },
           "additionalProperties": false
         },
+        "auto_fetch": {
+          "type": "object",
+          "description": "Background auto-fetch settings. Periodically polls each git remote (via git ls-remote, not the GitHub API) and runs git fetch --all --prune when something changed. Only updates remote-tracking refs; local branches are never touched.",
+          "properties": {
+            "mode": {
+              "type": "string",
+              "description": "Whether background auto-fetch is enabled. Disabled by default. The value specified in the command line argument takes precedence.",
+              "enum": [
+                "off",
+                "on"
+              ],
+              "default": "off"
+            },
+            "interval_secs": {
+              "type": "integer",
+              "description": "How often (in seconds) to poll remotes for changes. The value specified in the command line argument takes precedence.",
+              "minimum": 30,
+              "maximum": 3600,
+              "default": 600
+            }
+          },
+          "additionalProperties": false
+        },
         "search": {
           "type": "object",
           "description": "Default search settings",

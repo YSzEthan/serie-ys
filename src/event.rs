@@ -249,6 +249,25 @@ pub enum AppEvent {
         action: crate::github::PrDraftAction,
         filter_state: crate::github::StateFilter,
     },
+    /// 持續運作期間每隔一個 interval 再檢查一次遠端有沒有變化——跟
+    /// `PeriodicUpdateCheck` 同一種鏈：`send_after` 自我重新武裝，不是
+    /// detached thread + `loop { sleep }`。
+    ///
+    /// `last_fingerprint` 是這條鏈的累加器，不是共享狀態：種子是空字串
+    /// （`lib.rs::run()` 只排這一次），之後每一輪都由
+    /// `auto_fetch::spawn_poll` 的背景 thread 算出下一顆、在自己收尾時
+    /// `send_after` 傳下去——重新武裝必須在 worker 尾端而不是這個事件剛
+    /// 收到時，否則 `interval` 太短、單一 remote 逾時預算又不小時，會讓
+    /// 兩輪 poll 疊在一起。
+    AutoFetchPoll {
+        last_fingerprint: String,
+    },
+    /// `auto_fetch` 背景 thread 偵測到遠端有變化、`git fetch` 成功了——
+    /// 沒有變化或任何一步失敗都不送事件（見 `auto_fetch` 模組文件），
+    /// 所以這個事件本身就代表「該讓使用者知道」，不必帶 payload：顯示的
+    /// 文案固定，見 `app.rs` 處理端。顯示與否仍要過守衛：使用者正在
+    /// picker／輸入框裡的時候不搶 status line。
+    AutoFetchCompleted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -338,6 +357,22 @@ impl Sender {
 impl Debug for Sender {
     fn fmt(&self, f: &mut Formatter<'_>) -> fmt::Result {
         write!(f, "Sender")
+    }
+}
+
+/// `EventController::mark_pending_refresh` 的可攜版——`EventController` 不是
+/// `Clone`（`handle`／`term_signal` 這些欄位綁著整個 process 的生命週期），
+/// 塞不進 `'static` thread closure。跟 `Sender` 是同一種角色：只暴露
+/// `EventController` 內部狀態的一個輕量把手，讓背景 thread（目前只有
+/// `auto_fetch` 的 poll worker）能在真的要 fetch 之前標記 token，不需要
+/// 整個 `EventController`。
+#[derive(Clone)]
+pub struct PendingRefreshFlag(Arc<AtomicBool>);
+
+impl PendingRefreshFlag {
+    /// 語意與呼叫時機見 `EventController::mark_pending_refresh`。
+    pub fn mark(&self) {
+        self.0.store(true, Ordering::Release);
     }
 }
 
@@ -605,7 +640,13 @@ impl EventController {
     /// `AutoRefresh`），watcher 也不會因此永久卡住——最壞情況是多吞一次
     /// 無關的 fs 事件。
     pub fn mark_pending_refresh(&self) {
-        self.pending_refresh.store(true, Ordering::Release);
+        self.pending_refresh_flag().mark();
+    }
+
+    /// `mark_pending_refresh` 的可攜版，供背景 thread 使用——見
+    /// `PendingRefreshFlag` 文件。
+    pub fn pending_refresh_flag(&self) -> PendingRefreshFlag {
+        PendingRefreshFlag(self.pending_refresh.clone())
     }
 }
 

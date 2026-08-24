@@ -16,6 +16,7 @@ use ratatui::{
 use tui_input::backend::crossterm::EventHandler;
 
 use crate::{
+    auto_fetch::{self, AutoFetch},
     color::ColorTheme,
     config, keybind,
     update::{self, AutoRestart, ReleaseNotes, UpdateMode},
@@ -164,6 +165,13 @@ fn release_notes_desc(v: ReleaseNotes) -> &'static str {
     }
 }
 
+fn auto_fetch_desc(v: AutoFetch) -> &'static str {
+    match v {
+        AutoFetch::Off => "關閉",
+        AutoFetch::On => "開啟",
+    }
+}
+
 /// 精靈顯示「目前值」與循環切換起點用的參考點。跟 `src/lib.rs` 的 `run()`
 /// 裡 `args.field.or(core_config.option.field)` 那條合併鏈讀的是同一份
 /// 設定檔，語意也一樣（沒被使用者這次 session 動過的欄位，最終生效的值
@@ -185,6 +193,8 @@ struct ResolvedDefaults {
     update_interval: u64,
     auto_restart: AutoRestart,
     release_notes: ReleaseNotes,
+    auto_fetch: AutoFetch,
+    auto_fetch_interval: u64,
     /// 顏色編輯器的預覽基準（使用者實際設定，不是 `wizard::run()` 固定用
     /// 的畫面 chrome）。
     theme: ColorTheme,
@@ -237,6 +247,11 @@ impl ResolvedDefaults {
                 .unwrap_or(update::DEFAULT_INTERVAL_HOURS),
             auto_restart: core.update.auto_restart.unwrap_or_default(),
             release_notes: core.update.release_notes.unwrap_or_default(),
+            auto_fetch: core.auto_fetch.mode.unwrap_or_default(),
+            auto_fetch_interval: core
+                .auto_fetch
+                .interval_secs
+                .unwrap_or(auto_fetch::DEFAULT_INTERVAL_SECS),
             theme,
             keybind_patch: keybind_patch.unwrap_or_default(),
             user_commands,
@@ -317,6 +332,7 @@ struct ConfigKey {
 
 const CORE_OPTION: &[&str] = &["core", "option"];
 const CORE_UPDATE: &[&str] = &["core", "update"];
+const CORE_AUTO_FETCH: &[&str] = &["core", "auto_fetch"];
 const COLOR: &[&str] = &["color"];
 const COLOR_GRAPH: &[&str] = &["color", "graph"];
 const KEYBIND: &[&str] = &["keybind"];
@@ -332,6 +348,7 @@ enum CycleField {
     UpdateMode,
     AutoRestart,
     ReleaseNotes,
+    AutoFetch,
 }
 
 impl CycleField {
@@ -347,6 +364,7 @@ impl CycleField {
             CycleField::UpdateMode => (CORE_UPDATE, "mode"),
             CycleField::AutoRestart => (CORE_UPDATE, "auto_restart"),
             CycleField::ReleaseNotes => (CORE_UPDATE, "release_notes"),
+            CycleField::AutoFetch => (CORE_AUTO_FETCH, "mode"),
         };
         ConfigKey {
             table,
@@ -364,6 +382,7 @@ impl CycleField {
             CycleField::UpdateMode => "--update-mode",
             CycleField::AutoRestart => "--auto-restart",
             CycleField::ReleaseNotes => "--release-notes",
+            CycleField::AutoFetch => "--auto-fetch",
         }
     }
 
@@ -377,6 +396,7 @@ impl CycleField {
             CycleField::UpdateMode => "自動更新檢查模式",
             CycleField::AutoRestart => "更新後自動重啟／開啟新版",
             CycleField::ReleaseNotes => "更新後跳出 release notes",
+            CycleField::AutoFetch => "背景自動偵測 remote 並 fetch",
         }
     }
 
@@ -408,6 +428,7 @@ impl CycleField {
             CycleField::ReleaseNotes => {
                 cycle_value(&mut args.release_notes, defaults.release_notes, delta)
             }
+            CycleField::AutoFetch => cycle_value(&mut args.auto_fetch, defaults.auto_fetch, delta),
         };
         draft.edits.insert(self.config_key(), Some(name.into()));
     }
@@ -437,6 +458,9 @@ impl CycleField {
             CycleField::ReleaseNotes => {
                 release_notes_desc(args.release_notes.unwrap_or(defaults.release_notes))
             }
+            CycleField::AutoFetch => {
+                auto_fetch_desc(args.auto_fetch.unwrap_or(defaults.auto_fetch))
+            }
         }
     }
 }
@@ -453,6 +477,7 @@ struct NumberSpec {
 enum NumberField {
     MaxCount,
     UpdateInterval,
+    AutoFetchInterval,
 }
 
 impl NumberField {
@@ -466,6 +491,10 @@ impl NumberField {
                 table: CORE_UPDATE,
                 key: "interval_hours".into(),
             },
+            NumberField::AutoFetchInterval => ConfigKey {
+                table: CORE_AUTO_FETCH,
+                key: "interval_secs".into(),
+            },
         }
     }
 
@@ -473,6 +502,7 @@ impl NumberField {
         match self {
             NumberField::MaxCount => "-n, --max-count <NUMBER>",
             NumberField::UpdateInterval => "--update-interval <HOURS>",
+            NumberField::AutoFetchInterval => "--auto-fetch-interval <SECONDS>",
         }
     }
 
@@ -480,6 +510,7 @@ impl NumberField {
         match self {
             NumberField::MaxCount => "要渲染的最大 commit 數量",
             NumberField::UpdateInterval => "自動更新的檢查間隔",
+            NumberField::AutoFetchInterval => "自動 fetch 的輪詢間隔",
         }
     }
 
@@ -495,11 +526,17 @@ impl NumberField {
                 min: update::MIN_INTERVAL_HOURS as usize,
                 max: update::MAX_INTERVAL_HOURS as usize,
             },
+            NumberField::AutoFetchInterval => NumberSpec {
+                title: "自動 fetch 的輪詢間隔（秒，30–3600）",
+                min: auto_fetch::MIN_INTERVAL_SECS as usize,
+                max: auto_fetch::MAX_INTERVAL_SECS as usize,
+            },
         }
     }
 
     /// 目前有效值，也是彈窗開啟時的起始內容。`None` 只有 `max_count` 會發生
-    /// （「不限制」）——`update_interval` 一定解得出一個數字。
+    /// （「不限制」）——`update_interval`／`auto_fetch_interval` 一定解得出
+    /// 一個數字。
     fn current(self, draft: &Draft, defaults: &ResolvedDefaults) -> Option<usize> {
         match self {
             NumberField::MaxCount => draft.args.max_count.or(defaults.max_count),
@@ -509,19 +546,27 @@ impl NumberField {
                     .update_interval
                     .unwrap_or(defaults.update_interval) as usize,
             ),
+            NumberField::AutoFetchInterval => Some(
+                draft
+                    .args
+                    .auto_fetch_interval
+                    .unwrap_or(defaults.auto_fetch_interval) as usize,
+            ),
         }
     }
 
     fn current_label(self, draft: &Draft, defaults: &ResolvedDefaults) -> String {
-        // `current()` 對 UpdateInterval 一定回 `Some`（見該函式），`None` 只有
-        // MaxCount 會發生；不在這裡重算一次 `defaults.update_interval` 這個
-        // 已經在 `current()` 算過的後備值，避免同一條規則兩處真值。
+        // `current()` 對 UpdateInterval／AutoFetchInterval 一定回 `Some`
+        // （見該函式），`None` 只有 MaxCount 會發生；不在這裡重算一次
+        // `defaults.*` 這些已經在 `current()` 算過的後備值，避免同一條規則
+        // 兩處真值。
         let Some(n) = self.current(draft, defaults) else {
             return "不限制".to_string();
         };
         match self {
             NumberField::MaxCount => n.to_string(),
             NumberField::UpdateInterval => format!("{n} 小時"),
+            NumberField::AutoFetchInterval => format!("{n} 秒"),
         }
     }
 
@@ -531,6 +576,9 @@ impl NumberField {
         match self {
             NumberField::MaxCount => draft.args.max_count = value,
             NumberField::UpdateInterval => draft.args.update_interval = value.map(|n| n as u64),
+            NumberField::AutoFetchInterval => {
+                draft.args.auto_fetch_interval = value.map(|n| n as u64)
+            }
         }
         draft
             .edits
@@ -641,6 +689,10 @@ const ROWS: &[RowAction] = &[
     RowAction::Edit(Editor::Dialog(Dialog::Number(NumberField::UpdateInterval))),
     RowAction::Edit(Editor::Cycle(CycleField::AutoRestart)),
     RowAction::Edit(Editor::Cycle(CycleField::ReleaseNotes)),
+    RowAction::Edit(Editor::Cycle(CycleField::AutoFetch)),
+    RowAction::Edit(Editor::Dialog(Dialog::Number(
+        NumberField::AutoFetchInterval,
+    ))),
     RowAction::Edit(Editor::Dialog(Dialog::ColorMenu)),
     RowAction::Edit(Editor::Dialog(Dialog::KeyBindMenu)),
     RowAction::Launch,
@@ -1701,10 +1753,11 @@ mod tests {
 
     // ── 新架構釘住的不變式：ConfigKey 對應表、空 edits、PATH 的隔離 ──
 
-    /// 10 個項目全部碰過一遍，寫回、再用真正的設定檔 parser（不是自己重抄
-    /// 一份反序列化邏輯）讀回來逐欄位比對。這條測試同時證明 10 條表路徑、
-    /// 10 個鍵名（`update_mode` 寫的是 `mode`、`update_interval` 寫的是
-    /// `interval_hours`，兩個鍵名跟欄位名不同，最容易打錯）、10 個字串值
+    /// 12 個項目全部碰過一遍，寫回、再用真正的設定檔 parser（不是自己重抄
+    /// 一份反序列化邏輯）讀回來逐欄位比對。這條測試同時證明 12 條表路徑、
+    /// 12 個鍵名（`update_mode` 寫的是 `mode`、`update_interval` 寫的是
+    /// `interval_hours`、`auto_fetch` 寫的是 `mode`、`auto_fetch_interval`
+    /// 寫的是 `interval_secs`，鍵名跟欄位名不同的最容易打錯）、12 個字串值
     /// 全對——`toml_edit` 只認語法不認語意，鍵名寫錯不會有任何編譯期或
     /// 執行期警訊，只有真的讀回來比對值才抓得到。
     #[test]
@@ -1719,11 +1772,13 @@ mod tests {
             CycleField::UpdateMode,
             CycleField::AutoRestart,
             CycleField::ReleaseNotes,
+            CycleField::AutoFetch,
         ] {
             field.cycle(&mut s.draft, &s.defaults, 1);
         }
         NumberField::MaxCount.commit(&mut s.draft, Some(123));
         NumberField::UpdateInterval.commit(&mut s.draft, Some(12));
+        NumberField::AutoFetchInterval.commit(&mut s.draft, Some(45));
 
         let updated = apply_touched_settings(&s.draft, "").unwrap();
         let core = config::parse_core(&updated).unwrap();
@@ -1741,6 +1796,11 @@ mod tests {
         assert_eq!(core.update.interval_hours, s.draft.args.update_interval);
         assert_eq!(core.update.auto_restart, s.draft.args.auto_restart);
         assert_eq!(core.update.release_notes, s.draft.args.release_notes);
+        assert_eq!(core.auto_fetch.mode, s.draft.args.auto_fetch);
+        assert_eq!(
+            core.auto_fetch.interval_secs,
+            s.draft.args.auto_fetch_interval
+        );
     }
 
     /// 新架構才有的保證：`edits` 是空的，`apply_touched_settings` 一次
