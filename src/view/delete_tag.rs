@@ -139,7 +139,7 @@ impl<'a> DeleteTagView<'a> {
                         "Local tag deleted, but failed to delete from remote: {e}"
                     )));
                     // 仍然要 refresh 以顯示刪除結果
-                    tx.send(AppEvent::Refresh(RefreshViewContext::List { list_context }));
+                    tx.send(AppEvent::Refresh(RefreshViewContext::list(list_context)));
                     return;
                 }
             }
@@ -152,7 +152,7 @@ impl<'a> DeleteTagView<'a> {
             };
             tx.send(AppEvent::NotifySuccess(msg));
             tx.send(AppEvent::HidePendingOverlay);
-            tx.send(AppEvent::Refresh(RefreshViewContext::List { list_context }));
+            tx.send(AppEvent::Refresh(RefreshViewContext::list(list_context)));
         });
     }
 

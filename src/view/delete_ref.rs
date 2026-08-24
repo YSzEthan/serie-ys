@@ -201,16 +201,12 @@ impl<'a> DeleteRefView<'a> {
                     };
                     tx.send(AppEvent::NotifySuccess(msg));
                     tx.send(AppEvent::HidePendingOverlay);
-                    tx.send(AppEvent::Refresh(RefreshViewContext::List {
-                        list_context: list_context.clone(),
-                    }));
+                    tx.send(AppEvent::Refresh(RefreshViewContext::list(list_context)));
                 }
                 Err(e) => {
                     // 如果本機刪除成功，仍然要 refresh UI
                     if local_deleted {
-                        tx.send(AppEvent::Refresh(RefreshViewContext::List {
-                            list_context: list_context.clone(),
-                        }));
+                        tx.send(AppEvent::Refresh(RefreshViewContext::list(list_context)));
                     }
                     tx.send(AppEvent::HidePendingOverlay);
                     tx.send(AppEvent::NotifyError(e));

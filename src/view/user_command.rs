@@ -11,10 +11,7 @@ use crate::{
     app::AppContext,
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
     git::{Commit, Ref, Repository},
-    view::{
-        ansi_output_to_lines, ListRefreshViewContext, RefreshViewContext,
-        UserCommandRefreshViewContext,
-    },
+    view::{ansi_output_to_lines, ListRefreshViewContext, RefreshViewContext, ViewContext},
     widget::{
         commit_list::{CommitList, CommitListState},
         h,
@@ -259,15 +256,13 @@ impl<'a> UserCommandView<'a> {
     }
 
     pub fn refresh(&self) {
-        let list_state = self.as_list_state();
-        let list_context = ListRefreshViewContext::from(list_state);
-        let user_command_context = UserCommandRefreshViewContext {
-            n: self.user_command_number,
-        };
-        let context = RefreshViewContext::UserCommand {
+        let list_context = ListRefreshViewContext::from(self.as_list_state());
+        let context = RefreshViewContext::new(
             list_context,
-            user_command_context,
-        };
+            ViewContext::UserCommand {
+                n: self.user_command_number,
+            },
+        );
         self.tx.send(AppEvent::Refresh(context));
     }
 }

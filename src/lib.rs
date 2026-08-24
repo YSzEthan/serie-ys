@@ -5,12 +5,14 @@ mod github;
 pub mod graph;
 
 mod app;
+mod auto_fetch;
 mod diff;
 mod emoji;
 mod event;
 mod external;
 mod fuzzy;
 mod keybind;
+mod process;
 mod update;
 mod view;
 mod widget;
@@ -24,6 +26,7 @@ use std::{
 };
 
 use app::{App, Ret};
+use auto_fetch::AutoFetch;
 use clap::{CommandFactory, Parser, ValueEnum};
 use graph::Graph;
 use rustc_hash::FxHashSet;
@@ -97,6 +100,21 @@ struct Args {
     #[arg(long, value_name = "TYPE")]
     release_notes: Option<ReleaseNotes>,
 
+    /// 背景定期偵測 git remote 是否有新內容，有就自動 fetch（只更新
+    /// remote-tracking refs，本地 branch 不動）[default: off]
+    #[arg(long, value_name = "TYPE")]
+    auto_fetch: Option<AutoFetch>,
+
+    /// 自動 fetch 的輪詢間隔，單位秒 [default: 600]
+    #[arg(
+        long,
+        value_name = "SECONDS",
+        value_parser = clap::value_parser!(u64).range(
+            auto_fetch::MIN_INTERVAL_SECS..=auto_fetch::MAX_INTERVAL_SECS
+        )
+    )]
+    auto_fetch_interval: Option<u64>,
+
     /// 顯示說明
     #[arg(short = 'h', long, action = clap::ArgAction::Help)]
     help: Option<bool>,
@@ -142,6 +160,8 @@ impl Args {
             update_interval,
             auto_restart,
             release_notes,
+            auto_fetch,
+            auto_fetch_interval,
             help: _,
             version: _,
             update: _,
@@ -170,6 +190,14 @@ impl Args {
             (
                 "--release-notes",
                 release_notes.as_ref().map(wizard::variant_name),
+            ),
+            (
+                "--auto-fetch",
+                auto_fetch.as_ref().map(wizard::variant_name),
+            ),
+            (
+                "--auto-fetch-interval",
+                auto_fetch_interval.map(|s| s.to_string()),
             ),
         ] {
             if let Some(value) = value {
@@ -490,6 +518,16 @@ pub fn run() -> Result<()> {
             release_notes: core_config.update.release_notes,
         },
     );
+    let auto_fetch_settings = auto_fetch::resolve(
+        auto_fetch::AutoFetchOverrides {
+            mode: args.auto_fetch,
+            interval_secs: args.auto_fetch_interval,
+        },
+        auto_fetch::AutoFetchOverrides {
+            mode: core_config.auto_fetch.mode,
+            interval_secs: core_config.auto_fetch.interval_secs,
+        },
+    );
 
     let graph_color_set = color::GraphColorSet::new(&color_theme.graph);
 
@@ -515,10 +553,11 @@ pub fn run() -> Result<()> {
         graph_width,
         compact,
         update: update_settings,
+        auto_fetch: auto_fetch_settings,
         shell_command,
     });
 
-    let mut ec = event::EventController::init();
+    let ec = event::EventController::init();
     // 這一輪迴圈每次 `Ret::Refresh` 都會重建 `App` 並重跑到這裡——檢查要
     // spawn 在迴圈外，只在整個 process 生命週期跑一次；放進 `App::run()`
     // 開頭的話，建 tag、刪 branch、checkout 這些觸發 refresh 的操作都會
@@ -554,6 +593,20 @@ pub fn run() -> Result<()> {
     }
 
     let mut repository = git::Repository::load(Path::new(&args.path), order, max_count)?;
+    // 排第一次 auto-fetch 輪詢，立刻送（不是 `send_after`）：種子指紋是
+    // 空字串，只要 repo 有 remote，第一輪就會判定成「有變化」而 fetch，
+    // 這是「開起來就是最新的」的來源——之後每一輪由
+    // `AppEvent::AutoFetchPoll` 的處理在 worker 尾端自我重新武裝，起點只
+    // 有這裡一個。`mode = Off` 就不排。放在 `Repository::load` 之後才排：
+    // 那一行內部已經跑過 `check_git_repository`（含 bare repo），「是不是
+    // git repo」在這裡已經被證明，不需要像 `start_git_watcher` 那樣另外用
+    // `is_inside_work_tree` 當閘門——bare repo 沒有 worktree 但照樣有
+    // remote、照樣該 auto-fetch。
+    if auto_fetch_settings.mode == AutoFetch::On {
+        ec.sender().send(event::AppEvent::AutoFetchPoll {
+            last_fingerprint: String::new(),
+        });
+    }
     let mut graph = Rc::new(graph::calc_graph(
         &repository,
         resolve_head_commit_hash(&repository).as_ref(),
@@ -809,6 +862,10 @@ mod tests {
             "on",
             "--release-notes",
             "off",
+            "--auto-fetch",
+            "on",
+            "--auto-fetch-interval",
+            "45",
             "/some/repo",
         ])
         .unwrap();
@@ -826,6 +883,8 @@ mod tests {
         assert_eq!(reparsed.update_interval, args.update_interval);
         assert_eq!(reparsed.auto_restart, args.auto_restart);
         assert_eq!(reparsed.release_notes, args.release_notes);
+        assert_eq!(reparsed.auto_fetch, args.auto_fetch);
+        assert_eq!(reparsed.auto_fetch_interval, args.auto_fetch_interval);
         assert_eq!(reparsed.path, args.path);
     }
 

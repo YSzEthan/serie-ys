@@ -12,6 +12,7 @@ use ratatui::{
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{
+    auto_fetch,
     color::{ColorTheme, GraphColorSet},
     config::{CoreConfig, CoreShellConfig, UiConfig, UserCommand, UserCommandType},
     event::{AppEvent, EventController, UserEvent, UserEventWithCount},
@@ -19,15 +20,16 @@ use crate::{
         copy_to_clipboard, exec_user_command, exec_user_command_suspend, is_posix_shell,
         ExternalCommandParameters,
     },
-    git::{Commit, CommitHash, FileChange, Head, Ref, RefType, Repository},
+    git::{background_command, Commit, CommitHash, FileChange, Head, Ref, RefType, Repository},
     github::{
         is_merge_conflict_error, merge_pr, set_item_state, set_pr_draft, GhItemKind, MergeMethod,
         PrDraftAction, StateAction, StateFilter,
     },
     graph::{Graph, GraphStyle},
     keybind::KeyBind,
+    process::run_with_timeout,
     update::UpdateSettings,
-    view::{dispatch_delete_branch, RefreshViewContext, RefsOrigin, View},
+    view::{dispatch_delete_branch, RefreshViewContext, RefsOrigin, View, ViewContext},
     widget::{
         commit_list::{CommitInfo, CommitListState, RawCommitIdx},
         pending_overlay::PendingOverlay,
@@ -74,6 +76,9 @@ pub struct AppContext {
     /// 已合併 CLI／設定檔的自動更新設定，`update::spawn_check` 與
     /// `auto_restart` 的中斷判斷共用同一份，不各自再 `.or()` 一遍。
     pub update: UpdateSettings,
+    /// 已合併 CLI／設定檔的自動 fetch 設定，`AppEvent::AutoFetchPoll` 的
+    /// handler 讀 `interval` 來重新武裝下一輪。
+    pub auto_fetch: auto_fetch::AutoFetchSettings,
     /// 內嵌命令列（`/`）執行指令用的 `[程式, 旗標...]`——已解析完成的
     /// 最終值，不同於 `core_config.shell.command` 那個可能是 `None` 的
     /// 原始設定，見 `resolve_shell_command`。
@@ -445,6 +450,13 @@ impl App<'_> {
                 }
                 AppEvent::ShellOutputReady => {
                     self.view.poll_shell_output();
+                    // 指令跑完那一刻——watcher 在指令執行期間設過旗標的話
+                    // （`mark_refresh_pending`），現在才是安全的重建時機。
+                    if let View::Shell(ref mut view) = self.view {
+                        if let Some(context) = view.take_pending_refresh_context() {
+                            return Ok(Ret::Refresh(RefreshRequest { context }));
+                        }
+                    }
                 }
                 AppEvent::OpenReleaseNotes { body } => {
                     self.open_release_notes(body);
@@ -586,7 +598,42 @@ impl App<'_> {
                     self.checkout_commit(target);
                 }
                 AppEvent::AutoRefresh => {
-                    self.ec.clear_pending_refresh();
+                    if let Some(request) = self.shell_refresh_request() {
+                        return Ok(Ret::Refresh(request));
+                    }
+                    self.view.refresh();
+                }
+                AppEvent::AutoFetchPoll { last_fingerprint } => {
+                    if self.pending_message.is_some() {
+                        // 有 blocking overlay：這一輪跳過網路工作，但同一顆
+                        // 指紋要原封不動送下去重新武裝——連跳過都不能連
+                        // 重新武裝一起跳過，否則這條鏈永久死掉。
+                        self.ec.sender().send_after(
+                            AppEvent::AutoFetchPoll { last_fingerprint },
+                            self.ctx.auto_fetch.interval,
+                        );
+                    } else {
+                        auto_fetch::spawn_poll(
+                            self.ec,
+                            self.repository.path(),
+                            last_fingerprint,
+                            self.ctx.auto_fetch.interval,
+                        );
+                    }
+                }
+                AppEvent::AutoFetchCompleted => {
+                    // 使用者正在 picker／輸入框裡的時候不搶 status line；
+                    // refresh 照做，只有要不要出聲用這道守衛。刻意不用
+                    // `can_interrupt()`——它連 GitHub view 都排除，而盯著
+                    // GitHub view 等 PR 被 merge 正是這個功能存在的理由。
+                    if self.status_line_state.is_idle_or_notification() {
+                        self.status_line_state.set_notification_success(
+                            status_line::AUTO_FETCH_SUCCESS_MSG.to_string(),
+                        );
+                    }
+                    if let Some(request) = self.shell_refresh_request() {
+                        return Ok(Ret::Refresh(request));
+                    }
                     self.view.refresh();
                 }
                 AppEvent::OpenRefPicker { options, kind } => {
@@ -1301,9 +1348,6 @@ impl App<'_> {
             let (commit, _, refs) = selected_commit_details(self.repository, commit_list_state);
             (Some(commit), refs)
         };
-        let area_width = self.view_area.width.saturating_sub(4); // 扣掉左右 padding
-        let area_height =
-            crate::view::shell::output_pane_height(self.view_area.height).saturating_sub(1); // 扣掉上邊框，跟 render() 用同一條公式
         let repo_path = self.repository.path().to_path_buf();
         // 在 `mem::take` 之前對還沒被包住的 List/Detail 設旗標——list/detail
         // 底下多擠出一行輸入列，graph 是用終端圖形協定畫的，區域縮小不清
@@ -1316,8 +1360,6 @@ impl App<'_> {
             before_view,
             commit,
             refs,
-            area_width,
-            area_height,
             repo_path,
             self.ctx.clone(),
             self.ec.sender(),
@@ -1333,6 +1375,21 @@ impl App<'_> {
             }
             self.view.request_graph_clear();
         }
+    }
+
+    /// watcher 觸發時（`AutoRefresh` / `AutoFetchCompleted`）呼叫，讓命令列
+    /// 開著時背景 graph 也能立刻連動更新，不必等關掉命令列
+    /// （`close_shell` 的 `refresh_pending` 路徑）。只有「目前是 Shell view
+    /// 且指令沒在跑」才會回 `Some`；其他情況一律回 `None`，呼叫端照舊改呼叫
+    /// `self.view.refresh()`——非 Shell view 走原本的 `AppEvent::Refresh`
+    /// event queue，Shell 執行中則設 `refresh_pending`，等
+    /// `AppEvent::ShellOutputReady` 才補送。
+    fn shell_refresh_request(&mut self) -> Option<RefreshRequest> {
+        let View::Shell(ref mut view) = self.view else {
+            return None;
+        };
+        let context = view.take_refresh_context()?;
+        Some(RefreshRequest { context })
     }
 
     /// 這裡才是「看過」這一版 release notes 的認定時機——不是
@@ -1667,23 +1724,19 @@ impl App<'_> {
 
     fn init_with_context(&mut self, context: RefreshViewContext) {
         if let View::List(ref mut view) = self.view {
-            view.reset_commit_list_with(context.list_context());
+            view.reset_commit_list_with(&context.list);
         }
-        match context {
-            RefreshViewContext::List { .. } => {}
-            RefreshViewContext::Detail { .. } => {
+        match context.view {
+            ViewContext::List => {}
+            ViewContext::Detail => {
                 self.open_detail();
             }
-            RefreshViewContext::UserCommand {
-                user_command_context,
-                ..
-            } => {
-                self.open_user_command(user_command_context.n, None);
+            ViewContext::UserCommand { n } => {
+                self.open_user_command(n, None);
             }
-            RefreshViewContext::Refs {
+            ViewContext::Refs {
                 refs_context,
                 origin,
-                ..
             } => {
                 // origin 只是 close Refs 時「要回哪」的記號，不需要先把 view 切成 Detail
                 // 再立刻被 open_refs_with_origin take 走 list_state——那會白跑一次 git diff。
@@ -1691,6 +1744,15 @@ impl App<'_> {
                 if let View::Refs(ref mut view) = self.view {
                     view.reset_refs_with(refs_context);
                 }
+            }
+        }
+        // Shell 是疊加在 List/Detail 之上的第三個維度，等底層 view 還原完才
+        // 開——`open_shell()` 需要一個已經還原好選取狀態的 List/Detail 才能
+        // 正確取出 `{{target_hash}}` 系列 marker 用的 commit/refs。
+        if let Some(shell_context) = context.shell {
+            self.open_shell();
+            if let View::Shell(ref mut view) = self.view {
+                view.restore_state(*shell_context);
             }
         }
     }
@@ -1749,16 +1811,19 @@ impl App<'_> {
     }
 
     /// 現在能不能打斷使用者：沒有 pending overlay、在三個 browsing view 之一、
-    /// 狀態列閒置或只是顯示一則通知（picker／prompt 都不算）。比
-    /// `maybe_open_update_prompt` 的守衛寬一格——理由見
-    /// `StatusLineState::is_showing_notification`。這是唯一一處判斷「可不可以
-    /// 打斷」，`auto_restart` 的無提示重啟與這裡的重啟提示共用它，兩者不准各自
-    /// 長出一份守衛。
+    /// 狀態列閒置或只是顯示一則通知（picker／prompt 都不算，理由見
+    /// `StatusLineState::is_showing_notification`）。這是唯一一處判斷「可不可以
+    /// 打斷『使用者當下正在看的 view』」，`auto_restart` 的無提示重啟與這裡的
+    /// 重啟提示共用它，兩者不准各自長出一份守衛。
+    ///
+    /// 狀態列那半（閒置或僅顯示通知）另外抽成
+    /// `StatusLineState::is_idle_or_notification`，`AppEvent::AutoFetchCompleted`
+    /// 的守衛也共用同一份——它刻意不要求 `is_browsing_view()`（見該處註解），
+    /// 所以不能直接呼叫這個函式。
     fn can_interrupt(&self) -> bool {
         self.pending_message.is_none()
             && self.view.is_browsing_view()
-            && (self.status_line_state.is_idle()
-                || self.status_line_state.is_showing_notification())
+            && self.status_line_state.is_idle_or_notification()
     }
 
     /// 下載＋替換執行檔完成，問是否要離開並以新版重啟。守衛沒過就退回通知。
@@ -1779,6 +1844,7 @@ impl App<'_> {
             "Fetching...".into(),
             "Fetch completed".into(),
             "Fetch failed",
+            GIT_FETCH_TIMEOUT,
         );
     }
 
@@ -1790,6 +1856,7 @@ impl App<'_> {
             format!("Checking out '{target}'..."),
             format!("Checked out '{target}'"),
             "Checkout failed",
+            GIT_CHECKOUT_TIMEOUT,
         );
     }
 }
@@ -1942,7 +2009,7 @@ fn spawn_delete_branch(
         match result {
             Ok(()) => {
                 tx.send(AppEvent::NotifySuccess(format!("Branch '{name}' deleted")));
-                tx.send(AppEvent::Refresh(RefreshViewContext::List { list_context }));
+                tx.send(AppEvent::Refresh(RefreshViewContext::list(list_context)));
             }
             Err(e) => {
                 let hint = if !force && e.contains("not fully merged") {
@@ -1956,6 +2023,18 @@ fn spawn_delete_branch(
     });
 }
 
+/// `fetch --all` 的逾時預算。大 repo 的 fetch 合法超過幾十秒很常見，砍掉
+/// 一個今天會成功的操作就是 break userspace——這裡只防真的被網路黑洞吃掉
+/// 的情況。
+const GIT_FETCH_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// `checkout` 的逾時預算，刻意抓得比 fetch 大得多：中途被 kill 掉的
+/// `checkout` 會留下 `.git/index.lock`，之後這個 repo 裡每一個 git 指令都
+/// 會失敗，直到使用者手動去刪——這比洩漏一條背景 thread 嚴重得多，所以要
+/// 大到任何合法操作都碰不到，這裡只防真的卡死（例如掛掉的 smudge/clean
+/// filter）。
+const GIT_CHECKOUT_TIMEOUT: Duration = Duration::from_secs(1800);
+
 fn spawn_git_task(
     repo: &Path,
     ec: &EventController,
@@ -1963,6 +2042,7 @@ fn spawn_git_task(
     pending_msg: String,
     success_msg: String,
     error_prefix: &str,
+    timeout: Duration,
 ) {
     let repo_path = repo.to_path_buf();
     let tx = ec.sender();
@@ -1977,10 +2057,8 @@ fn spawn_git_task(
     });
 
     std::thread::spawn(move || {
-        let output = std::process::Command::new("git")
-            .args(&args)
-            .current_dir(&repo_path)
-            .output();
+        let cmd = background_command(&repo_path, &args);
+        let output = run_with_timeout(cmd, None, timeout);
 
         tx.send(AppEvent::HidePendingOverlay);
         match output {

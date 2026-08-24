@@ -22,6 +22,13 @@ interval_hours = 6      # 檢查間隔（小時），範圍 1-48；啟動查一�
 auto_restart = "off"    # off｜on——on 的話更新完不再詢問，TUI 直接重啟、CLI（-U）直接開啟
 release_notes = "on"    # off｜on——版本變了第一次啟動要不要自動跳出 release notes；--whats-new 隨時可手動查看
 
+[core.auto_fetch]
+# 背景定期偵測 git remote 是否有新內容，有就自動 fetch，對應
+# --auto-fetch/--auto-fetch-interval。只更新 remote-tracking refs，本地
+# branch 一律不動；預設關閉。
+mode = "off"          # off｜on
+interval_secs = 600   # 輪詢間隔（秒），範圍 30-3600
+
 [core.search]
 ignore_case = false  # 是否預設忽略大小寫
 fuzzy = false         # 是否預設啟用模糊比對

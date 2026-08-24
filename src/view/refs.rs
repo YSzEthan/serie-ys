@@ -10,7 +10,7 @@ use crate::{
     app::AppContext,
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
     git::{Ref, RefType},
-    view::{ListRefreshViewContext, RefreshViewContext, RefsRefreshViewContext},
+    view::{ListRefreshViewContext, RefreshViewContext, RefsRefreshViewContext, ViewContext},
     widget::{
         commit_list::{CommitList, CommitListState},
         ref_list::{RefList, RefListState},
@@ -206,18 +206,19 @@ impl<'a> RefsView<'a> {
     }
 
     pub fn refresh(&self) {
-        let list_state = self.as_list_state();
-        let list_context = ListRefreshViewContext::from(list_state);
+        let list_context = ListRefreshViewContext::from(self.as_list_state());
         let (tree_selected, tree_opened) = self.ref_list_state.current_tree_status();
         let refs_context = RefsRefreshViewContext {
             selected: tree_selected,
             opened: tree_opened,
         };
-        let context = RefreshViewContext::Refs {
+        let context = RefreshViewContext::new(
             list_context,
-            refs_context,
-            origin: self.origin,
-        };
+            ViewContext::Refs {
+                refs_context,
+                origin: self.origin,
+            },
+        );
         self.tx.send(AppEvent::Refresh(context));
     }
 

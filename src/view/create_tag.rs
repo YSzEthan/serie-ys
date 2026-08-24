@@ -213,7 +213,7 @@ impl<'a> CreateTagView<'a> {
                         "Tag created locally, but push failed: {e}"
                     )));
                     // 仍然要 refresh 以顯示本機已建立的 tag
-                    tx.send(AppEvent::Refresh(RefreshViewContext::List { list_context }));
+                    tx.send(AppEvent::Refresh(RefreshViewContext::list(list_context)));
                     return;
                 }
             }
@@ -226,7 +226,7 @@ impl<'a> CreateTagView<'a> {
             };
             tx.send(AppEvent::NotifySuccess(msg));
             tx.send(AppEvent::HidePendingOverlay);
-            tx.send(AppEvent::Refresh(RefreshViewContext::List { list_context }));
+            tx.send(AppEvent::Refresh(RefreshViewContext::list(list_context)));
         });
     }
 
