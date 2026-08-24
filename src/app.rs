@@ -29,7 +29,7 @@ use crate::{
     keybind::KeyBind,
     process::run_with_timeout,
     update::UpdateSettings,
-    view::{dispatch_delete_branch, RefreshViewContext, RefsOrigin, View},
+    view::{dispatch_delete_branch, RefreshViewContext, RefsOrigin, View, ViewContext},
     widget::{
         commit_list::{CommitInfo, CommitListState, RawCommitIdx},
         pending_overlay::PendingOverlay,
@@ -450,6 +450,13 @@ impl App<'_> {
                 }
                 AppEvent::ShellOutputReady => {
                     self.view.poll_shell_output();
+                    // 指令跑完那一刻——watcher 在指令執行期間設過旗標的話
+                    // （`mark_refresh_pending`），現在才是安全的重建時機。
+                    if let View::Shell(ref mut view) = self.view {
+                        if let Some(context) = view.take_pending_refresh_context() {
+                            return Ok(Ret::Refresh(RefreshRequest { context }));
+                        }
+                    }
                 }
                 AppEvent::OpenReleaseNotes { body } => {
                     self.open_release_notes(body);
@@ -588,6 +595,9 @@ impl App<'_> {
                     self.checkout_commit(target);
                 }
                 AppEvent::AutoRefresh => {
+                    if let Some(request) = self.shell_refresh_request() {
+                        return Ok(Ret::Refresh(request));
+                    }
                     self.view.refresh();
                 }
                 AppEvent::AutoFetchPoll { last_fingerprint } => {
@@ -617,6 +627,9 @@ impl App<'_> {
                         self.status_line_state.set_notification_success(
                             status_line::AUTO_FETCH_SUCCESS_MSG.to_string(),
                         );
+                    }
+                    if let Some(request) = self.shell_refresh_request() {
+                        return Ok(Ret::Refresh(request));
                     }
                     self.view.refresh();
                 }
@@ -1332,9 +1345,6 @@ impl App<'_> {
             let (commit, _, refs) = selected_commit_details(self.repository, commit_list_state);
             (Some(commit), refs)
         };
-        let area_width = self.view_area.width.saturating_sub(4); // 扣掉左右 padding
-        let area_height =
-            crate::view::shell::output_pane_height(self.view_area.height).saturating_sub(1); // 扣掉上邊框，跟 render() 用同一條公式
         let repo_path = self.repository.path().to_path_buf();
         // 在 `mem::take` 之前對還沒被包住的 List/Detail 設旗標——list/detail
         // 底下多擠出一行輸入列，graph 是用終端圖形協定畫的，區域縮小不清
@@ -1347,8 +1357,6 @@ impl App<'_> {
             before_view,
             commit,
             refs,
-            area_width,
-            area_height,
             repo_path,
             self.ctx.clone(),
             self.ec.sender(),
@@ -1364,6 +1372,21 @@ impl App<'_> {
             }
             self.view.request_graph_clear();
         }
+    }
+
+    /// watcher 觸發時（`AutoRefresh` / `AutoFetchCompleted`）呼叫，讓命令列
+    /// 開著時背景 graph 也能立刻連動更新，不必等關掉命令列
+    /// （`close_shell` 的 `refresh_pending` 路徑）。只有「目前是 Shell view
+    /// 且指令沒在跑」才會回 `Some`；其他情況一律回 `None`，呼叫端照舊改呼叫
+    /// `self.view.refresh()`——非 Shell view 走原本的 `AppEvent::Refresh`
+    /// event queue，Shell 執行中則設 `refresh_pending`，等
+    /// `AppEvent::ShellOutputReady` 才補送。
+    fn shell_refresh_request(&mut self) -> Option<RefreshRequest> {
+        let View::Shell(ref mut view) = self.view else {
+            return None;
+        };
+        let context = view.take_refresh_context()?;
+        Some(RefreshRequest { context })
     }
 
     /// 這裡才是「看過」這一版 release notes 的認定時機——不是
@@ -1686,23 +1709,19 @@ impl App<'_> {
 
     fn init_with_context(&mut self, context: RefreshViewContext) {
         if let View::List(ref mut view) = self.view {
-            view.reset_commit_list_with(context.list_context());
+            view.reset_commit_list_with(&context.list);
         }
-        match context {
-            RefreshViewContext::List { .. } => {}
-            RefreshViewContext::Detail { .. } => {
+        match context.view {
+            ViewContext::List => {}
+            ViewContext::Detail => {
                 self.open_detail();
             }
-            RefreshViewContext::UserCommand {
-                user_command_context,
-                ..
-            } => {
-                self.open_user_command(user_command_context.n, None);
+            ViewContext::UserCommand { n } => {
+                self.open_user_command(n, None);
             }
-            RefreshViewContext::Refs {
+            ViewContext::Refs {
                 refs_context,
                 origin,
-                ..
             } => {
                 // origin 只是 close Refs 時「要回哪」的記號，不需要先把 view 切成 Detail
                 // 再立刻被 open_refs_with_origin take 走 list_state——那會白跑一次 git diff。
@@ -1710,6 +1729,15 @@ impl App<'_> {
                 if let View::Refs(ref mut view) = self.view {
                     view.reset_refs_with(refs_context);
                 }
+            }
+        }
+        // Shell 是疊加在 List/Detail 之上的第三個維度，等底層 view 還原完才
+        // 開——`open_shell()` 需要一個已經還原好選取狀態的 List/Detail 才能
+        // 正確取出 `{{target_hash}}` 系列 marker 用的 commit/refs。
+        if let Some(shell_context) = context.shell {
+            self.open_shell();
+            if let View::Shell(ref mut view) = self.view {
+                view.restore_state(*shell_context);
             }
         }
     }
@@ -1966,7 +1994,7 @@ fn spawn_delete_branch(
         match result {
             Ok(()) => {
                 tx.send(AppEvent::NotifySuccess(format!("Branch '{name}' deleted")));
-                tx.send(AppEvent::Refresh(RefreshViewContext::List { list_context }));
+                tx.send(AppEvent::Refresh(RefreshViewContext::list(list_context)));
             }
             Err(e) => {
                 let hint = if !force && e.contains("not fully merged") {

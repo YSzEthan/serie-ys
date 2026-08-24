@@ -1,6 +1,7 @@
 use std::{path::PathBuf, rc::Rc};
 
-use ratatui::{crossterm::event::KeyEvent, layout::Rect, Frame};
+use ratatui::{crossterm::event::KeyEvent, layout::Rect, text::Line, Frame};
+use tui_input::Input;
 
 use crate::{
     app::AppContext,
@@ -304,21 +305,12 @@ impl<'a> View<'a> {
         before: View<'a>,
         commit: Option<Commit>,
         refs: Vec<Ref>,
-        area_width: u16,
-        area_height: u16,
         repo_path: PathBuf,
         ctx: Rc<AppContext>,
         tx: Sender,
     ) -> Self {
         View::Shell(Box::new(ShellView::new(
-            before,
-            commit,
-            refs,
-            area_width,
-            area_height,
-            repo_path,
-            ctx,
-            tx,
+            before, commit, refs, repo_path, ctx, tx,
         )))
     }
 
@@ -351,6 +343,21 @@ impl<'a> View<'a> {
         }
     }
 
+    /// `ShellView::take_refresh_context` 用這個問「我底下包的 `before` 是
+    /// 誰、它的 list 狀態長怎樣」——`open_shell` 只接受 List/Detail
+    /// （`app::open_shell`），這裡的定義域就只需要涵蓋這兩種。
+    pub fn refresh_context(&self) -> Option<RefreshViewContext> {
+        let (list_state, view) = match self {
+            View::List(view) => (view.as_list_state(), ViewContext::List),
+            View::Detail(view) => (view.as_list_state(), ViewContext::Detail),
+            _ => return None,
+        };
+        Some(RefreshViewContext::new(
+            ListRefreshViewContext::from(list_state),
+            view,
+        ))
+    }
+
     pub fn into_commit_list_state(self) -> CommitListState<'a> {
         let mut view = self;
         loop {
@@ -374,34 +381,51 @@ impl<'a> View<'a> {
     }
 }
 
+/// 四種 browsing/dialog view 的 refresh context 曾經各是 `RefreshViewContext`
+/// 的一個 variant，但全部都帶 `list_context`——那其實是「底層 view 長怎樣」
+/// 跟「list 的捲動/選取狀態」兩個維度硬塞進同一個 enum。拆開成 `list` +
+/// `view` 兩個欄位，`shell` 是疊加在 `view` 上面的第三個、獨立的維度
+/// （只會跟 `ViewContext::List` / `ViewContext::Detail` 同時出現，因為
+/// `open_shell` 只接受這兩種 view）。
 #[derive(Debug, Clone)]
-pub enum RefreshViewContext {
-    List {
-        list_context: ListRefreshViewContext,
-    },
-    Detail {
-        list_context: ListRefreshViewContext,
-    },
-    UserCommand {
-        list_context: ListRefreshViewContext,
-        user_command_context: UserCommandRefreshViewContext,
-    },
-    Refs {
-        list_context: ListRefreshViewContext,
-        refs_context: RefsRefreshViewContext,
-        origin: RefsOrigin,
-    },
+pub struct RefreshViewContext {
+    pub list: ListRefreshViewContext,
+    pub view: ViewContext,
+    /// `Box` 是因為只有 Shell 這一條路徑會填它——不 box 的話
+    /// `AppEvent::Refresh` 這個 variant 會為了這一條路徑，讓每顆
+    /// `Tick`/`Key` 走 channel 都多搬一份沒用到的 bytes。
+    pub shell: Option<Box<ShellRefreshViewContext>>,
 }
 
 impl RefreshViewContext {
-    pub fn list_context(&self) -> &ListRefreshViewContext {
-        match self {
-            RefreshViewContext::List { list_context }
-            | RefreshViewContext::Detail { list_context }
-            | RefreshViewContext::UserCommand { list_context, .. }
-            | RefreshViewContext::Refs { list_context, .. } => list_context,
+    /// `shell` 只有 Shell 那一條路徑會填——這裡統一補 `None`，呼叫端不用
+    /// 每個都記得寫一次。
+    pub fn new(list: ListRefreshViewContext, view: ViewContext) -> Self {
+        RefreshViewContext {
+            list,
+            view,
+            shell: None,
         }
     }
+
+    /// 純粹的 List 刷新——沒有底層 view 要切換、也沒有命令列要還原。
+    /// 大多數呼叫端（建立/刪除 tag、刪除 ref 之後刷新清單）都是這個形狀。
+    pub fn list(list: ListRefreshViewContext) -> Self {
+        RefreshViewContext::new(list, ViewContext::List)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub enum ViewContext {
+    List,
+    Detail,
+    UserCommand {
+        n: usize,
+    },
+    Refs {
+        refs_context: RefsRefreshViewContext,
+        origin: RefsOrigin,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -433,18 +457,27 @@ impl From<&CommitListState<'_>> for ListRefreshViewContext {
 pub fn send_refresh(list_state: Option<&CommitListState<'_>>, tx: &Sender) {
     if let Some(list_state) = list_state {
         let list_context = ListRefreshViewContext::from(list_state);
-        let context = RefreshViewContext::List { list_context };
-        tx.send(AppEvent::Refresh(context));
+        tx.send(AppEvent::Refresh(RefreshViewContext::list(list_context)));
     }
-}
-
-#[derive(Debug, Clone)]
-pub struct UserCommandRefreshViewContext {
-    pub n: usize,
 }
 
 #[derive(Debug, Clone)]
 pub struct RefsRefreshViewContext {
     pub selected: Vec<String>,
     pub opened: Vec<Vec<String>>,
+}
+
+/// `ShellView` 重建時要還原的純資料——全部是 `'static`，重建當下
+/// `rx`/`child` 早就結束（見 `ShellView::take_refresh_context` 的
+/// 文件註解），不需要一起搬。
+#[derive(Debug, Clone)]
+pub struct ShellRefreshViewContext {
+    pub input: Input,
+    pub history: Vec<String>,
+    pub history_index: Option<usize>,
+    pub output_lines: Vec<Line<'static>>,
+    /// 可能是 `usize::MAX`——`OutputPaneState::select_last()` 的貼底
+    /// sentinel，還沒經過任何 render 的 clamp。還原時的 `scroll_to`
+    /// 是第一次 clamp，下一次 render 是第二次，兩次都是必要的。
+    pub output_offset: usize,
 }
