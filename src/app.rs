@@ -1,4 +1,5 @@
 use std::path::{Path, PathBuf};
+use std::process::Command;
 use std::rc::Rc;
 use std::time::{Duration, Instant};
 
@@ -26,6 +27,7 @@ use crate::{
     },
     graph::{Graph, GraphStyle},
     keybind::KeyBind,
+    process::run_with_timeout,
     update::UpdateSettings,
     view::{dispatch_delete_branch, RefreshViewContext, RefsOrigin, View},
     widget::{
@@ -583,7 +585,6 @@ impl App<'_> {
                     self.checkout_commit(target);
                 }
                 AppEvent::AutoRefresh => {
-                    self.ec.clear_pending_refresh();
                     self.view.refresh();
                 }
                 AppEvent::OpenRefPicker { options, kind } => {
@@ -1764,6 +1765,7 @@ impl App<'_> {
             "Fetching...".into(),
             "Fetch completed".into(),
             "Fetch failed",
+            GIT_FETCH_TIMEOUT,
         );
     }
 
@@ -1775,6 +1777,7 @@ impl App<'_> {
             format!("Checking out '{target}'..."),
             format!("Checked out '{target}'"),
             "Checkout failed",
+            GIT_CHECKOUT_TIMEOUT,
         );
     }
 }
@@ -1941,6 +1944,36 @@ fn spawn_delete_branch(
     });
 }
 
+/// `fetch --all` 的逾時預算。大 repo 的 fetch 合法超過幾十秒很常見，砍掉
+/// 一個今天會成功的操作就是 break userspace——這裡只防真的被網路黑洞吃掉
+/// 的情況。
+const GIT_FETCH_TIMEOUT: Duration = Duration::from_secs(60);
+
+/// `checkout` 的逾時預算，刻意抓得比 fetch 大得多：中途被 kill 掉的
+/// `checkout` 會留下 `.git/index.lock`，之後這個 repo 裡每一個 git 指令都
+/// 會失敗，直到使用者手動去刪——這比洩漏一條背景 thread 嚴重得多，所以要
+/// 大到任何合法操作都碰不到，這裡只防真的卡死（例如掛掉的 smudge/clean
+/// filter）。
+const GIT_CHECKOUT_TIMEOUT: Duration = Duration::from_secs(1800);
+
+/// 背景 git 指令共用的環境設定：`raw mode + alternate screen` 的終端機上，
+/// 沒有可用 credential helper 時 git／ssh 會直接對 controlling tty 寫提示
+/// 把畫面弄爛，子行程卡到逾時才收；`fetch` 又會觸發 `gc --auto`，背景長出
+/// 一個重量級 gc 不是好事。
+///
+/// `-c gc.auto=0` 是全域選項，必須在子指令（`fetch`／`checkout`）之前，
+/// 所以這裡直接建構整個 `Command`，不是事後 `.arg()` 附加——附加在子指令
+/// 之後 git 會把它當成該子指令的位置參數解析，不是全域設定。
+fn background_git_command(repo: &Path, args: &[String]) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.args(["-c", "gc.auto=0"])
+        .args(args)
+        .current_dir(repo)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
+    cmd
+}
+
 fn spawn_git_task(
     repo: &Path,
     ec: &EventController,
@@ -1948,6 +1981,7 @@ fn spawn_git_task(
     pending_msg: String,
     success_msg: String,
     error_prefix: &str,
+    timeout: Duration,
 ) {
     let repo_path = repo.to_path_buf();
     let tx = ec.sender();
@@ -1962,10 +1996,8 @@ fn spawn_git_task(
     });
 
     std::thread::spawn(move || {
-        let output = std::process::Command::new("git")
-            .args(&args)
-            .current_dir(&repo_path)
-            .output();
+        let cmd = background_git_command(&repo_path, &args);
+        let output = run_with_timeout(cmd, None, timeout);
 
         tx.send(AppEvent::HidePendingOverlay);
         match output {
