@@ -11,6 +11,7 @@ mod event;
 mod external;
 mod fuzzy;
 mod keybind;
+mod process;
 mod update;
 mod view;
 mod widget;
@@ -518,7 +519,7 @@ pub fn run() -> Result<()> {
         shell_command,
     });
 
-    let mut ec = event::EventController::init();
+    let ec = event::EventController::init();
     // 這一輪迴圈每次 `Ret::Refresh` 都會重建 `App` 並重跑到這裡——檢查要
     // spawn 在迴圈外，只在整個 process 生命週期跑一次；放進 `App::run()`
     // 開頭的話，建 tag、刪 branch、checkout 這些觸發 refresh 的操作都會
