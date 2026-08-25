@@ -11,13 +11,17 @@
 //! GitHub API：不需要 token、無 rate limit、`upstream` 這類非 GitHub
 //! remote 也一起顧到。
 
-use std::{path::Path, process::Command, time::Duration};
+use std::{
+    path::Path,
+    process::Command,
+    time::{Duration, Instant},
+};
 
 use clap::ValueEnum;
 use serde::Deserialize;
 
 use crate::{
-    event::{AppEvent, EventController, PendingRefreshFlag, Sender},
+    event::{AppEvent, AutoFetchClock, EventController, PendingRefreshFlag, Sender},
     git::background_command,
     process::run_with_timeout,
 };
@@ -101,16 +105,24 @@ pub fn resolve(cli: AutoFetchOverrides, config: AutoFetchOverrides) -> AutoFetch
 pub fn spawn_poll(ec: &EventController, repo: &Path, last_fingerprint: String, interval: Duration) {
     let tx = ec.sender();
     let pending_refresh = ec.pending_refresh_flag();
+    let clock = ec.auto_fetch_clock();
     let repo = repo.to_path_buf();
     std::thread::spawn(move || {
         let next_fingerprint = poll_once(&tx, &pending_refresh, &repo, last_fingerprint);
-        tx.send_after(
-            AppEvent::AutoFetchPoll {
-                last_fingerprint: next_fingerprint,
-            },
-            interval,
-        );
+        rearm(tx, clock, next_fingerprint, interval);
     });
+}
+
+/// 排下一輪 poll，並把狀態列倒數的 deadline 對齊到同一個時間點。
+///
+/// 這兩件事必須成對——漏掉 `arm` 的話倒數會停在 `00:00` 直到下一輪真的
+/// 跑完。凡是用 `send_after` 排下一輪的都走這裡。
+///
+/// 收兩個把手而不是 `&EventController`：後者不是 `Send`，進不了 worker
+/// thread 的 `'static` closure（理由同 `PendingRefreshFlag`）。
+pub fn rearm(tx: Sender, clock: AutoFetchClock, last_fingerprint: String, interval: Duration) {
+    clock.arm(Instant::now() + interval);
+    tx.send_after(AppEvent::AutoFetchPoll { last_fingerprint }, interval);
 }
 
 /// 回傳值是「下一輪該拿去比對的指紋」——不是每次都等於新算出來的那個：

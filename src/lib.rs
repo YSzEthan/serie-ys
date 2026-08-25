@@ -23,6 +23,7 @@ use std::{
     io::{IsTerminal, Write},
     path::Path,
     rc::Rc,
+    time::Instant,
 };
 
 use app::{App, Ret};
@@ -603,6 +604,15 @@ pub fn run() -> Result<()> {
     // `is_inside_work_tree` 當閘門——bare repo 沒有 worktree 但照樣有
     // remote、照樣該 auto-fetch。
     if auto_fetch_settings.mode == AutoFetch::On {
+        // 倒數的 deadline 設在「現在」，狀態列從第一幀就顯示 `00:00`——語意
+        // 是「正在抓」，跟中途任何一輪 worker 執行期間看到的完全一致。不設
+        // 的話，從啟動到第一輪 worker 跑完為止（ls-remote 與 fetch 的逾時
+        // 預算加起來最壞 70 秒以上）狀態列是空的，而「開起來就看得到它在
+        // 跑」正是這個倒數存在的理由。
+        //
+        // 這一發是立即送、不是 `send_after`，所以不走 `auto_fetch::rearm`
+        // ——為了消滅一個分支去動啟動時的事件順序不划算。
+        ec.auto_fetch_clock().arm(Instant::now());
         ec.sender().send(event::AppEvent::AutoFetchPoll {
             last_fingerprint: String::new(),
         });
