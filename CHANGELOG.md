@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.5.0](https://github.com/YSzEthan/serie-ys/compare/v3.4.0...v3.5.0) (2026-08-25)
+
+
+### Features
+
+* auto-fetch 自動偵測與倒數、M 跳 child commit、內嵌命令列修正 (#81)(#83)(#84)(#87)(#88) (#82) ([e37c51d](https://github.com/YSzEthan/serie-ys/commit/e37c51dafdb8bdc76a9881b64417f819c2ecce1d))
+
 ## [3.4.0](https://github.com/YSzEthan/serie-ys/compare/v3.3.1...v3.4.0) (2026-08-21)
 
 
