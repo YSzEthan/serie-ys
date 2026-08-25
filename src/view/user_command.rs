@@ -11,10 +11,7 @@ use crate::{
     app::AppContext,
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
     git::{Commit, Ref, Repository},
-    view::{
-        ansi_output_to_lines, ListRefreshViewContext, RefreshViewContext,
-        UserCommandRefreshViewContext,
-    },
+    view::{ansi_output_to_lines, ListRefreshViewContext, RefreshViewContext, ViewContext},
     widget::{
         commit_list::{CommitList, CommitListState},
         h,
@@ -31,7 +28,10 @@ pub fn status_hints() -> Vec<HintSpec> {
         h(&[UserEvent::PageDown], "page"),
         h(&[UserEvent::GoToTop], "top"),
         h(&[UserEvent::GoToBottom], "bottom"),
-        h(&[UserEvent::GoToParent], "parent"),
+        h(
+            &[UserEvent::GoToParent, UserEvent::GoToChild],
+            "parent/child",
+        ),
         h(&[UserEvent::Confirm], "detail"),
         h(&[UserEvent::Refresh], "refresh"),
         h(&[UserEvent::HelpToggle], "help"),
@@ -121,6 +121,9 @@ impl<'a> UserCommandView<'a> {
             UserEvent::GoToParent => {
                 self.tx.send(AppEvent::SelectParentCommit);
             }
+            UserEvent::GoToChild => {
+                self.tx.send(AppEvent::SelectChildCommit);
+            }
             UserEvent::HelpToggle => {
                 self.tx.send(AppEvent::OpenHelp);
             }
@@ -208,6 +211,17 @@ impl<'a> UserCommandView<'a> {
         });
     }
 
+    pub fn select_child_commit(
+        &mut self,
+        repository: &Repository,
+        view_area: Rect,
+        exec_command: ExecCommandFn,
+    ) {
+        self.update_selected_commit(repository, view_area, exec_command, |state| {
+            state.select_child()
+        });
+    }
+
     fn update_selected_commit<F>(
         &mut self,
         repository: &Repository,
@@ -242,15 +256,13 @@ impl<'a> UserCommandView<'a> {
     }
 
     pub fn refresh(&self) {
-        let list_state = self.as_list_state();
-        let list_context = ListRefreshViewContext::from(list_state);
-        let user_command_context = UserCommandRefreshViewContext {
-            n: self.user_command_number,
-        };
-        let context = RefreshViewContext::UserCommand {
+        let list_context = ListRefreshViewContext::from(self.as_list_state());
+        let context = RefreshViewContext::new(
             list_context,
-            user_command_context,
-        };
+            ViewContext::UserCommand {
+                n: self.user_command_number,
+            },
+        );
         self.tx.send(AppEvent::Refresh(context));
     }
 }

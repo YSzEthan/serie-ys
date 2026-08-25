@@ -9,7 +9,7 @@ use crate::{
     git::{Commit, DiffTarget, FileChange, Ref, Repository, WorkingChanges},
     view::{
         dispatch_branch_copy, dispatch_tag_copy, partition_branches, partition_tags,
-        ListRefreshViewContext, RefreshViewContext,
+        ListRefreshViewContext, RefreshViewContext, ViewContext,
     },
     widget::{
         commit_detail::{
@@ -57,7 +57,10 @@ pub fn status_hints_for(pane: DetailPane) -> Vec<HintSpec> {
             &[UserEvent::NavigateLeft, UserEvent::NavigateRight],
             "commit",
         ),
-        h(&[UserEvent::GoToParent], "parent"),
+        h(
+            &[UserEvent::GoToParent, UserEvent::GoToChild],
+            "parent/child",
+        ),
         h(&[UserEvent::ShortCopy], "copy"),
     ]);
     if pane == DetailPane::Files {
@@ -274,6 +277,9 @@ impl<'a> DetailView<'a> {
             }
             UserEvent::GoToParent => {
                 self.tx.send(AppEvent::SelectParentCommit);
+            }
+            UserEvent::GoToChild => {
+                self.tx.send(AppEvent::SelectChildCommit);
             }
             UserEvent::ShortCopy => {
                 self.copy_commit_short_hash();
@@ -506,6 +512,10 @@ impl<'a> DetailView<'a> {
         self.update_selected_commit(repository, |state| state.select_parent());
     }
 
+    pub fn select_child_commit(&mut self, repository: &Repository) {
+        self.update_selected_commit(repository, |state| state.select_child());
+    }
+
     fn update_selected_commit<F>(&mut self, repository: &Repository, update_commit_list_state: F)
     where
         F: FnOnce(&mut CommitListState<'a>),
@@ -646,9 +656,8 @@ impl<'a> DetailView<'a> {
     }
 
     pub fn refresh(&self) {
-        let list_state = self.as_list_state();
-        let list_context = ListRefreshViewContext::from(list_state);
-        let context = RefreshViewContext::Detail { list_context };
+        let list_context = ListRefreshViewContext::from(self.as_list_state());
+        let context = RefreshViewContext::new(list_context, ViewContext::Detail);
         self.tx.send(AppEvent::Refresh(context));
     }
 }

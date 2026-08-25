@@ -419,15 +419,30 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn select_parent(&mut self) {
-        if self.total == 0 || self.is_virtual_row_selected() {
+        let Some(parent) = self.selected_commit_parent_hash() else {
             return;
+        };
+        let Some(&raw) = self.commit_hash_to_raw.get(parent) else {
+            return;
+        };
+        self.step_to_raw(raw);
+    }
+
+    /// 逐格把游標移到 `raw` 所在的可視列，沿用 select_next / select_prev 的
+    /// scroll margin 行為。`raw` 被 filter 濾掉時靜默不動。迭代次數算好
+    /// 才跑（而非以「游標到了沒」當終止條件），`height == 0` 時
+    /// select_next / select_prev 各自是 no-op，迴圈跑完游標原地不動——
+    /// 不需要額外的早退,也不會有選不到就空轉的風險。
+    fn step_to_raw(&mut self, raw: RawCommitIdx) {
+        let Some(target) = self.raw_to_visible(raw) else {
+            return;
+        };
+        let current = self.current_visible().0;
+        for _ in target.0..current {
+            self.select_prev();
         }
-        if let Some(target_commit) = self.selected_commit_parent_hash().cloned() {
-            if self.commit_hash_to_raw.contains_key(&target_commit) {
-                while target_commit.as_str() != self.selected_commit_hash().as_str() {
-                    self.select_next();
-                }
-            }
+        for _ in current..target.0 {
+            self.select_next();
         }
     }
 
@@ -439,6 +454,40 @@ impl<'a> CommitListState<'a> {
             .commit
             .parent_commit_hashes
             .first()
+    }
+
+    /// 跳到目前 commit 的 child —— `select_parent()` 的反向。清單由新到舊
+    /// （`--topo-order`，parent 不會出現在 child 之前），所以 child 必在
+    /// 游標上方；從游標往上掃 filtered 座標，收集把目前 commit 列進
+    /// `parent_commit_hashes`（不限 first-parent）的可視列。用「任一
+    /// parent」而非「只認 first-parent」是刻意的：merge commit 對
+    /// second-parent 那條線在主 graph 上也真的畫出來（見
+    /// `graph::calc::calc_edges` 的 merge detour），只認 first-parent 會漏掉
+    /// 游標正上方、畫面上看得到線的 merge commit。剛好一個可視 child 才跳；
+    /// 找到兩個以上代表目前 commit 是分支點，沒有依據替使用者猜要去哪一
+    /// 條，寧可不動也不要跳錯。不追求跟 `select_parent()` 嚴格互逆——
+    /// parent 是單值欄位、child 是多值關係，天生沒有唯一反向。
+    pub fn select_child(&mut self) {
+        if let Some(raw) = self.selected_commit_child_raw() {
+            self.step_to_raw(raw);
+        }
+    }
+
+    fn selected_commit_child_raw(&self) -> Option<RawCommitIdx> {
+        if self.total == 0 || self.is_virtual_row_selected() {
+            return None;
+        }
+        let current = self.current_selected_raw();
+        let hash = self.commit(current).commit_hash();
+        let current_filtered = self.raw_to_filtered(current)?;
+        let mut children = (0..current_filtered.0)
+            .rev()
+            .filter_map(|i| self.filtered_to_raw(FilteredIdx(i)))
+            .filter(|&raw| self.commit(raw).commit.parent_commit_hashes.contains(hash));
+        match (children.next(), children.next()) {
+            (Some(only), None) => Some(only),
+            _ => None,
+        }
     }
 
     pub fn select_prev(&mut self) {
@@ -554,16 +603,7 @@ impl<'a> CommitListState<'a> {
         let Some(&raw) = self.commit_hash_to_raw.get(&head) else {
             return;
         };
-        let Some(target) = self.raw_to_visible(raw) else {
-            return;
-        };
-        // 逐格移動 → 自動沿用 select_next / select_prev 的 scroll margin 行為。
-        while self.current_visible().0 > target.0 {
-            self.select_prev();
-        }
-        while self.current_visible().0 < target.0 {
-            self.select_next();
-        }
+        self.step_to_raw(raw);
     }
 
     fn current_graph(&self) -> &Graph {
@@ -643,6 +683,7 @@ fn compute_selection(target: VisibleIdx, total: usize, height: usize) -> Option<
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::git::Commit;
 
     // --- 座標系 regression tests ---------------------------------------------
     // 這些 test 聚焦在 pure function（`resolve_*` / `compute_selection`），
@@ -786,5 +827,154 @@ mod tests {
         let (offset, selected) = compute_selection(VisibleIdx(in_filter.0), 234, 50).unwrap();
         assert!(offset + selected < 234);
         assert!(selected < 50);
+    }
+
+    // --- select_parent() / select_child() 回歸測試 ----------------------------
+
+    fn commit_fixture(hash: &str, parents: &[&str]) -> Commit {
+        Commit {
+            commit_hash: hash.into(),
+            parent_commit_hashes: parents.iter().copied().map(CommitHash::from).collect(),
+            ..Default::default()
+        }
+    }
+
+    /// `visible_raw` 指定哪些 raw index 留在 `filtered_indices` 內
+    /// （其餘視為被 filter 藏起來），游標停在第一個可見列。
+    fn build_state_visible_raws<'a>(
+        commits: &'a [Commit],
+        visible_raw: &[usize],
+    ) -> CommitListState<'a> {
+        let infos = commits
+            .iter()
+            .map(|c| CommitInfo::new(c, Vec::new(), Color::Reset))
+            .collect();
+        let graph = Graph {
+            commit_hashes: Vec::new(),
+            commit_pos_map: FxHashMap::default(),
+            edges: Vec::new(),
+            max_pos_x: 0,
+        };
+        let mut state = CommitListState::new(
+            infos,
+            Rc::new(graph),
+            Vec::new(),
+            None,
+            Head::None,
+            FxHashMap::default(),
+            false,
+            false,
+            None,
+            None,
+            FxHashSet::default(),
+            None,
+        );
+        state.filtered_indices = visible_raw.iter().copied().map(RawCommitIdx).collect();
+        state.total = state.filtered_indices.len();
+        state.reset_height(10);
+        state.select_first();
+        state
+    }
+
+    #[test]
+    fn select_parent_hidden_by_filter_does_not_hang_and_leaves_cursor() {
+        // 由新到舊：child(0) -> parent(1) -> grandparent(2)。filter 只留
+        // child 跟 grandparent（raw 1 被藏起來）。
+        let commits = vec![
+            commit_fixture("child", &["parent"]),
+            commit_fixture("parent", &["grandparent"]),
+            commit_fixture("grandparent", &[]),
+        ];
+        let mut state = build_state_visible_raws(&commits, &[0, 2]);
+
+        // 修正前：select_next() 在 filtered total=2 觸底後直接 return，
+        // 但 while 迴圈比對的是全域 commit_hash_to_raw 找到的 hash，永遠
+        // 走不到「parent」→ 無窮迴圈。這裡若卡住，測試本身就會逾時失敗。
+        state.select_parent();
+
+        assert_eq!(
+            state.selected_commit_hash().as_str(),
+            "child",
+            "parent 被 filter 藏起來時，游標應該留在原地"
+        );
+    }
+
+    #[test]
+    fn select_parent_visible_in_filter_moves_cursor() {
+        let commits = vec![
+            commit_fixture("child", &["grandparent"]),
+            commit_fixture("middle", &[]),
+            commit_fixture("grandparent", &[]),
+        ];
+        let mut state = build_state_visible_raws(&commits, &[0, 2]);
+
+        state.select_parent();
+
+        assert_eq!(state.selected_commit_hash().as_str(), "grandparent");
+    }
+
+    #[test]
+    fn select_child_moves_to_sole_visible_child() {
+        // 由新到舊：tip(0) -> merge(1) -> base(2)。hidden(不可見) 的 parent
+        // 也是 merge，用來確認掃描不會誤選一個被 filter 藏起來的列
+        // （所以 merge 的可視 child 只有 tip 一個，不算分支點）。
+        let commits = vec![
+            commit_fixture("tip", &["merge"]),
+            commit_fixture("hidden", &["merge"]),
+            commit_fixture("merge", &["base"]),
+            commit_fixture("base", &[]),
+        ];
+        let mut state = build_state_visible_raws(&commits, &[0, 2, 3]);
+        state.select_parent(); // tip -> merge
+
+        state.select_child();
+
+        assert_eq!(state.selected_commit_hash().as_str(), "tip");
+    }
+
+    #[test]
+    fn select_child_multiple_visible_children_does_not_move() {
+        // fork(2) 有兩個可視 child：branchA(0)、branchB(1) —— 真正的分支
+        // 點，沒有依據替使用者決定要跳去哪一條，所以不動。
+        let commits = vec![
+            commit_fixture("branchA", &["fork"]),
+            commit_fixture("branchB", &["fork"]),
+            commit_fixture("fork", &[]),
+        ];
+        let mut state = build_state_visible_raws(&commits, &[0, 1, 2]);
+        state.select_commit_hash(&CommitHash::from("fork"));
+
+        state.select_child();
+
+        assert_eq!(state.selected_commit_hash().as_str(), "fork");
+    }
+
+    #[test]
+    fn select_child_at_tip_does_not_move() {
+        let commits = vec![commit_fixture("tip", &[]), commit_fixture("base", &[])];
+        let mut state = build_state_visible_raws(&commits, &[0, 1]);
+
+        state.select_child();
+
+        assert_eq!(state.selected_commit_hash().as_str(), "tip");
+    }
+
+    #[test]
+    fn select_child_no_visible_child_does_not_hang_and_leaves_cursor() {
+        // base 唯一的 child 是 hidden(1)，被 filter 藏起來；tip(0) 跟 base
+        // 沒有 parent/child 關係，純粹用來把 base 推離清單頂端。
+        // 掃描範圍有界（0..current_filtered），找不到就回 None，不會像
+        // 修正前的 select_parent() 那樣卡住。
+        let commits = vec![
+            commit_fixture("tip", &[]),
+            commit_fixture("hidden", &["base"]),
+            commit_fixture("base", &[]),
+        ];
+        let mut state = build_state_visible_raws(&commits, &[0, 2]);
+        state.select_commit_hash(&CommitHash::from("base"));
+
+        state.select_child();
+
+        assert_eq!(state.selected_commit_hash().as_str(), "base");
     }
 }

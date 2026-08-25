@@ -964,6 +964,7 @@ mod tests {
                 graph_width: Some(graph_width),
                 compact: Some(CompactType::Off),
                 update: crate::update::UpdateSettings::default(),
+                auto_fetch: crate::auto_fetch::AutoFetchSettings::default(),
                 shell_command: Vec::new(),
             })
         }
@@ -1228,6 +1229,7 @@ mod tests {
                 graph_width: Some(graph_width),
                 compact: Some(CompactType::On),
                 update: crate::update::UpdateSettings::default(),
+                auto_fetch: crate::auto_fetch::AutoFetchSettings::default(),
                 shell_command: Vec::new(),
             });
             let area = Rect::new(0, 0, TERM_W, height);
@@ -1780,6 +1782,7 @@ mod tests {
                 graph_width: Some(GraphWidthType::Single),
                 compact: Some(CompactType::On),
                 update: crate::update::UpdateSettings::default(),
+                auto_fetch: crate::auto_fetch::AutoFetchSettings::default(),
                 shell_command: Vec::new(),
             });
             let area = Rect::new(0, 0, TERM_W, 10);

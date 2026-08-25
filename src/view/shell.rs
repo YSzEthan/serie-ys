@@ -22,7 +22,7 @@ use crate::{
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
     external::{exec_shell_command, expand_shell_command_line},
     git::{Commit, Ref},
-    view::{ansi_output_to_lines, View},
+    view::{ansi_output_to_lines, RefreshViewContext, ShellRefreshViewContext, View},
     widget::{
         output_pane::{OutputPane, OutputPaneState},
         split_at_width,
@@ -43,13 +43,6 @@ const MAX_OUTPUT_LINES: usize = 50_000;
 /// 回傳的是輸出面板的 *外框* 高度；扣掉 `OutputPane` 自己的上邊框才是內容
 /// 可用列數，呼叫端各自處理（`render()` 把它原樣交給 widget，widget 內部
 /// 自己扣；marker 算式要自己扣一次）。
-///
-/// 這兩個數字是開啟命令列當下算好、存進 `ShellView` 的快照——終端機
-/// resize 之後 `render()` 會用新的即時 `area`，但 `{{area_width}}`／
-/// `{{area_height}}` marker 展開用的還是開啟當下那份，會跟畫面顯示的
-/// 尺寸不同步。跟 user command 那條路徑一樣的取捨（`app::open_shell` /
-/// `app::build_external_command_parameters` 也是開啟當下算一次），不是
-/// 這裡才有的新問題。
 pub(crate) fn output_pane_height(area_height: u16) -> u16 {
     OUTPUT_PANE_HEIGHT.min(area_height.saturating_sub(2))
 }
@@ -93,6 +86,12 @@ pub struct ShellView<'a> {
     /// 真的含這些 marker 時才報錯，不含（`git status` 這類）照跑。
     commit: Option<Commit>,
     refs: Vec<Ref>,
+    /// `{{area_width}}`／`{{area_height}}` marker 展開用的尺寸——每次
+    /// `render()` 都會用當下的即時 `area` 覆寫，不是開啟命令列當下算好
+    /// 存住的快照。這樣終端機 resize、或這個 view 因為 repo 變動被重建
+    /// （見 `take_refresh_context`）都不會讓 marker 展開成過期的值。
+    /// 第一次 render 必定早於任何按鍵（事件迴圈是先 draw 再 recv），
+    /// `run()` 讀到的一定是對的。
     area_width: u16,
     area_height: u16,
     repo_path: PathBuf,
@@ -130,8 +129,6 @@ impl<'a> ShellView<'a> {
         before: View<'a>,
         commit: Option<Commit>,
         refs: Vec<Ref>,
-        area_width: u16,
-        area_height: u16,
         repo_path: PathBuf,
         ctx: Rc<AppContext>,
         tx: Sender,
@@ -140,8 +137,10 @@ impl<'a> ShellView<'a> {
             before,
             commit,
             refs,
-            area_width,
-            area_height,
+            // 第一次 `render()` 會在任何按鍵之前把這兩個補成真的值，見上面
+            // 欄位的文件註解。
+            area_width: 0,
+            area_height: 0,
             repo_path,
             input: Input::default(),
             history: Vec::new(),
@@ -179,17 +178,81 @@ impl<'a> ShellView<'a> {
         self.before.request_graph_clear();
     }
 
-    /// `View::refresh()` 的 Shell arm 呼叫這裡——見上面 `refresh_pending`
-    /// 的註解，這裡只記旗標，不能真的動 `before`（那會把它跟 `Refresh`
-    /// event 的 `RefreshViewContext` 綁在一起，Shell 沒有對應的 context
-    /// 變體）。故意不叫 `refresh`：其他 view 的 `refresh()` 是「立刻送出
+    /// 指令正在背景執行緒跑（`rx.is_some()`）時，watcher 說 repo 有變動，
+    /// 呼叫這裡記旗標——這時 `take_refresh_context()` 會因為 `rx` 還沒空
+    /// 而回 `None`，重建得等指令跑完、`ShellOutputReady` 抵達時才能做。
+    /// 故意不叫 `refresh`：其他 view 的 `refresh()` 是「立刻送出
     /// `AppEvent::Refresh`」，同名但語意不同容易混淆。
     pub fn mark_refresh_pending(&mut self) {
         self.refresh_pending = true;
     }
 
+    /// 使用者在指令執行中按 Esc 關閉命令列時（`app::close_shell`）呼叫，
+    /// 是這個旗標唯一還會被無條件消費（不管拿不拿得到 context）的地方——
+    /// 這種情況下命令列本身已經不在了，`before` 直接補送一般的
+    /// `AppEvent::Refresh` 即可，不需要經過 `RefreshViewContext::Shell`。
     pub fn take_refresh_pending(&mut self) -> bool {
         std::mem::take(&mut self.refresh_pending)
+    }
+
+    /// watcher 觸發、指令沒在跑時呼叫——把 `ShellView` 的狀態搬進
+    /// `RefreshViewContext::Shell`，供 `App::init_with_context` 重建後
+    /// 還原。`rx.is_some()`（指令執行中）回 `None`：那個時機不安全，狀態
+    /// 搬走的話正在跑的指令的 `Receiver` 會被連帶丟掉。
+    ///
+    /// 不搬 `rx`／`child`——呼叫這裡的前提就是它們已經是 `None`。
+    pub fn take_refresh_context(&mut self) -> Option<RefreshViewContext> {
+        if self.rx.is_some() {
+            return None;
+        }
+        let mut context = self.before.refresh_context()?;
+        context.shell = Some(Box::new(ShellRefreshViewContext {
+            input: std::mem::take(&mut self.input),
+            history: std::mem::take(&mut self.history),
+            history_index: self.history_index,
+            output_lines: std::mem::take(&mut self.output_lines),
+            output_offset: self.output_pane_state.offset(),
+        }));
+        Some(context)
+    }
+
+    /// `AppEvent::ShellOutputReady` 抵達、指令剛跑完時呼叫。
+    ///
+    /// 旗標只能在**真的拿到 context** 之後才清——`poll_output()` 的
+    /// `Empty` 分支（過期喚醒打到已經換掉的新 `ShellView`）會讓 `rx`
+    /// 維持 `Some`，`take_refresh_context()` 這時回 `None`；`?` 在那之前
+    /// 短路，`refresh_pending` 因此留著，不會被平白吃掉。反過來先清旗標
+    /// 再判斷會漏更新：跑 `sleep 10` → Esc → 重開 → 跑 `sleep 20`
+    /// （新的 `rx`）→ 舊 thread 結束送出過期的 `ShellOutputReady`，這一刻
+    /// `refresh_pending` 若恰好是真的，就會被這次無效的呼叫吃掉。
+    pub fn take_pending_refresh_context(&mut self) -> Option<RefreshViewContext> {
+        if !self.refresh_pending {
+            return None;
+        }
+        let context = self.take_refresh_context()?;
+        self.refresh_pending = false;
+        Some(context)
+    }
+
+    /// `App::init_with_context` 在 Shell 重建之後呼叫，把
+    /// `take_refresh_context()` 搬走的狀態塞回新的 `ShellView`。
+    pub fn restore_state(&mut self, shell: ShellRefreshViewContext) {
+        self.input = shell.input;
+        self.history = shell.history;
+        self.history_index = shell.history_index;
+        self.output_lines = shell.output_lines;
+        let line_count = self.output_lines.len();
+        self.output_pane_state
+            .scroll_to(shell.output_offset, line_count);
+    }
+
+    /// 換一批輸出並貼底——一般終端機的行為是新輸出進來就停在最後一行，
+    /// 不是頂端。`select_last()` 只設 `offset = usize::MAX`，實際夾值要
+    /// 等下一次 `render()`（`OutputPane::render` 先算 `height` 再
+    /// `clamp`）；這裡不需要提前知道可用行數。
+    fn set_output(&mut self, lines: Vec<Line<'static>>) {
+        self.output_lines = lines;
+        self.output_pane_state.select_last();
     }
 
     /// `AppEvent::ShellOutputReady` 抵達時呼叫。過期的喚醒（例如指令還沒
@@ -199,8 +262,7 @@ impl<'a> ShellView<'a> {
         let Some(rx) = &self.rx else { return };
         match rx.try_recv() {
             Ok(lines) => {
-                self.output_lines = lines;
-                self.output_pane_state = OutputPaneState::default();
+                self.set_output(lines);
                 self.rx = None;
             }
             Err(mpsc::TryRecvError::Empty) => {}
@@ -288,11 +350,10 @@ impl<'a> ShellView<'a> {
         ) {
             Ok(s) => s,
             Err(err) => {
-                self.output_lines = vec![Line::styled(
+                self.set_output(vec![Line::styled(
                     err,
                     Style::default().fg(self.ctx.color_theme.status_error_fg),
-                )];
-                self.output_pane_state = OutputPaneState::default();
+                )]);
                 return;
             }
         };
@@ -328,6 +389,14 @@ impl<'a> ShellView<'a> {
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect, marquee_frame: u64) {
+        // `{{area_width}}`／`{{area_height}}` marker 用的尺寸——用當下即時
+        // `area` 更新，見欄位文件註解。算式必須跟下面的 `output_height`
+        // 各自獨立算一次：`output_height` 在 `show_output == false`
+        // 時是 0，重用同一個 local 會讓第一個指令的 `{{area_height}}`
+        // 展開成 0。
+        self.area_width = area.width.saturating_sub(4); // 扣掉左右 padding
+        self.area_height = output_pane_height(area.height).saturating_sub(1); // 扣掉上邊框
+
         let running = self.rx.is_some();
         let show_output = running || !self.output_lines.is_empty();
         let output_height = if show_output {
@@ -399,9 +468,19 @@ impl<'a> ShellView<'a> {
 
 impl Drop for ShellView<'_> {
     /// 使用者按 Esc 關閉（`before` 被 `take_before_view` 取出後，`self.view`
-    /// 被換成別的 view，這個 `Box<ShellView>` 就掉了）或整個 App 結束時都
-    /// 會經過這裡——還在跑的指令（`git push` 卡認證、寫錯的無窮迴圈）不會
-    /// 變成孤兒程序繼續握著 pipe。
+    /// 被換成別的 view，這個 `Box<ShellView>` 就掉了）、整個 App 結束、或
+    /// watcher 觸發重建（`take_refresh_context` 之後舊 `App` 被
+    /// `lib.rs` drop，見 `App::into_parts` 與慢速路徑的 `drop(app)`）時都
+    /// 會經過這裡。
+    ///
+    /// 重建這條路徑不會誤砍還在跑的指令：`take_refresh_context()` 只在
+    /// `rx.is_none()` 時才會被呼叫，而 `rx` 變成 `None` 唯一的來源是
+    /// `poll_output()`，它只在背景 thread 已經把結果送回來（或提早
+    /// disconnect）之後才設。指令仍在跑時 `rx` 是 `Some`，watcher 只會
+    /// 設 `refresh_pending`，不會觸發重建，這個 `Drop` 也就不會被呼叫到。
+    ///
+    /// 指令本身結束後才會走到這裡：還在跑的指令（`git push` 卡認證、寫錯
+    /// 的無窮迴圈）不會變成孤兒程序繼續握著 pipe。
     fn drop(&mut self) {
         if let Ok(mut guard) = self.child.lock() {
             if let Some(child) = guard.as_mut() {

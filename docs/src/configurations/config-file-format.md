@@ -16,6 +16,10 @@ interval_hours = 6
 auto_restart = "off"
 release_notes = "on"
 
+[core.auto_fetch]
+mode = "off"
+interval_secs = 600
+
 [core.search]
 ignore_case = false
 fuzzy = false
@@ -253,6 +257,32 @@ Commit 圖形的邊線風格。
 - 可選值：
   - `off`
   - `on`
+
+命令列參數指定的值優先。
+
+### `core.auto_fetch.mode`
+
+背景定期偵測 git remote 是否有新內容，有就自動 `git fetch --all --prune`。
+只更新 remote-tracking refs（例如 `origin/main`），本地 branch 一律不動——
+不 merge、不 rebase、不 fast-forward。偵測方式是逐一比對每個 remote 的
+`git ls-remote --heads --tags` 輸出，不打 GitHub API，`upstream` 這類非
+GitHub remote 一樣顧到。
+
+- 型別：`string`（enum）
+- 預設值：`off`
+- 可選值：
+  - `off`
+  - `on`
+
+命令列參數指定的值優先。
+
+### `core.auto_fetch.interval_secs`
+
+自動 fetch 的輪詢間隔（秒）。
+
+- 型別：`integer`
+- 預設值：`600`
+- 可選範圍：`30`–`3600`
 
 命令列參數指定的值優先。
 

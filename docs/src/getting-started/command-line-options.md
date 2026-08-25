@@ -197,6 +197,39 @@ _可選值：_ `off`、`on`
 
 設定檔對應鍵是 `core.update.release_notes`，命令列參數指定的值優先。
 
+## --auto-fetch \<TYPE\>
+
+背景定期偵測 git remote 是否有新內容，有就自動 `git fetch --all --prune`。
+**只更新 remote-tracking refs（例如 `origin/main`），本地 branch 一律不動**——
+不 merge、不 rebase、不 fast-forward，要不要跟上遠端由使用者自己決定。
+
+_可選值：_ `off`、`on`
+
+預設關閉：背景連網是有感知的行為，開不開由使用者明確決定。偵測方式是逐一比對
+每個 remote 的 `git ls-remote --heads --tags` 輸出，不打 GitHub API，不需要
+token、無 rate limit，`upstream` 這類非 GitHub remote 也一起顧到。
+
+開啟後啟動即檢查一次（有 remote 就會立刻同步到最新），之後依
+`--auto-fetch-interval` 設定的間隔持續輪詢。偵測到變化並成功 fetch 時，狀態列
+會跳出通知；沒有變化、或偵測／fetch 過程失敗，一律靜默，不會每個 interval 就
+彈一次錯誤。
+
+不受 `YSGIT_NO_UPDATE_CHECK` 影響——那個環境變數管的是「不要檢查更新」，跟
+auto-fetch 是不同的功能，且 auto-fetch 本來就預設關閉、需要明確開啟。
+
+背景 fetch 進行時會短暫持有 git 的鎖檔，若剛好在內嵌命令列（`/`）裡手動跑
+`git pull` 之類會碰觸相同鎖的指令，可能因此短暫失敗，重試即可。
+
+設定檔對應鍵是 `core.auto_fetch.mode`，命令列參數指定的值優先。
+
+## --auto-fetch-interval \<SECONDS\>
+
+自動 fetch 的輪詢間隔，單位秒。
+
+_可選範圍：_ `30`–`3600`，預設 `600`。
+
+設定檔對應鍵是 `core.auto_fetch.interval_secs`，命令列參數指定的值優先。
+
 ## --whats-new
 
 顯示目前這一版的 release notes 並離開，不進 TUI，不受 `--release-notes` 開關

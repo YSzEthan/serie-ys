@@ -11,7 +11,9 @@ use ratatui::{
 
 use crate::{
     config::CursorType,
-    event::{AppEvent, CheckoutPickKind, RefCopyKind, RelatedItem, Sender, UserEvent},
+    event::{
+        AppEvent, AutoFetchClock, CheckoutPickKind, RefCopyKind, RelatedItem, Sender, UserEvent,
+    },
     github::{GhItemKind, MergeMethod, PrDraftAction, StateAction, StateFilter},
     view::View,
     widget::{h, hint_line, hint_pairs, keybind_hint_line, truncate_line, HintSpec},
@@ -24,6 +26,10 @@ const ESC_CANCEL: &str = "(Esc to cancel)";
 /// `RestartPrompt` 取消後留下的提醒；`maybe_open_restart_prompt`（app.rs）
 /// 守衛沒過時也是同一句，兩處共用同一份字面值不會漂移。
 pub(super) const UPDATE_INSTALLED_HINT: &str = "Updated — restart ysgit to apply";
+
+/// `AppEvent::AutoFetchCompleted` 顯示用的固定文案，唯一生產者是
+/// `app.rs` 的處理端；`auto_fetch` 模組不帶 payload，見該事件的文件。
+pub(super) const AUTO_FETCH_SUCCESS_MSG: &str = "Auto-fetched new commits";
 
 fn picker_digit_index(key: KeyEvent) -> Option<usize> {
     let KeyCode::Char(c) = key.code else {
@@ -196,15 +202,41 @@ pub(super) struct StatusLineState {
     line: StatusLine,
     ctx: Rc<AppContext>,
     tx: Sender,
+    /// 下一輪 auto-fetch 的 deadline，倒數用。在這裡持有而不是每次 render
+    /// 從 `App` 傳進來：`App::render` 對倒數沒有任何話語權，讓它收一個純轉手
+    /// 參數等於逼呼叫端知道一件與它無關的事。
+    auto_fetch_clock: AutoFetchClock,
 }
 
 impl StatusLineState {
-    pub(super) fn new(ctx: Rc<AppContext>, tx: Sender) -> Self {
+    pub(super) fn new(ctx: Rc<AppContext>, tx: Sender, auto_fetch_clock: AutoFetchClock) -> Self {
         Self {
             line: StatusLine::default(),
             ctx,
             tx,
+            auto_fetch_clock,
         }
+    }
+
+    /// 這一幀該顯示的倒數秒數。`None` = 沒開 auto-fetch、還沒排第一輪，或
+    /// 狀態列正被別的東西佔用。
+    ///
+    /// **重畫判斷（`App::run` 的 `Tick`）與實際繪製共用這一個函式**——兩邊
+    /// 各寫一次條件的話，顯示條件一改重畫條件就會默默不同步，變成開著
+    /// picker／輸入框時每秒白畫一次全螢幕（倒數那時根本沒顯示）。
+    ///
+    /// 取上界而不是截斷：`interval` 是 600 時，`arm` 當下的 remaining 是
+    /// 599.999，截斷的話永遠不會顯示 `10:00`，而且 `00:00` 會多停一整秒。
+    /// 取上界之後 `00:00` 精確等於「已過期 = worker 正在抓」。
+    pub(super) fn countdown_secs(&self) -> Option<u64> {
+        if !self.is_idle() {
+            return None;
+        }
+        self.auto_fetch_clock
+            .remaining()
+            // 先除再 cast：結果必定落在 u64 內，讀者不必回頭確認
+            // `as_millis()` 的 u128 上界。
+            .map(|d| d.as_millis().div_ceil(1000) as u64)
     }
 
     pub(super) fn open_ref_picker(&mut self, options: Vec<String>, kind: RefCopyKind) {
@@ -308,6 +340,14 @@ impl StatusLineState {
                 | StatusLine::NotificationSuccess(_)
                 | StatusLine::NotificationWarn(_)
         )
+    }
+
+    /// 狀態列現在能不能被「背景不請自來」的通知寫入：閒置，或只是壓著
+    /// 另一則通知。picker／prompt 都不算。`is_idle`／`is_showing_notification`
+    /// 各自的語意仍然分開（見上），這裡只是把兩者的 `||` 組合具名化，讓
+    /// `can_interrupt` 與背景通知的守衛共用同一份真值，不要各自手寫一次。
+    pub(super) fn is_idle_or_notification(&self) -> bool {
+        self.is_idle() || self.is_showing_notification()
     }
 
     pub(super) fn clear(&mut self) {
@@ -691,8 +731,32 @@ impl StatusLineState {
         }
     }
 
+    /// `nf-cod-git_fetch`（U+EC1D）+ 剩餘時間。
+    ///
+    /// 不足一分鐘印 `29s`，超過才印 `9:58`——`interval` 最小值是 30 秒，
+    /// 用固定 `mm:ss` 的話那一整段時間都在顯示一個恆為 `00:` 的前綴，是純
+    /// 噪音。帶 `s` 字尾讓「這是秒」不必靠上下文猜（少了 `:` 之後純數字會
+    /// 有歧義）。
+    ///
+    /// 分鐘數不補零：`interval` 在 CLI 與設定檔兩個入口都夾在 30–3600 秒，
+    /// 最寬就是 `60:00`。
+    ///
+    /// 沒有 Nerd Font 的終端會看到豆腐字——auto-fetch 本來就預設關閉、要明確
+    /// 開啟，不為此加一個顯示開關。
+    fn countdown_span(&self, secs: u64) -> Span<'static> {
+        let remaining = if secs < 60 {
+            format!("{secs}s")
+        } else {
+            format!("{}:{:02}", secs / 60, secs % 60)
+        };
+        Span::styled(
+            format!("\u{EC1D} {remaining}  "),
+            Style::default().fg(self.ctx.color_theme.status_input_transient_fg),
+        )
+    }
+
     pub(super) fn render(&self, f: &mut Frame, area: Rect, view: &View, numeric_prefix: &str) {
-        let text: Line = match &self.line {
+        let mut text: Line = match &self.line {
             StatusLine::None => {
                 if numeric_prefix.is_empty() {
                     build_hotkey_hints(view, &self.ctx)
@@ -783,6 +847,17 @@ impl StatusLineState {
                 .add_modifier(Modifier::BOLD)
                 .fg(self.ctx.color_theme.status_error_fg),
         };
+
+        // 插入點只有這一個，不在 match 的個別 arm 裡各插一次——要不要擴到
+        // 別的 variant（例如通知）是改 `countdown_secs` 那個述詞，不是回來
+        // 翻這裡的每一支。
+        //
+        // 上面幾支 `Line::raw(..).fg(..)` 的樣式是設在 *line* 上的，這個
+        // span 帶自己的 `fg`，不會被蓋掉也不會污染別人。
+        if let Some(secs) = self.countdown_secs() {
+            text.spans.insert(0, self.countdown_span(secs));
+        }
+
         let block = Block::default()
             .borders(Borders::TOP)
             .style(Style::default().fg(self.ctx.color_theme.divider_fg))
@@ -931,13 +1006,17 @@ mod tests {
             graph_width: None,
             compact: None,
             update: crate::update::UpdateSettings::default(),
+            auto_fetch: crate::auto_fetch::AutoFetchSettings::default(),
             shell_command: Vec::new(),
         })
     }
 
     fn test_state() -> (StatusLineState, mpsc::Receiver<AppEvent>) {
         let (tx, rx) = Sender::channel_for_test();
-        (StatusLineState::new(test_ctx(), tx), rx)
+        (
+            StatusLineState::new(test_ctx(), tx, AutoFetchClock::default()),
+            rx,
+        )
     }
 
     fn char_key(c: char) -> KeyEvent {
@@ -1252,6 +1331,7 @@ mod tests {
                 line,
                 ctx: test_ctx(),
                 tx,
+                auto_fetch_clock: AutoFetchClock::default(),
             }
         }
 

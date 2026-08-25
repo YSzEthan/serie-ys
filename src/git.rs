@@ -1088,6 +1088,32 @@ fn run_git_command(
     Ok(())
 }
 
+/// 會打網路（`fetch`／`ls-remote`／`checkout` 觸發的 smudge/clean filter 等）
+/// 且跑在背景 thread 的 git 指令共用的設定：`app.rs::spawn_git_task`（手動
+/// `f`／checkout）跟 `auto_fetch.rs`（背景輪詢）都需要同一套硬化。
+///
+/// `raw mode + alternate screen` 的終端機上，沒有可用 credential helper 時
+/// git／ssh 會直接對 controlling tty 寫提示把畫面弄爛，子行程卡到逾時才
+/// 收；`fetch` 又會觸發 `gc --auto`，背景長出一個重量級 gc 不是好事。
+///
+/// `-c gc.auto=0` 是全域選項，必須在子指令（`fetch`／`checkout`／
+/// `ls-remote`）之前，所以這裡直接建構整個 `Command`，不是事後 `.arg()`
+/// 附加——附加在子指令之後 git 會把它當成該子指令的位置參數解析，不是
+/// 全域設定。
+pub(crate) fn background_command<I, S>(path: &Path, args: I) -> Command
+where
+    I: IntoIterator<Item = S>,
+    S: AsRef<std::ffi::OsStr>,
+{
+    let mut cmd = Command::new("git");
+    cmd.args(["-c", "gc.auto=0"])
+        .args(args)
+        .current_dir(path)
+        .env("GIT_TERMINAL_PROMPT", "0")
+        .env("GIT_SSH_COMMAND", "ssh -o BatchMode=yes");
+    cmd
+}
+
 pub fn create_tag(
     path: &Path,
     name: &str,

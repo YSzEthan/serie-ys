@@ -128,6 +128,7 @@ pub enum AppEvent {
     SelectNewerCommit,
     SelectOlderCommit,
     SelectParentCommit,
+    SelectChildCommit,
     CopyToClipboard {
         name: String,
         value: String,
@@ -249,6 +250,25 @@ pub enum AppEvent {
         action: crate::github::PrDraftAction,
         filter_state: crate::github::StateFilter,
     },
+    /// 持續運作期間每隔一個 interval 再檢查一次遠端有沒有變化——跟
+    /// `PeriodicUpdateCheck` 同一種鏈：`send_after` 自我重新武裝，不是
+    /// detached thread + `loop { sleep }`。
+    ///
+    /// `last_fingerprint` 是這條鏈的累加器，不是共享狀態：種子是空字串
+    /// （`lib.rs::run()` 只排這一次），之後每一輪都由
+    /// `auto_fetch::spawn_poll` 的背景 thread 算出下一顆、在自己收尾時
+    /// `send_after` 傳下去——重新武裝必須在 worker 尾端而不是這個事件剛
+    /// 收到時，否則 `interval` 太短、單一 remote 逾時預算又不小時，會讓
+    /// 兩輪 poll 疊在一起。
+    AutoFetchPoll {
+        last_fingerprint: String,
+    },
+    /// `auto_fetch` 背景 thread 偵測到遠端有變化、`git fetch` 成功了——
+    /// 沒有變化或任何一步失敗都不送事件（見 `auto_fetch` 模組文件），
+    /// 所以這個事件本身就代表「該讓使用者知道」，不必帶 payload：顯示的
+    /// 文案固定，見 `app.rs` 處理端。顯示與否仍要過守衛：使用者正在
+    /// picker／輸入框裡的時候不搶 status line。
+    AutoFetchCompleted,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -341,6 +361,53 @@ impl Debug for Sender {
     }
 }
 
+/// `EventController::mark_pending_refresh` 的可攜版——`EventController` 不是
+/// `Clone`（`handle`／`term_signal` 這些欄位綁著整個 process 的生命週期），
+/// 塞不進 `'static` thread closure。跟 `Sender` 是同一種角色：只暴露
+/// `EventController` 內部狀態的一個輕量把手，讓背景 thread（目前只有
+/// `auto_fetch` 的 poll worker）能在真的要 fetch 之前標記 token，不需要
+/// 整個 `EventController`。
+#[derive(Clone)]
+pub struct PendingRefreshFlag(Arc<AtomicBool>);
+
+impl PendingRefreshFlag {
+    /// 語意與呼叫時機見 `EventController::mark_pending_refresh`。
+    pub fn mark(&self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
+/// 下一輪 auto-fetch 的預定時間，狀態列的倒數讀它。
+///
+/// 跟 `PendingRefreshFlag` 同一種角色（`EventController` 內部狀態的輕量
+/// 把手），但存在這裡還有第二個、更硬的理由：`App` 每次 `AppEvent::Refresh`
+/// 都會被 `lib.rs::run()` 整個重建，watcher 一有動靜就發生。deadline 若存在
+/// `App` 欄位，每次重建就歸零，倒數會消失最長達一整個 interval。
+/// `EventController` 建在那個迴圈外面，跨重建存活。
+/// `Default` = 沒 arm 過，`remaining()` 恆為 `None`，語意等同「沒開
+/// auto-fetch」——不是危險狀態，所以對正式程式碼開放也無妨。
+#[derive(Debug, Clone, Default)]
+pub struct AutoFetchClock(Arc<Mutex<Option<Instant>>>);
+
+impl AutoFetchClock {
+    /// 排下一輪 poll 的同時呼叫——兩件事必須成對，見 `auto_fetch::rearm`。
+    pub fn arm(&self, at: Instant) {
+        *self.0.lock().unwrap() = Some(at);
+    }
+
+    /// `None` = 沒開 auto-fetch，或還沒排過第一輪。
+    ///
+    /// 已過期回 `Some(ZERO)`——`saturating_duration_since` 本來就是這個
+    /// 語意，不必手寫 `if at > now` 去製造特殊情況。過期期間正是 worker
+    /// 在跑 ls-remote／fetch 的時候，`00:00` 就是「正在抓」。
+    pub fn remaining(&self) -> Option<Duration> {
+        // 臨界區只做一次讀取，持鎖期間不呼叫任何東西——理由同
+        // `EventController` 對 mutex 中毒的註解。
+        let at = *self.0.lock().unwrap();
+        at.map(|at| at.saturating_duration_since(Instant::now()))
+    }
+}
+
 #[cfg(test)]
 impl Sender {
     pub(crate) fn channel_for_test() -> (Self, mpsc::Receiver<AppEvent>) {
@@ -371,7 +438,19 @@ pub struct EventController {
     rx: Receiver,
     stop: Arc<AtomicBool>,
     handle: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
-    pending_refresh: Option<Arc<AtomicBool>>,
+    /// 「已有 refresh 在路上」的一次性 token——`mark_pending_refresh` 設它、
+    /// `start_git_watcher` 的背景 thread 用 `swap(false, ...)` 消費，見該處
+    /// 註解。無條件建好（不是 `Option`）：沒有 watcher 時這個 flag 只是沒人
+    /// 讀，不是需要特判的錯誤狀態。
+    pending_refresh: Arc<AtomicBool>,
+    /// 下一輪 auto-fetch 的預定時間，狀態列倒數用。無條件建好：沒開
+    /// auto-fetch 時只是沒人 `arm`，`remaining()` 恆為 `None`，不是需要
+    /// 特判的狀態。見 `AutoFetchClock`。
+    ///
+    /// 直接存 newtype 而不是裸 `Arc`（`pending_refresh` 那樣）——
+    /// `PendingRefreshFlag` 不是 `Clone`，只能存裸的再包；`AutoFetchClock`
+    /// 是，沒有同一個限制。
+    auto_fetch_clock: AutoFetchClock,
     term_signal: Arc<AtomicBool>,
     heartbeat: Arc<AtomicU64>,
 }
@@ -419,7 +498,8 @@ impl EventController {
             rx,
             stop: Arc::new(AtomicBool::new(false)),
             handle: Arc::new(Mutex::new(None)),
-            pending_refresh: None,
+            pending_refresh: Arc::new(AtomicBool::new(false)),
+            auto_fetch_clock: AutoFetchClock::default(),
             term_signal,
             heartbeat: Arc::new(AtomicU64::new(0)),
         };
@@ -589,31 +669,62 @@ impl EventController {
         self.rx.recv()
     }
 
-    pub fn start_git_watcher(&mut self, repo_root: &Path) {
-        let flag = start_git_watcher(self.tx.clone(), repo_root);
-        self.pending_refresh = Some(flag);
-    }
-
-    pub fn clear_pending_refresh(&self) {
-        if let Some(ref flag) = self.pending_refresh {
-            flag.store(false, Ordering::Release);
-        }
+    pub fn start_git_watcher(&self, repo_root: &Path) {
+        start_git_watcher(self.tx.clone(), self.pending_refresh.clone(), repo_root);
     }
 
     /// 標記「已有 refresh 在路上」，讓 watcher 短期內偵測到的後續 fs 事件
     /// 被 debounce 吃掉，避免主動 refresh 後 watcher 重複觸發 slow-path。
+    ///
+    /// 一次性 token：watcher 端消費掉就清掉（見 `claim_send_slot`），不需要任何
+    /// 呼叫端負責清除。就算標記後的操作本身失敗（只送 `NotifyError`、不送
+    /// `AutoRefresh`），watcher 也不會因此永久卡住——最壞情況是多吞一次
+    /// 無關的 fs 事件。
     pub fn mark_pending_refresh(&self) {
-        if let Some(ref flag) = self.pending_refresh {
-            flag.store(true, Ordering::Release);
-        }
+        self.pending_refresh_flag().mark();
+    }
+
+    /// `mark_pending_refresh` 的可攜版，供背景 thread 使用——見
+    /// `PendingRefreshFlag` 文件。
+    pub fn pending_refresh_flag(&self) -> PendingRefreshFlag {
+        PendingRefreshFlag(self.pending_refresh.clone())
+    }
+
+    /// 狀態列倒數與 auto-fetch worker 共用的 deadline 把手，見
+    /// `AutoFetchClock` 文件。
+    pub fn auto_fetch_clock(&self) -> AutoFetchClock {
+        self.auto_fetch_clock.clone()
     }
 }
 
-pub fn start_git_watcher(tx: Sender, repo_root: &Path) -> Arc<AtomicBool> {
-    use notify_debouncer_mini::new_debouncer;
+/// 節流視窗內、或 `pending` token 被設過，都不送 `AutoRefresh`——後者是
+/// 背景 git 操作（`spawn_git_task`）主動觸發的 refresh 順便產生的 fs 事件，
+/// 不必疊加一次。抽出來獨立測：watcher thread 本身只做管線接線，這個判斷
+/// 才是真正需要單元測試覆蓋的邏輯。
+///
+/// 注意這不是 predicate——呼叫一次就會消費 `pending` token、推進
+/// `last_sent`，語意跟著改變，不能被安全地重複呼叫來「先問再做」。
+///
+/// `pending` 用 `swap(false, ...)` 消費，讀了就清掉——不像單向閂鎖那樣需要
+/// 第三方負責清除，沒有人清得掉的話，一次背景操作失敗就會把 watcher 永久
+/// 卡住。
+fn claim_send_slot(
+    pending: &AtomicBool,
+    now: Instant,
+    last_sent: &mut Instant,
+    throttle: Duration,
+) -> bool {
+    if now.duration_since(*last_sent) < throttle {
+        return false;
+    }
+    // 過了節流視窗就重設時鐘；吞掉的這批也算「已送」，讓視窗蓋住背景操作
+    // 觸發的 fs 事件尾巴，不會緊接著又被下一批事件重新判定成「該送」。
+    *last_sent = now;
+    !pending.swap(false, Ordering::AcqRel)
+}
 
-    let pending_refresh = Arc::new(AtomicBool::new(false));
-    let pending = pending_refresh.clone();
+fn start_git_watcher(tx: Sender, pending: Arc<AtomicBool>, repo_root: &Path) {
+    use notify_debouncer_mini::new_debouncer;
 
     let repo_root = repo_root.to_path_buf();
     let git_dir = repo_root
@@ -658,12 +769,8 @@ pub fn start_git_watcher(tx: Sender, repo_root: &Path) -> Arc<AtomicBool> {
                         continue;
                     }
                     let now = Instant::now();
-                    if now.duration_since(last_sent) < throttle {
-                        continue;
-                    }
-                    if !pending.swap(true, Ordering::AcqRel) {
+                    if claim_send_slot(&pending, now, &mut last_sent, throttle) {
                         tx.send(AppEvent::AutoRefresh);
-                        last_sent = now;
                     }
                 }
                 Ok(Err(_)) => {}
@@ -671,8 +778,6 @@ pub fn start_git_watcher(tx: Sender, repo_root: &Path) -> Arc<AtomicBool> {
             }
         }
     });
-
-    pending_refresh
 }
 
 /// 先走快速路徑：在任何 syscall 之前，先對原始 event path 做便宜的字串檢查。
@@ -765,6 +870,7 @@ pub enum UserEvent {
     GoToTop,
     GoToBottom,
     GoToParent,
+    GoToChild,
     GoToHead,
     ScrollUp,
     ScrollDown,
@@ -825,6 +931,7 @@ impl UserEvent {
             UserEvent::GoToTop => "go_to_top",
             UserEvent::GoToBottom => "go_to_bottom",
             UserEvent::GoToParent => "go_to_parent",
+            UserEvent::GoToChild => "go_to_child",
             UserEvent::GoToHead => "go_to_head",
             UserEvent::ScrollUp => "scroll_up",
             UserEvent::ScrollDown => "scroll_down",
@@ -889,6 +996,7 @@ impl UserEvent {
             UserEvent::GoToTop => "跳到頂端",
             UserEvent::GoToBottom => "跳到底端",
             UserEvent::GoToParent => "選擇 parent commit",
+            UserEvent::GoToChild => "選擇 child commit",
             UserEvent::GoToHead => "回到 HEAD",
             UserEvent::ScrollUp => "向上捲動",
             UserEvent::ScrollDown => "向下捲動",
@@ -973,6 +1081,7 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "go_to_top" => Ok(UserEvent::GoToTop),
                         "go_to_bottom" => Ok(UserEvent::GoToBottom),
                         "go_to_parent" => Ok(UserEvent::GoToParent),
+                        "go_to_child" => Ok(UserEvent::GoToChild),
                         "go_to_head" => Ok(UserEvent::GoToHead),
                         "scroll_up" => Ok(UserEvent::ScrollUp),
                         "scroll_down" => Ok(UserEvent::ScrollDown),
@@ -1045,6 +1154,7 @@ impl UserEvent {
                 | UserEvent::ScrollUp
                 | UserEvent::ScrollDown
                 | UserEvent::GoToParent
+                | UserEvent::GoToChild
                 | UserEvent::PageUp
                 | UserEvent::PageDown
                 | UserEvent::HalfPageUp
@@ -1086,6 +1196,56 @@ mod tests {
             "心跳週期 {TICK_INTERVAL:?} 對 stall 門檻 {WATCHDOG_STALL_TIMEOUT:?} 來說太長"
         );
         assert!(WATCHDOG_INTERVAL < WATCHDOG_STALL_TIMEOUT);
+    }
+
+    // ── claim_send_slot() ──
+
+    const THROTTLE: Duration = Duration::from_secs(1);
+
+    /// 節流視窗過了、沒有 pending token：正常送出，且更新 `last_sent`。
+    #[test]
+    fn claim_send_slot_sends_when_not_throttled_and_no_pending_token() {
+        let pending = AtomicBool::new(false);
+        let mut last_sent = Instant::now() - THROTTLE * 2;
+        let now = Instant::now();
+
+        assert!(claim_send_slot(&pending, now, &mut last_sent, THROTTLE));
+        assert_eq!(last_sent, now);
+    }
+
+    /// 節流視窗內：不送，且不觸碰 `pending`（沒有消費掉任何人設的 token）。
+    #[test]
+    fn claim_send_slot_swallows_within_throttle_window_without_consuming_token() {
+        let pending = AtomicBool::new(true);
+        let mut last_sent = Instant::now();
+        let now = last_sent + THROTTLE / 2;
+
+        assert!(!claim_send_slot(&pending, now, &mut last_sent, THROTTLE));
+        assert!(
+            pending.load(Ordering::Acquire),
+            "節流視窗內不該消費 token，留給視窗外的下一次判斷"
+        );
+    }
+
+    /// `pending` 是一次性 token：第一次呼叫吞掉（不送）並清成 `false`，且更新
+    /// `last_sent`；緊接著第二次呼叫（視窗外）沒有 token 可吞，正常送出。
+    /// 這是把單向閂鎖換成消費式 token 的核心不變式：token 讀了就清，不需要
+    /// 任何第三方負責清除。
+    #[test]
+    fn claim_send_slot_consumes_pending_token_exactly_once() {
+        let pending = AtomicBool::new(true);
+        let mut last_sent = Instant::now() - THROTTLE * 2;
+        let first = Instant::now();
+
+        assert!(!claim_send_slot(&pending, first, &mut last_sent, THROTTLE));
+        assert!(!pending.load(Ordering::Acquire), "token 應該被消費掉");
+        assert_eq!(last_sent, first, "吞掉的這批也算已送，更新 last_sent");
+
+        let second = first + THROTTLE * 2;
+        assert!(
+            claim_send_slot(&pending, second, &mut last_sent, THROTTLE),
+            "token 已經被上一次呼叫消費掉，這次沒有東西可吞，該正常送出"
+        );
     }
 
     #[test]
@@ -1141,6 +1301,7 @@ mod tests {
             UserEvent::GoToTop,
             UserEvent::GoToBottom,
             UserEvent::GoToParent,
+            UserEvent::GoToChild,
             UserEvent::GoToHead,
             UserEvent::ScrollUp,
             UserEvent::ScrollDown,

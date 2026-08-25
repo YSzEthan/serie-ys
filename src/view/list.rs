@@ -133,6 +133,11 @@ impl<'a> ListView<'a> {
                     self.as_mut_list_state().select_parent();
                 }
             }
+            UserEvent::GoToChild => {
+                for _ in 0..count {
+                    self.as_mut_list_state().select_child();
+                }
+            }
             UserEvent::UserCommand(n) => {
                 self.tx.send(AppEvent::OpenUserCommand(n));
             }
@@ -359,8 +364,8 @@ impl<'a> ListView<'a> {
     pub fn refresh(&self) {
         let list_state = self.as_list_state();
         let list_context = ListRefreshViewContext::from(list_state);
-        let context = RefreshViewContext::List { list_context };
-        self.tx.send(AppEvent::Refresh(context));
+        self.tx
+            .send(AppEvent::Refresh(RefreshViewContext::list(list_context)));
     }
 
     pub fn reset_commit_list_with(&mut self, list_context: &ListRefreshViewContext) {

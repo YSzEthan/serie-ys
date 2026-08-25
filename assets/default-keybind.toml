@@ -14,6 +14,7 @@ select_down = ["shift-j"]
 go_to_top = ["i"]
 go_to_bottom = ["shift-g"]
 go_to_parent = ["m"]
+go_to_child = ["shift-m"]
 go_to_head = ["."]
 
 # 沒有預設鍵位，列在這裡是為了讓它可以被設定（wizard 的動作清單也照這個
