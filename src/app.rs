@@ -193,6 +193,10 @@ pub struct App<'a> {
     marquee_frame: u64,
     marquee_needed: bool,
     last_marquee_id: Option<std::sync::Arc<str>>,
+    /// 上一幀畫出來的 auto-fetch 倒數秒數，`Tick` 用它判斷這一幀要不要重畫
+    /// （見 `run()` 的 `Tick` arm）。跟上面兩個欄位同一類「上一幀畫了什麼」的
+    /// 狀態；`App` 重建時歸 `None`，最多多畫一幀，無妨。
+    last_countdown_secs: Option<u64>,
 }
 
 /// GitHub 資料的排程狀態機。`(loading=false, pending=Some(_))`
@@ -319,7 +323,8 @@ impl<'a> App<'a> {
             }
         }
         let view = View::of_list(commit_list_state, ctx.clone(), ec.sender());
-        let status_line_state = StatusLineState::new(ctx.clone(), ec.sender());
+        let status_line_state =
+            StatusLineState::new(ctx.clone(), ec.sender(), ec.auto_fetch_clock());
 
         let mut app = Self {
             repository,
@@ -335,6 +340,7 @@ impl<'a> App<'a> {
             marquee_frame: 0,
             marquee_needed: false,
             last_marquee_id: None,
+            last_countdown_secs: None,
         };
 
         if let Some(context) = refresh_view_context {
@@ -375,9 +381,21 @@ impl App<'_> {
 
             match self.ec.recv() {
                 AppEvent::Tick => {
+                    // Tick 是 100ms 一次，但倒數每秒才需要動一次——以「該顯示
+                    // 的秒數變了」當重畫條件，沒開 auto-fetch 時
+                    // `countdown_secs()` 恆為 `None`，`changed` 恆為 false，
+                    // `skip_draw` 的行為跟這個功能出現之前完全一樣。
+                    //
+                    // 這三行放在 `if` 外面、無條件執行，不要搬進 `else`
+                    // 分支：那樣跑馬燈期間根本不會算，欄位會一路發霉，跑馬燈
+                    // 停下來的那一刻就用一個過期值去比對。
+                    let countdown = self.status_line_state.countdown_secs();
+                    let changed = countdown != self.last_countdown_secs;
+                    self.last_countdown_secs = countdown;
+
                     if self.marquee_needed {
                         self.marquee_frame = self.marquee_frame.wrapping_add(1);
-                    } else {
+                    } else if !changed {
                         skip_draw = true;
                     }
                     continue;
@@ -608,8 +626,15 @@ impl App<'_> {
                         // 有 blocking overlay：這一輪跳過網路工作，但同一顆
                         // 指紋要原封不動送下去重新武裝——連跳過都不能連
                         // 重新武裝一起跳過，否則這條鏈永久死掉。
-                        self.ec.sender().send_after(
-                            AppEvent::AutoFetchPoll { last_fingerprint },
+                        //
+                        // 走 `rearm` 而不是直接 `send_after`：倒數的 deadline
+                        // 必須跟著這一輪一起往後推。overlay 蓋著的時候狀態列
+                        // 本來就看不見，症狀要等 overlay 關掉才顯現——倒數卡在
+                        // `00:00` 一整個 interval，看起來像 auto-fetch 死了。
+                        auto_fetch::rearm(
+                            self.ec.sender(),
+                            self.ec.auto_fetch_clock(),
+                            last_fingerprint,
                             self.ctx.auto_fetch.interval,
                         );
                     } else {

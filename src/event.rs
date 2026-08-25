@@ -377,6 +377,37 @@ impl PendingRefreshFlag {
     }
 }
 
+/// 下一輪 auto-fetch 的預定時間，狀態列的倒數讀它。
+///
+/// 跟 `PendingRefreshFlag` 同一種角色（`EventController` 內部狀態的輕量
+/// 把手），但存在這裡還有第二個、更硬的理由：`App` 每次 `AppEvent::Refresh`
+/// 都會被 `lib.rs::run()` 整個重建，watcher 一有動靜就發生。deadline 若存在
+/// `App` 欄位，每次重建就歸零，倒數會消失最長達一整個 interval。
+/// `EventController` 建在那個迴圈外面，跨重建存活。
+/// `Default` = 沒 arm 過，`remaining()` 恆為 `None`，語意等同「沒開
+/// auto-fetch」——不是危險狀態，所以對正式程式碼開放也無妨。
+#[derive(Debug, Clone, Default)]
+pub struct AutoFetchClock(Arc<Mutex<Option<Instant>>>);
+
+impl AutoFetchClock {
+    /// 排下一輪 poll 的同時呼叫——兩件事必須成對，見 `auto_fetch::rearm`。
+    pub fn arm(&self, at: Instant) {
+        *self.0.lock().unwrap() = Some(at);
+    }
+
+    /// `None` = 沒開 auto-fetch，或還沒排過第一輪。
+    ///
+    /// 已過期回 `Some(ZERO)`——`saturating_duration_since` 本來就是這個
+    /// 語意，不必手寫 `if at > now` 去製造特殊情況。過期期間正是 worker
+    /// 在跑 ls-remote／fetch 的時候，`00:00` 就是「正在抓」。
+    pub fn remaining(&self) -> Option<Duration> {
+        // 臨界區只做一次讀取，持鎖期間不呼叫任何東西——理由同
+        // `EventController` 對 mutex 中毒的註解。
+        let at = *self.0.lock().unwrap();
+        at.map(|at| at.saturating_duration_since(Instant::now()))
+    }
+}
+
 #[cfg(test)]
 impl Sender {
     pub(crate) fn channel_for_test() -> (Self, mpsc::Receiver<AppEvent>) {
@@ -412,6 +443,14 @@ pub struct EventController {
     /// 註解。無條件建好（不是 `Option`）：沒有 watcher 時這個 flag 只是沒人
     /// 讀，不是需要特判的錯誤狀態。
     pending_refresh: Arc<AtomicBool>,
+    /// 下一輪 auto-fetch 的預定時間，狀態列倒數用。無條件建好：沒開
+    /// auto-fetch 時只是沒人 `arm`，`remaining()` 恆為 `None`，不是需要
+    /// 特判的狀態。見 `AutoFetchClock`。
+    ///
+    /// 直接存 newtype 而不是裸 `Arc`（`pending_refresh` 那樣）——
+    /// `PendingRefreshFlag` 不是 `Clone`，只能存裸的再包；`AutoFetchClock`
+    /// 是，沒有同一個限制。
+    auto_fetch_clock: AutoFetchClock,
     term_signal: Arc<AtomicBool>,
     heartbeat: Arc<AtomicU64>,
 }
@@ -460,6 +499,7 @@ impl EventController {
             stop: Arc::new(AtomicBool::new(false)),
             handle: Arc::new(Mutex::new(None)),
             pending_refresh: Arc::new(AtomicBool::new(false)),
+            auto_fetch_clock: AutoFetchClock::default(),
             term_signal,
             heartbeat: Arc::new(AtomicU64::new(0)),
         };
@@ -648,6 +688,12 @@ impl EventController {
     /// `PendingRefreshFlag` 文件。
     pub fn pending_refresh_flag(&self) -> PendingRefreshFlag {
         PendingRefreshFlag(self.pending_refresh.clone())
+    }
+
+    /// 狀態列倒數與 auto-fetch worker 共用的 deadline 把手，見
+    /// `AutoFetchClock` 文件。
+    pub fn auto_fetch_clock(&self) -> AutoFetchClock {
+        self.auto_fetch_clock.clone()
     }
 }
 
