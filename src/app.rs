@@ -22,8 +22,9 @@ use crate::{
     },
     git::{background_command, Commit, CommitHash, FileChange, Head, Ref, RefType, Repository},
     github::{
-        is_merge_conflict_error, merge_pr, set_item_state, set_pr_draft, GhItemKind, MergeMethod,
-        PrDraftAction, StateAction, StateFilter,
+        delete_remote_branch as gh_delete_remote_branch, is_merge_conflict_error, merge_pr,
+        set_item_state, set_pr_draft, GhItemKind, MergeMethod, PrDraftAction, StateAction,
+        StateFilter,
     },
     graph::{Graph, GraphStyle},
     keybind::KeyBind,
@@ -688,9 +689,10 @@ impl App<'_> {
                     number,
                     head_ref,
                     state,
+                    deletable,
                 } => {
                     self.status_line_state
-                        .open_merge_pr_prompt(number, head_ref, state);
+                        .open_merge_pr_prompt(number, head_ref, state, deletable);
                 }
                 AppEvent::OpenToggleStatePrompt {
                     number,
@@ -734,7 +736,7 @@ impl App<'_> {
                     number,
                     state,
                     method,
-                    delete_branch,
+                    delete_remote_branch,
                 } => {
                     spawn_merge_pr(
                         self.repository.path(),
@@ -742,7 +744,7 @@ impl App<'_> {
                         number,
                         state,
                         method,
-                        delete_branch,
+                        delete_remote_branch,
                     );
                 }
                 AppEvent::ToggleItemStateRequested {
@@ -1892,7 +1894,7 @@ fn spawn_merge_pr(
     number: u64,
     state: StateFilter,
     method: MergeMethod,
-    delete_branch: bool,
+    delete_remote_branch: Option<String>,
 ) {
     let repo_path = repo.to_path_buf();
     let tx = ec.sender();
@@ -1900,17 +1902,34 @@ fn spawn_merge_pr(
         message: format!("Merging PR #{number}..."),
     });
     std::thread::spawn(move || {
-        let result = merge_pr(&repo_path, number, method.as_flag(), delete_branch);
-        tx.send(AppEvent::HidePendingOverlay);
+        let result = merge_pr(&repo_path, number, method.as_flag());
         match result {
             Ok(()) => {
-                tx.send(AppEvent::NotifySuccess(format!(
-                    "PR #{number} merged ({})",
-                    method.display()
-                )));
+                // 列表不必等刪除分支——先送，讓 merge 完成立刻反映在畫面上。
                 tx.send(AppEvent::RefreshGitHub { state });
+
+                let merged = format!("PR #{number} merged ({})", method.display());
+                let notify = match delete_remote_branch {
+                    None => AppEvent::NotifySuccess(merged),
+                    Some(head_ref) => {
+                        tx.send(AppEvent::ShowPendingOverlay {
+                            message: "Deleting remote branch...".to_string(),
+                        });
+                        match gh_delete_remote_branch(&repo_path, &head_ref) {
+                            Ok(()) => AppEvent::NotifySuccess(format!(
+                                "{merged}, remote branch '{head_ref}' deleted"
+                            )),
+                            Err(e) => AppEvent::NotifyWarn(format!(
+                                "{merged}, but failed to delete remote branch '{head_ref}': {e}"
+                            )),
+                        }
+                    }
+                };
+                tx.send(AppEvent::HidePendingOverlay);
+                tx.send(notify);
             }
             Err(e) => {
+                tx.send(AppEvent::HidePendingOverlay);
                 if is_merge_conflict_error(&e) {
                     tx.send(AppEvent::NotifyWarn(format!(
                         "PR #{number} has conflicts — resolve before merging"

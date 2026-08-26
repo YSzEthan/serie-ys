@@ -178,6 +178,9 @@ pub enum AppEvent {
         number: u64,
         head_ref: String,
         state: crate::github::StateFilter,
+        /// false = fork／head 是 default branch／head==base，UI 直接跳過
+        /// delete-branch 那一問，見 `github::head_branch_deletable`。
+        deletable: bool,
     },
     OpenToggleStatePrompt {
         number: u64,
@@ -237,7 +240,8 @@ pub enum AppEvent {
         number: u64,
         state: crate::github::StateFilter,
         method: crate::github::MergeMethod,
-        delete_branch: bool,
+        /// `Some(head_ref)` = 要刪遠端的這條 branch；`None` = 不刪。
+        delete_remote_branch: Option<String>,
     },
     ToggleItemStateRequested {
         number: u64,
