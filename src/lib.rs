@@ -20,10 +20,10 @@ mod wizard;
 
 use std::{
     collections::VecDeque,
+    env,
     io::{IsTerminal, Write},
     path::Path,
     rc::Rc,
-    time::Instant,
 };
 
 use app::{App, Ret};
@@ -93,7 +93,9 @@ struct Args {
     )]
     update_interval: Option<u64>,
 
-    /// 更新完成後自動重啟（TUI）／開啟新版（CLI），不再詢問 [default: off]
+    /// 更新完成後自動重啟（TUI）／開啟新版（CLI），不再詢問；開啟時也會
+    /// 偵測磁碟上的執行檔是否被別的 ysgit 實例或手動部署換掉，換掉且確認
+    /// 可執行就在使用者閒置時自動接上新版 [default: off]
     #[arg(long, value_name = "TYPE")]
     auto_restart: Option<AutoRestart>,
 
@@ -412,6 +414,12 @@ fn resolve_head_commit_hash(repository: &git::Repository) -> Option<git::CommitH
     }
 }
 
+/// 跨 `exec` 傳給新 process 的旗標：有設就在啟動時顯示一次性的重啟通知。
+/// 不用 argv（`args.to_argv()` 是從解析後的 `Args` 決定性重建的，硬塞一個
+/// 它不認得的旗標進去會在下一次 `Args::try_parse()` 炸掉），環境變數是
+/// `exec` 天然會繼承的通道，用完即丟，不影響後續任何行為。
+const EXE_REPLACED_NOTICE_ENV: &str = "YSGIT_EXE_REPLACED_NOTICE";
+
 pub fn run() -> Result<()> {
     // ratatui::init() 裝的 panic hook 只還原 alt screen + raw mode，
     // 不會清 mouse capture — 先補一層 DisableMouseCapture。
@@ -573,6 +581,37 @@ pub fn run() -> Result<()> {
             update_settings.interval,
         );
     }
+    // 排第一次「執行檔已被換掉」檢查——起點只有這裡一個，絕對不能搬進
+    // 下面 `let ret = loop` 裡：那個迴圈每次 `Ret::Refresh` 都會重跑，
+    // 每重跑一次就多一條並行的鏈，而 watcher 一有動靜就 refresh。
+    //
+    // 三個閘門都要過：`auto_restart` 是這個功能唯一的開關，刻意不看
+    // `update_settings.mode`——手動 deploy（`rm`/`cp`／`mv`）跟遠端有沒有
+    // 新版是兩件事，`mode = off` 的使用者一樣該在別人換掉執行檔後接上
+    // 新版；`!cfg!(debug_assertions)` 對齊 `download_and_replace`
+    // （`update.rs`）與 `pending_release_notes` 兩處既有先例，避免
+    // `cargo run` 開著時另一個終端機 `cargo build` 把自己重啟掉；
+    // `exe_snapshot_available()` 避免武裝一個每
+    // `update::EXE_CHECK_INTERVAL` spawn 一條 thread、卻因為快照失敗而
+    // 永遠回 `None` 的空轉 timer。
+    //
+    // `send_after` 不是 `send`：快照才剛在 `update::snapshot_exe()` 釘好，
+    // 立即檢查必定回 false。
+    if update_settings.auto_restart && !cfg!(debug_assertions) && update::exe_snapshot_available() {
+        ec.sender().send_after(
+            event::AppEvent::ExeReplacedCheck,
+            update::EXE_CHECK_INTERVAL,
+        );
+    }
+    // `AppEvent::ExeReplacedCheck` 自動重啟後，新 process 讀這個環境變數
+    // 顯示一次性通知——exec 之後畫面會一閃回到初始狀態，沒有這個提示，
+    // 使用者只會以為程式當掉重開。讀完即用，不特地清除：新 process 的
+    // 子行程不會繼承到會造成問題的殘留狀態。
+    if env::var_os(EXE_REPLACED_NOTICE_ENV).is_some() {
+        ec.sender().send(event::AppEvent::ShowNoticeOverlay {
+            message: "Applied the version already on disk".to_string(),
+        });
+    }
     // 清掃上次啟動可能留下的自我更新殘檔——跟這次的 `mode` 無關（上次啟動
     // 沒關閉時留下的殘檔，不能因為這次關了就不清），背景執行不擋啟動。
     std::thread::spawn(update::cleanup_stale_temp_files);
@@ -594,28 +633,24 @@ pub fn run() -> Result<()> {
     }
 
     let mut repository = git::Repository::load(Path::new(&args.path), order, max_count)?;
-    // 排第一次 auto-fetch 輪詢，立刻送（不是 `send_after`）：種子指紋是
-    // 空字串，只要 repo 有 remote，第一輪就會判定成「有變化」而 fetch，
-    // 這是「開起來就是最新的」的來源——之後每一輪由
-    // `AppEvent::AutoFetchPoll` 的處理在 worker 尾端自我重新武裝，起點只
-    // 有這裡一個。`mode = Off` 就不排。放在 `Repository::load` 之後才排：
-    // 那一行內部已經跑過 `check_git_repository`（含 bare repo），「是不是
-    // git repo」在這裡已經被證明，不需要像 `start_git_watcher` 那樣另外用
-    // `is_inside_work_tree` 當閘門——bare repo 沒有 worktree 但照樣有
-    // remote、照樣該 auto-fetch。
+    // 排第一次 auto-fetch 輪詢。`mode = Off` 就不排；放在 `Repository::load`
+    // 之後才排：那一行內部已經跑過 `check_git_repository`（含 bare repo），
+    // 「是不是 git repo」在這裡已經被證明，不需要像 `start_git_watcher`
+    // 那樣另外用 `is_inside_work_tree` 當閘門——bare repo 沒有 worktree 但
+    // 照樣有 remote、照樣該 auto-fetch。
     if auto_fetch_settings.mode == AutoFetch::On {
-        // 倒數的 deadline 設在「現在」，狀態列從第一幀就顯示 `00:00`——語意
-        // 是「正在抓」，跟中途任何一輪 worker 執行期間看到的完全一致。不設
-        // 的話，從啟動到第一輪 worker 跑完為止（ls-remote 與 fetch 的逾時
-        // 預算加起來最壞 70 秒以上）狀態列是空的，而「開起來就看得到它在
-        // 跑」正是這個倒數存在的理由。
+        // 啟動不主動 fetch，先靠 `spawn_resync` 建立真實基準（只做
+        // `ls-remote`，deadline 設在 now+interval）：舊版種子用空字串當
+        // 保證比不中的哨兵，開起來就必定判定「有差異」而 fetch，這在新
+        // 架構下會變成每次啟動都蓋一次擋鍵盤的 overlay（`spawn_due_fetch`
+        // 跟手動 fetch 共用同一套 pending overlay，不像舊版是靜默背景
+        // fetch）。改成先建基準，之後遠端真的有新內容才會觸發。
         //
-        // 這一發是立即送、不是 `send_after`，所以不走 `auto_fetch::rearm`
-        // ——為了消滅一個分支去動啟動時的事件順序不划算。
-        ec.auto_fetch_clock().arm(Instant::now());
-        ec.sender().send(event::AppEvent::AutoFetchPoll {
-            last_fingerprint: String::new(),
-        });
+        // 立刻 `send`（不是 `send_after`）：`AutoFetchPoll` 處理端會自己問
+        // `remaining()`，見到 deadline 還沒到（`spawn_resync` 剛設的
+        // now+interval）就會睡到正確時間，不需要在這裡重複算一次 interval。
+        auto_fetch::spawn_resync(&ec, repository.path(), auto_fetch_settings.interval);
+        ec.sender().send(event::AppEvent::AutoFetchPoll);
     }
     let mut graph = Rc::new(graph::calc_graph(
         &repository,
@@ -716,6 +751,17 @@ pub fn run() -> Result<()> {
     // 接手的終端機這時才是還原乾淨的，不然會接手一個還在 alt screen ＋
     // raw mode 的終端機。
     if let Some(exe) = ret? {
+        // 新 process 讀這個環境變數顯示一次性通知——重啟後 view 狀態全丟
+        // （選到的 commit、filter 都回到初始），沒有這個提示，使用者只會
+        // 看到畫面一閃、以為程式當掉重開。會走到這裡的三條路徑（使用者
+        // 確認重啟提示、`auto_restart` 靜默重啟、`ExeReplacedCheck` 偵測
+        // 到別的實例更新）共用同一則訊息，不特別分開判斷。
+        //
+        // SAFETY: 這是收尾階段的最後幾行，沒有其他 thread 會同時讀寫
+        // 環境變數。
+        unsafe {
+            env::set_var(EXE_REPLACED_NOTICE_ENV, "1");
+        }
         if let Err(e) = update::exec_replacing_self(&exe, &args.to_argv()) {
             // 執行檔已經換好了，只是沒能自動重啟——印出來讓使用者知道要
             // 手動重開，不能回頭再跑一次 -U（新 process 已經是新版，

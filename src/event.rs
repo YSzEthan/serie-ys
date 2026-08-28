@@ -204,6 +204,27 @@ pub enum AppEvent {
     /// 沒有鍵盤／`UserEvent` 對應：只有 `lib.rs::run()` 排第一次、
     /// 處理它的地方排下一次，使用者無法直接觸發。
     PeriodicUpdateCheck,
+    /// 磁碟上的執行檔是不是已經被別的 ysgit 實例／手動部署換掉、寫完整、
+    /// 跑得起來，是的話就 `exec` 過去——跟 `PeriodicUpdateCheck` 同一種
+    /// `send_after` 自我重新武裝的鏈，只在 `auto_restart` 開著時武裝。
+    ///
+    /// **刻意沒有 payload**：判準（`update::replacement_ready()`）是單次
+    /// stat 加兩個守衛，每一輪都無狀態，不需要累加器——順便避開一個陷阱：
+    /// 累加器若放在 `App` 欄位會被 `Ret::Refresh` 重建清掉（見
+    /// `AutoFetchClock` 的 doc comment），在頻繁 refresh 的活躍 repo 上會
+    /// 變成「乾淨測試 repo 驗得過、真實工作 repo 永遠不動」那種 bug。
+    ///
+    /// 只有 `lib.rs::run()` 排第一次、處理它的地方排下一次，使用者無法
+    /// 直接觸發。
+    ExeReplacedCheck,
+    /// 執行檔被 `AppEvent::ExeReplacedCheck` 自動 exec 換掉之後，新
+    /// process 啟動時顯示的一次性通知，讓使用者知道畫面重置的原因
+    /// （見 `lib.rs::run()` 讀環境變數那段）。獨立於 `ShowPendingOverlay`
+    /// ——後者的 Cancel 鍵會送「Operation continues in background」，
+    /// 用在「已經做完的事」上語意是錯的。
+    ShowNoticeOverlay {
+        message: String,
+    },
     /// 有新版才送——見 `update::check_for_update`。
     OpenUpdatePrompt {
         tag: String,
@@ -258,21 +279,42 @@ pub enum AppEvent {
     /// `PeriodicUpdateCheck` 同一種鏈：`send_after` 自我重新武裝，不是
     /// detached thread + `loop { sleep }`。
     ///
-    /// `last_fingerprint` 是這條鏈的累加器，不是共享狀態：種子是空字串
-    /// （`lib.rs::run()` 只排這一次），之後每一輪都由
-    /// `auto_fetch::spawn_poll` 的背景 thread 算出下一顆、在自己收尾時
-    /// `send_after` 傳下去——重新武裝必須在 worker 尾端而不是這個事件剛
-    /// 收到時，否則 `interval` 太短、單一 remote 逾時預算又不小時，會讓
-    /// 兩輪 poll 疊在一起。
-    AutoFetchPoll {
-        last_fingerprint: String,
+    /// **不帶 payload**——比對用的基準指紋活在 `AutoFetchClock`（共享
+    /// 狀態，見該處文件），不再靠 event payload 一路往前傳。這個事件單純
+    /// 是「叫醒」：處理端先問 `AutoFetchClock::remaining()`，deadline 還沒
+    /// 到（代表手動 fetch 觸發的重算把它往後推過）就睡到真正的 deadline，
+    /// 到了才真的 `spawn_poll`。種子由 `lib.rs::run()` 排第一次，之後每一
+    /// 輪由 `auto_fetch::rearm` 排下一次——`spawn_due_fetch` 真的跑過
+    /// `git fetch` 才會在 worker 尾端呼叫它，其餘兩處（忙碌跳過、沒有
+    /// 差異）都在主執行緒當場呼叫；只有真的執行網路動作的那條路徑需要
+    /// 等 worker 收尾才重新武裝，否則 `interval` 太短、單一 remote 逾時
+    /// 預算又不小時，會讓兩輪 poll 疊在一起。
+    AutoFetchPoll,
+    /// `auto_fetch::spawn_poll` 的背景 thread 只做 `ls-remote`、不做任何
+    /// 比對（`None` = 失敗），比對留給主執行緒用「現在」的
+    /// `AutoFetchClock::baseline()` 去做——不是 worker 出發時讀到的那份
+    /// 快照，`spawn_resync` 可能在這段 `ls-remote` 期間已經把基準改掉。
+    /// 唯一的比對點只有一個，才不會有兩處判準各自為政（例如其中一處沒
+    /// 把「基準暫時是 `None`」當成不可比較）。
+    ///
+    /// 真的判定有差異之後要不要蓋 overlay 跑 fetch，是 `can_interrupt()`
+    /// 這個只有在主執行緒才問得準的判斷——拆成「背景只做 I/O、主執行緒做
+    /// 全部決策」兩階段，就是為了讓這個判斷跟「真的蓋上去」之間沒有交還
+    /// 控制權給事件迴圈的空隙。
+    AutoFetchPolled {
+        fingerprint: Option<String>,
     },
-    /// `auto_fetch` 背景 thread 偵測到遠端有變化、`git fetch` 成功了——
-    /// 沒有變化或任何一步失敗都不送事件（見 `auto_fetch` 模組文件），
-    /// 所以這個事件本身就代表「該讓使用者知道」，不必帶 payload：顯示的
-    /// 文案固定，見 `app.rs` 處理端。顯示與否仍要過守衛：使用者正在
+    /// `auto_fetch` 真的判定要 fetch、且 `git fetch` 成功了——沒有變化、
+    /// 不可打斷跳過、或任何一步失敗都不送這個事件（見 `auto_fetch` 模組
+    /// 文件），所以它本身就代表「該讓使用者知道」，不必帶 payload：顯示
+    /// 的文案固定，見 `app.rs` 處理端。顯示與否仍要過守衛：使用者正在
     /// picker／輸入框裡的時候不搶 status line。
     AutoFetchCompleted,
+    /// 手動 `fetch_all()` 成功後送出——等同「一輪 auto-fetch 已經跑過」，
+    /// 讓倒數重新計算、比對基準重新計算，不能讓已排定的舊排程再判定一次
+    /// 同一批差異、跳出重複的 overlay。只接手動 fetch，見
+    /// `app.rs::spawn_git_task` 的 `on_success` 掛鉤。
+    AutoFetchResync,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -365,38 +407,57 @@ impl Debug for Sender {
     }
 }
 
-/// `EventController::mark_pending_refresh` 的可攜版——`EventController` 不是
-/// `Clone`（`handle`／`term_signal` 這些欄位綁著整個 process 的生命週期），
-/// 塞不進 `'static` thread closure。跟 `Sender` 是同一種角色：只暴露
-/// `EventController` 內部狀態的一個輕量把手，讓背景 thread（目前只有
-/// `auto_fetch` 的 poll worker）能在真的要 fetch 之前標記 token，不需要
-/// 整個 `EventController`。
-#[derive(Clone)]
-pub struct PendingRefreshFlag(Arc<AtomicBool>);
+/// 下一輪 auto-fetch 的預定時間，加上目前比對用的基準指紋。狀態列的倒數
+/// 讀 `remaining()`；`auto_fetch` 模組的 poll worker 讀／寫 `baseline`。
+///
+/// `EventController` 內部狀態的輕量把手，能被背景 thread clone 走
+/// （`EventController` 本身不是 `Clone`，`handle`／`term_signal` 這些欄位
+/// 綁著整個 process 的生命週期，塞不進 `'static` thread closure）。存在
+/// 這裡還有第二個、更硬的理由：`App` 每次 `AppEvent::Refresh` 都會被
+/// `lib.rs::run()` 整個重建，watcher 一有動靜就發生。deadline／baseline
+/// 若存在 `App` 欄位，每次重建就歸零，倒數與基準都會消失最長達一整個
+/// interval。`EventController` 建在那個迴圈外面，跨重建存活。
+///
+/// `baseline` 為什麼活在這裡而不是像過去那樣靠 `AppEvent` payload
+/// 一路往前傳：一旦有兩個寫入者（背景輪詢與手動 fetch 觸發的重算）,
+/// 它就不再是「單一鏈的累加器」，是共享狀態，該用共享狀態的容器裝，
+/// 不該另外發明一個世代號去標記「哪一份累加器才算數」。`None` = 正在
+/// 重算基準（resync 進行中），這段期間任何一輪 `ls-remote` 比對出的
+/// 「有差異」都不可信，一律當作「還不能判斷」處理。
+///
+/// `Default` = 沒 arm 過，`remaining()` 恆為 `None`、`baseline()` 恆為
+/// `None`，語意等同「沒開 auto-fetch」——不是危險狀態，所以對正式程式碼
+/// 開放也無妨。
+#[derive(Debug, Clone, Default)]
+pub struct AutoFetchClock(Arc<Mutex<AutoFetchClockState>>);
 
-impl PendingRefreshFlag {
-    /// 語意與呼叫時機見 `EventController::mark_pending_refresh`。
-    pub fn mark(&self) {
-        self.0.store(true, Ordering::Release);
-    }
+#[derive(Debug, Default)]
+struct AutoFetchClockState {
+    deadline: Option<Instant>,
+    baseline: Option<String>,
 }
 
-/// 下一輪 auto-fetch 的預定時間，狀態列的倒數讀它。
-///
-/// 跟 `PendingRefreshFlag` 同一種角色（`EventController` 內部狀態的輕量
-/// 把手），但存在這裡還有第二個、更硬的理由：`App` 每次 `AppEvent::Refresh`
-/// 都會被 `lib.rs::run()` 整個重建，watcher 一有動靜就發生。deadline 若存在
-/// `App` 欄位，每次重建就歸零，倒數會消失最長達一整個 interval。
-/// `EventController` 建在那個迴圈外面，跨重建存活。
-/// `Default` = 沒 arm 過，`remaining()` 恆為 `None`，語意等同「沒開
-/// auto-fetch」——不是危險狀態，所以對正式程式碼開放也無妨。
-#[derive(Debug, Clone, Default)]
-pub struct AutoFetchClock(Arc<Mutex<Option<Instant>>>);
-
 impl AutoFetchClock {
-    /// 排下一輪 poll 的同時呼叫——兩件事必須成對，見 `auto_fetch::rearm`。
+    /// 排下一輪 poll，只推 deadline——`rearm()` 每輪都呼叫。**刻意不碰
+    /// baseline**：早期版本這裡是讀出目前基準再原封不動寫回去（想表達
+    /// 「不動它」），但那是兩次獨立上鎖的 read-modify-write，會在
+    /// `spawn_due_fetch`／`spawn_resync` 剛好插進中間時把它們寫入的新值
+    /// （或剛清成的 `None`）蓋回舊值——一次真實的 lost update，會讓
+    /// `spawn_resync` 用來關窗的 `None` 保護失效。baseline 只有
+    /// `begin_resync`／`set_baseline` 能動，`arm` 完全不摸它就不會有這個
+    /// 問題。
     pub fn arm(&self, at: Instant) {
-        *self.0.lock().unwrap() = Some(at);
+        self.0.lock().unwrap().deadline = Some(at);
+    }
+
+    /// 手動 fetch 觸發重算（`spawn_resync`）與啟動種子的唯一入口：同一個
+    /// 臨界區內把 deadline 往後推、baseline 清成 `None`——兩者必須原子
+    /// 一起做，分開寫會有上面 `arm()` 說的那個窗口。回傳前一個基準，讓
+    /// 背景重算失敗時能把它原封不動放回去。
+    pub fn begin_resync(&self, at: Instant) -> Option<String> {
+        let mut s = self.0.lock().unwrap();
+        s.deadline = Some(at);
+        std::mem::take(&mut s.baseline)
     }
 
     /// `None` = 沒開 auto-fetch，或還沒排過第一輪。
@@ -407,8 +468,19 @@ impl AutoFetchClock {
     pub fn remaining(&self) -> Option<Duration> {
         // 臨界區只做一次讀取，持鎖期間不呼叫任何東西——理由同
         // `EventController` 對 mutex 中毒的註解。
-        let at = *self.0.lock().unwrap();
+        let at = self.0.lock().unwrap().deadline;
         at.map(|at| at.saturating_duration_since(Instant::now()))
+    }
+
+    /// 目前的基準指紋，給 worker 開始一輪 `ls-remote` 比對前 clone 一份。
+    pub fn baseline(&self) -> Option<String> {
+        self.0.lock().unwrap().baseline.clone()
+    }
+
+    /// worker 算完之後回填基準；`deadline` 不受影響——它只由 `arm()`／
+    /// `begin_resync()` 動。
+    pub fn set_baseline(&self, baseline: Option<String>) {
+        self.0.lock().unwrap().baseline = baseline;
     }
 }
 
@@ -445,15 +517,14 @@ pub struct EventController {
     /// 「已有 refresh 在路上」的一次性 token——`mark_pending_refresh` 設它、
     /// `start_git_watcher` 的背景 thread 用 `swap(false, ...)` 消費，見該處
     /// 註解。無條件建好（不是 `Option`）：沒有 watcher 時這個 flag 只是沒人
-    /// 讀，不是需要特判的錯誤狀態。
+    /// 讀，不是需要特判的錯誤狀態。唯一的寫入端都握有 `&EventController`
+    /// 本身（`app.rs` 的 `spawn_git_task`／`auto_fetch::spawn_due_fetch`），
+    /// 不需要另外包一層可攜把手給背景 thread 用。
     pending_refresh: Arc<AtomicBool>,
-    /// 下一輪 auto-fetch 的預定時間，狀態列倒數用。無條件建好：沒開
-    /// auto-fetch 時只是沒人 `arm`，`remaining()` 恆為 `None`，不是需要
-    /// 特判的狀態。見 `AutoFetchClock`。
-    ///
-    /// 直接存 newtype 而不是裸 `Arc`（`pending_refresh` 那樣）——
-    /// `PendingRefreshFlag` 不是 `Clone`，只能存裸的再包；`AutoFetchClock`
-    /// 是，沒有同一個限制。
+    /// 下一輪 auto-fetch 的預定時間與比對基準，狀態列倒數、`auto_fetch`
+    /// 模組共用。無條件建好：沒開 auto-fetch 時只是沒人 `arm`，
+    /// `remaining()`／`baseline()` 恆為 `None`，不是需要特判的狀態。見
+    /// `AutoFetchClock`。
     auto_fetch_clock: AutoFetchClock,
     term_signal: Arc<AtomicBool>,
     heartbeat: Arc<AtomicU64>,
@@ -685,16 +756,10 @@ impl EventController {
     /// `AutoRefresh`），watcher 也不會因此永久卡住——最壞情況是多吞一次
     /// 無關的 fs 事件。
     pub fn mark_pending_refresh(&self) {
-        self.pending_refresh_flag().mark();
+        self.pending_refresh.store(true, Ordering::Release);
     }
 
-    /// `mark_pending_refresh` 的可攜版，供背景 thread 使用——見
-    /// `PendingRefreshFlag` 文件。
-    pub fn pending_refresh_flag(&self) -> PendingRefreshFlag {
-        PendingRefreshFlag(self.pending_refresh.clone())
-    }
-
-    /// 狀態列倒數與 auto-fetch worker 共用的 deadline 把手，見
+    /// 狀態列倒數與 auto-fetch worker 共用的 deadline／基準把手，見
     /// `AutoFetchClock` 文件。
     pub fn auto_fetch_clock(&self) -> AutoFetchClock {
         self.auto_fetch_clock.clone()
@@ -1200,6 +1265,79 @@ mod tests {
             "心跳週期 {TICK_INTERVAL:?} 對 stall 門檻 {WATCHDOG_STALL_TIMEOUT:?} 來說太長"
         );
         assert!(WATCHDOG_INTERVAL < WATCHDOG_STALL_TIMEOUT);
+    }
+
+    // ── AutoFetchClock ──
+
+    #[test]
+    fn default_clock_has_no_deadline_and_no_baseline() {
+        let clock = AutoFetchClock::default();
+        assert_eq!(clock.remaining(), None);
+        assert_eq!(clock.baseline(), None);
+    }
+
+    #[test]
+    fn arm_only_touches_deadline() {
+        let clock = AutoFetchClock::default();
+        clock.set_baseline(Some("a".to_string()));
+        clock.arm(Instant::now() + Duration::from_secs(100));
+        assert_eq!(
+            clock.baseline(),
+            Some("a".to_string()),
+            "arm 不該碰 baseline——這是它跟 begin_resync 的唯一差別"
+        );
+    }
+
+    #[test]
+    fn remaining_is_zero_once_deadline_has_passed() {
+        // `saturating_duration_since`：deadline 設在呼叫當下，等函式回來時
+        // 單調時鐘必然已經往前走，deadline 相對「現在」已經過期。
+        let clock = AutoFetchClock::default();
+        clock.arm(Instant::now());
+        assert_eq!(clock.remaining(), Some(Duration::ZERO));
+    }
+
+    #[test]
+    fn remaining_reflects_a_future_deadline() {
+        let clock = AutoFetchClock::default();
+        clock.arm(Instant::now() + Duration::from_secs(100));
+        let remaining = clock.remaining().expect("剛 arm 過，不該是 None");
+        assert!(
+            remaining > Duration::from_secs(90) && remaining <= Duration::from_secs(100),
+            "{remaining:?} 應該接近剛設定的 100 秒"
+        );
+    }
+
+    #[test]
+    fn begin_resync_sets_deadline_and_clears_baseline_and_returns_previous() {
+        let clock = AutoFetchClock::default();
+        clock.set_baseline(Some("a".to_string()));
+
+        let previous = clock.begin_resync(Instant::now() + Duration::from_secs(100));
+        assert_eq!(previous, Some("a".to_string()), "要拿到清空之前的舊值");
+        assert_eq!(
+            clock.baseline(),
+            None,
+            "resync 進行中用 None 表示暫無可信基準"
+        );
+
+        let remaining = clock.remaining().unwrap();
+        assert!(remaining > Duration::from_secs(90), "deadline 要一起往後推");
+    }
+
+    #[test]
+    fn set_baseline_overwrites_without_touching_deadline() {
+        let clock = AutoFetchClock::default();
+        let deadline = Instant::now() + Duration::from_secs(100);
+        clock.arm(deadline);
+        clock.set_baseline(Some("a".to_string()));
+
+        clock.set_baseline(Some("b".to_string()));
+        assert_eq!(clock.baseline(), Some("b".to_string()));
+
+        // deadline 全程不受 set_baseline 影響。
+        let remaining = clock.remaining().unwrap();
+        assert!(remaining > Duration::from_secs(90));
     }
 
     // ── claim_send_slot() ──
