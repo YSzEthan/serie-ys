@@ -45,6 +45,81 @@ pub(super) struct TimelineBlock<'a> {
     pub(super) items: Vec<TimelineItem<'a>>,
 }
 
+impl<'a> TimelineBlock<'a> {
+    /// 一個 gh timeline node 對應 0 或 1 個 block。`Unknown` 節點——`itemTypes`
+    /// 本不該產生的 `__typename`——被直接丟棄，不渲染成錯誤：一個無法辨識的
+    /// 節點不該在原本正常的 timeline 中間跳出一則嚇人的訊息。PENDING review
+    /// （`submitted_at` 為 `None`，尚未送出的草稿，只有作者自己看得到）同樣
+    /// 丟棄，理由相同——不該讓半成品永遠掛在別人也看得到的 timeline 上。
+    ///
+    /// 一則 review 連同它的行內留言算*一個* block：`TimelineBlock` 的用途
+    /// 就是「同一個 section 底下連續出現的 item」，行內留言緊接在總結留言
+    /// 之後正是這個形狀，不需要為此另立機制。
+    fn from_gh(item: &'a GhTimelineItem) -> Option<Self> {
+        match item {
+            GhTimelineItem::IssueComment {
+                body,
+                created_at,
+                author,
+            } => Some(TimelineBlock {
+                section: Section::Comment,
+                items: vec![TimelineItem::Comment {
+                    author: author.as_ref().map_or("ghost", |a| a.login.as_str()),
+                    created_at,
+                    body,
+                }],
+            }),
+            GhTimelineItem::PullRequestCommit { commit } => Some(TimelineBlock {
+                section: Section::Commit,
+                items: vec![TimelineItem::Commit {
+                    oid: &commit.abbreviated_oid,
+                    headline: &commit.message_headline,
+                    ci_state: commit
+                        .status_check_rollup
+                        .as_ref()
+                        .map(|r| r.state.as_str()),
+                }],
+            }),
+            GhTimelineItem::PullRequestReview {
+                state,
+                body,
+                submitted_at,
+                author,
+                comments,
+            } => {
+                let submitted_at = submitted_at.as_deref()?;
+                let mut items = vec![TimelineItem::Review {
+                    state,
+                    author: author.as_ref().map_or("ghost", |a| a.login.as_str()),
+                    submitted_at,
+                    body,
+                }];
+                items.extend(comments.nodes.iter().map(|c| TimelineItem::ReviewComment {
+                    path: &c.path,
+                    line: c.line,
+                    outdated: c.outdated,
+                    resolved: c.resolved,
+                    body: &c.body,
+                }));
+                if comments.total_count > comments.nodes.len() {
+                    items.push(TimelineItem::notice(
+                        format!(
+                            "(+{} more comments)",
+                            comments.total_count - comments.nodes.len()
+                        ),
+                        Color::DarkGray,
+                    ));
+                }
+                Some(TimelineBlock {
+                    section: Section::Review,
+                    items,
+                })
+            }
+            GhTimelineItem::Unknown => None,
+        }
+    }
+}
+
 /// 把 `TimelineEntry` 可能處於的每種狀態——pending、failed、loaded（空或
 /// 非空）、分頁中——攤平成一份可渲染 block 的清單。走訪結果的渲染迴圈本身
 /// 沒有任何分支：「我現在是什麼狀態」這個問題只在這裡回答一次。
@@ -68,28 +143,27 @@ pub(super) fn build_timeline(
             vec![notice_block(format!("(comments failed: {e})"), Color::Red)]
         }
         TimelineLoad::Loaded => {
-            let (commits, comments): (Vec<_>, Vec<_>) = entry
+            let (commit_blocks, rest): (Vec<_>, Vec<_>) = entry
                 .items
                 .iter()
-                .filter_map(TimelineItem::from_gh)
-                .partition(|item| matches!(item, TimelineItem::Commit { .. }));
+                .filter_map(TimelineBlock::from_gh)
+                .partition(|b| b.section == Section::Commit);
 
             let mut blocks = Vec::new();
-            if !commits.is_empty() {
+            if !commit_blocks.is_empty() {
+                let commit_items: Vec<_> =
+                    commit_blocks.into_iter().flat_map(|b| b.items).collect();
                 let items = if expand_commits {
-                    commits
+                    commit_items
                 } else {
-                    vec![TimelineItem::CollapsedCommits(commits.len())]
+                    vec![TimelineItem::CollapsedCommits(commit_items.len())]
                 };
                 blocks.push(TimelineBlock {
                     section: Section::Commit,
                     items,
                 });
             }
-            blocks.extend(comments.into_iter().map(|item| TimelineBlock {
-                section: Section::Comment,
-                items: vec![item],
-            }));
+            blocks.extend(rest);
 
             // 判斷用的是*過濾/分組後*的 block 清單，不是 `entry.items`：一頁
             // 全是 `Unknown` 節點時，仍然要 fallback 到提示訊息，而不是渲染
@@ -140,8 +214,9 @@ pub(super) fn commit_block_height(items: &[GhTimelineItem], expand_commits: bool
     }
 }
 
-/// timeline 的一列可渲染內容：留言、commit、收合後的 commit 數量摘要，
-/// 或是代替以上任何一種的狀態提示（載入中／錯誤／空／分頁 footer）。
+/// timeline 的一列可渲染內容：留言、commit、review 總結、review 行內留言、
+/// 收合後的 commit 數量摘要，或是代替以上任何一種的狀態提示
+/// （載入中／錯誤／空／分頁 footer）。
 /// 借用自建置它的那個 `TimelineEntry`——每次 cache miss 都會從頭重建，
 /// 所以渲染之後不需要保留任何東西。
 pub(super) enum TimelineItem<'a> {
@@ -156,38 +231,27 @@ pub(super) enum TimelineItem<'a> {
         ci_state: Option<&'a str>,
     },
     CollapsedCommits(usize),
+    Review {
+        state: &'a str,
+        author: &'a str,
+        submitted_at: &'a str,
+        body: &'a str,
+    },
+    /// 前面必定緊接著同一個 block 裡的 `Review`（或另一個 `ReviewComment`）
+    /// ——渲染時自帶一條前置空行當視覺分隔，見 `render`。
+    ReviewComment {
+        path: &'a str,
+        line: Option<u32>,
+        outdated: bool,
+        resolved: bool,
+        body: &'a str,
+    },
     Notice(Line<'static>),
 }
 
 impl<'a> TimelineItem<'a> {
     fn notice(text: impl Into<String>, color: Color) -> Self {
         TimelineItem::Notice(Line::styled(text.into(), Style::default().fg(color)))
-    }
-
-    /// `Unknown` 節點——`itemTypes` 本不該產生的 `__typename`——會被直接
-    /// 丟棄，而不是渲染成錯誤。一個無法辨識的節點不該在原本正常的
-    /// timeline 中間跳出一則嚇人的訊息。
-    fn from_gh(item: &'a GhTimelineItem) -> Option<Self> {
-        match item {
-            GhTimelineItem::IssueComment {
-                body,
-                created_at,
-                author,
-            } => Some(TimelineItem::Comment {
-                author: author.as_ref().map_or("ghost", |a| a.login.as_str()),
-                created_at,
-                body,
-            }),
-            GhTimelineItem::PullRequestCommit { commit } => Some(TimelineItem::Commit {
-                oid: &commit.abbreviated_oid,
-                headline: &commit.message_headline,
-                ci_state: commit
-                    .status_check_rollup
-                    .as_ref()
-                    .map(|r| r.state.as_str()),
-            }),
-            GhTimelineItem::Unknown => None,
-        }
     }
 
     pub(super) fn render(self, lines: &mut Vec<Line<'static>>, width: usize) {
@@ -224,8 +288,68 @@ impl<'a> TimelineItem<'a> {
                     Style::default().fg(Color::DarkGray),
                 ));
             }
+            TimelineItem::Review {
+                state,
+                author,
+                submitted_at,
+                body,
+            } => {
+                let (marker, marker_color) = review_state_marker(state);
+                lines.push(Line::from(vec![
+                    Span::styled(marker, Style::default().fg(marker_color)),
+                    Span::styled(
+                        format!("@{author}"),
+                        Style::default()
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                    Span::styled(
+                        format!("  {}", state.to_lowercase()),
+                        Style::default().fg(marker_color),
+                    ),
+                    Span::styled(
+                        format!("  {submitted_at}"),
+                        Style::default().fg(Color::DarkGray),
+                    ),
+                ]));
+                lines.extend(crate::view::markdown::render(body, width));
+            }
+            TimelineItem::ReviewComment {
+                path,
+                line,
+                outdated,
+                resolved,
+                body,
+            } => {
+                lines.push(Line::raw(""));
+                let mut header = match line {
+                    Some(l) => format!("{path}:{l}"),
+                    None => path.to_string(),
+                };
+                if outdated {
+                    header.push_str("  (outdated)");
+                }
+                if resolved {
+                    header.push_str("  (resolved)");
+                }
+                lines.push(Line::styled(header, Style::default().fg(Color::DarkGray)));
+                lines.extend(crate::view::markdown::render(body, width));
+            }
             TimelineItem::Notice(line) => lines.push(line),
         }
+    }
+}
+
+/// review 總結留言 state 的標記字元 + 顏色。完全沒有對應狀態時 fallback
+/// 成兩個空格，讓 `@author` 欄位跟其他 review 保持對齊——理由同
+/// `commit_ci_marker`。
+fn review_state_marker(state: &str) -> (&'static str, Color) {
+    match state {
+        "APPROVED" => ("✓ ", Color::Green),
+        "CHANGES_REQUESTED" => ("✗ ", Color::Red),
+        "COMMENTED" => ("● ", Color::Blue),
+        "DISMISSED" => ("- ", Color::DarkGray),
+        _ => ("  ", Color::DarkGray),
     }
 }
 
@@ -302,6 +426,17 @@ mod tests {
         // 完全沒有 rollup（API 回傳 null）：用兩個空格，而不是讓標記欄位
         // 直接消失，這樣 oid 在各個 commit 之間才能保持對齊。
         assert_eq!(commit_ci_marker(None).0, "  ");
+    }
+
+    #[test]
+    fn review_state_marker_covers_all_states() {
+        assert_eq!(review_state_marker("APPROVED").0, "✓ ");
+        assert_eq!(review_state_marker("CHANGES_REQUESTED").0, "✗ ");
+        assert_eq!(review_state_marker("COMMENTED").0, "● ");
+        assert_eq!(review_state_marker("DISMISSED").0, "- ");
+        // 未知 state（理論上不會發生，但 fallback 用兩個空格保持 @author
+        // 欄位跟其他 review 對齊，而不是讓標記欄位消失。
+        assert_eq!(review_state_marker("PENDING").0, "  ");
     }
 
     #[test]
