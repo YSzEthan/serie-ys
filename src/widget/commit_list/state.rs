@@ -8,10 +8,43 @@ use crate::git::{CommitHash, Head, Ref, WorkingChanges};
 use crate::graph::{CellWidthType, Graph, TextCell};
 
 use super::search::{FilterState, SearchMatch, SearchState};
-use super::{CommitInfo, FilteredIdx, RawCommitIdx, VisibleIdx};
+use super::{ChildPickOption, CommitInfo, FilteredIdx, RawCommitIdx, VisibleIdx};
 
 /// 游標與 viewport 上下邊緣保持的最小距離；撞進這個 margin 時改由 offset 滾動。
 const CURSOR_SCROLL_MARGIN: usize = 15;
+
+/// `CommitListState::select_child` 的結果。標 `#[must_use]`：忽略回傳值等於
+/// 假裝分支點一定只有一個 child，`Ambiguous` 那份候選清單會被靜靜丟掉。
+#[must_use]
+#[derive(Debug)]
+pub enum ChildJump {
+    /// 目前 commit 沒有任何可視 child（已在最新的 commit，或被 filter 濾掉）。
+    None,
+    /// 剛好一個可視 child，游標已經跳過去了。
+    Jumped,
+    /// 兩個以上可視 child（目前 commit 是分支點），游標沒有動，呼叫端要開
+    /// picker 讓使用者選要跳到哪一個。
+    Ambiguous(Vec<ChildPickOption>),
+}
+
+/// `select_child` 候選項目的顯示標籤：tag 或（本地）branch 名稱 + commit
+/// subject，subject 一定會帶——分支點的兩個 child 通常都不是任何 ref 的
+/// tip，兩個候選都只剩短 hash 的話使用者根本分不出差異，等於沒解決問題。
+///
+/// 優先序刻意跟 `dispatch_checkout`（`src/view.rs`，local branch > tag）方向
+/// 相反：這裡是 tag > branch，是使用者對這個功能明確要求的順序，不是筆誤，
+/// 之後想把兩處統一時回來看這行。
+fn child_pick_label(info: &CommitInfo) -> String {
+    let refs = info.refs();
+    let named = refs
+        .iter()
+        .find(|r| matches!(r, Ref::Tag { .. }))
+        .or_else(|| refs.iter().find(|r| matches!(r, Ref::Branch { .. })));
+    match named {
+        Some(r) => format!("{}: {}", r.name(), info.subject()),
+        None => info.subject().to_string(),
+    }
+}
 
 #[derive(Debug)]
 pub struct CommitListState<'a> {
@@ -465,28 +498,47 @@ impl<'a> CommitListState<'a> {
     /// `graph::calc::calc_edges` 的 merge detour），只認 first-parent 會漏掉
     /// 游標正上方、畫面上看得到線的 merge commit。剛好一個可視 child 才跳；
     /// 找到兩個以上代表目前 commit 是分支點，沒有依據替使用者猜要去哪一
-    /// 條，寧可不動也不要跳錯。不追求跟 `select_parent()` 嚴格互逆——
-    /// parent 是單值欄位、child 是多值關係，天生沒有唯一反向。
-    pub fn select_child(&mut self) {
-        if let Some(raw) = self.selected_commit_child_raw() {
-            self.step_to_raw(raw);
+    /// 條，交給 `Ambiguous` 的候選清單讓呼叫端開 picker 問使用者。不追求跟
+    /// `select_parent()` 嚴格互逆——parent 是單值欄位、child 是多值關係，
+    /// 天生沒有唯一反向。
+    pub fn select_child(&mut self) -> ChildJump {
+        let candidates = self.selected_commit_children_raw();
+        match candidates.as_slice() {
+            [] => ChildJump::None,
+            [only] => {
+                self.step_to_raw(*only);
+                ChildJump::Jumped
+            }
+            _ => ChildJump::Ambiguous(
+                candidates
+                    .iter()
+                    .map(|&raw| self.child_pick_option(raw))
+                    .collect(),
+            ),
         }
     }
 
-    fn selected_commit_child_raw(&self) -> Option<RawCommitIdx> {
+    fn selected_commit_children_raw(&self) -> Vec<RawCommitIdx> {
         if self.total == 0 || self.is_virtual_row_selected() {
-            return None;
+            return Vec::new();
         }
         let current = self.current_selected_raw();
         let hash = self.commit(current).commit_hash();
-        let current_filtered = self.raw_to_filtered(current)?;
-        let mut children = (0..current_filtered.0)
+        let Some(current_filtered) = self.raw_to_filtered(current) else {
+            return Vec::new();
+        };
+        (0..current_filtered.0)
             .rev()
             .filter_map(|i| self.filtered_to_raw(FilteredIdx(i)))
-            .filter(|&raw| self.commit(raw).commit.parent_commit_hashes.contains(hash));
-        match (children.next(), children.next()) {
-            (Some(only), None) => Some(only),
-            _ => None,
+            .filter(|&raw| self.commit(raw).commit.parent_commit_hashes.contains(hash))
+            .collect()
+    }
+
+    fn child_pick_option(&self, raw: RawCommitIdx) -> ChildPickOption {
+        let info = self.commit(raw);
+        ChildPickOption {
+            label: child_pick_label(info),
+            commit_hash: info.commit_hash().clone(),
         }
     }
 
@@ -594,16 +646,26 @@ impl<'a> CommitListState<'a> {
         }
     }
 
+    /// 跟 `select_commit_hash` 的差異在捲動手感：這支走 `step_to_raw`，比照
+    /// 上下移動的 scroll margin 規則捲動；`select_commit_hash` 走
+    /// `set_visible_selection`，會把目標釘到畫面最上緣。`select_head` 與
+    /// `select_child`（分支點選完 picker 之後）都要跟一般移動手感一致，
+    /// 用這支；`reset_commit_list_with` 重整後還原視角那個「釘頂」是刻意
+    /// 的，繼續用 `select_commit_hash`，不要互換。
+    pub fn step_to_commit_hash(&mut self, commit_hash: &CommitHash) {
+        let Some(&raw) = self.commit_hash_to_raw.get(commit_hash) else {
+            return;
+        };
+        self.step_to_raw(raw);
+    }
+
     /// 把游標移到 HEAD 指向的 commit,畫面比照上下移動的 scroll margin 規則捲動
     /// (不把 HEAD 硬拉到最上面)。HEAD 不存在或被 filter 濾掉時靜默不動。
     pub fn select_head(&mut self) {
         let Some(head) = self.head_commit_hash.clone() else {
             return;
         };
-        let Some(&raw) = self.commit_hash_to_raw.get(&head) else {
-            return;
-        };
-        self.step_to_raw(raw);
+        self.step_to_commit_hash(&head);
     }
 
     fn current_graph(&self) -> &Graph {
@@ -927,15 +989,17 @@ mod tests {
         let mut state = build_state_visible_raws(&commits, &[0, 2, 3]);
         state.select_parent(); // tip -> merge
 
-        state.select_child();
+        let jump = state.select_child();
 
+        assert!(matches!(jump, ChildJump::Jumped));
         assert_eq!(state.selected_commit_hash().as_str(), "tip");
     }
 
     #[test]
-    fn select_child_multiple_visible_children_does_not_move() {
+    fn select_child_multiple_visible_children_returns_ambiguous() {
         // fork(2) 有兩個可視 child：branchA(0)、branchB(1) —— 真正的分支
-        // 點，沒有依據替使用者決定要跳去哪一條，所以不動。
+        // 點，沒有依據替使用者決定要跳去哪一條，回報候選讓呼叫端開 picker
+        // 問使用者，游標本身不動。
         let commits = vec![
             commit_fixture("branchA", &["fork"]),
             commit_fixture("branchB", &["fork"]),
@@ -944,23 +1008,31 @@ mod tests {
         let mut state = build_state_visible_raws(&commits, &[0, 1, 2]);
         state.select_commit_hash(&CommitHash::from("fork"));
 
-        state.select_child();
+        let jump = state.select_child();
 
+        let ChildJump::Ambiguous(options) = jump else {
+            panic!("expected Ambiguous, got {jump:?}");
+        };
+        // 掃描由游標往上、由近到遠：branchB（raw 1，緊鄰 fork）比 branchA
+        // （raw 0，離 fork 較遠）先被收進候選清單。
+        let hashes: Vec<&str> = options.iter().map(|o| o.commit_hash.as_str()).collect();
+        assert_eq!(hashes, ["branchB", "branchA"]);
         assert_eq!(state.selected_commit_hash().as_str(), "fork");
     }
 
     #[test]
-    fn select_child_at_tip_does_not_move() {
+    fn select_child_at_tip_returns_none() {
         let commits = vec![commit_fixture("tip", &[]), commit_fixture("base", &[])];
         let mut state = build_state_visible_raws(&commits, &[0, 1]);
 
-        state.select_child();
+        let jump = state.select_child();
 
+        assert!(matches!(jump, ChildJump::None));
         assert_eq!(state.selected_commit_hash().as_str(), "tip");
     }
 
     #[test]
-    fn select_child_no_visible_child_does_not_hang_and_leaves_cursor() {
+    fn select_child_no_visible_child_returns_none_and_leaves_cursor() {
         // base 唯一的 child 是 hidden(1)，被 filter 藏起來；tip(0) 跟 base
         // 沒有 parent/child 關係，純粹用來把 base 推離清單頂端。
         // 掃描範圍有界（0..current_filtered），找不到就回 None，不會像
@@ -973,8 +1045,34 @@ mod tests {
         let mut state = build_state_visible_raws(&commits, &[0, 2]);
         state.select_commit_hash(&CommitHash::from("base"));
 
-        state.select_child();
+        let jump = state.select_child();
 
+        assert!(matches!(jump, ChildJump::None));
         assert_eq!(state.selected_commit_hash().as_str(), "base");
+    }
+
+    #[test]
+    fn child_pick_label_prefers_tag_over_branch_over_subject_only() {
+        let commit = Commit {
+            subject: "fix things".into(),
+            ..Default::default()
+        };
+        let tag = Ref::Tag {
+            name: "v1.0".into(),
+            target: "deadbeef".into(),
+        };
+        let branch = Ref::Branch {
+            name: "feature/x".into(),
+            target: "deadbeef".into(),
+        };
+
+        let both = CommitInfo::new(&commit, vec![&branch, &tag], Color::Reset);
+        assert_eq!(child_pick_label(&both), "v1.0: fix things");
+
+        let branch_only = CommitInfo::new(&commit, vec![&branch], Color::Reset);
+        assert_eq!(child_pick_label(&branch_only), "feature/x: fix things");
+
+        let none = CommitInfo::new(&commit, vec![], Color::Reset);
+        assert_eq!(child_pick_label(&none), "fix things");
     }
 }

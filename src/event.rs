@@ -17,7 +17,9 @@ use serde::{
     Deserialize,
 };
 
+use crate::git::CommitHash;
 use crate::view::RefreshViewContext;
+use crate::widget::commit_list::ChildPickOption;
 
 /// 驅動 UI 動畫（跑馬燈等）的 tick 事件間隔。
 pub const TICK_INTERVAL: Duration = Duration::from_millis(100);
@@ -129,6 +131,9 @@ pub enum AppEvent {
     SelectOlderCommit,
     SelectParentCommit,
     SelectChildCommit,
+    SelectChildCommitByHash {
+        hash: CommitHash,
+    },
     CopyToClipboard {
         name: String,
         value: String,
@@ -157,6 +162,12 @@ pub enum AppEvent {
     OpenCheckoutPicker {
         options: Vec<String>,
         kind: CheckoutPickKind,
+    },
+    /// 未截斷的候選清單——1-9 的數字鍵上限是 `StatusLineState::open_child_picker`
+    /// 的責任（呼叫端有 List/Detail/UserCommand 三處，收在單一消費端避免抄三份
+    /// `.take(9)`），不是這裡。
+    OpenChildPicker {
+        options: Vec<ChildPickOption>,
     },
     OpenRelatedPicker {
         items: Vec<RelatedItem>,
