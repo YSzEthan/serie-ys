@@ -6,7 +6,7 @@ use crate::{
     config::UserListColumnType,
     diff::{self, DiffNotes, ModeNote, RenderedDiff},
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
-    git::{Commit, DiffTarget, FileChange, Ref, Repository, WorkingChanges},
+    git::{Commit, CommitHash, DiffTarget, FileChange, Ref, Repository, WorkingChanges},
     view::{
         dispatch_branch_copy, dispatch_tag_copy, partition_branches, partition_tags,
         ListRefreshViewContext, RefreshViewContext, ViewContext,
@@ -16,7 +16,7 @@ use crate::{
             build_commit_tree_rows, build_working_changes_tree_rows, CommitDetail,
             CommitDetailState, DetailPane, TreeRow, WorkingChangesDetail,
         },
-        commit_list::{CommitList, CommitListState},
+        commit_list::{ChildJump, CommitList, CommitListState},
         h,
         marquee::display_width,
         output_pane::{OutputPane, OutputPaneState},
@@ -513,7 +513,26 @@ impl<'a> DetailView<'a> {
     }
 
     pub fn select_child_commit(&mut self, repository: &Repository) {
-        self.update_selected_commit(repository, |state| state.select_child());
+        let Some(state) = self.commit_list_state.as_mut() else {
+            return;
+        };
+        match state.select_child() {
+            ChildJump::Ambiguous(options) => {
+                self.tx.send(AppEvent::OpenChildPicker { options });
+            }
+            // 已跳到唯一 child，或沒有 child 可跳——兩種情況都比照原本行為
+            // 依目前 selection 重刷內容面板；selection 本身在 Ambiguous 時
+            // 沒有動，跳過重刷（下面 select_commit_by_hash 才是真正跳過去
+            // 之後要刷新的地方）。
+            ChildJump::Jumped | ChildJump::None => {
+                self.update_selected_commit(repository, |_| {});
+            }
+        }
+    }
+
+    /// child picker 選定候選後跳過去並重刷內容面板。
+    pub fn select_commit_by_hash(&mut self, repository: &Repository, hash: &CommitHash) {
+        self.update_selected_commit(repository, |state| state.step_to_commit_hash(hash));
     }
 
     fn update_selected_commit<F>(&mut self, repository: &Repository, update_commit_list_state: F)

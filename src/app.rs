@@ -575,6 +575,9 @@ impl App<'_> {
                 AppEvent::SelectChildCommit => {
                     self.select_child_commit();
                 }
+                AppEvent::SelectChildCommitByHash { hash } => {
+                    self.select_commit_by_hash(&hash);
+                }
                 AppEvent::CopyToClipboard { name, value } => {
                     self.copy_to_clipboard(name, value);
                 }
@@ -666,6 +669,9 @@ impl App<'_> {
                 }
                 AppEvent::OpenCheckoutPicker { options, kind } => {
                     self.status_line_state.open_checkout_picker(options, kind);
+                }
+                AppEvent::OpenChildPicker { options } => {
+                    self.status_line_state.open_child_picker(options);
                 }
                 AppEvent::OpenRelatedPicker { items } => {
                     self.status_line_state.open_related_picker(items);
@@ -1744,6 +1750,23 @@ impl App<'_> {
                 self.view_area,
                 build_external_command_parameters_and_exec_command,
             );
+        }
+    }
+
+    /// child picker 選定候選後的跳轉——跟 `select_child_commit` 不同，List
+    /// 也要接（List 的 `GoToChild` 不經過 `AppEvent::SelectChildCommit`，
+    /// 但分支點的 picker 選擇一律走這裡回來，三個 view 都要能接）。
+    fn select_commit_by_hash(&mut self, hash: &CommitHash) {
+        match self.view {
+            View::List(ref mut view) => view.select_commit_by_hash(hash),
+            View::Detail(ref mut view) => view.select_commit_by_hash(self.repository, hash),
+            View::UserCommand(ref mut view) => view.select_commit_by_hash(
+                self.repository,
+                self.view_area,
+                build_external_command_parameters_and_exec_command,
+                hash,
+            ),
+            _ => {}
         }
     }
 
