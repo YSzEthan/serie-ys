@@ -3,7 +3,7 @@ use std::process::Command;
 use std::sync::{LazyLock, Mutex, MutexGuard};
 use std::time::Duration;
 
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Deserializer};
 
 use crate::process::run_with_timeout;
@@ -350,6 +350,13 @@ struct GqlIssueNode {
 struct GqlConnection<T> {
     nodes: Vec<T>,
 }
+/// 手寫而非 `#[derive(Default)]`：derive 會加上多餘的 `T: Default` bound，
+/// 但一個空 `Vec<T>` 從不需要 `T` 本身可以是預設值。
+impl<T> Default for GqlConnection<T> {
+    fn default() -> Self {
+        GqlConnection { nodes: Vec::new() }
+    }
+}
 
 impl GqlIssueNode {
     fn into_gh_issue(self) -> GhIssue {
@@ -544,8 +551,21 @@ pub enum GhTimelineItem {
     PullRequestCommit {
         commit: GhCommit,
     },
-    /// `itemTypes` 理論上只會產生上面兩種 variant，但把整頁的反序列化都賭在
-    /// GitHub 永遠不會新增第三種上並不值得 —— 否則一個未知的 `__typename` 會讓
+    PullRequestReview {
+        #[serde(default)]
+        state: String,
+        #[serde(default)]
+        body: String,
+        /// PENDING（尚未 submit 的草稿，只有作者自己看得到）時是 `None`——
+        /// 過濾靠這個欄位，不比對 `state` 字串。
+        #[serde(default, rename = "submittedAt")]
+        submitted_at: Option<String>,
+        author: Option<GhAuthor>,
+        #[serde(default)]
+        comments: GhReviewCommentConn,
+    },
+    /// `itemTypes` 理論上只會產生上面三種 variant，但把整頁的反序列化都賭在
+    /// GitHub 永遠不會新增第四種上並不值得 —— 否則一個未知的 `__typename` 會讓
     /// 每個 node 都失敗，而不只是這一個。
     #[serde(other)]
     Unknown,
@@ -564,6 +584,39 @@ pub struct GhCommit {
 #[derive(Debug, Clone, PartialEq, Deserialize)]
 pub struct GhStatusCheckRollup {
     pub state: String,
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GhReviewCommentConn {
+    #[serde(default)]
+    pub total_count: usize,
+    #[serde(default)]
+    pub nodes: Vec<GhReviewComment>,
+}
+
+#[derive(Debug, Clone, PartialEq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GhReviewComment {
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub path: String,
+    /// 留言所在行被後續 commit 改掉時是 `None`（PR 一 rebase 就常見）；
+    /// `parse_timeline_graphql` 會 fallback 到 `original_line`，所以
+    /// view 層看到的已經是收斂後的單一 `Option<u32>`。
+    #[serde(default)]
+    pub line: Option<u32>,
+    #[serde(default, rename = "originalLine")]
+    pub original_line: Option<u32>,
+    #[serde(default)]
+    pub outdated: bool,
+    #[serde(default)]
+    pub body: String,
+    /// 是否已標記解決——GraphQL 本身不在這個型別上提供，是
+    /// `parse_timeline_graphql` 拿同一次查詢多帶的 `reviewThreads` 回填的。
+    #[serde(default)]
+    pub resolved: bool,
 }
 
 /// PR 目前是否可以合併。`UNKNOWN`（GitHub 惰性計算出的第三種狀態，
@@ -598,16 +651,29 @@ pub struct GhTimelinePage {
 /// PullRequestCommit can't be spread inside IssueTimelineItems"），而不是安靜地
 /// 回傳空結果 —— 所以四處分岔綁在同一個 match 上，漏掉其中一項就編不過。
 fn build_timeline_query(kind: GhItemKind) -> String {
-    let (item_field, item_types, mergeable_field, commit_fragment) = match kind {
+    let (item_field, item_types, pr_only_fields, pr_fragments) = match kind {
         GhItemKind::Issue => ("issue", "ISSUE_COMMENT", "", ""),
         GhItemKind::PullRequest => (
             "pullRequest",
-            "ISSUE_COMMENT, PULL_REQUEST_COMMIT",
-            "mergeable",
+            "ISSUE_COMMENT, PULL_REQUEST_COMMIT, PULL_REQUEST_REVIEW",
+            // reviewThreads 是 resolved 狀態唯一的來源——`PullRequestReviewComment`
+            // 本身沒有這個欄位，只在 `PullRequestReviewThread` 上。跟 timelineItems
+            // 平行查詢，回應裡靠 comment id 對應回去（見 parse_timeline_graphql）。
+            r#"mergeable
+                    reviewThreads(first:100) {
+                        nodes { isResolved comments(first:20) { nodes { id } } }
+                    }"#,
             r#"... on PullRequestCommit { commit {
                                 abbreviatedOid messageHeadline
                                 statusCheckRollup { state }
-                            } }"#,
+                            } }
+                            ... on PullRequestReview {
+                                state body submittedAt author { login }
+                                comments(first:20) {
+                                    totalCount
+                                    nodes { id path line originalLine outdated body }
+                                }
+                            }"#,
         ),
     };
     // 用 100（connection 上限）而非 50：commit 只佔一行視覺高度，
@@ -616,13 +682,13 @@ fn build_timeline_query(kind: GhItemKind) -> String {
         r#"query($owner:String!,$name:String!,$number:Int!,$after:String){{
             repository(owner:$owner,name:$name){{
                 {item_field}(number:$number){{
-                    {mergeable_field}
+                    {pr_only_fields}
                     timelineItems(first:100,after:$after,itemTypes:[{item_types}]){{
                         pageInfo {{ hasNextPage endCursor }}
                         nodes {{
                             __typename
                             ... on IssueComment {{ body createdAt author {{ login }} }}
-                            {commit_fragment}
+                            {pr_fragments}
                         }}
                     }}
                 }}
@@ -672,8 +738,21 @@ fn parse_timeline_graphql(json: &str, kind: GhItemKind) -> Result<GhTimelinePage
     } else {
         None
     };
+    // resolved 狀態與 line/originalLine 的收斂都在這裡做一次，view 層因此
+    // 只需要認識收斂後的單一 `Option<u32>` 與 `bool`，不必知道 reviewThreads
+    // 這條平行查詢的存在。
+    let resolved_ids = resolved_comment_ids(&container.review_threads);
+    let mut items = conn.nodes;
+    for item in &mut items {
+        if let GhTimelineItem::PullRequestReview { comments, .. } = item {
+            for c in &mut comments.nodes {
+                c.line = c.line.or(c.original_line);
+                c.resolved = resolved_ids.contains(c.id.as_str());
+            }
+        }
+    }
     Ok(GhTimelinePage {
-        items: conn.nodes,
+        items,
         next_cursor,
         mergeable: container.mergeable.as_deref().and_then(Mergeable::from_api),
     })
@@ -701,6 +780,8 @@ struct GqlTimelineContainer {
     #[serde(default)]
     mergeable: Option<String>,
     timeline_items: GqlTimelineConn,
+    #[serde(default)]
+    review_threads: GqlConnection<GqlReviewThread>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -708,6 +789,31 @@ struct GqlTimelineConn {
     #[serde(default)]
     page_info: GqlPageInfo,
     nodes: Vec<GhTimelineItem>,
+}
+
+/// resolved 狀態不在 `PullRequestReviewComment` 上，只在
+/// `PullRequestReviewThread` 上——這裡把已 resolved 的 thread 底下每則
+/// 留言的 id 收集起來，讓 `parse_timeline_graphql` 拿去回填。
+fn resolved_comment_ids(threads: &GqlConnection<GqlReviewThread>) -> FxHashSet<&str> {
+    threads
+        .nodes
+        .iter()
+        .filter(|t| t.is_resolved)
+        .flat_map(|t| t.comments.nodes.iter().map(|c| c.id.as_str()))
+        .collect()
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlReviewThread {
+    #[serde(default)]
+    is_resolved: bool,
+    #[serde(default)]
+    comments: GqlConnection<GqlReviewThreadCommentId>,
+}
+#[derive(Deserialize)]
+struct GqlReviewThreadCommentId {
+    #[serde(default)]
+    id: String,
 }
 
 // ── Checkbox／工作清單 ──
@@ -1412,12 +1518,18 @@ mod tests {
         assert!(!q.contains("PullRequestCommit"));
         assert!(!q.contains("PULL_REQUEST_COMMIT"));
         assert!(!q.contains("mergeable"));
+        assert!(!q.contains("PullRequestReview"));
+        assert!(!q.contains("PULL_REQUEST_REVIEW"));
+        assert!(!q.contains("reviewThreads"));
 
         let q = build_timeline_query(GhItemKind::PullRequest);
         assert!(q.contains("pullRequest(number:$number)"));
         assert!(q.contains("PullRequestCommit"));
         assert!(q.contains("PULL_REQUEST_COMMIT"));
         assert!(q.contains("mergeable"));
+        assert!(q.contains("PullRequestReview"));
+        assert!(q.contains("PULL_REQUEST_REVIEW"));
+        assert!(q.contains("reviewThreads"));
     }
 
     /// `itemTypes` 理論上只會產生兩種已知的 variant，但這個測試釘住了
@@ -1568,5 +1680,99 @@ mod tests {
         assert!(page.items[0].head_branch_deletable);
         assert!(!page.items[1].head_branch_deletable);
         assert!(!page.items[2].head_branch_deletable);
+    }
+
+    /// resolved 狀態不在 `PullRequestReviewComment` 上，是這裡拿平行查詢的
+    /// `reviewThreads` 靠 comment id 回填的。一個 review 帶兩則行內留言，
+    /// 只有其中一個的 id 出現在已 resolved 的 thread 裡。
+    #[test]
+    fn parse_timeline_backfills_resolved_from_review_threads() {
+        let json = r#"{
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "mergeable": "MERGEABLE",
+                        "reviewThreads": {
+                            "nodes": [
+                                {
+                                    "isResolved": true,
+                                    "comments": { "nodes": [{"id": "C1"}] }
+                                },
+                                {
+                                    "isResolved": false,
+                                    "comments": { "nodes": [{"id": "C2"}] }
+                                }
+                            ]
+                        },
+                        "timelineItems": {
+                            "pageInfo": {"hasNextPage": false, "endCursor": null},
+                            "nodes": [
+                                {
+                                    "__typename": "PullRequestReview",
+                                    "state": "COMMENTED",
+                                    "body": "",
+                                    "submittedAt": "2026-01-01T00:00:00Z",
+                                    "author": {"login": "carol"},
+                                    "comments": {
+                                        "totalCount": 2,
+                                        "nodes": [
+                                            {"id": "C1", "path": "a.rs", "line": 5, "originalLine": 5, "outdated": false, "body": "x"},
+                                            {"id": "C2", "path": "b.rs", "line": 9, "originalLine": 9, "outdated": false, "body": "y"}
+                                        ]
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        }"#;
+        let page = parse_timeline_graphql(json, GhItemKind::PullRequest).unwrap();
+        let GhTimelineItem::PullRequestReview { comments, .. } = &page.items[0] else {
+            panic!("expected a review item, got {:?}", page.items[0]);
+        };
+        assert!(comments.nodes[0].resolved, "C1's thread is resolved");
+        assert!(!comments.nodes[1].resolved, "C2's thread is not resolved");
+    }
+
+    /// `line` 為 null（留言所在行被後續 commit 改掉）時 fallback 到
+    /// `originalLine`；兩者皆 null 時保持 `None`，view 層只印 path。
+    #[test]
+    fn parse_timeline_falls_back_to_original_line_when_line_is_null() {
+        let json = r#"{
+            "data": {
+                "repository": {
+                    "pullRequest": {
+                        "mergeable": null,
+                        "reviewThreads": { "nodes": [] },
+                        "timelineItems": {
+                            "pageInfo": {"hasNextPage": false, "endCursor": null},
+                            "nodes": [
+                                {
+                                    "__typename": "PullRequestReview",
+                                    "state": "COMMENTED",
+                                    "body": "",
+                                    "submittedAt": "2026-01-01T00:00:00Z",
+                                    "author": {"login": "carol"},
+                                    "comments": {
+                                        "totalCount": 2,
+                                        "nodes": [
+                                            {"id": "C1", "path": "a.rs", "line": null, "originalLine": 5, "outdated": true, "body": "x"},
+                                            {"id": "C2", "path": "b.rs", "line": null, "originalLine": null, "outdated": true, "body": "y"}
+                                        ]
+                                    }
+                                }
+                            ]
+                        }
+                    }
+                }
+            }
+        }"#;
+        let page = parse_timeline_graphql(json, GhItemKind::PullRequest).unwrap();
+        let GhTimelineItem::PullRequestReview { comments, .. } = &page.items[0] else {
+            panic!("expected a review item, got {:?}", page.items[0]);
+        };
+        assert_eq!(comments.nodes[0].line, Some(5));
+        assert_eq!(comments.nodes[1].line, None);
     }
 }
