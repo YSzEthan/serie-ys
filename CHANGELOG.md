@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.6.0](https://github.com/YSzEthan/serie-ys/compare/v3.5.0...v3.6.0) (2026-09-01)
+
+
+### Features
+
+* 執行檔替換自動重啟、auto-fetch 觸發彈窗、PR review 留言預覽、shift+M 分支點選擇、merge PR 分支修正 (#90)(#92)(#93)(#94)(#97) (#98) ([118537d](https://github.com/YSzEthan/serie-ys/commit/118537df0a80c38f7626b320e8edb01c0de259f8))
+
 ## [3.5.0](https://github.com/YSzEthan/serie-ys/compare/v3.4.0...v3.5.0) (2026-08-25)
 
 
