@@ -14,17 +14,39 @@ use crate::{
 };
 
 pub struct PendingOverlay<'a> {
+    title: &'static str,
     message: &'a str,
     color_theme: &'a ColorTheme,
-    keybind: &'a KeyBind,
+    /// 底下那行鍵位提示，建構時就算好——兩個建構子手上都已經有
+    /// `color_theme`，不必延後到 `render()` 才決定內容。
+    hint: Line<'static>,
 }
 
 impl<'a> PendingOverlay<'a> {
-    pub fn new(message: &'a str, color_theme: &'a ColorTheme, keybind: &'a KeyBind) -> Self {
+    pub fn working(message: &'a str, color_theme: &'a ColorTheme, keybind: &KeyBind) -> Self {
         Self {
+            title: " Working... ",
             message,
             color_theme,
-            keybind,
+            // 關掉它的是 `UserEvent::Cancel`（見 `App::handle_key`），不是
+            // 寫死的 Esc。
+            hint: keybind_hint_line(color_theme, keybind, &[h(&[UserEvent::Cancel], "hide")]),
+        }
+    }
+
+    /// `AppEvent::ExeReplacedCheck` 自動重啟後的一次性通知——沒有背景
+    /// 操作，任何鍵都能關（見 `App::handle_key` 對 `notice_message` 的
+    /// 處理），不像 `working()` 只認 Cancel，所以底下是靜態文字，不透過
+    /// `keybind_hint_line`。
+    pub fn notice(message: &'a str, color_theme: &'a ColorTheme) -> Self {
+        Self {
+            title: " Restarted ",
+            message,
+            color_theme,
+            hint: Line::styled(
+                "any key: close",
+                Style::default().fg(color_theme.help_key_fg),
+            ),
         }
     }
 }
@@ -55,7 +77,7 @@ impl Widget for PendingOverlay<'_> {
         Clear.render(dialog_area, buf);
 
         let block = Block::default()
-            .title(" Working... ")
+            .title(self.title)
             .borders(Borders::ALL)
             .border_style(Style::default().fg(self.color_theme.divider_fg))
             .style(
@@ -71,12 +93,7 @@ impl Widget for PendingOverlay<'_> {
         let mut lines = vec![Line::raw("")];
         lines.extend(message_lines);
         lines.push(Line::raw(""));
-        // 關掉它的是 `UserEvent::Cancel`（見 `App::handle_key`），不是寫死的 Esc。
-        lines.push(keybind_hint_line(
-            self.color_theme,
-            self.keybind,
-            &[h(&[UserEvent::Cancel], "hide")],
-        ));
+        lines.push(self.hint);
 
         Paragraph::new(lines).centered().render(inner_area, buf);
     }

@@ -22,8 +22,9 @@ use crate::{
     },
     git::{background_command, Commit, CommitHash, FileChange, Head, Ref, RefType, Repository},
     github::{
-        is_merge_conflict_error, merge_pr, set_item_state, set_pr_draft, GhItemKind, MergeMethod,
-        PrDraftAction, StateAction, StateFilter,
+        delete_remote_branch as gh_delete_remote_branch, is_merge_conflict_error, merge_pr,
+        set_item_state, set_pr_draft, GhItemKind, MergeMethod, PrDraftAction, StateAction,
+        StateFilter,
     },
     graph::{Graph, GraphStyle},
     keybind::KeyBind,
@@ -185,6 +186,11 @@ pub struct App<'a> {
     view_area: Rect,
     status_line_state: StatusLineState,
     pending_message: Option<String>,
+    /// `AppEvent::ExeReplacedCheck` 自動重啟後，新 process 顯示的一次性
+    /// 通知。跟 `pending_message` 分開存：它不擋鍵盤（不是「操作進行
+    /// 中」），Cancel 只是關掉它，不像 `pending_message` 的 Cancel 要送
+    /// 「Operation continues in background」——沒有背景操作可言。
+    notice_message: Option<String>,
     /// `None` 代表資料現在活在開著的 `GitHubView` 裡；兩者不會同時各存一份。
     github_data: Option<crate::github::GitHubData>,
     github_load: GitHubLoad,
@@ -333,6 +339,7 @@ impl<'a> App<'a> {
             view_area: Rect::default(),
             status_line_state,
             pending_message: None,
+            notice_message: None,
             github_data: None,
             github_load: GitHubLoad::Idle,
             ctx,
@@ -621,27 +628,61 @@ impl App<'_> {
                     }
                     self.view.refresh();
                 }
-                AppEvent::AutoFetchPoll { last_fingerprint } => {
-                    if self.pending_message.is_some() {
-                        // 有 blocking overlay：這一輪跳過網路工作，但同一顆
-                        // 指紋要原封不動送下去重新武裝——連跳過都不能連
-                        // 重新武裝一起跳過，否則這條鏈永久死掉。
+                AppEvent::AutoFetchPoll => {
+                    // `remaining()` 只有從未 arm 過才是 `None`（等同已到期）；
+                    // 三個分支是互斥的線性優先序，用 if/else 比 match 上兩個
+                    // 跟 scrutinee 無關的 `_ if` guard 直白。
+                    let remaining = self.ec.auto_fetch_clock().remaining().unwrap_or_default();
+                    if !remaining.is_zero() {
+                        // 醒早了——deadline 在我排定之後被手動 fetch 的重算
+                        // （`spawn_resync`）往後推過，睡到真正的 deadline，
+                        // 不做任何網路動作。這個分支讓「舊排程自然收斂成
+                        // 一條」不需要額外的世代比對。
+                        self.ec
+                            .sender()
+                            .send_after(AppEvent::AutoFetchPoll, remaining);
+                    } else if self.pending_message.is_some() {
+                        // 有 blocking overlay：這一輪跳過網路工作，deadline
+                        // 原封不動往後推一個 interval——連跳過都不能連重新
+                        // 武裝一起跳過，否則這條鏈永久死掉。
                         //
                         // 走 `rearm` 而不是直接 `send_after`：倒數的 deadline
                         // 必須跟著這一輪一起往後推。overlay 蓋著的時候狀態列
                         // 本來就看不見，症狀要等 overlay 關掉才顯現——倒數卡在
                         // `00:00` 一整個 interval，看起來像 auto-fetch 死了。
-                        auto_fetch::rearm(
-                            self.ec.sender(),
-                            self.ec.auto_fetch_clock(),
-                            last_fingerprint,
-                            self.ctx.auto_fetch.interval,
-                        );
+                        self.rearm_auto_fetch();
                     } else {
-                        auto_fetch::spawn_poll(
+                        auto_fetch::spawn_poll(self.ec, self.repository.path());
+                    }
+                }
+                AppEvent::AutoFetchPolled { fingerprint } => {
+                    // 唯一的比對點：`ls-remote` 失敗（`None`）、基準暫時是
+                    // `None`（resync 進行中）、或兩者相等，都落進 `_`，
+                    // 統一當「這輪什麼都不用做」處理——尤其是 `None` 基準
+                    // 那個情況：若誤判成「有差異」，手動 fetch 剛清空基準
+                    // 的空窗期就會蓋出重複的 overlay，這是整個重新設計要
+                    // 關上的那扇窗，只能有一處判準，不能有第二份。
+                    let due = match (fingerprint, self.ec.auto_fetch_clock().baseline()) {
+                        (Some(fp), Some(base)) if fp != base => Some(fp),
+                        _ => None,
+                    };
+                    match due {
+                        Some(candidate) if self.can_interrupt() => {
+                            auto_fetch::spawn_due_fetch(
+                                self.ec,
+                                self.repository.path(),
+                                candidate,
+                                self.ctx.auto_fetch.interval,
+                            );
+                        }
+                        _ => self.rearm_auto_fetch(),
+                    }
+                }
+                AppEvent::AutoFetchResync => {
+                    if self.ctx.auto_fetch.mode == auto_fetch::AutoFetch::On {
+                        auto_fetch::spawn_resync(
                             self.ec,
                             self.repository.path(),
-                            last_fingerprint,
                             self.ctx.auto_fetch.interval,
                         );
                     }
@@ -688,9 +729,10 @@ impl App<'_> {
                     number,
                     head_ref,
                     state,
+                    deletable,
                 } => {
                     self.status_line_state
-                        .open_merge_pr_prompt(number, head_ref, state);
+                        .open_merge_pr_prompt(number, head_ref, state, deletable);
                 }
                 AppEvent::OpenToggleStatePrompt {
                     number,
@@ -734,7 +776,7 @@ impl App<'_> {
                     number,
                     state,
                     method,
-                    delete_branch,
+                    delete_remote_branch,
                 } => {
                     spawn_merge_pr(
                         self.repository.path(),
@@ -742,7 +784,7 @@ impl App<'_> {
                         number,
                         state,
                         method,
-                        delete_branch,
+                        delete_remote_branch,
                     );
                 }
                 AppEvent::ToggleItemStateRequested {
@@ -790,13 +832,41 @@ impl App<'_> {
                     // 還沒重啟，或別的 ysgit 實例／手動部署換掉了）：不再
                     // 檢查，也不重新武裝——鏈就停在這裡，下一輪 interval
                     // 不會再有這個事件。重啟後是全新 process，
-                    // `lib.rs::run()` 會重新排第一次。
+                    // `lib.rs::run()` 會重新排第一次；`auto_restart` 開著
+                    // 的話，`AppEvent::ExeReplacedCheck` 會在使用者閒置時
+                    // 主動觸發那次重啟，這裡不必自己等。
                     if !crate::update::exe_is_stale() {
                         crate::update::spawn_check(self.ec, false, self.ctx.update);
                         self.ec
                             .sender()
                             .send_after(AppEvent::PeriodicUpdateCheck, self.ctx.update.interval);
                     }
+                }
+                AppEvent::ExeReplacedCheck => {
+                    // 無條件、放在任何 if 之前重新武裝——這條鏈跟
+                    // `PeriodicUpdateCheck` 語意相反：那條在 stale 時刻意
+                    // 停鏈，這條的守衛沒過只代表「這輪不方便」，鏈絕對不能
+                    // 死，否則使用者永遠等不到自動重啟。
+                    //
+                    // 排在收到事件的當下、不是像 `AutoFetchPoll` 那樣在
+                    // worker 尾端：一輪的工作是一次 `stat(2)` 加偶爾一次
+                    // `--version` fork，不可能跟下一輪疊在一起。
+                    self.ec.sender().send_after(
+                        AppEvent::ExeReplacedCheck,
+                        crate::update::EXE_CHECK_INTERVAL,
+                    );
+                    // `can_interrupt()` 先問：幾個欄位比對，比 stat／fork
+                    // 都便宜。不在這裡重複檢查 `auto_restart`——武裝點
+                    // （`lib.rs::run()`）是唯一判斷點，跟 `can_interrupt()`
+                    // 的 doc comment 講的紀律一致：不准各自長出一份守衛。
+                    if self.can_interrupt() {
+                        if let Some(exe) = crate::update::replacement_ready() {
+                            return Ok(Ret::Quit(Some(exe.to_path_buf())));
+                        }
+                    }
+                }
+                AppEvent::ShowNoticeOverlay { message } => {
+                    self.notice_message = Some(message);
                 }
                 AppEvent::OpenUpdatePrompt { tag } => {
                     self.maybe_open_update_prompt(tag);
@@ -833,6 +903,14 @@ impl App<'_> {
     }
 
     fn handle_key(&mut self, key: KeyEvent) {
+        // 一次性重啟通知——任何鍵都關掉它，不像下面 pending overlay 只認
+        // Cancel：這裡沒有背景操作要保留，純粹是「讓使用者知道剛才發生
+        // 了什麼」，第一個按鍵就該讓路。
+        if self.notice_message.is_some() {
+            self.notice_message = None;
+            return;
+        }
+
         // 處理 pending overlay——Esc 會把它藏起來
         if self.pending_message.is_some() {
             if let Some(UserEvent::Cancel) = self.ctx.keybind.get(&key) {
@@ -936,7 +1014,12 @@ impl App<'_> {
         );
 
         if let Some(message) = &self.pending_message {
-            let overlay = PendingOverlay::new(message, &self.ctx.color_theme, &self.ctx.keybind);
+            let overlay =
+                PendingOverlay::working(message, &self.ctx.color_theme, &self.ctx.keybind);
+            f.render_widget(overlay, f.area());
+        }
+        if let Some(message) = &self.notice_message {
+            let overlay = PendingOverlay::notice(message, &self.ctx.color_theme);
             f.render_widget(overlay, f.area());
         }
     }
@@ -1838,8 +1921,9 @@ impl App<'_> {
     /// 現在能不能打斷使用者：沒有 pending overlay、在三個 browsing view 之一、
     /// 狀態列閒置或只是顯示一則通知（picker／prompt 都不算，理由見
     /// `StatusLineState::is_showing_notification`）。這是唯一一處判斷「可不可以
-    /// 打斷『使用者當下正在看的 view』」，`auto_restart` 的無提示重啟與這裡的
-    /// 重啟提示共用它，兩者不准各自長出一份守衛。
+    /// 打斷『使用者當下正在看的 view』」，`auto_restart` 的無提示重啟、這裡的
+    /// 重啟提示、`AppEvent::ExeReplacedCheck` 的自動重啟共用它，三者不准各自
+    /// 長出一份守衛。
     ///
     /// 狀態列那半（閒置或僅顯示通知）另外抽成
     /// `StatusLineState::is_idle_or_notification`，`AppEvent::AutoFetchCompleted`
@@ -1849,6 +1933,17 @@ impl App<'_> {
         self.pending_message.is_none()
             && self.view.is_browsing_view()
             && self.status_line_state.is_idle_or_notification()
+    }
+
+    /// `auto_fetch::rearm` 收兩個把手是為了背景 thread（`spawn_due_fetch`
+    /// 尾端）；主執行緒這兩個呼叫點（忙碌跳過、沒有差異）沒有那個限制，
+    /// 收成一行省掉重複的 `self.ec.sender()`／`self.ec.auto_fetch_clock()`。
+    fn rearm_auto_fetch(&self) {
+        auto_fetch::rearm(
+            self.ec.sender(),
+            self.ec.auto_fetch_clock(),
+            self.ctx.auto_fetch.interval,
+        );
     }
 
     /// 下載＋替換執行檔完成，問是否要離開並以新版重啟。守衛沒過就退回通知。
@@ -1863,25 +1958,33 @@ impl App<'_> {
 
     fn fetch_all(&self) {
         spawn_git_task(
-            self.repository.path(),
             self.ec,
-            &["fetch", "--all"],
-            "Fetching...".into(),
-            "Fetch completed".into(),
-            "Fetch failed",
-            GIT_FETCH_TIMEOUT,
+            GitTask {
+                repo: self.repository.path(),
+                args: &["fetch", "--all"],
+                pending_msg: "Fetching...".into(),
+                success_msg: "Fetch completed".into(),
+                error_prefix: "Fetch failed",
+                timeout: GIT_FETCH_TIMEOUT,
+                // 手動 fetch 成功等同「一輪 auto-fetch 已經跑過」，讓倒數與
+                // 基準指紋重新計算，見 `auto_fetch::spawn_resync`。
+                on_success: Some(AppEvent::AutoFetchResync),
+            },
         );
     }
 
     fn checkout_commit(&self, target: String) {
         spawn_git_task(
-            self.repository.path(),
             self.ec,
-            &["checkout", &target],
-            format!("Checking out '{target}'..."),
-            format!("Checked out '{target}'"),
-            "Checkout failed",
-            GIT_CHECKOUT_TIMEOUT,
+            GitTask {
+                repo: self.repository.path(),
+                args: &["checkout", &target],
+                pending_msg: format!("Checking out '{target}'..."),
+                success_msg: format!("Checked out '{target}'"),
+                error_prefix: "Checkout failed",
+                timeout: GIT_CHECKOUT_TIMEOUT,
+                on_success: None,
+            },
         );
     }
 }
@@ -1892,7 +1995,7 @@ fn spawn_merge_pr(
     number: u64,
     state: StateFilter,
     method: MergeMethod,
-    delete_branch: bool,
+    delete_remote_branch: Option<String>,
 ) {
     let repo_path = repo.to_path_buf();
     let tx = ec.sender();
@@ -1900,17 +2003,34 @@ fn spawn_merge_pr(
         message: format!("Merging PR #{number}..."),
     });
     std::thread::spawn(move || {
-        let result = merge_pr(&repo_path, number, method.as_flag(), delete_branch);
-        tx.send(AppEvent::HidePendingOverlay);
+        let result = merge_pr(&repo_path, number, method.as_flag());
         match result {
             Ok(()) => {
-                tx.send(AppEvent::NotifySuccess(format!(
-                    "PR #{number} merged ({})",
-                    method.display()
-                )));
+                // 列表不必等刪除分支——先送，讓 merge 完成立刻反映在畫面上。
                 tx.send(AppEvent::RefreshGitHub { state });
+
+                let merged = format!("PR #{number} merged ({})", method.display());
+                let notify = match delete_remote_branch {
+                    None => AppEvent::NotifySuccess(merged),
+                    Some(head_ref) => {
+                        tx.send(AppEvent::ShowPendingOverlay {
+                            message: "Deleting remote branch...".to_string(),
+                        });
+                        match gh_delete_remote_branch(&repo_path, &head_ref) {
+                            Ok(()) => AppEvent::NotifySuccess(format!(
+                                "{merged}, remote branch '{head_ref}' deleted"
+                            )),
+                            Err(e) => AppEvent::NotifyWarn(format!(
+                                "{merged}, but failed to delete remote branch '{head_ref}': {e}"
+                            )),
+                        }
+                    }
+                };
+                tx.send(AppEvent::HidePendingOverlay);
+                tx.send(notify);
             }
             Err(e) => {
+                tx.send(AppEvent::HidePendingOverlay);
                 if is_merge_conflict_error(&e) {
                     tx.send(AppEvent::NotifyWarn(format!(
                         "PR #{number} has conflicts — resolve before merging"
@@ -2060,15 +2180,34 @@ const GIT_FETCH_TIMEOUT: Duration = Duration::from_secs(60);
 /// filter）。
 const GIT_CHECKOUT_TIMEOUT: Duration = Duration::from_secs(1800);
 
-fn spawn_git_task(
-    repo: &Path,
-    ec: &EventController,
-    args: &[&str],
+/// `spawn_git_task` 的參數包——原本 7 個位置參數裡 `pending_msg`／
+/// `success_msg`／`error_prefix` 三個相鄰同型別，寫反編譯器抓不到（跟
+/// `AutoFetchOverrides` doc comment 點名的同一類風險），加第 8 個參數
+/// `on_success` 正好是收進具名欄位的時機。
+struct GitTask<'a> {
+    repo: &'a Path,
+    args: &'a [&'a str],
     pending_msg: String,
     success_msg: String,
-    error_prefix: &str,
+    error_prefix: &'a str,
     timeout: Duration,
-) {
+    /// 指令成功時（除了固定的 `NotifySuccess` + `AutoRefresh`）額外要送的
+    /// 一個事件；`None` 給不需要的呼叫端（例如 `checkout_commit`）用。目前
+    /// 唯一用途是 `fetch_all()` 送 `AppEvent::AutoFetchResync`，讓手動
+    /// fetch 成功後 auto-fetch 的倒數與基準跟著重整。
+    on_success: Option<AppEvent>,
+}
+
+fn spawn_git_task(ec: &EventController, task: GitTask) {
+    let GitTask {
+        repo,
+        args,
+        pending_msg,
+        success_msg,
+        error_prefix,
+        timeout,
+        on_success,
+    } = task;
     let repo_path = repo.to_path_buf();
     let tx = ec.sender();
     let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
@@ -2096,6 +2235,9 @@ fn spawn_git_task(
                 };
                 tx.send(AppEvent::NotifySuccess(msg));
                 tx.send(AppEvent::AutoRefresh);
+                if let Some(event) = on_success {
+                    tx.send(event);
+                }
             }
             Ok(o) => {
                 let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();

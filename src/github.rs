@@ -140,6 +140,7 @@ pub struct GhPullRequest {
     pub head_ref_name: String,
     pub base_ref_name: String,
     pub is_draft: bool,
+    pub head_branch_deletable: bool,
     #[serde(default)]
     pub body: String,
     #[serde(default)]
@@ -385,10 +386,11 @@ pub fn list_pull_requests(
     let query = format!(
         r#"query($owner:String!,$name:String!,$after:String){{
             repository(owner:$owner,name:$name){{
+                defaultBranchRef {{ name }}
                 pullRequests(first:50,after:$after,states:{states},orderBy:{{field:CREATED_AT,direction:DESC}}){{
                     pageInfo {{ hasNextPage endCursor }}
                     nodes {{
-                        number title state body url closedAt updatedAt headRefName baseRefName isDraft
+                        number title state body url closedAt updatedAt headRefName baseRefName isDraft isCrossRepository
                         author {{ login }}
                         labels(first:20) {{ nodes {{ name color }} }}
                         closingIssuesReferences(first:20) {{ nodes {{ number title state url }} }}
@@ -416,16 +418,33 @@ pub fn list_pull_requests(
 fn parse_prs_graphql(json: &str) -> Result<GhPage<GhPullRequest>, String> {
     let resp: GqlPrsResp =
         serde_json::from_str(json).map_err(|e| format!("JSON parse error: {e}"))?;
-    let list = resp.data.repository.pull_requests;
+    let repo = resp.data.repository;
+    let default_branch = repo.default_branch_ref.map(|r| r.name);
+    let list = repo.pull_requests;
     let next_cursor = if list.page_info.has_next_page {
         list.page_info.end_cursor
     } else {
         None
     };
     Ok(GhPage {
-        items: list.nodes.into_iter().map(GqlPrNode::into_gh_pr).collect(),
+        items: list
+            .nodes
+            .into_iter()
+            .map(|node| node.into_gh_pr(default_branch.as_deref()))
+            .collect(),
         next_cursor,
     })
+}
+
+/// head branch 可刪的條件。`head != base` 在同 repo PR 下永遠成立
+/// （GitHub 不接受 head == base 的 PR），留著是防禦性斷言，不是走得到的路。
+fn head_branch_deletable(
+    is_cross: bool,
+    head: &str,
+    base: &str,
+    default_branch: Option<&str>,
+) -> bool {
+    !is_cross && head != base && default_branch != Some(head)
 }
 
 // ── GraphQL PR 回應包裝型別 ──
@@ -441,7 +460,13 @@ struct GqlPrsData {
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct GqlPrsRepo {
+    #[serde(default)]
+    default_branch_ref: Option<GqlRefName>,
     pull_requests: GqlPrList,
+}
+#[derive(Deserialize)]
+struct GqlRefName {
+    name: String,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -465,6 +490,7 @@ struct GqlPrNode {
     head_ref_name: String,
     base_ref_name: String,
     is_draft: bool,
+    is_cross_repository: bool,
     #[serde(default)]
     closed_at: Option<String>,
     #[serde(default)]
@@ -475,7 +501,13 @@ struct GqlPrNode {
 }
 
 impl GqlPrNode {
-    fn into_gh_pr(self) -> GhPullRequest {
+    fn into_gh_pr(self, default_branch: Option<&str>) -> GhPullRequest {
+        let head_branch_deletable = head_branch_deletable(
+            self.is_cross_repository,
+            &self.head_ref_name,
+            &self.base_ref_name,
+            default_branch,
+        );
         GhPullRequest {
             number: self.number,
             title: self.title,
@@ -487,6 +519,7 @@ impl GqlPrNode {
             head_ref_name: self.head_ref_name,
             base_ref_name: self.base_ref_name,
             is_draft: self.is_draft,
+            head_branch_deletable,
             body: self.body.unwrap_or_default(),
             url: self.url.unwrap_or_default(),
             closed_at: self.closed_at,
@@ -881,14 +914,46 @@ impl MergeMethod {
     }
 }
 
-pub fn merge_pr(path: &Path, number: u64, method: &str, delete_branch: bool) -> Result<(), String> {
-    let num_str = number.to_string();
-    let mut args = vec!["pr", "merge", &num_str, method];
-    if delete_branch {
-        args.push("--delete-branch");
-    }
-    run_gh(path, &args)?;
+pub fn merge_pr(path: &Path, number: u64, method: &str) -> Result<(), String> {
+    run_gh(path, &["pr", "merge", &number.to_string(), method])?;
     Ok(())
+}
+
+/// 只刪遠端的 head branch，不動本地。owner/repo 走 `fetch_repo_name_with_owner`
+/// 而非 gh 的 `{owner}/{repo}` placeholder——列表也是走這個函式解析 repo，
+/// 兩套機制解析同一件事就有機會給出不同答案（快取在 process 生命週期內不失效，
+/// 期間若有人 `gh repo set-default`，就會列出 A repo 的 PR、卻刪到 B repo 的分支）。
+pub fn delete_remote_branch(path: &Path, head_ref: &str) -> Result<(), String> {
+    let (owner, name) = fetch_repo_name_with_owner(path)?;
+    let endpoint = ref_delete_endpoint(&owner, &name, head_ref);
+    match run_gh(path, &["api", "-X", "DELETE", &endpoint]) {
+        // repo 開了 auto-delete head branches 時 merge 當下遠端就沒了，不是失敗
+        Err(e) if is_ref_missing_error(&e) => Ok(()),
+        other => other.map(|_| ()),
+    }
+}
+
+fn ref_delete_endpoint(owner: &str, name: &str, head_ref: &str) -> String {
+    format!(
+        "repos/{owner}/{name}/git/refs/heads/{}",
+        encode_ref_path(head_ref)
+    )
+}
+
+/// branch 名塞進 URL path 前跳脫——`/` 原樣留（endpoint 本來就吃斜線），
+/// 只處理會壞掉 URL 的字元。git 允許分支名含 `#`，不編碼會被當成 fragment 截斷。
+/// `%` 必須先換，否則後面插入的 `%23`／`%3F` 會被二次編碼。
+fn encode_ref_path(head_ref: &str) -> String {
+    head_ref
+        .replace('%', "%25")
+        .replace('#', "%23")
+        .replace('?', "%3F")
+}
+
+/// 只認明確的「ref 不存在」，裸 404 不吞——沒權限、repo 解析錯、endpoint
+/// 打錯也會是 404，全吞掉就等於靜默失敗。
+fn is_ref_missing_error(msg: &str) -> bool {
+    msg.contains("Reference does not exist")
 }
 
 // ── PR draft 切換 ──
@@ -1384,5 +1449,124 @@ mod tests {
         assert_eq!(page.items.len(), 2);
         assert!(matches!(page.items[0], GhTimelineItem::Unknown));
         assert!(matches!(page.items[1], GhTimelineItem::IssueComment { .. }));
+    }
+
+    /// 三個會讓「刪錯 branch」重演的條件：fork（同名分支會打到 base repo）、
+    /// head == base（GitHub 不接受，防禦性斷言）、head 是 default branch
+    /// （GitHub 會拒刪，UI 不該先問一件做不到的事）。
+    #[test]
+    fn head_branch_deletable_blocks_fork_default_and_self_merge() {
+        assert!(head_branch_deletable(
+            false,
+            "feature/x",
+            "main",
+            Some("main")
+        ));
+        assert!(!head_branch_deletable(
+            true,
+            "feature/x",
+            "main",
+            Some("main")
+        ));
+        assert!(!head_branch_deletable(false, "main", "main", Some("main")));
+        assert!(!head_branch_deletable(
+            false,
+            "main",
+            "develop",
+            Some("main")
+        ));
+        assert!(head_branch_deletable(false, "feature/x", "main", None));
+    }
+
+    /// 只認明確的「ref 不存在」；裸 404（沒權限、repo 解析錯、endpoint 打錯
+    /// 都會是 404）絕不能被吞成「成功」，否則刪除失敗會靜默過關。
+    #[test]
+    fn ref_missing_error_only_matches_explicit_message() {
+        assert!(is_ref_missing_error(
+            "gh command failed: HTTP 422: Reference does not exist"
+        ));
+        assert!(!is_ref_missing_error(
+            "gh command failed: HTTP 404: Not Found"
+        ));
+        assert!(!is_ref_missing_error(
+            "gh command failed: HTTP 403: Forbidden"
+        ));
+        assert!(!is_ref_missing_error("gh command failed: Merge conflict"));
+    }
+
+    #[test]
+    fn ref_delete_endpoint_builds_expected_path() {
+        assert_eq!(
+            ref_delete_endpoint("owner", "repo", "feature/x"),
+            "repos/owner/repo/git/refs/heads/feature/x"
+        );
+    }
+
+    /// `/` 原樣留（endpoint 本來就吃斜線），但 `%` `#` `?` 會壞掉 URL 或被
+    /// 當成 fragment／query 截斷，git 允許分支名含這些字元，不編碼就是地雷。
+    #[test]
+    fn encode_ref_path_escapes_url_special_chars_but_keeps_slashes() {
+        assert_eq!(encode_ref_path("feature/x"), "feature/x");
+        assert_eq!(encode_ref_path("fix#1"), "fix%231");
+        assert_eq!(encode_ref_path("100%done"), "100%25done");
+        assert_eq!(encode_ref_path("what?"), "what%3F");
+    }
+
+    /// `defaultBranchRef` 與 `isCrossRepository` 要能從同一支 query 解析出來，
+    /// 且要在 parse 當下就算進 `head_branch_deletable`，而不是留給呼叫端。
+    #[test]
+    fn parse_prs_graphql_computes_head_branch_deletable() {
+        let json = r#"{
+            "data": {
+                "repository": {
+                    "defaultBranchRef": {"name": "main"},
+                    "pullRequests": {
+                        "pageInfo": {"hasNextPage": false, "endCursor": null},
+                        "nodes": [
+                            {
+                                "number": 1,
+                                "title": "same repo",
+                                "state": "OPEN",
+                                "headRefName": "feature/x",
+                                "baseRefName": "main",
+                                "isDraft": false,
+                                "isCrossRepository": false,
+                                "author": {"login": "alice"},
+                                "labels": {"nodes": []},
+                                "closingIssuesReferences": {"nodes": []}
+                            },
+                            {
+                                "number": 2,
+                                "title": "fork",
+                                "state": "OPEN",
+                                "headRefName": "feature/y",
+                                "baseRefName": "main",
+                                "isDraft": false,
+                                "isCrossRepository": true,
+                                "author": {"login": "bob"},
+                                "labels": {"nodes": []},
+                                "closingIssuesReferences": {"nodes": []}
+                            },
+                            {
+                                "number": 3,
+                                "title": "head is default branch",
+                                "state": "OPEN",
+                                "headRefName": "main",
+                                "baseRefName": "release/1.x",
+                                "isDraft": false,
+                                "isCrossRepository": false,
+                                "author": {"login": "carol"},
+                                "labels": {"nodes": []},
+                                "closingIssuesReferences": {"nodes": []}
+                            }
+                        ]
+                    }
+                }
+            }
+        }"#;
+        let page = parse_prs_graphql(json).unwrap();
+        assert!(page.items[0].head_branch_deletable);
+        assert!(!page.items[1].head_branch_deletable);
+        assert!(!page.items[2].head_branch_deletable);
     }
 }
