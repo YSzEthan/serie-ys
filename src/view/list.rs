@@ -9,11 +9,12 @@ use ratatui::{
 use crate::{
     app::AppContext,
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
+    git::CommitHash,
     view::{
         dispatch_branch_copy, dispatch_checkout, dispatch_tag_copy, partition_branches,
         partition_tags, ListRefreshViewContext, RefreshViewContext,
     },
-    widget::commit_list::{CommitList, CommitListState, FilterState, SearchState},
+    widget::commit_list::{ChildJump, CommitList, CommitListState, FilterState, SearchState},
 };
 
 #[derive(Debug)]
@@ -135,7 +136,14 @@ impl<'a> ListView<'a> {
             }
             UserEvent::GoToChild => {
                 for _ in 0..count {
-                    self.as_mut_list_state().select_child();
+                    match self.as_mut_list_state().select_child() {
+                        ChildJump::Jumped => continue,
+                        ChildJump::None => break,
+                        ChildJump::Ambiguous(options) => {
+                            self.tx.send(AppEvent::OpenChildPicker { options });
+                            break;
+                        }
+                    }
                 }
             }
             UserEvent::UserCommand(n) => {
@@ -257,6 +265,13 @@ impl<'a> ListView<'a> {
         if let Some(s) = self.commit_list_state.as_mut() {
             s.request_graph_clear();
         }
+    }
+
+    /// child picker 選定候選後跳過去。用 `step_to_commit_hash`（保留 scroll
+    /// margin）而不是 `select_commit_hash`（會把目標釘到畫面最上緣）——跟
+    /// 剛好一個 child 時 `select_child()` 直接跳的手感要一致。
+    pub fn select_commit_by_hash(&mut self, hash: &CommitHash) {
+        self.as_mut_list_state().step_to_commit_hash(hash);
     }
 
     fn as_mut_list_state(&mut self) -> &mut CommitListState<'a> {

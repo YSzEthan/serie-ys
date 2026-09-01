@@ -32,6 +32,7 @@ enum Section {
     Body,
     Comment,
     Commit,
+    Review,
 }
 
 impl Section {
@@ -41,6 +42,7 @@ impl Section {
             Section::Body => Color::Indexed(146),    // 粉藍灰 (#afafd7)
             Section::Comment => Color::Indexed(151), // 粉綠灰 (#afd7af)
             Section::Commit => Color::Indexed(186),  // 粉黃灰 (#d7d787)
+            Section::Review => Color::Indexed(181),  // 粉紅灰 (#d7afaf)
         }
     }
 
@@ -640,6 +642,7 @@ impl<'a> GitHubView<'a> {
             head_ref_name: "topic".to_string(),
             base_ref_name: "main".to_string(),
             is_draft,
+            head_branch_deletable: true,
             body: String::new(),
             url: String::new(),
             closed_at: None,
@@ -903,7 +906,10 @@ mod tests {
     use super::*;
     use ratatui::{backend::TestBackend, Terminal};
 
-    use crate::github::{GhAuthor, GhCommit, GhStatusCheckRollup, GhTimelineItem, Mergeable};
+    use crate::github::{
+        GhAuthor, GhCommit, GhReviewComment, GhReviewCommentConn, GhStatusCheckRollup,
+        GhTimelineItem, Mergeable,
+    };
 
     use super::preview::build_preview_content;
 
@@ -1006,6 +1012,7 @@ mod tests {
             head_ref_name: "topic".to_string(),
             base_ref_name: "main".to_string(),
             is_draft: false,
+            head_branch_deletable: true,
             body,
             url: String::new(),
             closed_at: None,
@@ -1142,6 +1149,41 @@ mod tests {
                     state: state.to_string(),
                 }),
             },
+        }
+    }
+
+    /// `submitted_at: None` 代表 PENDING（尚未送出的草稿），會被
+    /// `TimelineBlock::from_gh` 過濾掉——測試 PENDING 過濾時傳 `None`。
+    fn timeline_review(
+        login: &str,
+        state: &str,
+        submitted_at: Option<&str>,
+        body: &str,
+        comments: Vec<GhReviewComment>,
+    ) -> GhTimelineItem {
+        GhTimelineItem::PullRequestReview {
+            state: state.to_string(),
+            body: body.to_string(),
+            submitted_at: submitted_at.map(str::to_string),
+            author: Some(GhAuthor {
+                login: login.to_string(),
+            }),
+            comments: GhReviewCommentConn {
+                total_count: comments.len(),
+                nodes: comments,
+            },
+        }
+    }
+
+    fn review_comment(path: &str, line: Option<u32>, body: &str) -> GhReviewComment {
+        GhReviewComment {
+            id: format!("{path}:{line:?}"),
+            path: path.to_string(),
+            line,
+            original_line: line,
+            outdated: false,
+            body: body.to_string(),
+            resolved: false,
         }
     }
 
@@ -1502,6 +1544,229 @@ mod tests {
                 ('─', Some(Section::Comment.color())),
             ],
         );
+    }
+
+    /// block 分隔線的顏色——markdown 自己那條固定 DarkGray 的不算，
+    /// 那條不是 `append_comment_lines` 畫的。
+    fn block_divider_colors(lines: &[Line<'static>]) -> Vec<Option<Color>> {
+        lines
+            .iter()
+            .filter(|l| {
+                let text: String = l.spans.iter().map(|s| s.content.to_string()).collect();
+                text.starts_with('─') && l.style.fg != Some(Color::DarkGray)
+            })
+            .map(|l| l.style.fg)
+            .collect()
+    }
+
+    /// 分隔線顏色來自它*之前*那個 block 的 section，所以 `Section::Review`
+    /// 的顏色要在 review block *之後*還有其他 block 時才會被畫出來。
+    #[test]
+    fn review_block_divider_is_colour_coded() {
+        let mut view = view_with_body("body".to_string());
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            timeline_page(
+                vec![
+                    timeline_comment("a", "one"),
+                    timeline_review(
+                        "reviewer",
+                        "APPROVED",
+                        Some("2026-08-30T12:00:00Z"),
+                        "lgtm",
+                        Vec::new(),
+                    ),
+                    timeline_comment("b", "two"),
+                ],
+                None,
+            ),
+        );
+
+        let (lines, _) = build_preview_content(&view.preview_input(40));
+        assert_eq!(
+            block_divider_colors(&lines),
+            vec![
+                Some(Section::Body.color()),    // body → 第一則留言
+                Some(Section::Comment.color()), // 第一則留言 → review block
+                Some(Section::Review.color()),  // review block → 第二則留言
+            ],
+            "got:\n{lines:?}"
+        );
+    }
+
+    /// 一則 review 連同它的行內留言只算*一個* block：只有一條 Review 色
+    /// 分隔線，行內留言之間不會各自被切成獨立 block（那樣會多出好幾條
+    /// 分隔線，把「這些留言屬於同一次 review」的關係拆散）。
+    #[test]
+    fn review_and_its_inline_comments_render_as_one_block() {
+        let mut view = view_with_body("body".to_string());
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            timeline_page(
+                vec![timeline_review(
+                    "reviewer",
+                    "APPROVED",
+                    Some("2026-08-30T12:00:00Z"),
+                    "looks good",
+                    vec![
+                        review_comment("src/a.rs", Some(10), "nit here"),
+                        review_comment("src/b.rs", Some(20), "and here"),
+                    ],
+                )],
+                None,
+            ),
+        );
+
+        // 分隔線的顏色來自它*之前*那個 block 的 section（見
+        // `dividers_are_colour_coded_by_section`），這裡唯一的 block 前面
+        // 是初始值 `Section::Body`，所以直接數「不是 markdown 自己那條
+        // 固定 DarkGray 分隔線」的數量——一個 block 只會有一條。
+        let (lines, _) = build_preview_content(&view.preview_input(40));
+        let block_dividers = block_divider_colors(&lines).len();
+        assert_eq!(
+            block_dividers, 1,
+            "review + its inline comments must draw exactly one divider, got:\n{lines:?}"
+        );
+    }
+
+    #[test]
+    fn approved_review_renders_marker_author_state_and_body() {
+        let mut view = view_with_body("body".to_string());
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            timeline_page(
+                vec![timeline_review(
+                    "reviewer",
+                    "APPROVED",
+                    Some("2026-08-30T12:00:00Z"),
+                    "looks good",
+                    Vec::new(),
+                )],
+                None,
+            ),
+        );
+
+        let screen = render_to_string(&mut view);
+        assert!(screen.contains('✓'), "got:\n{screen}");
+        assert!(screen.contains("@reviewer"), "got:\n{screen}");
+        assert!(screen.contains("approved"), "got:\n{screen}");
+        assert!(screen.contains("looks good"), "got:\n{screen}");
+    }
+
+    #[test]
+    fn inline_comment_renders_path_and_line() {
+        let mut view = view_with_body("body".to_string());
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            timeline_page(
+                vec![timeline_review(
+                    "reviewer",
+                    "COMMENTED",
+                    Some("2026-08-30T12:00:00Z"),
+                    "",
+                    vec![review_comment(
+                        "src/github.rs",
+                        Some(604),
+                        "missing a type here",
+                    )],
+                )],
+                None,
+            ),
+        );
+
+        let screen = render_to_string(&mut view);
+        assert!(screen.contains("src/github.rs:604"), "got:\n{screen}");
+        assert!(screen.contains("missing a type here"), "got:\n{screen}");
+    }
+
+    /// PENDING review（`submitted_at: None`，尚未送出的草稿）要被過濾掉；
+    /// 一頁*只有* PENDING review 時仍要 fallback 到 `(no comments)`，跟
+    /// 全 `Unknown` 節點是同一種情況。
+    #[test]
+    fn pending_review_is_filtered_and_falls_back_to_no_comments() {
+        let mut view = view_with_body("body".to_string());
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            timeline_page(
+                vec![timeline_review(
+                    "reviewer",
+                    "PENDING",
+                    None,
+                    "draft, not submitted yet",
+                    Vec::new(),
+                )],
+                None,
+            ),
+        );
+
+        let screen = render_to_string(&mut view);
+        assert!(
+            !screen.contains("draft, not submitted yet"),
+            "PENDING review draft must not render, got:\n{screen}"
+        );
+        assert!(screen.contains("no comments"), "got:\n{screen}");
+    }
+
+    #[test]
+    fn resolved_and_outdated_markers_appear_on_inline_comments() {
+        let mut view = view_with_body("body".to_string());
+        let mut resolved = review_comment("src/a.rs", Some(1), "fixed already");
+        resolved.resolved = true;
+        resolved.outdated = true;
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            timeline_page(
+                vec![timeline_review(
+                    "reviewer",
+                    "COMMENTED",
+                    Some("2026-08-30T12:00:00Z"),
+                    "",
+                    vec![resolved],
+                )],
+                None,
+            ),
+        );
+
+        let screen = render_to_string(&mut view);
+        assert!(screen.contains("(resolved)"), "got:\n{screen}");
+        assert!(screen.contains("(outdated)"), "got:\n{screen}");
+    }
+
+    #[test]
+    fn review_comment_overflow_shows_remaining_count() {
+        let mut view = view_with_body("body".to_string());
+        let mut review = timeline_review(
+            "reviewer",
+            "COMMENTED",
+            Some("2026-08-30T12:00:00Z"),
+            "",
+            vec![review_comment("src/a.rs", Some(1), "one")],
+        );
+        // totalCount 比實際帶回的 nodes 多——GraphQL 端只給了前 N 則。
+        if let GhTimelineItem::PullRequestReview { comments, .. } = &mut review {
+            comments.total_count = 4;
+        }
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            timeline_page(vec![review], None),
+        );
+
+        let screen = render_to_string(&mut view);
+        assert!(screen.contains("(+3 more comments)"), "got:\n{screen}");
     }
 
     /// commit 集中成一個區塊：即使 API 回傳的時間序是 commit/comment 交錯，

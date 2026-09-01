@@ -10,10 +10,10 @@ use ratatui::{
 use crate::{
     app::AppContext,
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
-    git::{Commit, Ref, Repository},
+    git::{Commit, CommitHash, Ref, Repository},
     view::{ansi_output_to_lines, ListRefreshViewContext, RefreshViewContext, ViewContext},
     widget::{
-        commit_list::{CommitList, CommitListState},
+        commit_list::{ChildJump, CommitList, CommitListState},
         h,
         output_pane::{OutputPane, OutputPaneState},
         HintSpec,
@@ -217,8 +217,32 @@ impl<'a> UserCommandView<'a> {
         view_area: Rect,
         exec_command: ExecCommandFn,
     ) {
+        let Some(state) = self.commit_list_state.as_mut() else {
+            return;
+        };
+        match state.select_child() {
+            ChildJump::Ambiguous(options) => {
+                self.tx.send(AppEvent::OpenChildPicker { options });
+            }
+            // Ambiguous 時故意不呼叫 update_selected_commit：那條路徑會重跑
+            // exec_command（spawn 外部行程）並 output_pane_state.select_first()，
+            // selection 根本沒動卻把使用者在 output pane 的捲動位置洗掉。
+            ChildJump::Jumped | ChildJump::None => {
+                self.update_selected_commit(repository, view_area, exec_command, |_| {});
+            }
+        }
+    }
+
+    /// child picker 選定候選後跳過去並重刷 output pane。
+    pub fn select_commit_by_hash(
+        &mut self,
+        repository: &Repository,
+        view_area: Rect,
+        exec_command: ExecCommandFn,
+        hash: &CommitHash,
+    ) {
         self.update_selected_commit(repository, view_area, exec_command, |state| {
-            state.select_child()
+            state.step_to_commit_hash(hash)
         });
     }
 

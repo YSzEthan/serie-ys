@@ -5,7 +5,7 @@ mod state;
 
 pub use render::CommitList;
 pub use search::{FilterState, SearchState};
-pub use state::CommitListState;
+pub use state::{ChildJump, CommitListState};
 
 use ratatui::style::Color;
 
@@ -53,4 +53,22 @@ impl<'a> CommitInfo<'a> {
     pub fn refs(&self) -> &[&'a Ref] {
         &self.refs
     }
+
+    pub fn subject(&self) -> &str {
+        &self.commit.subject
+    }
+}
+
+/// `select_child` 遇到分支點（2 個以上 child）時回報的候選項目。
+///
+/// 用 owned `String`/`CommitHash` 而非 `&'a Ref`，不是風格選擇：
+/// - `Sender::send_after`（`event.rs`）把 `AppEvent` move 進 `thread::spawn` 的
+///   closure，要求 `AppEvent: Send + 'static`。
+/// - `EventController` 活得比任何一次 `App::new` 借用的 `Repository` 都久（見
+///   `lib.rs` 的主迴圈），`&'a Ref` 那個 `'a` 撐不到事件被消費的那一刻。
+/// - 同樣的約束 `CommitHash` 選擇 `Arc<str>` 時已經寫過一次（`git.rs`）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ChildPickOption {
+    pub label: String,
+    pub commit_hash: CommitHash,
 }

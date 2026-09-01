@@ -300,6 +300,7 @@ impl<'a> GitHubView<'a> {
             number: pr.number,
             head_ref: pr.head_ref_name.clone(),
             state: self.state_filter,
+            deletable: pr.head_branch_deletable,
         });
     }
 

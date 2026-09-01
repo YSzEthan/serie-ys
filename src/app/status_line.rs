@@ -16,7 +16,10 @@ use crate::{
     },
     github::{GhItemKind, MergeMethod, PrDraftAction, StateAction, StateFilter},
     view::View,
-    widget::{h, hint_line, hint_pairs, keybind_hint_line, truncate_line, HintSpec},
+    widget::{
+        commit_list::ChildPickOption, h, hint_line, hint_pairs, keybind_hint_line, truncate_line,
+        HintSpec,
+    },
 };
 
 use super::AppContext;
@@ -128,8 +131,22 @@ enum MergePrStage {
     },
     Confirm {
         method: MergeMethod,
-        delete_branch: bool,
+        delete: RemoteBranchDelete,
     },
+}
+
+/// merge PR 時遠端 head branch 的處置。三個狀態而非兩個 bool——
+/// `deletable` 與「使用者按了 y/n」疊在一起會出現不可達的組合
+/// （不可刪卻標記要刪），寫成三態就沒有這種狀態。分支名本來就活在
+/// `MergePrPrompt.head_ref`，`Confirmed` 不必再帶一份。
+#[derive(Debug, Clone, Copy)]
+enum RemoteBranchDelete {
+    /// fork／head 是 default branch／head==base，UI 直接跳過這一問
+    NotOffered,
+    /// 使用者按 n
+    Declined,
+    /// 使用者按 y
+    Confirmed,
 }
 
 /// 單階段 y/n 確認的答案。
@@ -154,6 +171,14 @@ enum StatusLine {
         options: Vec<String>,
         kind: CheckoutPickKind,
     },
+    /// `options` 已經截斷到 9 個（數字鍵上限），`total` 是截斷前的實際候選數，
+    /// 供 render 顯示「還有幾個沒列出」。截斷在 `open_child_picker` 做，
+    /// 不是在送 `AppEvent::OpenChildPicker` 之前——呼叫端有 List/Detail/
+    /// UserCommand 三處，收在這個唯一消費端才不會抄三份 `.take(9)`。
+    ChildPicker {
+        options: Vec<ChildPickOption>,
+        total: usize,
+    },
     DeleteBranchPicker {
         options: Vec<String>,
         total: usize,
@@ -165,6 +190,7 @@ enum StatusLine {
         number: u64,
         head_ref: String,
         state: StateFilter,
+        deletable: bool,
         stage: MergePrStage,
     },
     ToggleStatePrompt {
@@ -247,6 +273,12 @@ impl StatusLineState {
         self.line = StatusLine::CheckoutPicker { options, kind };
     }
 
+    pub(super) fn open_child_picker(&mut self, options: Vec<ChildPickOption>) {
+        let total = options.len();
+        let options = options.into_iter().take(9).collect();
+        self.line = StatusLine::ChildPicker { options, total };
+    }
+
     /// 空清單走同步賦值，不透過 `tx` 送 `AppEvent::NotifyInfo`——`App::run()`
     /// 是「畫一幀 → recv 一個事件 → 處理 → 再畫一幀」的迴圈，送事件的話這
     /// 一輪迴圈會先用 `line` 還沒變的狀態畫一幀（顯示 hotkey hints），下一
@@ -272,11 +304,13 @@ impl StatusLineState {
         number: u64,
         head_ref: String,
         state: StateFilter,
+        deletable: bool,
     ) {
         self.line = StatusLine::MergePrPrompt {
             number,
             head_ref,
             state,
+            deletable,
             stage: MergePrStage::PickMethod,
         };
     }
@@ -379,7 +413,7 @@ impl StatusLineState {
         self.line = StatusLine::NotificationError(msg);
     }
 
-    /// 回傳 true 表示這是 10 個攔截變體之一（7 個 handler：`ToggleStatePrompt`、
+    /// 回傳 true 表示這是 11 個攔截變體之一（8 個 handler：`ToggleStatePrompt`、
     /// `TogglePrDraftPrompt`、`UpdatePrompt`、`RestartPrompt` 四個共用
     /// `handle_yes_no_prompt_key`，其餘各自一個 handler）、鍵已被吃掉。
     ///
@@ -394,6 +428,10 @@ impl StatusLineState {
             }
             StatusLine::CheckoutPicker { .. } => {
                 self.handle_checkout_picker_key(key);
+                true
+            }
+            StatusLine::ChildPicker { .. } => {
+                self.handle_child_picker_key(key);
                 true
             }
             StatusLine::RelatedPicker { .. } => {
@@ -437,6 +475,7 @@ impl StatusLineState {
             | StatusLine::Input(_, _, _)
             | StatusLine::RefPicker { .. }
             | StatusLine::CheckoutPicker { .. }
+            | StatusLine::ChildPicker { .. }
             | StatusLine::RelatedPicker { .. }
             | StatusLine::DeleteBranchPicker { .. }
             | StatusLine::DeleteBranchConfirm { .. }
@@ -470,6 +509,7 @@ impl StatusLineState {
             StatusLine::Input(_, _, _)
             | StatusLine::RefPicker { .. }
             | StatusLine::CheckoutPicker { .. }
+            | StatusLine::ChildPicker { .. }
             | StatusLine::RelatedPicker { .. }
             | StatusLine::DeleteBranchPicker { .. }
             | StatusLine::DeleteBranchConfirm { .. } => true,
@@ -550,6 +590,25 @@ impl StatusLineState {
         self.tx.send(AppEvent::CheckoutCommit { target });
     }
 
+    fn handle_child_picker_key(&mut self, key: KeyEvent) {
+        if let Some(UserEvent::Cancel) = self.ctx.keybind.get(&key) {
+            self.line = StatusLine::None;
+            return;
+        }
+        let StatusLine::ChildPicker { options, .. } = &self.line else {
+            return;
+        };
+        let Some(idx) = picker_digit_index(key) else {
+            return;
+        };
+        let Some(option) = options.get(idx) else {
+            return;
+        };
+        let hash = option.commit_hash.clone();
+        self.line = StatusLine::None;
+        self.tx.send(AppEvent::SelectChildCommitByHash { hash });
+    }
+
     fn handle_delete_branch_picker_key(&mut self, key: KeyEvent) {
         if let Some(UserEvent::Cancel) = self.ctx.keybind.get(&key) {
             self.line = StatusLine::None;
@@ -598,6 +657,7 @@ impl StatusLineState {
             number,
             ref head_ref,
             state,
+            deletable,
             stage,
         } = self.line
         else {
@@ -615,31 +675,36 @@ impl StatusLineState {
                 KeyCode::Char('r') | KeyCode::Char('R') => Some(MergeMethod::Rebase),
                 _ => None,
             }
-            .map(|method| MergePrStage::AskDeleteBranch { method }),
-
-            MergePrStage::AskDeleteBranch { method } => match key.code {
-                KeyCode::Char('y') | KeyCode::Char('Y') => Some(true),
-                KeyCode::Char('n') | KeyCode::Char('N') => Some(false),
-                _ => None,
-            }
-            .map(|delete_branch| MergePrStage::Confirm {
-                method,
-                delete_branch,
+            .map(|method| {
+                if deletable {
+                    MergePrStage::AskDeleteBranch { method }
+                } else {
+                    MergePrStage::Confirm {
+                        method,
+                        delete: RemoteBranchDelete::NotOffered,
+                    }
+                }
             }),
 
-            MergePrStage::Confirm {
-                method,
-                delete_branch,
-            } => {
+            MergePrStage::AskDeleteBranch { method } => match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => Some(RemoteBranchDelete::Confirmed),
+                KeyCode::Char('n') | KeyCode::Char('N') => Some(RemoteBranchDelete::Declined),
+                _ => None,
+            }
+            .map(|delete| MergePrStage::Confirm { method, delete }),
+
+            MergePrStage::Confirm { method, delete } => {
                 let is_confirm = matches!(self.ctx.keybind.get(&key), Some(UserEvent::Confirm))
                     || matches!(key.code, KeyCode::Enter);
                 if is_confirm {
                     self.line = StatusLine::None;
+                    let delete_remote_branch =
+                        matches!(delete, RemoteBranchDelete::Confirmed).then(|| head_ref.clone());
                     self.tx.send(AppEvent::MergePrRequested {
                         number,
                         state,
                         method,
-                        delete_branch,
+                        delete_remote_branch,
                     });
                 } else if matches!(self.ctx.keybind.get(&key), Some(UserEvent::Cancel)) {
                     self.line = StatusLine::None;
@@ -653,6 +718,7 @@ impl StatusLineState {
                 number,
                 head_ref,
                 state,
+                deletable,
                 stage,
             };
         } else if matches!(self.ctx.keybind.get(&key), Some(UserEvent::Cancel)) {
@@ -785,11 +851,27 @@ impl StatusLineState {
                     Line::raw(msg).fg(self.ctx.color_theme.status_input_fg)
                 }
             }
-            StatusLine::RefPicker { options, kind } => {
-                self.render_picker_line(kind.picker_prompt(), options, ESC_CANCEL.into())
-            }
-            StatusLine::CheckoutPicker { options, kind } => {
-                self.render_picker_line(kind.picker_prompt(), options, ESC_CANCEL.into())
+            StatusLine::RefPicker { options, kind } => self.render_picker_line(
+                kind.picker_prompt(),
+                options.iter().map(String::as_str),
+                ESC_CANCEL.into(),
+            ),
+            StatusLine::CheckoutPicker { options, kind } => self.render_picker_line(
+                kind.picker_prompt(),
+                options.iter().map(String::as_str),
+                ESC_CANCEL.into(),
+            ),
+            StatusLine::ChildPicker { options, total } => {
+                let tail = if *total > options.len() {
+                    format!("(+{} more)", total - options.len())
+                } else {
+                    ESC_CANCEL.into()
+                };
+                self.render_picker_line(
+                    "Go to child: ",
+                    options.iter().map(|o| o.label.as_str()),
+                    tail,
+                )
             }
             StatusLine::RelatedPicker { items } => self.render_related_picker_line(items),
             StatusLine::DeleteBranchPicker { options, total } => {
@@ -798,7 +880,7 @@ impl StatusLineState {
                 } else {
                     ESC_CANCEL.into()
                 };
-                self.render_picker_line("Delete branch: ", options, tail)
+                self.render_picker_line("Delete branch: ", options.iter().map(String::as_str), tail)
             }
             StatusLine::DeleteBranchConfirm { name } => {
                 let hint_fg = self.ctx.color_theme.status_interactive_fg;
@@ -914,16 +996,20 @@ impl StatusLineState {
         Line::from(spans)
     }
 
+    /// `labels` 收 `impl Iterator<Item = &'s str>` 而非 `&'s [String]`：
+    /// `RefPicker`/`CheckoutPicker`/`DeleteBranchPicker` 的候選本來就是
+    /// `String`，`ChildPicker` 的候選是 `ChildPickOption`，只借它的
+    /// `label` 欄位——不用為了統一型別多 clone 一份 `Vec<String>`。
     fn render_picker_line<'s>(
         &self,
         prompt: &'s str,
-        options: &'s [String],
+        labels: impl Iterator<Item = &'s str>,
         tail: String,
     ) -> Line<'s> {
         let mut spans: Vec<Span<'s>> = vec![prompt.into()];
-        for (i, name) in options.iter().enumerate() {
+        for (i, name) in labels.enumerate() {
             spans.push(format!("[{}]", i + 1).fg(self.ctx.color_theme.status_interactive_fg));
-            spans.push(name.as_str().into());
+            spans.push(name.into());
             spans.push("  ".into());
         }
         spans.push(tail.fg(self.ctx.color_theme.status_interactive_fg));
@@ -950,7 +1036,7 @@ impl StatusLineState {
             ]),
             MergePrStage::AskDeleteBranch { method } => Line::from(vec![
                 format!(
-                    "Delete branch '{head_ref}' after {} merge? ",
+                    "Delete remote branch '{head_ref}' after {} merge? ",
                     method.display()
                 )
                 .into(),
@@ -959,15 +1045,13 @@ impl StatusLineState {
                 "[n]o".fg(hint_fg),
                 "  (Esc cancel)".fg(hint_fg),
             ]),
-            MergePrStage::Confirm {
-                method,
-                delete_branch,
-            } => {
-                let del = if delete_branch { "yes" } else { "no" };
-                let prompt = format!(
-                    "Merge #{number} with {}, delete branch: {del}  ",
-                    method.display()
-                );
+            MergePrStage::Confirm { method, delete } => {
+                let del_suffix = match delete {
+                    RemoteBranchDelete::Confirmed => ", delete remote branch: yes",
+                    RemoteBranchDelete::Declined => ", delete remote branch: no",
+                    RemoteBranchDelete::NotOffered => "",
+                };
+                let prompt = format!("Merge #{number} with {}{del_suffix}  ", method.display());
                 confirm_line(prompt, "execute", &self.ctx)
             }
         }
@@ -983,6 +1067,7 @@ mod tests {
     use crate::{
         color::ColorTheme,
         config::{CoreConfig, UiConfig},
+        git::CommitHash,
         github::{GhItemKind, PrDraftAction, StateAction},
         graph::GraphStyle,
         keybind::KeyBind,
@@ -1091,6 +1176,68 @@ mod tests {
     }
 
     #[test]
+    fn child_picker_selects_and_sends_select_child_commit_by_hash() {
+        let (mut state, rx) = test_state();
+        state.line = StatusLine::ChildPicker {
+            options: vec![
+                ChildPickOption {
+                    label: "feature/x: fix a".into(),
+                    commit_hash: CommitHash::from("aaa"),
+                },
+                ChildPickOption {
+                    label: "fix b".into(),
+                    commit_hash: CommitHash::from("bbb"),
+                },
+            ],
+            total: 2,
+        };
+
+        state.handle_child_picker_key(char_key('2'));
+
+        assert!(matches!(state.line, StatusLine::None));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AppEvent::SelectChildCommitByHash { hash }) if hash.as_str() == "bbb"
+        ));
+    }
+
+    #[test]
+    fn child_picker_cancel_clears_without_sending() {
+        let (mut state, rx) = test_state();
+        state.line = StatusLine::ChildPicker {
+            options: vec![ChildPickOption {
+                label: "fix a".into(),
+                commit_hash: CommitHash::from("aaa"),
+            }],
+            total: 1,
+        };
+
+        state.handle_child_picker_key(key(KeyCode::Esc));
+
+        assert!(matches!(state.line, StatusLine::None));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn open_child_picker_truncates_to_nine_but_keeps_total() {
+        let (mut state, _rx) = test_state();
+        let options: Vec<ChildPickOption> = (0..12)
+            .map(|i| ChildPickOption {
+                label: format!("child {i}"),
+                commit_hash: CommitHash::from(format!("hash{i}").as_str()),
+            })
+            .collect();
+
+        state.open_child_picker(options);
+
+        let StatusLine::ChildPicker { options, total } = &state.line else {
+            panic!("expected ChildPicker, got {:?}", state.line);
+        };
+        assert_eq!(options.len(), 9);
+        assert_eq!(*total, 12);
+    }
+
+    #[test]
     fn delete_branch_picker_selection_transitions_to_confirm() {
         let (mut state, _rx) = test_state();
         state.line = StatusLine::DeleteBranchPicker {
@@ -1156,10 +1303,15 @@ mod tests {
     }
 
     fn merge_pr_prompt() -> StatusLine {
+        merge_pr_prompt_with_deletable(true)
+    }
+
+    fn merge_pr_prompt_with_deletable(deletable: bool) -> StatusLine {
         StatusLine::MergePrPrompt {
             number: 42,
             head_ref: "feature/x".into(),
             state: StateFilter::Open,
+            deletable,
             stage: MergePrStage::PickMethod,
         }
     }
@@ -1188,7 +1340,7 @@ mod tests {
             StatusLine::MergePrPrompt {
                 stage: MergePrStage::Confirm {
                     method: MergeMethod::Squash,
-                    delete_branch: false,
+                    delete: RemoteBranchDelete::Declined,
                 },
                 ..
             }
@@ -1201,7 +1353,65 @@ mod tests {
             Ok(AppEvent::MergePrRequested {
                 number: 42,
                 method: MergeMethod::Squash,
-                delete_branch: false,
+                delete_remote_branch: None,
+                ..
+            })
+        ));
+    }
+
+    /// `y` 路徑要帶著 `head_ref` 一起送出，不是單純的 bool。
+    #[test]
+    fn merge_pr_prompt_yes_sends_head_ref_to_delete() {
+        let (mut state, rx) = test_state();
+        state.line = merge_pr_prompt();
+
+        state.handle_merge_pr_prompt_key(char_key('s'));
+        state.handle_merge_pr_prompt_key(char_key('y'));
+        assert!(matches!(
+            state.line,
+            StatusLine::MergePrPrompt {
+                stage: MergePrStage::Confirm {
+                    method: MergeMethod::Squash,
+                    delete: RemoteBranchDelete::Confirmed,
+                },
+                ..
+            }
+        ));
+
+        state.handle_merge_pr_prompt_key(key(KeyCode::Enter));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AppEvent::MergePrRequested {
+                delete_remote_branch: Some(b),
+                ..
+            }) if b == "feature/x"
+        ));
+    }
+
+    /// `deletable: false`（fork／default branch／head==base）時，`AskDeleteBranch`
+    /// 這個 stage 根本不該出現——直接跳進 `Confirm { delete: NotOffered }`。
+    #[test]
+    fn merge_pr_prompt_not_deletable_skips_ask_delete_branch_stage() {
+        let (mut state, rx) = test_state();
+        state.line = merge_pr_prompt_with_deletable(false);
+
+        state.handle_merge_pr_prompt_key(char_key('s'));
+        assert!(matches!(
+            state.line,
+            StatusLine::MergePrPrompt {
+                stage: MergePrStage::Confirm {
+                    method: MergeMethod::Squash,
+                    delete: RemoteBranchDelete::NotOffered,
+                },
+                ..
+            }
+        ));
+
+        state.handle_merge_pr_prompt_key(key(KeyCode::Enter));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AppEvent::MergePrRequested {
+                delete_remote_branch: None,
                 ..
             })
         ));
@@ -1318,7 +1528,7 @@ mod tests {
         assert!(rx.try_recv().is_err());
     }
 
-    /// `StatusLine` 全部 16 個變體各自對 `handle_intercepting_key`／
+    /// `StatusLine` 全部 17 個變體各自對 `handle_intercepting_key`／
     /// `is_input_mode_variant` 的回傳值，把「兩者故意不同步」這件事從一句
     /// 註解變成有東西擋著的不變式（做法比照這個 session 的 `2fa4064` 先
     /// 例）。5 個 prompt 變體在 handle_intercepting_key 永遠攔截，但
@@ -1357,6 +1567,15 @@ mod tests {
                 StatusLine::CheckoutPicker {
                     options: vec![],
                     kind: CheckoutPickKind::Branch,
+                },
+                true,
+                true,
+            ),
+            (
+                "ChildPicker",
+                StatusLine::ChildPicker {
+                    options: vec![],
+                    total: 0,
                 },
                 true,
                 true,
@@ -1449,12 +1668,12 @@ mod tests {
 
         assert_eq!(
             cases.len(),
-            16,
-            "StatusLine 有 16 個變體，表格漏列或多列了，先檢查表格本身"
+            17,
+            "StatusLine 有 17 個變體，表格漏列或多列了，先檢查表格本身"
         );
 
         for (label, line, want_intercept, want_input_mode) in cases {
-            // handle_intercepting_key 在 10 個攔截變體上會呼叫對應 handler、
+            // handle_intercepting_key 在 11 個攔截變體上會呼叫對應 handler、
             // 可能改變 self.line 或送事件——這裡只關心它的回傳值，用一個
             // 全新的 state 避免副作用互相汙染。
             let mut for_intercept = make(line.clone());

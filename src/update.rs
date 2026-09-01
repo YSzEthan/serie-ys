@@ -58,6 +58,12 @@ pub enum UpdateMode {
 }
 
 /// 更新完成後是否自動重啟（TUI）／開啟新版（CLI），不再詢問。
+///
+/// 這是 `AppEvent::ExeReplacedCheck` 這條鏈唯一的開關：開著時，process
+/// 每 `EXE_CHECK_INTERVAL` 會確認一次磁碟上的執行檔是不是被別的 ysgit
+/// 實例或手動部署換掉、寫完整、跑得起來，是的話就在使用者閒置時自動
+/// exec 過去。跟遠端有沒有新版無關（不看 `UpdateMode`），純粹是「磁碟上
+/// 那份是不是已經不是我在跑的這份」。
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum AutoRestart {
@@ -334,6 +340,18 @@ static UPDATE_RUNNING: AtomicBool = AtomicBool::new(false);
 // 後果：週期重新武裝只問了前者，於是另一個實例更新完之後，這個 process
 // 每個 interval 打一次網路、彈一次提示、被 `download_and_replace` 擋下，
 // 永遠迴圈。
+//
+// 第四個呼叫點——`replacement_ready()`（給 `AppEvent::ExeReplacedCheck`
+// 用）——問的是另一個問題：「磁碟上那份是不是已經寫完整、可以拿去 exec
+// 了」，答案不對稱（fail closed，不是這裡的 fail open），所以它在
+// `exe_is_stale()` 之上疊加 mtime 沉澱與 `exe_runs()`，而不是另切一個
+// predicate 取代這裡的判斷。
+//
+// 隱藏的耦合：這個 predicate 的「時間性質」現在跟著 `auto_restart` 走。
+// `auto_restart` 開著時，stale 只是暫態——process 會透過
+// `ExeReplacedCheck` 自己重啟解決掉它；關著時，stale 是終局，跟這段
+// 註解原本描述的行為一樣，只能靠人工重開恢復。之後任何新讀
+// `exe_is_stale()` 的程式碼都要知道自己活在哪一種 régime 裡。
 
 /// 本 process 自己成功替換過執行檔。是 `exe_is_stale()` 的其中一個來源：
 /// 非 unix（沒有 inode 可比）時是唯一來源，unix 上則是省掉一次 stat 的
@@ -341,13 +359,19 @@ static UPDATE_RUNNING: AtomicBool = AtomicBool::new(false);
 /// 磁碟上的不是同一份，不必再去問檔案系統。
 static UPDATE_INSTALLED: AtomicBool = AtomicBool::new(false);
 
-/// 啟動時的執行檔身分：canonicalize 過的路徑，加上它當下的 inode。
+/// 啟動時的執行檔身分：canonicalize 過的路徑，加上它當下的 inode 與
+/// mtime。具名 struct 而非三元組——`exe_is_stale()`／`replacement_ready()`
+/// 各自只用得到其中兩個欄位，`.1`／`.2` 會讓呼叫端看不出哪個是哪個。
 ///
 /// `None` = 沒有可用快照（非 unix，或啟動時就解析不出執行檔路徑），此時
-/// 守衛失效、一律視同未被替換。用 `Option<(PathBuf, u64)>` 而不是
-/// `(PathBuf, Option<u64>)`：兩個獨立的失敗軸會有四種狀態而只有兩種有
-/// 意義，而且路徑解析失敗時根本生不出那個 `PathBuf`。
-static STARTUP_EXE: OnceLock<Option<(PathBuf, u64)>> = OnceLock::new();
+/// 守衛失效、一律視同未被替換。
+struct StartupExe {
+    path: PathBuf,
+    ino: u64,
+    mtime: SystemTime,
+}
+
+static STARTUP_EXE: OnceLock<Option<StartupExe>> = OnceLock::new();
 
 /// 三個守衛共用同一句話——`download_and_replace` 的重入檢查、
 /// `current_exe_checked` 的 `(deleted)` 偵測、`spawn_check` 的早退，講的
@@ -374,12 +398,12 @@ const EXE_REPLACED_MSG: &str = "磁碟上的 ysgit 已被替換（自我更新�
 pub fn snapshot_exe() {
     STARTUP_EXE.get_or_init(|| {
         let path = current_exe_checked().ok()?;
-        let ino = exe_fingerprint(&path)?;
-        Some((path, ino))
+        let (ino, mtime) = exe_identity(&path)?;
+        Some(StartupExe { path, ino, mtime })
     });
 }
 
-/// 這個路徑當下的 inode。非 unix 沒有等價概念，回 `None`。
+/// 這個路徑當下的 inode 與 mtime。非 unix 沒有等價概念，回 `None`。
 ///
 /// **收路徑而不自己找**：`fs::rename` 換掉執行檔後，Linux 的
 /// `/proc/self/exe` 會回 `".../ysgit (deleted)"`，`current_exe_checked()`
@@ -389,17 +413,18 @@ pub fn snapshot_exe() {
 /// 替換，所以這個坑只在 Linux 發作，開發機上測不出來。
 ///
 /// 傳進來的是 `snapshot_exe()` 啟動時算好的乾淨路徑，rename 之後對它
-/// stat 拿到的是新檔的 inode，兩個平台行為一致。
+/// stat 拿到的是新檔的 inode／mtime，兩個平台行為一致。
 ///
 /// 不快取：這個函式的全部價值就是反映「現在」磁碟上的狀態，快取等於把它
 /// 變成第二個 `UPDATE_INSTALLED`。一次 `stat(2)` 在 dentry cache 裡是微秒
 /// 級，而呼叫頻率是每個 interval 一次——`should_check_now()` 對 marker 檔
 /// 本來就在做同一件事。
-fn exe_fingerprint(path: &Path) -> Option<u64> {
+fn exe_identity(path: &Path) -> Option<(u64, SystemTime)> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::MetadataExt;
-        fs::metadata(path).ok().map(|m| m.ino())
+        let meta = fs::metadata(path).ok()?;
+        Some((meta.ino(), meta.modified().ok()?))
     }
     #[cfg(not(unix))]
     {
@@ -427,11 +452,96 @@ fn stale(installed: bool, startup: Option<u64>, current: Option<u64>) -> bool {
 /// 環境會永久判定被替換、再也自我更新不了。訊息（`EXE_REPLACED_MSG`）是
 /// 中性的，使用者看得懂發生什麼事。
 pub fn exe_is_stale() -> bool {
-    let (startup, current) = match STARTUP_EXE.get().and_then(Option::as_ref) {
-        Some((path, ino)) => (Some(*ino), exe_fingerprint(path)),
-        None => (None, None),
-    };
-    stale(UPDATE_INSTALLED.load(Ordering::SeqCst), startup, current)
+    let snapshot = startup_exe();
+    stale(
+        UPDATE_INSTALLED.load(Ordering::SeqCst),
+        snapshot.map(|s| s.ino),
+        snapshot
+            .and_then(|s| exe_identity(&s.path))
+            .map(|(ino, _)| ino),
+    )
+}
+
+/// `STARTUP_EXE` 的雙層解包（`OnceLock<Option<StartupExe>>`）收斂成一處，
+/// 給 `exe_is_stale()`／`exe_snapshot_available()`／`replacement_ready()`
+/// 共用，不各自重寫一份。
+fn startup_exe() -> Option<&'static StartupExe> {
+    STARTUP_EXE.get().and_then(Option::as_ref)
+}
+
+/// 啟動快照拿到了沒——`AppEvent::ExeReplacedCheck` 初次武裝的閘門：
+/// `STARTUP_EXE` 是 `None`（非 unix、啟動時解析失敗）就不武裝，否則會
+/// 排一個每 `EXE_CHECK_INTERVAL` spawn 一條 thread、卻永遠回 `None` 的
+/// 空轉 timer。唯一呼叫端只問「有沒有」，不需要路徑本身——真的要用路徑
+/// 的 `replacement_ready()` 自己從 `startup_exe()` 拿。
+pub fn exe_snapshot_available() -> bool {
+    startup_exe().is_some()
+}
+
+/// `AppEvent::ExeReplacedCheck` 的輪詢間隔。一輪的工作只有一次 `stat(2)`
+/// （dentry cache 裡是微秒級，見 `exe_identity` 的 doc comment）加上偶爾
+/// 一次 `--version` fork，30 秒讓「另一個實例已更新」到「這個實例接上」
+/// 之間的延遲夠短，同時遠低於任何合理的熱迴圈疑慮。
+pub const EXE_CHECK_INTERVAL: Duration = Duration::from_secs(30);
+
+/// `mtime_settled()` 的沉澱門檻。部署走 `cp` 到同目錄暫存檔再 `mv`
+/// （見 `Makefile`），`mv` 之後 mtime 不會再變，5 秒足以涵蓋一次
+/// `EXE_CHECK_INTERVAL` 之間任何合理速度的寫入；抓太大只會讓正常部署
+/// 後的重開多等，抓太小則失去意義（見 `mtime_settled` 的 doc comment）。
+const EXE_SETTLE: Duration = Duration::from_secs(5);
+
+/// 純函式，三個時間點攤開才測得到（`replacement_ready()` 讀全域
+/// static）。`now` 也是參數而非 `SystemTime::now()`——測試才餵得了
+/// 確定值。
+///
+/// 只比 inode 不夠：`exe_is_stale()` 的 doc comment 已載明某些 FUSE／
+/// 網路掛載對同一個檔案回不穩定的 inode。那個判準用在「要不要繼續檢查
+/// 更新」上，答錯的代價是永久停檢查；用在「要不要 exec」上，答錯的
+/// 代價是每 `EXE_CHECK_INTERVAL` 重啟一次、永無自我終止的迴圈——
+/// `mtime` 在這些掛載上是穩定的，加這一個條件就擋掉整個風暴。
+///
+/// mtime 不同還不夠：得等它沉澱過 `EXE_SETTLE`，才能排除「檔案正在被
+/// 寫入、只是剛好被兩次輪詢夾在中間」的可能。mtime 在未來（時鐘不同步）
+/// 也視為未沉澱，fail closed。
+fn mtime_settled(startup: SystemTime, current: SystemTime, now: SystemTime) -> bool {
+    startup != current
+        && now
+            .duration_since(current)
+            .is_ok_and(|age| age >= EXE_SETTLE)
+}
+
+/// `Some(path)` = 磁碟上的執行檔已經換成一份寫完整、跑得起來的新檔，
+/// 可以拿去 `exec` 了；回傳的是啟動時釘住的路徑。
+///
+/// Fail closed，跟 `stale()` 的 fail open 刻意相反：`stale()` 問不出
+/// 答案時寧可讓既有的更新流程繼續走；這裡問不出答案時寧可什麼都不做，
+/// 因為誤判的代價是把使用者正在用的 TUI 換掉（`Ret::Quit` 之後
+/// `ratatui::restore()` 已經跑完，`exec` 失敗就是整個 session 沒了，
+/// 不是「重開失敗、繼續用舊的」）。
+///
+/// 三個條件缺一不可：`exe_is_stale()` 為假就還沒被換過；mtime 沒沉澱
+/// 就可能還在寫；`exe_runs()` 為假就算沉澱了也可能是壞檔（Gatekeeper
+/// SIGKILL、抓錯架構）。
+pub fn replacement_ready() -> Option<&'static Path> {
+    let snapshot = startup_exe()?;
+    // 現值問不出來就沒有下文可談，先 `?` 掉：不論 `UPDATE_INSTALLED` 是
+    // 真是假，`stale()` 少了現值都只能回退到那一個布林值，接下來的 mtime
+    // 沉澱判斷也一樣需要現值——早退跟晚退是同一個結果，早退省一次
+    // `Option` 解構。同一份 `exe_identity` 結果餵給 staleness 判斷與 mtime
+    // 判斷，不重複呼叫 `exe_is_stale()` 再多 stat 一次。
+    let (current_ino, current_mtime) = exe_identity(&snapshot.path)?;
+    let is_stale = stale(
+        UPDATE_INSTALLED.load(Ordering::SeqCst),
+        Some(snapshot.ino),
+        Some(current_ino),
+    );
+    if !is_stale {
+        return None;
+    }
+    if !mtime_settled(snapshot.mtime, current_mtime, SystemTime::now()) {
+        return None;
+    }
+    exe_runs(&snapshot.path).then_some(snapshot.path.as_path())
 }
 
 struct UpdateGuard;
@@ -731,16 +841,30 @@ fn copy_permissions(from: &Path, to: &Path) -> Result<(), String> {
     fs::set_permissions(to, perms).map_err(|e| format!("設定執行權限失敗: {e}"))
 }
 
+/// `verify_binary()` 與 `exe_runs()` 共用的那一次 `Command` 呼叫，避免
+/// 兩份幾乎一樣的 spawn 邏輯各自維護。
+fn spawn_version_output(path: &Path) -> std::io::Result<std::process::Output> {
+    Command::new(path)
+        .arg("--version")
+        .stdin(Stdio::null())
+        .output()
+}
+
+/// 這個路徑跑得起來嗎——只問「執行成功與否」，不管版本。給
+/// `replacement_ready()` 用：自動重開只在意「這份檔案在這台機器上跑得
+/// 起來」，不知道也不該知道預期版本（降版部署是合法的）。是
+/// `verify_binary()` 版本比對之前那一半，正好涵蓋 binary 被 Gatekeeper
+/// 標記、啟動時 SIGKILL 的情況——那是 checksum／inode 都驗不出來的。
+pub fn exe_runs(path: &Path) -> bool {
+    spawn_version_output(path).is_ok_and(|o| o.status.success())
+}
+
 /// 跑 `<path> --version`，輸出要含 `expected_version` 才算過。驗的是「這個
 /// 檔案在這台機器上真的跑得起來」——正好涵蓋 binary 被 Gatekeeper 標記、
 /// 啟動時 SIGKILL 的情況，而那是 checksum 驗不出來的（bytes 完全正確，
 /// 照樣被殺）。順帶擋掉抓錯架構、下載不完整。
 fn verify_binary(path: &Path, expected_version: &str) -> Result<(), String> {
-    let output = Command::new(path)
-        .arg("--version")
-        .stdin(Stdio::null())
-        .output()
-        .map_err(|e| format!("無法執行下載的檔案: {e}"))?;
+    let output = spawn_version_output(path).map_err(|e| format!("無法執行下載的檔案: {e}"))?;
 
     if !output.status.success() {
         return Err(format!(
@@ -919,6 +1043,86 @@ ca0a1ac34d2e1138b9308820e3a53b6822552268907e87a11a1350b98f1a6ada  ysgit_2.4.1-ma
         // 本 process 自己裝過，不必管 inode 比對結果。
         assert!(stale(true, Some(42), Some(42)));
         assert!(stale(true, None, None));
+    }
+
+    // ── mtime_settled()：磁碟上那份的寫入是不是已經穩定 ──
+
+    fn epoch_secs(secs: u64) -> SystemTime {
+        SystemTime::UNIX_EPOCH + Duration::from_secs(secs)
+    }
+
+    #[test]
+    fn mtime_settled_unchanged_mtime_is_not_settled() {
+        // mtime 沒變：根本沒有真的換檔（例如只是 `touch`），不算沉澱。
+        let t = epoch_secs(1_000);
+        assert!(!mtime_settled(t, t, epoch_secs(1_100)));
+    }
+
+    #[test]
+    fn mtime_settled_changed_and_aged_well_past_threshold_is_settled() {
+        let startup = epoch_secs(1_000);
+        let current = epoch_secs(1_010);
+        assert!(mtime_settled(
+            startup,
+            current,
+            current + EXE_SETTLE + Duration::from_secs(10)
+        ));
+    }
+
+    #[test]
+    fn mtime_settled_changed_but_not_yet_aged_is_not_settled() {
+        // 寫入可能還在進行中（`cp` 尚未收尾）。
+        let startup = epoch_secs(1_000);
+        let current = epoch_secs(1_010);
+        assert!(!mtime_settled(
+            startup,
+            current,
+            current + EXE_SETTLE - Duration::from_secs(1)
+        ));
+    }
+
+    #[test]
+    fn mtime_settled_exactly_at_threshold_is_settled() {
+        let startup = epoch_secs(1_000);
+        let current = epoch_secs(1_010);
+        assert!(mtime_settled(startup, current, current + EXE_SETTLE));
+    }
+
+    #[test]
+    fn mtime_settled_future_mtime_is_not_settled() {
+        // 時鐘不同步、mtime 在 `now` 之後：`duration_since` 回 Err，
+        // fail closed。
+        let startup = epoch_secs(1_000);
+        let current = epoch_secs(2_000);
+        assert!(!mtime_settled(startup, current, epoch_secs(1_500)));
+    }
+
+    // ── exe_runs()：這個路徑在這台機器上跑得起來嗎 ──
+    //
+    // 靠系統既有路徑（`/usr/bin/true`、`/etc/hosts`）而非自建暫存檔：
+    // 這三個測試要的正是「一個真的可執行」「一個不存在」「一個存在但不可
+    // 執行」，用系統路徑比自己造一個可執行檔案再設權限簡單得多。
+    // `#[cfg(unix)]` 對齊 `exe_identity` 同一個平台假設；CI 只跑
+    // ubuntu-latest，本機在 macOS 上也吃得到同一組路徑。
+
+    #[cfg(unix)]
+    #[test]
+    fn exe_runs_true_for_a_binary_that_exits_zero() {
+        assert!(exe_runs(Path::new("/usr/bin/true")));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exe_runs_false_for_a_nonexistent_path() {
+        assert!(!exe_runs(Path::new(
+            "/nonexistent/path/that/should/never/exist/ysgit-test"
+        )));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn exe_runs_false_for_a_non_executable_file() {
+        assert!(!exe_runs(Path::new("/etc/hosts")));
     }
 
     // ── resolve()：CLI > 設定檔 > 內建預設 ──
