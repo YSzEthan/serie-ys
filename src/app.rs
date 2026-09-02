@@ -1063,13 +1063,7 @@ impl App<'_> {
         use crate::view::ListRefreshViewContext;
         match &self.view {
             View::List(v) => ListRefreshViewContext::from(v.as_list_state()),
-            _ => ListRefreshViewContext {
-                commit_hash: CommitHash::default(),
-                selected: 0,
-                height: 0,
-                scroll_to_top: true,
-                show_remote_refs: true,
-            },
+            _ => ListRefreshViewContext::default(),
         }
     }
 

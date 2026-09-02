@@ -105,12 +105,10 @@ impl<'a> DeleteTagView<'a> {
             .commit_list_state
             .as_ref()
             .map(ListRefreshViewContext::from)
-            .unwrap_or(ListRefreshViewContext {
+            .unwrap_or_else(|| ListRefreshViewContext {
                 commit_hash: self.commit_hash.clone(),
-                selected: 0,
-                height: 0,
                 scroll_to_top: false,
-                show_remote_refs: true,
+                ..Default::default()
             });
 
         // 顯示 pending overlay 並關閉對話框

@@ -1,6 +1,7 @@
 use ratatui::crossterm::event::{Event, KeyEvent};
 use rustc_hash::FxHashMap;
 use tui_input::backend::crossterm::EventHandler;
+use tui_input::Input;
 
 use crate::fuzzy::SearchMatcher;
 use crate::git::Ref;
@@ -8,14 +9,30 @@ use crate::git::Ref;
 use super::state::CommitListState;
 use super::{CommitInfo, MatchStep, RawCommitIdx, VisibleIdx};
 
+/// 一組比對設定。search 與 filter 各自在 `CommitListState` 持有一份，跨
+/// mode 轉換（`Searching` → `Applied`、filter 套用後仍生效）存活——套用後
+/// 這組設定還要繼續驅動增量比對與 refresh 還原，跟「現在是不是在輸入」是
+/// 兩件事，不該塞進只在輸入模式才存在的 enum variant。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct MatchOptions {
+    pub ignore_case: bool,
+    pub fuzzy: bool,
+}
+
+impl MatchOptions {
+    /// Filter 模式預設用 fuzzy + 忽略大小寫，操作體驗比較好。
+    pub const FILTER_DEFAULT: MatchOptions = MatchOptions {
+        ignore_case: true,
+        fuzzy: true,
+    };
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum SearchState {
     Inactive,
     Searching {
         start_index: RawCommitIdx,
         match_index: usize,
-        ignore_case: bool,
-        fuzzy: bool,
         transient_message: TransientMessage,
     },
     Applied {
@@ -32,6 +49,15 @@ impl SearchState {
             _ => {}
         }
     }
+
+    fn set_transient_message(&mut self, message: TransientMessage) {
+        if let SearchState::Searching {
+            transient_message, ..
+        } = self
+        {
+            *transient_message = message;
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -46,11 +72,15 @@ pub enum TransientMessage {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum FilterState {
     Inactive,
-    Filtering {
-        ignore_case: bool,
-        fuzzy: bool,
-        transient_message: TransientMessage,
-    },
+    Filtering { transient_message: TransientMessage },
+}
+
+/// refresh 之後還原一次 search 或 filter 所需的全部輸入。兩者存的是同一個
+/// 概念（餵給 `SearchMatcher::new` 的 query + 設定），共用一個型別。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MatchQuery {
+    pub query: String,
+    pub options: MatchOptions,
 }
 
 #[derive(Debug, Default, Clone)]
@@ -168,11 +198,13 @@ impl<'a> CommitListState<'a> {
 
     pub fn start_search(&mut self) {
         if let SearchState::Inactive | SearchState::Applied { .. } = self.search_state {
+            self.search_options = MatchOptions {
+                ignore_case: self.default_ignore_case,
+                fuzzy: self.default_fuzzy,
+            };
             self.search_state = SearchState::Searching {
                 start_index: self.current_selected_raw(),
                 match_index: 0,
-                ignore_case: self.default_ignore_case,
-                fuzzy: self.default_fuzzy,
                 transient_message: TransientMessage::None,
             };
             self.search_input.reset();
@@ -181,24 +213,14 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn handle_search_input(&mut self, key: KeyEvent) {
-        if let SearchState::Searching {
-            transient_message, ..
-        } = &mut self.search_state
-        {
-            *transient_message = TransientMessage::None;
-        }
-
-        if let SearchState::Searching {
-            start_index,
-            ignore_case,
-            fuzzy,
-            ..
-        } = self.search_state
-        {
-            self.search_input.handle_event(&Event::Key(key));
-            self.update_search_matches(ignore_case, fuzzy);
-            self.select_current_or_next_match_index(start_index);
-        }
+        let SearchState::Searching { start_index, .. } = self.search_state else {
+            return;
+        };
+        self.search_state
+            .set_transient_message(TransientMessage::None);
+        self.search_input.handle_event(&Event::Key(key));
+        self.update_search_matches();
+        self.select_current_or_next_match_index(start_index);
     }
 
     pub fn apply_search(&mut self) {
@@ -215,6 +237,56 @@ impl<'a> CommitListState<'a> {
         }
     }
 
+    /// refresh 之後還原一次已套用的 search。要在 selection 還原**之後**呼叫——它靠
+    /// `current_selected_raw()` 判斷還原後游標停的 commit 是否仍是一個 match，見
+    /// `CommitListState::reset_commit_list_with` 內的順序註記。
+    ///
+    /// 刻意不移動游標：`select_current_or_next_match_index` 會把目標釘到 viewport
+    /// 最上緣，把 selection 還原剛校正好的「使用者原本在畫面第幾列」整個沖掉。
+    /// 找不到 match 時 `match_index` 停在 0（顯示成 `Match 0 of N`），按 `n`/`N`
+    /// 會自然校正。
+    ///
+    /// `total_match` 算的是全體 commits，不理 filter——filter 與 search 同時還原時，
+    /// 「Match a of b」裡可能有一部分是被 filter 藏起來、按 `n` 走不到的列
+    /// （`select_match_in_direction` 用 `is_raw_visible` 跳過它們）。
+    pub fn restore_search(&mut self, context: &MatchQuery) {
+        self.search_input = Input::new(context.query.clone());
+        self.search_options = context.options;
+        self.update_search_matches();
+
+        // total == 0（還原的 filter 零命中）或選到虛擬列時，current_selected_raw()
+        // 會 fallback 成 RawCommitIdx(0)——不是使用者實際選取的 commit，不能拿來查
+        // match_index。
+        let match_index = if self.total > 0 && !self.is_virtual_row_selected() {
+            let m = self.search_match(self.current_selected_raw());
+            if m.matched() {
+                m.match_index
+            } else {
+                0
+            }
+        } else {
+            0
+        };
+
+        self.search_state = SearchState::Applied {
+            match_index,
+            total_match: self.search_matches.iter().filter(|m| m.matched()).count(),
+        };
+    }
+
+    /// 只在 `Applied`（真的套用過、非輸入中）時回傳——refresh 中途取消一次沒套用
+    /// 完的搜尋，沒有理由把它還原回來。
+    pub fn search_refresh_context(&self) -> Option<MatchQuery> {
+        if let SearchState::Applied { .. } = self.search_state {
+            Some(MatchQuery {
+                query: self.search_input.value().into(),
+                options: self.search_options,
+            })
+        } else {
+            None
+        }
+    }
+
     pub fn cancel_search(&mut self) {
         if let SearchState::Searching { .. } | SearchState::Applied { .. } = self.search_state {
             self.search_state = SearchState::Inactive;
@@ -224,57 +296,33 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn toggle_ignore_case(&mut self) {
-        if let SearchState::Searching {
-            ignore_case,
-            transient_message,
-            ..
-        } = &mut self.search_state
-        {
-            *ignore_case = !*ignore_case;
-            *transient_message = if *ignore_case {
+        let SearchState::Searching { start_index, .. } = self.search_state else {
+            return;
+        };
+        self.search_options.ignore_case = !self.search_options.ignore_case;
+        self.search_state
+            .set_transient_message(if self.search_options.ignore_case {
                 TransientMessage::IgnoreCaseOn
             } else {
                 TransientMessage::IgnoreCaseOff
-            };
-        }
-
-        if let SearchState::Searching {
-            start_index,
-            ignore_case,
-            fuzzy,
-            ..
-        } = self.search_state
-        {
-            self.update_search_matches(ignore_case, fuzzy);
-            self.select_current_or_next_match_index(start_index);
-        }
+            });
+        self.update_search_matches();
+        self.select_current_or_next_match_index(start_index);
     }
 
     pub fn toggle_fuzzy(&mut self) {
-        if let SearchState::Searching {
-            fuzzy,
-            transient_message,
-            ..
-        } = &mut self.search_state
-        {
-            *fuzzy = !*fuzzy;
-            *transient_message = if *fuzzy {
+        let SearchState::Searching { start_index, .. } = self.search_state else {
+            return;
+        };
+        self.search_options.fuzzy = !self.search_options.fuzzy;
+        self.search_state
+            .set_transient_message(if self.search_options.fuzzy {
                 TransientMessage::FuzzyOn
             } else {
                 TransientMessage::FuzzyOff
-            };
-        }
-
-        if let SearchState::Searching {
-            start_index,
-            ignore_case,
-            fuzzy,
-            ..
-        } = self.search_state
-        {
-            self.update_search_matches(ignore_case, fuzzy);
-            self.select_current_or_next_match_index(start_index);
-        }
+            });
+        self.update_search_matches();
+        self.select_current_or_next_match_index(start_index);
     }
 
     pub fn search_query_string(&self) -> Option<String> {
@@ -327,7 +375,7 @@ impl<'a> CommitListState<'a> {
         }
     }
 
-    fn update_search_matches(&mut self, ignore_case: bool, fuzzy: bool) {
+    fn update_search_matches(&mut self) {
         let query = self.search_input.value().to_string();
 
         // query 為空時提早返回
@@ -338,6 +386,7 @@ impl<'a> CommitListState<'a> {
             return;
         }
 
+        let MatchOptions { ignore_case, fuzzy } = self.search_options;
         let matcher = SearchMatcher::new(&query, ignore_case, fuzzy);
 
         // 判斷能不能用增量搜尋：
@@ -454,36 +503,34 @@ impl<'a> CommitListState<'a> {
 
     pub fn start_filter(&mut self) {
         if let FilterState::Inactive = self.filter_state {
-            // Filter 模式預設用 fuzzy，操作體驗比較好
+            self.filter_options = MatchOptions::FILTER_DEFAULT;
             self.filter_state = FilterState::Filtering {
-                ignore_case: true,
-                fuzzy: true,
                 transient_message: TransientMessage::None,
             };
             self.filter_input.reset();
             self.filtered_indices.clear();
-            self.update_filter();
+            self.update_filter_matches();
         }
     }
 
     pub fn handle_filter_input(&mut self, key: KeyEvent) {
-        if let FilterState::Filtering {
-            transient_message, ..
-        } = &mut self.filter_state
-        {
-            *transient_message = TransientMessage::None;
-        }
-
-        if let FilterState::Filtering {
-            ignore_case, fuzzy, ..
-        } = self.filter_state
-        {
-            self.filter_input.handle_event(&Event::Key(key));
-            self.update_filter_matches(ignore_case, fuzzy);
-        }
+        let FilterState::Filtering { .. } = self.filter_state else {
+            return;
+        };
+        self.filter_state = FilterState::Filtering {
+            transient_message: TransientMessage::None,
+        };
+        self.filter_input.handle_event(&Event::Key(key));
+        self.update_filter_matches();
     }
 
+    /// 沒有生效中的 filter 時是 no-op，游標不動——`filter_input` 為空且
+    /// `Inactive` 就代表這裡本來就沒有 filter，`rebuild_filtered_indices` +
+    /// `set_visible_selection(0)` 沒有東西可清，硬跑只會把游標無端拉到最上面。
     pub fn cancel_filter(&mut self) {
+        if self.filter_state == FilterState::Inactive && self.filter_input.value().is_empty() {
+            return;
+        }
         self.filter_state = FilterState::Inactive;
         self.filter_input.reset();
         self.text_filtered_indices.clear();
@@ -498,42 +545,56 @@ impl<'a> CommitListState<'a> {
         }
     }
 
-    pub fn toggle_filter_ignore_case(&mut self) {
-        if let FilterState::Filtering {
-            ignore_case,
-            fuzzy,
-            transient_message,
-        } = &mut self.filter_state
-        {
-            *ignore_case = !*ignore_case;
-            *transient_message = if *ignore_case {
-                TransientMessage::IgnoreCaseOn
-            } else {
-                TransientMessage::IgnoreCaseOff
-            };
-            let ic = *ignore_case;
-            let fz = *fuzzy;
-            self.update_filter_matches(ic, fz);
+    /// refresh 之後還原一次已套用的 filter。要排在 `restore_search` 與 selection
+    /// 還原之前呼叫——它會重建 `filtered_indices`（改變 `total`）並把游標壓到頂端，
+    /// 見 `CommitListState::reset_commit_list_with` 內的順序註記。
+    pub fn restore_filter(&mut self, context: &MatchQuery) {
+        self.filter_input = Input::new(context.query.clone());
+        self.filter_options = context.options;
+        self.update_filter_matches();
+    }
+
+    /// filter 是否生效跟是否在輸入模式無關——`filter_input` 非空就代表清單正被
+    /// 過濾，這正是 `rebuild_filtered_indices` 判斷 `has_text_filter` 的同一條件。
+    pub fn filter_refresh_context(&self) -> Option<MatchQuery> {
+        if self.filter_input.value().is_empty() {
+            None
+        } else {
+            Some(MatchQuery {
+                query: self.filter_input.value().into(),
+                options: self.filter_options,
+            })
         }
     }
 
+    pub fn toggle_filter_ignore_case(&mut self) {
+        let FilterState::Filtering { .. } = self.filter_state else {
+            return;
+        };
+        self.filter_options.ignore_case = !self.filter_options.ignore_case;
+        self.filter_state = FilterState::Filtering {
+            transient_message: if self.filter_options.ignore_case {
+                TransientMessage::IgnoreCaseOn
+            } else {
+                TransientMessage::IgnoreCaseOff
+            },
+        };
+        self.update_filter_matches();
+    }
+
     pub fn toggle_filter_fuzzy(&mut self) {
-        if let FilterState::Filtering {
-            ignore_case,
-            fuzzy,
-            transient_message,
-        } = &mut self.filter_state
-        {
-            *fuzzy = !*fuzzy;
-            *transient_message = if *fuzzy {
+        let FilterState::Filtering { .. } = self.filter_state else {
+            return;
+        };
+        self.filter_options.fuzzy = !self.filter_options.fuzzy;
+        self.filter_state = FilterState::Filtering {
+            transient_message: if self.filter_options.fuzzy {
                 TransientMessage::FuzzyOn
             } else {
                 TransientMessage::FuzzyOff
-            };
-            let ic = *ignore_case;
-            let fz = *fuzzy;
-            self.update_filter_matches(ic, fz);
-        }
+            },
+        };
+        self.update_filter_matches();
     }
 
     pub fn filter_query_string(&self) -> Option<String> {
@@ -566,21 +627,13 @@ impl<'a> CommitListState<'a> {
         }
     }
 
-    fn update_filter(&mut self) {
-        if let FilterState::Filtering {
-            ignore_case, fuzzy, ..
-        } = self.filter_state
-        {
-            self.update_filter_matches(ignore_case, fuzzy);
-        }
-    }
-
-    fn update_filter_matches(&mut self, ignore_case: bool, fuzzy: bool) {
+    fn update_filter_matches(&mut self) {
         let query = self.filter_input.value().to_string();
 
         self.text_filtered_indices.clear();
 
         if !query.is_empty() {
+            let MatchOptions { ignore_case, fuzzy } = self.filter_options;
             let matcher = SearchMatcher::new(&query, ignore_case, fuzzy);
             for (i, commit_info) in self.commits.iter().enumerate() {
                 if Self::commit_quick_matches(&matcher, commit_info) {
@@ -637,5 +690,206 @@ mod tests {
         // stash 的名稱與訊息都不該被搜到
         let m = hit("stash@");
         assert!(m.refs.is_empty() && !m.matched(), "stash 不該進搜尋範圍");
+    }
+
+    fn hash(n: usize) -> crate::git::CommitHash {
+        format!("{n:040x}").as_str().into()
+    }
+
+    /// 忽略大小寫關閉、fuzzy 關閉——本檔絕大多數測試要的都是這組。
+    fn exact(query: &str) -> MatchQuery {
+        MatchQuery {
+            query: query.into(),
+            options: MatchOptions {
+                ignore_case: false,
+                fuzzy: false,
+            },
+        }
+    }
+
+    fn commits_with_subjects(subjects: &[&str]) -> Vec<Commit> {
+        subjects
+            .iter()
+            .enumerate()
+            .map(|(i, subject)| Commit {
+                commit_hash: hash(i + 1),
+                subject: (*subject).into(),
+                ..Default::default()
+            })
+            .collect()
+    }
+
+    /// 用真實輸入路徑（`filter_input` → `update_filter_matches` →
+    /// `rebuild_filtered_indices`）建 fixture，而非直接塞 `filtered_indices`——
+    /// 否則 `restore_filter` 這種測的就是自己塞進去的值。
+    fn with_state<R>(subjects: &[&str], f: impl FnOnce(&mut CommitListState<'_>) -> R) -> R {
+        use std::rc::Rc;
+
+        use rustc_hash::{FxHashMap, FxHashSet};
+
+        use crate::git::Head;
+        use crate::graph::Graph;
+
+        let commits = commits_with_subjects(subjects);
+        let infos = commits
+            .iter()
+            .map(|c| CommitInfo::new(c, Vec::new(), Color::Reset))
+            .collect();
+        let graph = Graph {
+            commit_hashes: Vec::new(),
+            commit_pos_map: FxHashMap::default(),
+            edges: Vec::new(),
+            max_pos_x: 0,
+        };
+        let mut state = CommitListState::new(
+            infos,
+            Rc::new(graph),
+            Vec::new(),
+            None,
+            Head::None,
+            FxHashMap::default(),
+            false,
+            false,
+            None,
+            None,
+            FxHashSet::default(),
+            None,
+        );
+        state.reset_height(10);
+        f(&mut state)
+    }
+
+    #[test]
+    fn restore_search_uses_restored_options_not_defaults() {
+        with_state(&["FIX one", "fix two", "other"], |state| {
+            // default_ignore_case = false（見 with_state），但還原的 context 要求
+            // ignore_case = true —— 若 restore_search 誤用 default，"FIX" 只會命中
+            // 第一筆，不會命中第二筆。
+            let context = MatchQuery {
+                query: "fix".into(),
+                options: MatchOptions {
+                    ignore_case: true,
+                    fuzzy: false,
+                },
+            };
+            state.restore_search(&context);
+
+            let SearchState::Applied { total_match, .. } = state.search_state() else {
+                panic!("expected Applied after restore_search");
+            };
+            assert_eq!(total_match, 2, "ignore_case 未依還原的設定重算");
+        });
+    }
+
+    #[test]
+    fn restore_search_keeps_selected_position_and_updates_match_index() {
+        with_state(&["a match", "b match", "no hit"], |state| {
+            state.select_commit_hash(&hash(2));
+            let before = state.current_list_status();
+
+            state.restore_search(&exact("match"));
+
+            assert_eq!(
+                state.current_list_status(),
+                before,
+                "restore_search 不該移動游標／捲動位置"
+            );
+            let SearchState::Applied { match_index, .. } = state.search_state() else {
+                panic!("expected Applied after restore_search");
+            };
+            assert_eq!(match_index, 2, "目前選取的 commit 是第 2 個 match");
+        });
+    }
+
+    #[test]
+    fn restore_search_without_match_keeps_index_zero() {
+        with_state(&["nothing here", "still nothing"], |state| {
+            let before = state.current_list_status();
+
+            state.restore_search(&exact("zzz"));
+
+            assert_eq!(state.current_list_status(), before);
+            let SearchState::Applied {
+                match_index,
+                total_match,
+            } = state.search_state()
+            else {
+                panic!("expected Applied after restore_search");
+            };
+            assert_eq!((match_index, total_match), (0, 0));
+        });
+    }
+
+    #[test]
+    fn restore_filter_rebuilds_via_real_path() {
+        with_state(&["keep me", "drop this", "keep too"], |state| {
+            state.restore_filter(&exact("keep"));
+
+            assert_eq!(state.total, 2, "只有兩筆含 keep 的 commit 該留下");
+        });
+    }
+
+    #[test]
+    fn restore_filter_hiding_selected_commit_leaves_cursor_at_top_no_panic() {
+        with_state(&["alpha", "beta", "gamma"], |state| {
+            state.select_commit_hash(&hash(2));
+
+            state.restore_filter(&exact("alpha"));
+            // 原本選的 "beta" 被 filter 藏起來，游標退回頂端（唯一剩下的那列）。
+            state.select_commit_hash(&hash(2));
+
+            assert_eq!(state.total, 1);
+            let (selected, offset, _) = state.current_list_status();
+            assert_eq!((selected, offset), (0, 0));
+        });
+    }
+
+    #[test]
+    fn restore_filter_zero_hits_guards_restore_search_from_bogus_index() {
+        with_state(&["alpha", "beta"], |state| {
+            state.restore_filter(&exact("no-such-term"));
+            assert_eq!(state.total, 0);
+
+            // total == 0 時 restore_search 不該去讀 current_selected_raw()。
+            state.restore_search(&exact("alpha"));
+            let SearchState::Applied { match_index, .. } = state.search_state() else {
+                panic!("expected Applied after restore_search");
+            };
+            assert_eq!(match_index, 0);
+        });
+    }
+
+    #[test]
+    fn apply_filter_transitions_to_inactive_but_keeps_effect() {
+        with_state(&["keep me", "drop this"], |state| {
+            state.start_filter();
+            state.filter_input = Input::new("keep".into());
+            state.filter_options = MatchOptions {
+                ignore_case: false,
+                fuzzy: false,
+            };
+            state.update_filter_matches();
+
+            state.apply_filter();
+
+            assert!(matches!(state.filter_state(), FilterState::Inactive));
+            assert_eq!(state.total, 1, "apply 之後 filtered_indices 應該繼續生效");
+        });
+    }
+
+    #[test]
+    fn cancel_filter_without_active_filter_does_not_move_cursor() {
+        with_state(&["a", "b", "c"], |state| {
+            state.select_commit_hash(&hash(2));
+            let before = state.current_list_status();
+
+            state.cancel_filter();
+
+            assert_eq!(
+                before,
+                state.current_list_status(),
+                "沒有生效中的 filter 時，Esc 不該把游標拉回頂端"
+            );
+        });
     }
 }
