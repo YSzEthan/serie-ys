@@ -1,5 +1,12 @@
 # Changelog
 
+## [3.6.1](https://github.com/YSzEthan/serie-ys/compare/v3.6.0...v3.6.1) (2026-09-03)
+
+
+### Bug Fixes
+
+* refresh 保留搜尋／篩選狀態，作者名稱經 .mailmap 解析 (#99) (#100) ([00a1f56](https://github.com/YSzEthan/serie-ys/commit/00a1f569455544be39bd94c93f905e6e46c44b04))
+
 ## [3.6.0](https://github.com/YSzEthan/serie-ys/compare/v3.5.0...v3.6.0) (2026-09-01)
 
 
