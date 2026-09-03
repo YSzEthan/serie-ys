@@ -14,7 +14,7 @@ use crate::{
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
     git::{
         delete_branch, delete_branch_force, delete_remote_branch, delete_remote_tag, delete_tag,
-        CommitHash, Ref, RefType,
+        Ref, RefType,
     },
     view::{ListRefreshViewContext, RefreshViewContext, RefsOrigin},
     widget::{
@@ -116,13 +116,7 @@ impl<'a> DeleteRefView<'a> {
             .commit_list_state
             .as_ref()
             .map(ListRefreshViewContext::from)
-            .unwrap_or(ListRefreshViewContext {
-                commit_hash: CommitHash::default(),
-                selected: 0,
-                height: 0,
-                scroll_to_top: true,
-                show_remote_refs: true,
-            });
+            .unwrap_or_default();
 
         let pending_msg = match ref_type {
             RefType::Tag => {

@@ -1,6 +1,7 @@
 use std::{path::PathBuf, rc::Rc};
 
 use ratatui::{crossterm::event::KeyEvent, layout::Rect, text::Line, Frame};
+use smart_default::SmartDefault;
 use tui_input::Input;
 
 use crate::{
@@ -13,7 +14,10 @@ use crate::{
         release_notes::ReleaseNotesView, shell::ShellView, user_command::UserCommandView,
         RefsOrigin,
     },
-    widget::{commit_list::CommitListState, ref_list::RefListState},
+    widget::{
+        commit_list::{CommitListState, MatchQuery},
+        ref_list::RefListState,
+    },
 };
 
 #[derive(Debug, Default)]
@@ -428,13 +432,17 @@ pub enum ViewContext {
     },
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, SmartDefault)]
 pub struct ListRefreshViewContext {
     pub commit_hash: CommitHash,
     pub selected: usize,
     pub height: usize,
+    #[default = true]
     pub scroll_to_top: bool,
+    #[default = true]
     pub show_remote_refs: bool,
+    pub search: Option<MatchQuery>,
+    pub filter: Option<MatchQuery>,
 }
 
 impl From<&CommitListState<'_>> for ListRefreshViewContext {
@@ -450,6 +458,8 @@ impl From<&CommitListState<'_>> for ListRefreshViewContext {
             height,
             scroll_to_top,
             show_remote_refs: list_state.show_remote_refs(),
+            search: list_state.search_refresh_context(),
+            filter: list_state.filter_refresh_context(),
         }
     }
 }

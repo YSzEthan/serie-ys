@@ -4,7 +4,7 @@ mod search;
 mod state;
 
 pub use render::CommitList;
-pub use search::{FilterState, SearchState};
+pub use search::{FilterState, MatchQuery, SearchState};
 pub use state::{ChildJump, CommitListState};
 
 use ratatui::style::Color;

@@ -534,8 +534,10 @@ fn load_all_stashes(path: &Path) -> Vec<Commit> {
 }
 
 fn load_commits_format() -> String {
+    // 大寫的 %aN/%aE/%cN/%cE 會經 .mailmap 解析身分；沒有 .mailmap 時輸出
+    // 跟小寫版完全相同，故不需要另外開 config 開關。
     [
-        "%H", "%an", "%ae", "%ad", "%cn", "%ce", "%cd", "%s", "%b", "%P",
+        "%H", "%aN", "%aE", "%ad", "%cN", "%cE", "%cd", "%s", "%b", "%P",
     ]
     .join("%x1f") // 用 Unit Separator 作為分隔符
 }

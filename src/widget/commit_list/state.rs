@@ -7,7 +7,7 @@ use tui_input::Input;
 use crate::git::{CommitHash, Head, Ref, WorkingChanges};
 use crate::graph::{CellWidthType, Graph, TextCell};
 
-use super::search::{FilterState, SearchMatch, SearchState};
+use super::search::{FilterState, MatchOptions, SearchMatch, SearchState};
 use super::{ChildPickOption, CommitInfo, FilteredIdx, RawCommitIdx, VisibleIdx};
 
 /// 游標與 viewport 上下邊緣保持的最小距離；撞進這個 margin 時改由 offset 滾動。
@@ -80,6 +80,9 @@ pub struct CommitListState<'a> {
     pub(super) search_state: SearchState,
     pub(super) search_input: Input,
     pub(super) search_matches: Vec<SearchMatch>,
+    /// 目前生效的搜尋設定。刻意不放進 `SearchState::Searching`：套用之後
+    /// （`Applied`）這組設定還要繼續驅動 refresh 還原，跟輸入模式無關。
+    pub(super) search_options: MatchOptions,
 
     // 最佳化：記住前一次搜尋，供增量搜尋使用
     pub(super) last_search_query: String,
@@ -90,6 +93,8 @@ pub struct CommitListState<'a> {
     // Filter 模式
     pub(super) filter_state: FilterState,
     pub(super) filter_input: Input,
+    /// 目前生效的 filter 設定，理由同 `search_options`。
+    pub(super) filter_options: MatchOptions,
     pub(super) filtered_indices: Vec<RawCommitIdx>,
     pub(super) text_filtered_indices: Vec<RawCommitIdx>,
 
@@ -162,12 +167,17 @@ impl<'a> CommitListState<'a> {
             search_state: SearchState::Inactive,
             search_input: Input::default(),
             search_matches: vec![SearchMatch::default(); commit_count],
+            search_options: MatchOptions {
+                ignore_case: default_ignore_case,
+                fuzzy: default_fuzzy,
+            },
             last_search_query: String::new(),
             last_matched_indices: Vec::new(),
             last_search_ignore_case: false,
             last_search_fuzzy: false,
             filter_state: FilterState::Inactive,
             filter_input: Input::default(),
+            filter_options: MatchOptions::FILTER_DEFAULT,
             filtered_indices: Vec::new(),
             text_filtered_indices: Vec::new(),
             selected: 0,

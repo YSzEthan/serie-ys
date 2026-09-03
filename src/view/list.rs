@@ -383,20 +383,34 @@ impl<'a> ListView<'a> {
             .send(AppEvent::Refresh(RefreshViewContext::list(list_context)));
     }
 
+    /// 順序有影響，四步缺一不可：
+    /// 1. `reset_height` 先寫——`compute_selection`（selection 唯一入口）在
+    ///    `height == 0` 時永遠回 `None`，後面幾步的 `set_visible_selection`
+    ///    才會是有意義的動作，不是靠「height 還沒設，反正也是 no-op」撐著。
+    /// 2. `set_show_remote_refs` + `restore_filter`——兩者都會重建
+    ///    `filtered_indices`（改變 `total`）並把游標壓到 `VisibleIdx(0)`，
+    ///    必須在動 selection *之前*。
+    /// 3. selection 還原（`select_first` / `select_commit_hash`）——目標被
+    ///    還原的 filter 藏起來時 `select_commit_hash` 自然不動，游標留在
+    ///    上一步的頂端。
+    /// 4. `restore_search`——要讀 `current_selected_raw()`，必須排在
+    ///    selection 還原之後。
     pub fn reset_commit_list_with(&mut self, list_context: &ListRefreshViewContext) {
-        // 順序有影響：set_show_remote_refs 會重建 filtered_indices，
-        // 可能改變 reset_height / select_* 所依賴的 `total`。
-        // 要在動 selection *之前* 先還原顯示切換狀態。
         let ListRefreshViewContext {
             commit_hash,
             selected,
             height,
             scroll_to_top,
             show_remote_refs,
+            search,
+            filter,
         } = list_context;
         let list_state = self.as_mut_list_state();
-        list_state.set_show_remote_refs(*show_remote_refs);
         list_state.reset_height(*height);
+        list_state.set_show_remote_refs(*show_remote_refs);
+        if let Some(filter) = filter {
+            list_state.restore_filter(filter);
+        }
         if *scroll_to_top {
             list_state.select_first();
         } else {
@@ -404,6 +418,9 @@ impl<'a> ListView<'a> {
             for _ in 0..*selected {
                 list_state.scroll_up();
             }
+        }
+        if let Some(search) = search {
+            list_state.restore_search(search);
         }
     }
 }
