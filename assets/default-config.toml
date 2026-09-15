@@ -27,9 +27,15 @@ release_notes = "on"    # off｜on——版本變了第一次啟動要不要自�
 [core.auto_fetch]
 # 背景定期偵測 git remote 是否有新內容，有就自動 fetch，對應
 # --auto-fetch/--auto-fetch-interval。只更新 remote-tracking refs，本地
-# branch 一律不動；預設關閉。
+# branch 一律不動；預設關閉。是否加 --prune 見下面 [core.fetch]。
 mode = "off"          # off｜on
 interval_secs = 600   # 輪詢間隔（秒），範圍 30-3600
+
+[core.fetch]
+# 手動 fetch（f 鍵）與上面的 auto-fetch 共用，對應 --fetch-prune。
+# off 不是「保證不 prune」，而是不加任何 prune 相關旗標，實際會不會
+# prune 交給你自己的 git fetch.prune／remote.<name>.prune 設定決定。
+prune = "off"   # off（不加旗標，依 git 設定）｜on（加上 --prune）
 
 [core.search]
 ignore_case = false  # 是否預設忽略大小寫

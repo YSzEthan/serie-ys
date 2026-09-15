@@ -1092,6 +1092,7 @@ mod tests {
             compact: None,
             update: crate::update::UpdateSettings::default(),
             auto_fetch: crate::auto_fetch::AutoFetchSettings::default(),
+            fetch_prune: crate::git::FetchPrune::default(),
             shell_command: Vec::new(),
         })
     }

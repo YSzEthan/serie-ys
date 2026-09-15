@@ -20,7 +20,10 @@ use crate::{
         copy_to_clipboard, exec_user_command, exec_user_command_suspend, is_posix_shell,
         ExternalCommandParameters,
     },
-    git::{background_command, Commit, CommitHash, FileChange, Head, Ref, RefType, Repository},
+    git::{
+        background_command, Commit, CommitHash, FetchPrune, FileChange, Head, Ref, RefType,
+        Repository,
+    },
     github::{
         delete_remote_branch as gh_delete_remote_branch, is_merge_conflict_error, merge_pr,
         set_item_state, set_pr_draft, GhItemKind, MergeMethod, PrDraftAction, StateAction,
@@ -80,6 +83,11 @@ pub struct AppContext {
     /// 已合併 CLI／設定檔的自動 fetch 設定，`AppEvent::AutoFetchPoll` 的
     /// handler 讀 `interval` 來重新武裝下一輪。
     pub auto_fetch: auto_fetch::AutoFetchSettings,
+    /// 已合併 CLI／設定檔的 fetch prune 開關，手動 `f`（`fetch_all`）與
+    /// auto-fetch（`AppEvent::AutoFetchPolled` handler 傳給
+    /// `auto_fetch::spawn_due_fetch`）共用同一份，不掛在 `auto_fetch` 底下
+    /// ——那個欄位是 `core.auto_fetch` 的合併結果，跟手動 fetch 無關。
+    pub fetch_prune: FetchPrune,
     /// 內嵌命令列（`/`）執行指令用的 `[程式, 旗標...]`——已解析完成的
     /// 最終值，不同於 `core_config.shell.command` 那個可能是 `None` 的
     /// 原始設定，見 `resolve_shell_command`。
@@ -676,6 +684,7 @@ impl App<'_> {
                                 self.repository.path(),
                                 candidate,
                                 self.ctx.auto_fetch.interval,
+                                self.ctx.fetch_prune,
                             );
                         }
                         _ => self.rearm_auto_fetch(),
@@ -1978,7 +1987,7 @@ impl App<'_> {
             self.ec,
             GitTask {
                 repo: self.repository.path(),
-                args: &["fetch", "--all"],
+                args: self.ctx.fetch_prune.fetch_all_args(),
                 pending_msg: "Fetching...".into(),
                 success_msg: "Fetch completed".into(),
                 error_prefix: "Fetch failed",

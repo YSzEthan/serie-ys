@@ -7,7 +7,9 @@ use std::{
 };
 
 use chrono::{DateTime, FixedOffset};
+use clap::ValueEnum;
 use rustc_hash::FxHashMap;
+use serde::Deserialize;
 
 use crate::Result;
 
@@ -1116,6 +1118,33 @@ where
     cmd
 }
 
+/// `fetch --all` 要不要多帶 `--prune`，手動 `f`（`app.rs::fetch_all`）與背景
+/// auto-fetch（`auto_fetch.rs::spawn_due_fetch`）共用同一個開關。
+///
+/// `Off` **不是** `--no-prune`：不傳任何 prune 相關旗標，讓使用者
+/// `fetch.prune`／`remote.<name>.prune` 的 gitconfig 設定照常生效——這樣手動
+/// `f` 在新增這個開關之後，對沒有動過這個設定的人是逐位元組不變的行為。
+/// 若改傳 `--no-prune`，會反過來蓋掉那些已經設了 `fetch.prune = true` 的人
+/// 的既有行為，是這個功能不該附帶的副作用。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum FetchPrune {
+    #[default]
+    Off,
+    On,
+}
+
+impl FetchPrune {
+    /// 唯一的指令組裝點：`fetch_all()`（手動 `f`）與 `spawn_due_fetch()`
+    /// （auto-fetch）都呼叫這裡拿參數，不各自拼字面量。
+    pub(crate) fn fetch_all_args(self) -> &'static [&'static str] {
+        match self {
+            FetchPrune::Off => &["fetch", "--all"],
+            FetchPrune::On => &["fetch", "--all", "--prune"],
+        }
+    }
+}
+
 pub fn create_tag(
     path: &Path,
     name: &str,
@@ -1191,6 +1220,17 @@ pub fn delete_remote_branch(path: &Path, branch_name: &str) -> std::result::Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 只釘不變式，不逐字重抄 `fetch_all_args` 的兩個分支（那樣等於沒測）：
+    /// Off 不含任何 prune 相關字串——守住「不是 `--no-prune`」這個決定。
+    #[test]
+    fn off_never_mentions_prune() {
+        assert!(!FetchPrune::Off
+            .fetch_all_args()
+            .iter()
+            .any(|a| a.contains("prune")));
+        assert!(FetchPrune::On.fetch_all_args().contains(&"--prune"));
+    }
 
     #[test]
     fn parse_commit_line_expands_emoji_shortcodes() {

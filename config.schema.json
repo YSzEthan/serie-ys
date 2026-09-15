@@ -111,7 +111,7 @@
         },
         "auto_fetch": {
           "type": "object",
-          "description": "Background auto-fetch settings. Periodically polls each git remote (via git ls-remote, not the GitHub API) and runs git fetch --all --prune when something changed. Only updates remote-tracking refs; local branches are never touched.",
+          "description": "Background auto-fetch settings. Periodically polls each git remote (via git ls-remote, not the GitHub API) and runs git fetch --all when something changed (whether --prune is also added is controlled by core.fetch.prune). Only updates remote-tracking refs; local branches are never touched.",
           "properties": {
             "mode": {
               "type": "string",
@@ -128,6 +128,22 @@
               "minimum": 30,
               "maximum": 3600,
               "default": 600
+            }
+          },
+          "additionalProperties": false
+        },
+        "fetch": {
+          "type": "object",
+          "description": "Settings shared by manual fetch (the f key) and background auto-fetch.",
+          "properties": {
+            "prune": {
+              "type": "string",
+              "description": "Whether to add --prune to git fetch --all. Disabled by default: off does not pass any prune-related flag, so the outcome still follows your git fetch.prune / remote.<name>.prune config, if set. The value specified in the command line argument takes precedence.",
+              "enum": [
+                "off",
+                "on"
+              ],
+              "default": "off"
             }
           },
           "additionalProperties": false

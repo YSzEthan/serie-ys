@@ -29,6 +29,7 @@ use std::{
 use app::{App, Ret};
 use auto_fetch::AutoFetch;
 use clap::{CommandFactory, Parser, ValueEnum};
+use git::FetchPrune;
 use graph::Graph;
 use rustc_hash::FxHashSet;
 use serde::Deserialize;
@@ -118,6 +119,12 @@ struct Args {
     )]
     auto_fetch_interval: Option<u64>,
 
+    /// fetch 時是否加上 --prune（手動 f 與 auto-fetch 共用）；關閉時不加任何
+    /// prune 相關旗標，是否 prune 交由 git 自己的 fetch.prune 設定決定
+    /// [default: off]
+    #[arg(long, value_name = "TYPE")]
+    fetch_prune: Option<FetchPrune>,
+
     /// 顯示說明
     #[arg(short = 'h', long, action = clap::ArgAction::Help)]
     help: Option<bool>,
@@ -165,6 +172,7 @@ impl Args {
             release_notes,
             auto_fetch,
             auto_fetch_interval,
+            fetch_prune,
             help: _,
             version: _,
             update: _,
@@ -201,6 +209,10 @@ impl Args {
             (
                 "--auto-fetch-interval",
                 auto_fetch_interval.map(|s| s.to_string()),
+            ),
+            (
+                "--fetch-prune",
+                fetch_prune.as_ref().map(wizard::variant_name),
             ),
         ] {
             if let Some(value) = value {
@@ -513,6 +525,10 @@ pub fn run() -> Result<()> {
         .initial_selection
         .or(core_config.option.initial_selection)
         .into();
+    let fetch_prune = args
+        .fetch_prune
+        .or(core_config.fetch.prune)
+        .unwrap_or_default();
     let update_settings = update::resolve(
         update::UpdateOverrides {
             mode: args.update_mode,
@@ -563,6 +579,7 @@ pub fn run() -> Result<()> {
         compact,
         update: update_settings,
         auto_fetch: auto_fetch_settings,
+        fetch_prune,
         shell_command,
     });
 
@@ -922,6 +939,8 @@ mod tests {
             "on",
             "--auto-fetch-interval",
             "45",
+            "--fetch-prune",
+            "on",
             "/some/repo",
         ])
         .unwrap();
@@ -941,6 +960,7 @@ mod tests {
         assert_eq!(reparsed.release_notes, args.release_notes);
         assert_eq!(reparsed.auto_fetch, args.auto_fetch);
         assert_eq!(reparsed.auto_fetch_interval, args.auto_fetch_interval);
+        assert_eq!(reparsed.fetch_prune, args.fetch_prune);
         assert_eq!(reparsed.path, args.path);
     }
 

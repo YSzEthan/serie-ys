@@ -204,9 +204,10 @@ _可選值：_ `off`、`on`
 
 ## --auto-fetch \<TYPE\>
 
-背景定期偵測 git remote 是否有新內容，有就自動 `git fetch --all --prune`。
-**只更新 remote-tracking refs（例如 `origin/main`），本地 branch 一律不動**——
-不 merge、不 rebase、不 fast-forward，要不要跟上遠端由使用者自己決定。
+背景定期偵測 git remote 是否有新內容，有就自動 `git fetch --all`（是否多帶
+`--prune` 見下方 [`--fetch-prune`](#--fetch-prune-type)）。**只更新
+remote-tracking refs（例如 `origin/main`），本地 branch 一律不動**——不
+merge、不 rebase、不 fast-forward，要不要跟上遠端由使用者自己決定。
 
 _可選值：_ `off`、`on`
 
@@ -234,6 +235,20 @@ auto-fetch 是不同的功能，且 auto-fetch 本來就預設關閉、需要明
 _可選範圍：_ `30`–`3600`，預設 `600`。
 
 設定檔對應鍵是 `core.auto_fetch.interval_secs`，命令列參數指定的值優先。
+
+## --fetch-prune \<TYPE\>
+
+`git fetch --all` 要不要多帶 `--prune`，手動 fetch（`f` 鍵）與上面的
+[`--auto-fetch`](#--auto-fetch-type) 共用同一個開關。
+
+_可選值：_ `off`、`on`
+
+預設關閉，且 `off` **不是**「保證不 prune」：關閉時不會多傳任何 prune
+相關旗標，實際會不會 prune 仍然交給使用者自己的 git `fetch.prune`／
+`remote.<name>.prune` 設定決定——這樣沒動過這個開關的人，手動 `f` 的行為
+完全不受影響。
+
+設定檔對應鍵是 `core.fetch.prune`，命令列參數指定的值優先。
 
 ## --whats-new
 

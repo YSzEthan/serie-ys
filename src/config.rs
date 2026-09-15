@@ -15,6 +15,7 @@ use umbra::optional;
 use crate::{
     auto_fetch::{AutoFetch, MAX_INTERVAL_SECS, MIN_INTERVAL_SECS},
     color::{ColorTheme, OptionalColorTheme},
+    git::FetchPrune,
     keybind::KeyBind,
     update::{AutoRestart, ReleaseNotes, UpdateMode, MAX_INTERVAL_HOURS, MIN_INTERVAL_HOURS},
     CommitOrderType, CompactType, GraphStyle, GraphWidthType, InitialSelection, Result,
@@ -172,6 +173,9 @@ pub struct CoreConfig {
     #[garde(dive)]
     #[nested]
     pub auto_fetch: CoreAutoFetchConfig,
+    #[garde(skip)]
+    #[nested]
+    pub fetch: CoreFetchConfig,
 }
 
 #[optional(derives = [Deserialize])]
@@ -213,6 +217,16 @@ pub struct CoreAutoFetchConfig {
     pub mode: Option<AutoFetch>,
     #[garde(range(min = MIN_INTERVAL_SECS, max = MAX_INTERVAL_SECS))]
     pub interval_secs: Option<u64>,
+}
+
+/// 手動 `f` 與 auto-fetch 共用的 fetch 設定，目前只有 prune 這一個鍵。獨立
+/// 成表（不掛進 `[core.auto_fetch]`）是因為它同時管手動 fetch，掛在
+/// auto_fetch 底下名不符實；不掛進 `[core.option]` 是因為那張表是畫面呈現
+/// 相關的旋鈕，跟 fetch 是不同性質的設定。
+#[optional(derives = [Deserialize])]
+#[derive(Debug, Clone, PartialEq, Eq, SmartDefault)]
+pub struct CoreFetchConfig {
+    pub prune: Option<FetchPrune>,
 }
 
 #[optional(derives = [Deserialize])]
@@ -749,6 +763,7 @@ mod tests {
                     mode: None,
                     interval_secs: None,
                 },
+                fetch: CoreFetchConfig { prune: None },
                 search: CoreSearchConfig {
                     ignore_case: false,
                     fuzzy: false,
@@ -853,6 +868,7 @@ mod tests {
                     mode: None,
                     interval_secs: None,
                 },
+                fetch: CoreFetchConfig { prune: None },
                 search: CoreSearchConfig {
                     ignore_case: true,
                     fuzzy: true,
@@ -1027,13 +1043,14 @@ mod tests {
 
         let parsed: OptionalConfig = toml::from_str(example).unwrap();
         let mut actual = Config::from(parsed);
-        // `core.option`／`core.update`／`core.auto_fetch` 的欄位與 `keybind`
-        // 是 Option，「未設定」與「設定成預設值」在型別上不同（命令列參數
-        // 要能覆蓋，所以預設留到更後面才解析）。範例把它們明寫出來正是它
-        // 的用途，比對前歸零，其餘欄位照比。
+        // `core.option`／`core.update`／`core.auto_fetch`／`core.fetch` 的
+        // 欄位與 `keybind` 是 Option，「未設定」與「設定成預設值」在型別上
+        // 不同（命令列參數要能覆蓋，所以預設留到更後面才解析）。範例把它們
+        // 明寫出來正是它的用途，比對前歸零，其餘欄位照比。
         actual.core.option = CoreOptionConfig::default();
         actual.core.update = CoreUpdateConfig::default();
         actual.core.auto_fetch = CoreAutoFetchConfig::default();
+        actual.core.fetch = CoreFetchConfig::default();
         actual.keybind = None;
         assert_eq!(actual, Config::default());
     }
@@ -1067,7 +1084,7 @@ mod tests {
     }
 
     /// `assets/default-config.toml` 裡明寫出來的值（`core.option`／
-    /// `core.update`／`core.auto_fetch` 除外，理由同
+    /// `core.update`／`core.auto_fetch`／`core.fetch` 除外，理由同
     /// `documented_example_config_is_valid_...`）必須真的是
     /// `Config::default()`——這是它作為「首次啟動範本」的存在意義：使用者
     /// 看到的第一份設定檔，內容要跟沒有這份檔案時的行為一致。
@@ -1079,6 +1096,7 @@ mod tests {
         actual.core.option = CoreOptionConfig::default();
         actual.core.update = CoreUpdateConfig::default();
         actual.core.auto_fetch = CoreAutoFetchConfig::default();
+        actual.core.fetch = CoreFetchConfig::default();
         actual.keybind = None;
         assert_eq!(actual, Config::default());
     }
@@ -1221,6 +1239,11 @@ mod tests {
     #[test]
     fn auto_fetch_mode_schema_enum_matches_every_accepted_cli_value() {
         assert_schema_enum_matches_every_accepted_cli_value::<AutoFetch>(&["auto_fetch", "mode"]);
+    }
+
+    #[test]
+    fn fetch_prune_schema_enum_matches_every_accepted_cli_value() {
+        assert_schema_enum_matches_every_accepted_cli_value::<FetchPrune>(&["fetch", "prune"]);
     }
 
     #[test]

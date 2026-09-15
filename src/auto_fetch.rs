@@ -31,7 +31,7 @@ use serde::Deserialize;
 
 use crate::{
     event::{AppEvent, AutoFetchClock, EventController, Sender},
-    git::background_command,
+    git::{background_command, FetchPrune},
     process::run_with_timeout,
 };
 
@@ -54,9 +54,10 @@ pub const MAX_INTERVAL_SECS: u64 = 3600;
 pub const DEFAULT_INTERVAL_SECS: u64 = 600;
 
 const LS_REMOTE_TIMEOUT: Duration = Duration::from_secs(10);
-/// `fetch --all --prune` 的逾時預算，跟 `app.rs::GIT_FETCH_TIMEOUT` 同一個
-/// 數字、但分開宣告——兩者觸發來源不同（使用者按 `f` vs 背景輪詢），沒有
-/// 理由綁死成同一個常數，各自表達各自呼叫端的取捨。
+/// `fetch --all`（是否加 `--prune` 見 `git::FetchPrune`）的逾時預算，跟
+/// `app.rs::GIT_FETCH_TIMEOUT` 同一個數字、但分開宣告——兩者觸發來源不同
+/// （使用者按 `f` vs 背景輪詢），沒有理由綁死成同一個常數，各自表達各自
+/// 呼叫端的取捨。
 const FETCH_TIMEOUT: Duration = Duration::from_secs(60);
 
 /// CLI 與設定檔合併後的自動 fetch 設定。
@@ -130,8 +131,9 @@ pub fn rearm(tx: Sender, clock: AutoFetchClock, interval: Duration) {
 
 /// `AppEvent::AutoFetchPolled` 判定有差異、且 `can_interrupt()` 為真時
 /// 呼叫。跟手動 `fetch_all()` 一樣蓋 pending overlay、跑
-/// `git fetch --all --prune`；成功才把 `candidate` 寫回基準，失敗保留
-/// 原基準讓下一輪重新判定同一批差異。
+/// `git fetch --all`（要不要多帶 `--prune` 由呼叫端傳入的 `prune` 決定，
+/// 跟手動 fetch 共用同一個開關，見 `git::FetchPrune`）；成功才把
+/// `candidate` 寫回基準，失敗保留原基準讓下一輪重新判定同一批差異。
 ///
 /// `mark_pending_refresh()` 在這裡呼叫（不是像舊版那樣在背景 thread 裡）
 /// ——這是新架構下第一次真正確定「這輪要跑 `git fetch`」的時間點，且已
@@ -143,7 +145,13 @@ pub fn rearm(tx: Sender, clock: AutoFetchClock, interval: Duration) {
 /// 新問題——`checkout`／merge PR 等既有功能共用同一個「Cancel 不中止
 /// 背景工作」設計，git 對併發 fetch 通常安全，最壞是其中一個因鎖檔失敗
 /// 靜默 `NotifyError`，不特別處理。
-pub fn spawn_due_fetch(ec: &EventController, repo: &Path, candidate: String, interval: Duration) {
+pub fn spawn_due_fetch(
+    ec: &EventController,
+    repo: &Path,
+    candidate: String,
+    interval: Duration,
+    prune: FetchPrune,
+) {
     let tx = ec.sender();
     let clock = ec.auto_fetch_clock();
     let repo = repo.to_path_buf();
@@ -154,7 +162,7 @@ pub fn spawn_due_fetch(ec: &EventController, repo: &Path, candidate: String, int
     });
 
     std::thread::spawn(move || {
-        let cmd = background_command(&repo, ["fetch", "--all", "--prune"]);
+        let cmd = background_command(&repo, prune.fetch_all_args());
         let succeeded =
             run_with_timeout(cmd, None, FETCH_TIMEOUT).is_ok_and(|o| o.status.success());
         tx.send(AppEvent::HidePendingOverlay);
@@ -204,7 +212,10 @@ pub fn spawn_resync(ec: &EventController, repo: &Path, interval: Duration) {
 /// `git remote` 會列它；預設 `fetch` 只跟隨可從抓下來的歷史到達的 tag，
 /// 不是全部 remote tag，`--tags` 涵蓋過頭；remote 有自訂 refspec（例如
 /// 只抓 `refs/heads/main`）時 `--heads` 同樣涵蓋過頭。三者都只造成偶發
-/// 的多餘 fetch 與一個「沒東西變」的通知，修掉的成本遠高於症狀。
+/// 的多餘 fetch 與一個「沒東西變」的通知，修掉的成本遠高於症狀。同一類：
+/// `fetch_prune = off` 時，遠端只刪掉分支／tag 也會讓指紋變化觸發一次
+/// 實際上沒有新內容的 fetch，一樣跳出成功通知——不會重複觸發（成功後基準
+/// 就更新成新指紋），不特別處理。
 ///
 /// 沒有 remote（`git remote` 空輸出）時回傳空字串，不是 `None`——這是一個
 /// 真實、穩定的指紋值（只要沒有 remote，永遠算出同一個空字串），不需要
