@@ -45,6 +45,7 @@ fn help_output_lists_every_flag_including_the_new_path_browser() {
         "--release-notes",
         "--auto-fetch",
         "--auto-fetch-interval",
+        "--fetch-prune",
         "--whats-new",
         "-h, --help",
         "-V, --version",

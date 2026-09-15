@@ -965,6 +965,7 @@ mod tests {
                 compact: Some(CompactType::Off),
                 update: crate::update::UpdateSettings::default(),
                 auto_fetch: crate::auto_fetch::AutoFetchSettings::default(),
+                fetch_prune: crate::git::FetchPrune::default(),
                 shell_command: Vec::new(),
             })
         }
@@ -1230,6 +1231,7 @@ mod tests {
                 compact: Some(CompactType::On),
                 update: crate::update::UpdateSettings::default(),
                 auto_fetch: crate::auto_fetch::AutoFetchSettings::default(),
+                fetch_prune: crate::git::FetchPrune::default(),
                 shell_command: Vec::new(),
             });
             let area = Rect::new(0, 0, TERM_W, height);
@@ -1783,6 +1785,7 @@ mod tests {
                 compact: Some(CompactType::On),
                 update: crate::update::UpdateSettings::default(),
                 auto_fetch: crate::auto_fetch::AutoFetchSettings::default(),
+                fetch_prune: crate::git::FetchPrune::default(),
                 shell_command: Vec::new(),
             });
             let area = Rect::new(0, 0, TERM_W, 10);

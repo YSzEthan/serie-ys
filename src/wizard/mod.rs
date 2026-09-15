@@ -18,7 +18,9 @@ use tui_input::backend::crossterm::EventHandler;
 use crate::{
     auto_fetch::{self, AutoFetch},
     color::ColorTheme,
-    config, keybind,
+    config,
+    git::FetchPrune,
+    keybind,
     update::{self, AutoRestart, ReleaseNotes, UpdateMode},
     Args, CommitOrderType, CompactType, GraphStyle, GraphWidthType, InitialSelection,
 };
@@ -172,6 +174,17 @@ fn auto_fetch_desc(v: AutoFetch) -> &'static str {
     }
 }
 
+/// `Off` 不寫「關閉」——這個開關關閉時不是「不 prune」，而是不傳任何 prune
+/// 旗標，交給使用者自己的 git `fetch.prune` 設定決定，見
+/// `git::FetchPrune` 的 doc comment。畫面文字要如實反映這件事，不能讓人
+/// 誤以為選了 `Off` 就保證不會 prune。
+fn fetch_prune_desc(v: FetchPrune) -> &'static str {
+    match v {
+        FetchPrune::Off => "不加（依 git 設定）",
+        FetchPrune::On => "加上 --prune",
+    }
+}
+
 /// 精靈顯示「目前值」與循環切換起點用的參考點。跟 `src/lib.rs` 的 `run()`
 /// 裡 `args.field.or(core_config.option.field)` 那條合併鏈讀的是同一份
 /// 設定檔，語意也一樣（沒被使用者這次 session 動過的欄位，最終生效的值
@@ -195,6 +208,7 @@ struct ResolvedDefaults {
     release_notes: ReleaseNotes,
     auto_fetch: AutoFetch,
     auto_fetch_interval: u64,
+    fetch_prune: FetchPrune,
     /// 顏色編輯器的預覽基準（使用者實際設定，不是 `wizard::run()` 固定用
     /// 的畫面 chrome）。
     theme: ColorTheme,
@@ -252,6 +266,7 @@ impl ResolvedDefaults {
                 .auto_fetch
                 .interval_secs
                 .unwrap_or(auto_fetch::DEFAULT_INTERVAL_SECS),
+            fetch_prune: core.fetch.prune.unwrap_or_default(),
             theme,
             keybind_patch: keybind_patch.unwrap_or_default(),
             user_commands,
@@ -288,7 +303,7 @@ impl ResolvedDefaults {
 /// 的目前值一模一樣的格子，數值沒變、只是多了個勾，等於白按一次。這樣算，
 /// 第一次按不管哪個方向都保證換到一個不一樣的值。
 ///
-/// 七個循環選擇欄位共用同一份算術，只是各自的 `T`／`current` 不同，所以
+/// 每個循環選擇欄位共用同一份算術，只是各自的 `T`／`current` 不同，所以
 /// 抽成吃 `&mut Option<T>` 的自由函式而不是把 `CycleField` 本身泛型化——後者
 /// 才會讓型別設計變複雜，這裡型別完全由呼叫端推導。
 ///
@@ -333,6 +348,7 @@ struct ConfigKey {
 const CORE_OPTION: &[&str] = &["core", "option"];
 const CORE_UPDATE: &[&str] = &["core", "update"];
 const CORE_AUTO_FETCH: &[&str] = &["core", "auto_fetch"];
+const CORE_FETCH: &[&str] = &["core", "fetch"];
 const COLOR: &[&str] = &["color"];
 const COLOR_GRAPH: &[&str] = &["color", "graph"];
 const KEYBIND: &[&str] = &["keybind"];
@@ -348,6 +364,7 @@ enum CycleField {
     UpdateMode,
     AutoRestart,
     ReleaseNotes,
+    FetchPrune,
     AutoFetch,
 }
 
@@ -364,6 +381,7 @@ impl CycleField {
             CycleField::UpdateMode => (CORE_UPDATE, "mode"),
             CycleField::AutoRestart => (CORE_UPDATE, "auto_restart"),
             CycleField::ReleaseNotes => (CORE_UPDATE, "release_notes"),
+            CycleField::FetchPrune => (CORE_FETCH, "prune"),
             CycleField::AutoFetch => (CORE_AUTO_FETCH, "mode"),
         };
         ConfigKey {
@@ -382,6 +400,7 @@ impl CycleField {
             CycleField::UpdateMode => "--update-mode",
             CycleField::AutoRestart => "--auto-restart",
             CycleField::ReleaseNotes => "--release-notes",
+            CycleField::FetchPrune => "--fetch-prune",
             CycleField::AutoFetch => "--auto-fetch",
         }
     }
@@ -396,6 +415,7 @@ impl CycleField {
             CycleField::UpdateMode => "自動更新檢查模式",
             CycleField::AutoRestart => "更新後自動重啟／開啟新版",
             CycleField::ReleaseNotes => "更新後跳出 release notes",
+            CycleField::FetchPrune => "fetch 時加上 --prune（手動與自動共用）",
             CycleField::AutoFetch => "背景自動偵測 remote 並 fetch",
         }
     }
@@ -428,6 +448,9 @@ impl CycleField {
             CycleField::ReleaseNotes => {
                 cycle_value(&mut args.release_notes, defaults.release_notes, delta)
             }
+            CycleField::FetchPrune => {
+                cycle_value(&mut args.fetch_prune, defaults.fetch_prune, delta)
+            }
             CycleField::AutoFetch => cycle_value(&mut args.auto_fetch, defaults.auto_fetch, delta),
         };
         draft.edits.insert(self.config_key(), Some(name.into()));
@@ -457,6 +480,9 @@ impl CycleField {
             }
             CycleField::ReleaseNotes => {
                 release_notes_desc(args.release_notes.unwrap_or(defaults.release_notes))
+            }
+            CycleField::FetchPrune => {
+                fetch_prune_desc(args.fetch_prune.unwrap_or(defaults.fetch_prune))
             }
             CycleField::AutoFetch => {
                 auto_fetch_desc(args.auto_fetch.unwrap_or(defaults.auto_fetch))
@@ -689,6 +715,7 @@ const ROWS: &[RowAction] = &[
     RowAction::Edit(Editor::Dialog(Dialog::Number(NumberField::UpdateInterval))),
     RowAction::Edit(Editor::Cycle(CycleField::AutoRestart)),
     RowAction::Edit(Editor::Cycle(CycleField::ReleaseNotes)),
+    RowAction::Edit(Editor::Cycle(CycleField::FetchPrune)),
     RowAction::Edit(Editor::Cycle(CycleField::AutoFetch)),
     RowAction::Edit(Editor::Dialog(Dialog::Number(
         NumberField::AutoFetchInterval,
@@ -1433,6 +1460,21 @@ mod tests {
     }
 
     #[test]
+    fn fetch_prune_row_toggles() {
+        let mut s = test_state();
+        let idx = row_of_field(CycleField::FetchPrune);
+        move_to_row(&mut s, idx);
+        assert_eq!(s.draft.args.fetch_prune, None);
+
+        s.on_key(key(KeyCode::Right));
+        assert_eq!(
+            s.draft.args.fetch_prune,
+            Some(FetchPrune::On),
+            "off 是目前值，第一次按 → 跳過它，切到下一個 on"
+        );
+    }
+
+    #[test]
     fn right_on_path_row_also_opens_the_browser() {
         let mut s = test_state();
         assert!(matches!(
@@ -1753,11 +1795,11 @@ mod tests {
 
     // ── 新架構釘住的不變式：ConfigKey 對應表、空 edits、PATH 的隔離 ──
 
-    /// 12 個項目全部碰過一遍，寫回、再用真正的設定檔 parser（不是自己重抄
-    /// 一份反序列化邏輯）讀回來逐欄位比對。這條測試同時證明 12 條表路徑、
-    /// 12 個鍵名（`update_mode` 寫的是 `mode`、`update_interval` 寫的是
+    /// 每個項目全部碰過一遍，寫回、再用真正的設定檔 parser（不是自己重抄
+    /// 一份反序列化邏輯）讀回來逐欄位比對。這條測試同時證明每條表路徑、
+    /// 每個鍵名（`update_mode` 寫的是 `mode`、`update_interval` 寫的是
     /// `interval_hours`、`auto_fetch` 寫的是 `mode`、`auto_fetch_interval`
-    /// 寫的是 `interval_secs`，鍵名跟欄位名不同的最容易打錯）、12 個字串值
+    /// 寫的是 `interval_secs`，鍵名跟欄位名不同的最容易打錯）、每個字串值
     /// 全對——`toml_edit` 只認語法不認語意，鍵名寫錯不會有任何編譯期或
     /// 執行期警訊，只有真的讀回來比對值才抓得到。
     #[test]
@@ -1772,6 +1814,7 @@ mod tests {
             CycleField::UpdateMode,
             CycleField::AutoRestart,
             CycleField::ReleaseNotes,
+            CycleField::FetchPrune,
             CycleField::AutoFetch,
         ] {
             field.cycle(&mut s.draft, &s.defaults, 1);
@@ -1801,6 +1844,7 @@ mod tests {
             core.auto_fetch.interval_secs,
             s.draft.args.auto_fetch_interval
         );
+        assert_eq!(core.fetch.prune, s.draft.args.fetch_prune);
     }
 
     /// 新架構才有的保證：`edits` 是空的，`apply_touched_settings` 一次

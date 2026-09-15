@@ -20,6 +20,9 @@ release_notes = "on"
 mode = "off"
 interval_secs = 600
 
+[core.fetch]
+prune = "off"
+
 [core.search]
 ignore_case = false
 fuzzy = false
@@ -266,9 +269,10 @@ Commit 圖形的邊線風格。
 
 ### `core.auto_fetch.mode`
 
-背景定期偵測 git remote 是否有新內容，有就自動 `git fetch --all --prune`。
-只更新 remote-tracking refs（例如 `origin/main`），本地 branch 一律不動——
-不 merge、不 rebase、不 fast-forward。偵測方式是逐一比對每個 remote 的
+背景定期偵測 git remote 是否有新內容，有就自動 `git fetch --all`（是否多帶
+`--prune` 見 [`core.fetch.prune`](#corefetchprune)）。只更新
+remote-tracking refs（例如 `origin/main`），本地 branch 一律不動——不
+merge、不 rebase、不 fast-forward。偵測方式是逐一比對每個 remote 的
 `git ls-remote --heads --tags` 輸出，不打 GitHub API，`upstream` 這類非
 GitHub remote 一樣顧到。
 
@@ -287,6 +291,23 @@ GitHub remote 一樣顧到。
 - 型別：`integer`
 - 預設值：`600`
 - 可選範圍：`30`–`3600`
+
+命令列參數指定的值優先。
+
+### `core.fetch.prune`
+
+`git fetch --all` 要不要多帶 `--prune`，手動 fetch（`f` 鍵）與上面的
+auto-fetch 共用同一個設定。
+
+`off` 不等於「保證不 prune」：只是不多傳任何 prune 相關旗標，實際會不會
+prune 仍然交給你自己的 git `fetch.prune`／`remote.<name>.prune` 設定決定
+——這樣沒有動過這個開關的人，手動 `f` 的行為完全不受影響。
+
+- 型別：`string`（enum）
+- 預設值：`off`
+- 可選值：
+  - `off`
+  - `on`
 
 命令列參數指定的值優先。
 
