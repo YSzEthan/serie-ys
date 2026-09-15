@@ -1,5 +1,16 @@
 # Changelog
 
+## [4.0.0](https://github.com/YSzEthan/serie-ys/compare/v3.6.1...v4.0.0) (2026-09-15)
+
+
+### ⚠ BREAKING CHANGES
+
+* auto-fetch 預設行為改變，不再固定執行 prune。若原本 仰賴 auto-fetch 自動清除已刪除的遠端分支追蹤，請設定 fetch.prune=true 或加上 --fetch-prune=on 才能維持舊行為。
+
+### Features
+
+* 精靈新增 --fetch-prune，auto-fetch 預設不再固定 prune (#101) (#102) ([e8b95c2](https://github.com/YSzEthan/serie-ys/commit/e8b95c2c42e3f40ad0f99567c482e6fb39628efe))
+
 ## [3.6.1](https://github.com/YSzEthan/serie-ys/compare/v3.6.0...v3.6.1) (2026-09-03)
 
 
