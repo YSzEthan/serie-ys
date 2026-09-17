@@ -96,10 +96,7 @@ impl TransientMessage {
             Self::IgnoreCaseOff => Some("Ignore case: OFF".to_string()),
             Self::FuzzyOn => Some("Fuzzy match: ON ".to_string()),
             Self::FuzzyOff => Some("Fuzzy match: OFF".to_string()),
-            Self::Target(target) => Some(format!(
-                "Search target: {:<7}",
-                target.as_str().to_uppercase()
-            )),
+            Self::Target(target) => Some(format!("Target: {:<7}", target.as_str().to_uppercase())),
         }
     }
 }
@@ -271,14 +268,13 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn handle_search_input(&mut self, key: KeyEvent) {
-        let SearchState::Searching { start_index, .. } = self.search_state else {
+        let SearchState::Searching { .. } = self.search_state else {
             return;
         };
         self.search_state
             .set_transient_message(TransientMessage::None);
         self.search_input.handle_event(&Event::Key(key));
-        self.update_search_matches();
-        self.select_current_or_next_match_index(start_index);
+        self.update_search_after_change();
     }
 
     pub fn apply_search(&mut self) {
@@ -319,7 +315,7 @@ impl<'a> CommitListState<'a> {
 
     /// 重算比對結果並重建 `Applied`。刻意不移動游標：
     /// `select_current_or_next_match_index` 會把目標釘到 viewport 最上緣，這裡
-    /// 不要這個副作用。`restore_search` 與 `update_search_after_options_change`
+    /// 不要這個副作用。`restore_search` 與 `update_search_after_change`
     /// 的 `Applied` 分支共用。
     fn reapply_search(&mut self) {
         self.update_search_matches();
@@ -365,13 +361,13 @@ impl<'a> CommitListState<'a> {
         }
     }
 
-    /// `toggle_ignore_case`/`toggle_fuzzy` 共用，形狀照抄 upstream `c4e771b` 的
-    /// `update_search_after_options_change()`，但 `Applied` 分支**刻意不移動游標**
-    /// （細節見 `reapply_search()` 的文件註解）——這點跟 upstream 不同，是必要的
-    /// 偏離，不是漏改：upstream 在瀏覽模式 toggle 之後仍然呼叫
-    /// `select_current_or_next_match_index`，會讓「切換一個選項」變成「清單自己往下
-    /// 捲一大段」，本專案的 `restore_search()` 已經為了同一個理由拒絕過這個行為。
-    fn update_search_after_options_change(&mut self) {
+    /// search 的輸入按鍵與 `toggle_ignore_case`/`toggle_fuzzy`/`toggle_target` 共用，
+    /// 形狀照抄 upstream `c4e771b` 的 `update_search_after_options_change()`，但
+    /// `Applied` 分支**刻意不移動游標**（細節見 `reapply_search()` 的文件註解）——這點
+    /// 跟 upstream 不同，是必要的偏離，不是漏改：upstream 在瀏覽模式 toggle 之後仍然
+    /// 呼叫 `select_current_or_next_match_index`，會讓「切換一個選項」變成「清單自己
+    /// 往下捲一大段」，本專案的 `restore_search()` 已經為了同一個理由拒絕過這個行為。
+    fn update_search_after_change(&mut self) {
         match self.search_state {
             SearchState::Inactive => {}
             SearchState::Searching { start_index, .. } => {
@@ -390,7 +386,7 @@ impl<'a> CommitListState<'a> {
             } else {
                 TransientMessage::IgnoreCaseOff
             });
-        self.update_search_after_options_change();
+        self.update_search_after_change();
     }
 
     pub fn toggle_fuzzy(&mut self) {
@@ -401,14 +397,14 @@ impl<'a> CommitListState<'a> {
             } else {
                 TransientMessage::FuzzyOff
             });
-        self.update_search_after_options_change();
+        self.update_search_after_change();
     }
 
     pub fn toggle_target(&mut self) {
         self.search_options.target = self.search_options.target.next();
         self.search_state
             .set_transient_message(TransientMessage::Target(self.search_options.target));
-        self.update_search_after_options_change();
+        self.update_search_after_change();
     }
 
     /// refresh 時無條件呼叫；有 active search 時 `restore_search` 會再用
@@ -871,9 +867,9 @@ mod tests {
     #[test]
     fn restore_search_uses_restored_options_not_defaults() {
         with_state(&["FIX one", "fix two", "other"], |state| {
-            // default_ignore_case = false（見 with_state），但還原的 context 要求
-            // ignore_case = true —— 若 restore_search 誤用 default，"FIX" 只會命中
-            // 第一筆，不會命中第二筆。
+            // with_state 建立的初始 ignore_case 預設為 false（MatchOptions::default()），
+            // 但還原的 context 要求 ignore_case = true —— 若 restore_search 誤用 default，
+            // "FIX" 只會命中第一筆，不會命中第二筆。
             let context = MatchQuery {
                 query: "fix".into(),
                 options: MatchOptions {
@@ -1071,7 +1067,7 @@ mod tests {
     #[test]
     fn start_search_reuses_browsing_mode_toggle_not_config_default() {
         with_state(&["FIX one", "fix two", "other"], |state| {
-            // default_ignore_case = false（見 with_state）
+            // with_state 建立的初始 ignore_case 預設為 false（MatchOptions::default()）
             state.toggle_ignore_case(); // Inactive -> true，瀏覽模式下切換
 
             state.start_search();
@@ -1326,7 +1322,7 @@ mod tests {
 
             assert_eq!(
                 state.transient_message_string(),
-                Some("Search target: SUBJECT".to_string())
+                Some("Target: SUBJECT".to_string())
             );
         });
     }
@@ -1339,7 +1335,7 @@ mod tests {
 
             assert_eq!(
                 state.filter_transient_message_string(),
-                Some("Search target: SUBJECT".to_string())
+                Some("Target: SUBJECT".to_string())
             );
         });
     }

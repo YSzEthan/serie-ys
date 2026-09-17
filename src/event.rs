@@ -1095,7 +1095,7 @@ impl UserEvent {
             UserEvent::UserCommand(_) => return None,
             UserEvent::IgnoreCaseToggle => "切換大小寫忽略",
             UserEvent::FuzzyToggle => "切換模糊比對",
-            UserEvent::TargetToggle => "切換搜尋比對欄位",
+            UserEvent::TargetToggle => "切換比對欄位",
             UserEvent::Refresh => "重新整理",
             UserEvent::ShortCopy => "複製 commit short hash",
             UserEvent::FullCopy => "複製 commit subject",
