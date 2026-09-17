@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.1.0](https://github.com/YSzEthan/serie-ys/compare/v4.0.0...v4.1.0) (2026-09-17)
+
+
+### Features
+
+* 搜尋選項瀏覽模式可切換並沿用、新增限定比對欄位 target (#103)(#104) (#105) ([f8ee0f7](https://github.com/YSzEthan/serie-ys/commit/f8ee0f76c7af8d96aae61992f0d7524cd3ff9dc0))
+
 ## [4.0.0](https://github.com/YSzEthan/serie-ys/compare/v3.6.1...v4.0.0) (2026-09-15)
 
 
