@@ -154,12 +154,12 @@
           "properties": {
             "ignore_case": {
               "type": "boolean",
-              "description": "Whether to enable ignore case by default.",
+              "description": "Whether to enable ignore case at startup. Toggled value persists for later searches.",
               "default": false
             },
             "fuzzy": {
               "type": "boolean",
-              "description": "Whether to enable fuzzy matching by default.",
+              "description": "Whether to enable fuzzy matching at startup. Toggled value persists for later searches.",
               "default": false
             }
           },

@@ -25,6 +25,17 @@ impl MatchOptions {
         ignore_case: true,
         fuzzy: true,
     };
+
+    /// 兩個維度都講、永不省略——不會有「沒顯示 = 哪個狀態」的歧義。
+    pub fn status_string(&self) -> String {
+        let case = if self.ignore_case {
+            "ignore-case"
+        } else {
+            "case-sensitive"
+        };
+        let matcher = if self.fuzzy { "fuzzy" } else { "substring" };
+        format!("[{case}] [{matcher}]")
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,12 +207,12 @@ impl<'a> CommitListState<'a> {
         self.search_state
     }
 
+    pub fn search_options(&self) -> MatchOptions {
+        self.search_options
+    }
+
     pub fn start_search(&mut self) {
         if let SearchState::Inactive | SearchState::Applied { .. } = self.search_state {
-            self.search_options = MatchOptions {
-                ignore_case: self.default_ignore_case,
-                fuzzy: self.default_fuzzy,
-            };
             self.search_state = SearchState::Searching {
                 start_index: self.current_selected_raw(),
                 match_index: 0,
@@ -228,50 +239,62 @@ impl<'a> CommitListState<'a> {
             if self.search_input.value().is_empty() {
                 self.search_state = SearchState::Inactive;
             } else {
-                let total_match = self.search_matches.iter().filter(|m| m.matched()).count();
                 self.search_state = SearchState::Applied {
                     match_index,
-                    total_match,
+                    total_match: self.total_match(),
                 };
             }
         }
     }
 
+    fn total_match(&self) -> usize {
+        self.search_matches.iter().filter(|m| m.matched()).count()
+    }
+
+    /// 目前游標所在列的 match_index；游標不在 match 上、或根本沒有可讀的選取列時
+    /// 給 `0`，顯示成 `Match 0 of N`，按 GoToNext/GoToPrevious（預設 `]`/`[`）會
+    /// 自然校正。
+    ///
+    /// 「沒有可讀的選取列」指 `total == 0`（例如 filter 零命中）或選在虛擬列：這兩
+    /// 種情況 `current_selected_raw()` 回傳的是 fallback 值（第一個可見 commit），
+    /// 不是使用者實際選取的 commit。
+    fn current_match_index(&self) -> usize {
+        if self.total == 0 || self.is_virtual_row_selected() {
+            return 0;
+        }
+        let m = self.search_match(self.current_selected_raw());
+        if m.matched() {
+            m.match_index
+        } else {
+            0
+        }
+    }
+
+    /// 重算比對結果並重建 `Applied`。刻意不移動游標：
+    /// `select_current_or_next_match_index` 會把目標釘到 viewport 最上緣，這裡
+    /// 不要這個副作用。`restore_search` 與 `update_search_after_options_change`
+    /// 的 `Applied` 分支共用。
+    fn reapply_search(&mut self) {
+        self.update_search_matches();
+        self.search_state = SearchState::Applied {
+            match_index: self.current_match_index(),
+            total_match: self.total_match(),
+        };
+    }
+
     /// refresh 之後還原一次已套用的 search。要在 selection 還原**之後**呼叫——它靠
     /// `current_selected_raw()` 判斷還原後游標停的 commit 是否仍是一個 match，見
-    /// `CommitListState::reset_commit_list_with` 內的順序註記。
-    ///
-    /// 刻意不移動游標：`select_current_or_next_match_index` 會把目標釘到 viewport
-    /// 最上緣，把 selection 還原剛校正好的「使用者原本在畫面第幾列」整個沖掉。
-    /// 找不到 match 時 `match_index` 停在 0（顯示成 `Match 0 of N`），按 `n`/`N`
-    /// 會自然校正。
+    /// `CommitListState::reset_commit_list_with` 內的順序註記。不移動游標的理由見
+    /// `reapply_search()`；這裡額外的後果是會把 selection 還原剛校正好的「使用者
+    /// 原本在畫面第幾列」沖掉。
     ///
     /// `total_match` 算的是全體 commits，不理 filter——filter 與 search 同時還原時，
-    /// 「Match a of b」裡可能有一部分是被 filter 藏起來、按 `n` 走不到的列
-    /// （`select_match_in_direction` 用 `is_raw_visible` 跳過它們）。
+    /// 「Match a of b」裡可能有一部分是被 filter 藏起來、按 GoToNext/GoToPrevious
+    /// 走不到的列（`select_match_in_direction` 用 `is_raw_visible` 跳過它們）。
     pub fn restore_search(&mut self, context: &MatchQuery) {
         self.search_input = Input::new(context.query.clone());
         self.search_options = context.options;
-        self.update_search_matches();
-
-        // total == 0（還原的 filter 零命中）或選到虛擬列時，current_selected_raw()
-        // 會 fallback 成 RawCommitIdx(0)——不是使用者實際選取的 commit，不能拿來查
-        // match_index。
-        let match_index = if self.total > 0 && !self.is_virtual_row_selected() {
-            let m = self.search_match(self.current_selected_raw());
-            if m.matched() {
-                m.match_index
-            } else {
-                0
-            }
-        } else {
-            0
-        };
-
-        self.search_state = SearchState::Applied {
-            match_index,
-            total_match: self.search_matches.iter().filter(|m| m.matched()).count(),
-        };
+        self.reapply_search();
     }
 
     /// 只在 `Applied`（真的套用過、非輸入中）時回傳——refresh 中途取消一次沒套用
@@ -295,10 +318,24 @@ impl<'a> CommitListState<'a> {
         }
     }
 
+    /// `toggle_ignore_case`/`toggle_fuzzy` 共用，形狀照抄 upstream `c4e771b` 的
+    /// `update_search_after_options_change()`，但 `Applied` 分支**刻意不移動游標**
+    /// （細節見 `reapply_search()` 的文件註解）——這點跟 upstream 不同，是必要的
+    /// 偏離，不是漏改：upstream 在瀏覽模式 toggle 之後仍然呼叫
+    /// `select_current_or_next_match_index`，會讓「切換一個選項」變成「清單自己往下
+    /// 捲一大段」，本專案的 `restore_search()` 已經為了同一個理由拒絕過這個行為。
+    fn update_search_after_options_change(&mut self) {
+        match self.search_state {
+            SearchState::Inactive => {}
+            SearchState::Searching { start_index, .. } => {
+                self.update_search_matches();
+                self.select_current_or_next_match_index(start_index);
+            }
+            SearchState::Applied { .. } => self.reapply_search(),
+        }
+    }
+
     pub fn toggle_ignore_case(&mut self) {
-        let SearchState::Searching { start_index, .. } = self.search_state else {
-            return;
-        };
         self.search_options.ignore_case = !self.search_options.ignore_case;
         self.search_state
             .set_transient_message(if self.search_options.ignore_case {
@@ -306,14 +343,10 @@ impl<'a> CommitListState<'a> {
             } else {
                 TransientMessage::IgnoreCaseOff
             });
-        self.update_search_matches();
-        self.select_current_or_next_match_index(start_index);
+        self.update_search_after_options_change();
     }
 
     pub fn toggle_fuzzy(&mut self) {
-        let SearchState::Searching { start_index, .. } = self.search_state else {
-            return;
-        };
         self.search_options.fuzzy = !self.search_options.fuzzy;
         self.search_state
             .set_transient_message(if self.search_options.fuzzy {
@@ -321,8 +354,17 @@ impl<'a> CommitListState<'a> {
             } else {
                 TransientMessage::FuzzyOff
             });
-        self.update_search_matches();
-        self.select_current_or_next_match_index(start_index);
+        self.update_search_after_options_change();
+    }
+
+    /// refresh 時無條件呼叫；有 active search 時 `restore_search` 會再用
+    /// `context.options` 寫一次，兩者在 `From<&CommitListState>` 裡讀的是同一個
+    /// `search_options`，值必然相同，先後順序不影響結果。
+    ///
+    /// 只寫欄位，不重算比對、不動 selection。不要從互動式按鍵處理函式呼叫，那些
+    /// 場合請用 `toggle_ignore_case`/`toggle_fuzzy`。
+    pub fn set_search_options(&mut self, options: MatchOptions) {
+        self.search_options = options;
     }
 
     pub fn search_query_string(&self) -> Option<String> {
@@ -342,11 +384,13 @@ impl<'a> CommitListState<'a> {
         } = self.search_state
         {
             let query = self.search_input.value();
+            let options = self.search_options.status_string();
             if total_match == 0 {
-                let msg = format!("No matches found (query: \"{query}\")");
+                let msg = format!("No matches found (query: \"{query}\") {options}");
                 Some((msg, false))
             } else {
-                let msg = format!("Match {match_index} of {total_match} (query: \"{query}\")");
+                let msg =
+                    format!("Match {match_index} of {total_match} (query: \"{query}\") {options}");
                 Some((msg, true))
             }
         } else {
@@ -890,6 +934,149 @@ mod tests {
                 state.current_list_status(),
                 "沒有生效中的 filter 時，Esc 不該把游標拉回頂端"
             );
+        });
+    }
+
+    #[test]
+    fn toggle_ignore_case_works_from_browsing_mode_when_inactive() {
+        with_state(&["FIX one", "fix two", "other"], |state| {
+            assert_eq!(state.search_state(), SearchState::Inactive);
+
+            state.toggle_ignore_case();
+
+            assert!(state.search_options().ignore_case);
+            assert_eq!(
+                state.search_state(),
+                SearchState::Inactive,
+                "瀏覽模式下切換選項不該把狀態拉回 Searching"
+            );
+        });
+    }
+
+    #[test]
+    fn toggle_after_applying_search_recalculates_total_match() {
+        with_state(&["FIX one", "fix two", "other"], |state| {
+            state.restore_search(&exact("fix"));
+            let SearchState::Applied { total_match, .. } = state.search_state() else {
+                panic!("expected Applied");
+            };
+            assert_eq!(total_match, 1, "ignore_case=false 時只有 'fix two' 命中");
+
+            state.toggle_ignore_case();
+
+            let SearchState::Applied { total_match, .. } = state.search_state() else {
+                panic!("expected still Applied after toggling in browsing mode");
+            };
+            assert_eq!(total_match, 2, "toggle 後應該立刻重算，兩筆都命中");
+        });
+    }
+
+    #[test]
+    fn toggle_after_applying_search_does_not_move_cursor() {
+        with_state(&["FIX one", "fix two", "other"], |state| {
+            state.restore_search(&exact("fix"));
+            let before = state.current_list_status();
+
+            state.toggle_ignore_case();
+
+            assert_eq!(
+                state.current_list_status(),
+                before,
+                "瀏覽模式下 toggle 不該移動選取列／捲動位置"
+            );
+        });
+    }
+
+    #[test]
+    fn toggle_after_zero_hit_filter_keeps_match_index_zero() {
+        with_state(&["alpha", "beta"], |state| {
+            state.restore_search(&exact("alpha"));
+            state.restore_filter(&exact("no-such-term"));
+            assert_eq!(state.total, 0);
+
+            state.toggle_ignore_case();
+
+            let SearchState::Applied { match_index, .. } = state.search_state() else {
+                panic!("expected Applied after toggle");
+            };
+            assert_eq!(
+                match_index, 0,
+                "total == 0 時 current_match_index 的守衛要擋住"
+            );
+        });
+    }
+
+    #[test]
+    fn start_search_reuses_browsing_mode_toggle_not_config_default() {
+        with_state(&["FIX one", "fix two", "other"], |state| {
+            // default_ignore_case = false（見 with_state）
+            state.toggle_ignore_case(); // Inactive -> true，瀏覽模式下切換
+
+            state.start_search();
+
+            assert!(
+                state.search_options().ignore_case,
+                "start_search 不該把瀏覽模式切換過的選項重設回 config 預設值"
+            );
+        });
+    }
+
+    #[test]
+    fn search_options_survive_full_cancel_and_restart_cycle() {
+        with_state(&["FIX one", "fix two", "other"], |state| {
+            state.start_search();
+            state.toggle_fuzzy(); // 輸入模式中先開一次
+            assert!(state.search_options().fuzzy);
+            state.cancel_search(); // 回到 Inactive
+
+            state.toggle_fuzzy(); // 瀏覽模式下關掉（issue #103 新能力）
+            assert!(!state.search_options().fuzzy);
+            state.toggle_fuzzy(); // 再開回來
+            assert!(state.search_options().fuzzy);
+
+            state.start_search(); // 重新按 `/`
+
+            assert!(
+                state.search_options().fuzzy,
+                "瀏覽模式下切換過的選項要沿用到下一次搜尋"
+            );
+        });
+    }
+
+    #[test]
+    fn status_string_covers_all_four_combinations() {
+        let opts = |ignore_case, fuzzy| MatchOptions { ignore_case, fuzzy };
+        assert_eq!(
+            opts(false, false).status_string(),
+            "[case-sensitive] [substring]"
+        );
+        assert_eq!(
+            opts(true, false).status_string(),
+            "[ignore-case] [substring]"
+        );
+        assert_eq!(
+            opts(false, true).status_string(),
+            "[case-sensitive] [fuzzy]"
+        );
+        assert_eq!(opts(true, true).status_string(), "[ignore-case] [fuzzy]");
+    }
+
+    #[test]
+    fn matched_query_string_includes_options_after_query() {
+        with_state(&["fix one", "fix two"], |state| {
+            state.restore_search(&MatchQuery {
+                query: "fix".into(),
+                options: MatchOptions {
+                    ignore_case: true,
+                    fuzzy: false,
+                },
+            });
+
+            let (msg, matched) = state.matched_query_string().unwrap();
+            assert!(matched);
+            let query_pos = msg.find("(query: \"fix\")").expect("query segment present");
+            let options_pos = msg.find("[ignore-case]").expect("options segment present");
+            assert!(query_pos < options_pos, "選項摘要要排在 query 之後: {msg}");
         });
     }
 }

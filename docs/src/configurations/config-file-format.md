@@ -313,14 +313,16 @@ prune 仍然交給你自己的 git `fetch.prune`／`remote.<name>.prune` 設定�
 
 ### `core.search.ignore_case`
 
-是否預設啟用忽略大小寫。
+啟動時是否啟用忽略大小寫。執行中可用 `ignore_case_toggle`（預設 <kbd>Alt-c</kbd>）
+切換，切換結果會沿用到之後的搜尋，不會被這裡的設定值覆蓋。
 
 - 型別：`boolean`
 - 預設值：`false`
 
 ### `core.search.fuzzy`
 
-是否預設啟用模糊比對。
+啟動時是否啟用模糊比對。執行中可用 `fuzzy_toggle`（預設 <kbd>x</kbd>）切換，切換
+結果會沿用到之後的搜尋，不會被這裡的設定值覆蓋。
 
 - 型別：`boolean`
 - 預設值：`false`

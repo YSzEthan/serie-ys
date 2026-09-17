@@ -111,9 +111,6 @@ pub struct CommitListState<'a> {
 
     name_cell_width: u16,
 
-    pub(super) default_ignore_case: bool,
-    pub(super) default_fuzzy: bool,
-
     working_changes: Option<WorkingChanges>,
 
     pub(crate) selected_row_overflows: Cell<bool>,
@@ -189,8 +186,6 @@ impl<'a> CommitListState<'a> {
             remote_only_commits,
             needs_graph_clear: false,
             name_cell_width,
-            default_ignore_case,
-            default_fuzzy,
             working_changes,
             selected_row_overflows: Cell::new(false),
         }

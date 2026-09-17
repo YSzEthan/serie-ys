@@ -65,6 +65,7 @@ fn build_hotkey_hints(view: &View, ctx: &AppContext) -> Line<'static> {
             h(&[UserEvent::Search], "search"),
             h(&[UserEvent::Filter], "filter"),
             h(&[UserEvent::IgnoreCaseToggle], "case"),
+            h(&[UserEvent::FuzzyToggle], "fuzzy"),
             h(&[UserEvent::CreateTag], "tag"),
             h(&[UserEvent::RefList], "refs"),
             h(&[UserEvent::RemoteRefsToggle], "remote"),
