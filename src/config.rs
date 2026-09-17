@@ -236,6 +236,48 @@ pub struct CoreSearchConfig {
     pub ignore_case: bool,
     #[default = false]
     pub fuzzy: bool,
+    #[default(SearchTarget::All)]
+    pub target: SearchTarget,
+}
+
+/// 搜尋／過濾要限定比對哪個欄位。`All` 是目前的既有行為（比對
+/// `search_fields()` 列出的全部欄位）。實際「哪個 target 對應哪個欄位」的判斷
+/// 邏輯在 `widget/commit_list/search.rs` 的 `impl SearchField`（要吃私有的
+/// `SearchField` enum，不適合放這裡）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum SearchTarget {
+    #[default]
+    All,
+    Subject,
+    Author,
+    Hash,
+    Ref,
+}
+
+impl SearchTarget {
+    /// 循環順序刻意跟 `search_fields()`（widget/commit_list/search.rs）欄位順序
+    /// 一致（Subject → AuthorName → CommitHash → Ref），兩份清單對得上，不用切
+    /// 檔案比對。
+    pub fn next(self) -> Self {
+        match self {
+            Self::All => Self::Subject,
+            Self::Subject => Self::Author,
+            Self::Author => Self::Hash,
+            Self::Hash => Self::Ref,
+            Self::Ref => Self::All,
+        }
+    }
+
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::All => "all",
+            Self::Subject => "subject",
+            Self::Author => "author",
+            Self::Hash => "hash",
+            Self::Ref => "ref",
+        }
+    }
 }
 
 #[optional]
@@ -767,6 +809,7 @@ mod tests {
                 search: CoreSearchConfig {
                     ignore_case: false,
                     fuzzy: false,
+                    target: SearchTarget::All,
                 },
                 user_command: CoreUserCommandConfig {
                     commands: FxHashMap::default(),
@@ -822,6 +865,7 @@ mod tests {
             [core.search]
             ignore_case = true
             fuzzy = true
+            target = "author"
             [core.user_command]
             commands_1 = { name = "git diff no color", commands = ["git", "diff", "{{first_parent_hash}}", "{{target_hash}}"] }
             commands_2 = { name = "echo hello", type = "silent", commands = ["echo", "hello"], refresh = true }
@@ -872,6 +916,7 @@ mod tests {
                 search: CoreSearchConfig {
                     ignore_case: true,
                     fuzzy: true,
+                    target: SearchTarget::Author,
                 },
                 user_command: CoreUserCommandConfig {
                     commands: FxHashMap::from_iter([

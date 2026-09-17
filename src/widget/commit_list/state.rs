@@ -84,11 +84,13 @@ pub struct CommitListState<'a> {
     /// （`Applied`）這組設定還要繼續驅動 refresh 還原，跟輸入模式無關。
     pub(super) search_options: MatchOptions,
 
-    // 最佳化：記住前一次搜尋，供增量搜尋使用
+    // 最佳化：記住前一次搜尋，供增量搜尋使用。整包存 `MatchOptions`（而非拆成
+    // 散裝欄位）：`update_search_matches` 的 `settings_unchanged` 判斷式靠這個
+    // 型別的 `PartialEq` 一次比較 ignore_case/fuzzy/target 三個維度，往後這個
+    // struct 再加欄位，這裡結構上不可能漏比對。
     pub(super) last_search_query: String,
     pub(super) last_matched_indices: Vec<RawCommitIdx>,
-    pub(super) last_search_ignore_case: bool,
-    pub(super) last_search_fuzzy: bool,
+    pub(super) last_search_options: MatchOptions,
 
     // Filter 模式
     pub(super) filter_state: FilterState,
@@ -124,8 +126,7 @@ impl<'a> CommitListState<'a> {
         head_commit_hash: Option<CommitHash>,
         head: Head,
         ref_name_to_commit_index_map: FxHashMap<String, RawCommitIdx>,
-        default_ignore_case: bool,
-        default_fuzzy: bool,
+        search_defaults: MatchOptions,
         filtered: Option<Rc<Graph>>,
         filtered_graph_colors: Option<FxHashMap<CommitHash, Color>>,
         remote_only_commits: FxHashSet<CommitHash>,
@@ -164,14 +165,13 @@ impl<'a> CommitListState<'a> {
             search_state: SearchState::Inactive,
             search_input: Input::default(),
             search_matches: vec![SearchMatch::default(); commit_count],
-            search_options: MatchOptions {
-                ignore_case: default_ignore_case,
-                fuzzy: default_fuzzy,
-            },
+            search_options: search_defaults,
             last_search_query: String::new(),
             last_matched_indices: Vec::new(),
-            last_search_ignore_case: false,
-            last_search_fuzzy: false,
+            // 初始值不影響正確性：`can_use_incremental` 有
+            // `!last_search_query.is_empty()` 守衛，首次呼叫 `update_search_matches`
+            // 時 `last_search_query` 必為空字串，一定會走全量掃描並覆寫這個值。
+            last_search_options: search_defaults,
             filter_state: FilterState::Inactive,
             filter_input: Input::default(),
             filter_options: MatchOptions::FILTER_DEFAULT,
@@ -929,8 +929,7 @@ mod tests {
             None,
             Head::None,
             FxHashMap::default(),
-            false,
-            false,
+            MatchOptions::default(),
             None,
             None,
             FxHashSet::default(),

@@ -65,6 +65,10 @@ impl<'a> ListView<'a> {
                     self.as_mut_list_state().toggle_filter_fuzzy();
                     self.update_filter_query();
                 }
+                InputAction::TargetToggle => {
+                    self.as_mut_list_state().toggle_filter_target();
+                    self.update_filter_query();
+                }
                 InputAction::TextInput => {
                     self.as_mut_list_state().handle_filter_input(key);
                     self.update_filter_query();
@@ -90,6 +94,10 @@ impl<'a> ListView<'a> {
                 }
                 InputAction::FuzzyToggle => {
                     self.as_mut_list_state().toggle_fuzzy();
+                    self.update_search_query();
+                }
+                InputAction::TargetToggle => {
+                    self.as_mut_list_state().toggle_target();
                     self.update_search_query();
                 }
                 InputAction::TextInput => {
@@ -198,6 +206,10 @@ impl<'a> ListView<'a> {
             }
             UserEvent::FuzzyToggle => {
                 self.as_mut_list_state().toggle_fuzzy();
+                self.update_search_options_message();
+            }
+            UserEvent::TargetToggle => {
+                self.as_mut_list_state().toggle_target();
                 self.update_search_options_message();
             }
             UserEvent::RemoteRefsToggle => {
@@ -464,6 +476,7 @@ enum InputAction {
     Cancel,
     IgnoreCaseToggle,
     FuzzyToggle,
+    TargetToggle,
     TextInput,
 }
 
@@ -475,6 +488,7 @@ fn resolve_input_action(event: UserEvent, key: KeyEvent) -> InputAction {
         UserEvent::Cancel => InputAction::Cancel,
         UserEvent::IgnoreCaseToggle => InputAction::IgnoreCaseToggle,
         UserEvent::FuzzyToggle => InputAction::FuzzyToggle,
+        UserEvent::TargetToggle => InputAction::TargetToggle,
         _ => InputAction::TextInput,
     }
 }

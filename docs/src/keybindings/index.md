@@ -48,6 +48,7 @@
 | <kbd>[</kbd> | 上一個符合項 | `go_to_previous` |
 | <kbd>x</kbd> | 切換模糊比對 | `fuzzy_toggle` |
 | <kbd>Alt-c</kbd> | 切換大小寫忽略 | `ignore_case_toggle` |
+| <kbd>Alt-t</kbd> | 切換搜尋比對欄位 | `target_toggle` |
 | <kbd>c</kbd> | 複製 commit short hash | `short_copy` |
 | <kbd>C</kbd> | 複製 commit subject | `full_copy` |
 | <kbd>b</kbd> | 複製 branch 名稱（優先 local） | `branch_copy` |

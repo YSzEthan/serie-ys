@@ -920,6 +920,7 @@ fn highlighted_spans(
 
 #[cfg(test)]
 mod tests {
+    use super::super::search::MatchOptions;
     use super::layout::calc_cell_widths;
     use super::*;
     use crate::{git::Commit, CompactType, GraphWidthType};
@@ -1175,8 +1176,7 @@ mod tests {
                 head_hash,
                 Head::None,
                 FxHashMap::default(),
-                false,
-                false,
+                MatchOptions::default(),
                 filtered,
                 None,
                 FxHashSet::default(),
@@ -1696,8 +1696,7 @@ mod tests {
                 None,
                 Head::None,
                 FxHashMap::default(),
-                false,
-                false,
+                MatchOptions::default(),
                 Some(Rc::new(filtered)),
                 None,
                 FxHashSet::default(),
