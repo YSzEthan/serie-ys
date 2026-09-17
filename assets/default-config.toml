@@ -40,6 +40,7 @@ prune = "off"   # off（不加旗標，依 git 設定）｜on（加上 --prune�
 [core.search]
 ignore_case = false  # 是否預設忽略大小寫
 fuzzy = false         # 是否預設啟用模糊比對
+target = "all"        # 限定比對欄位：all｜subject｜author｜hash｜ref
 
 [core.user_command]
 tab_width = 4  # 使用者自訂指令輸出裡的 tab 展開寬度

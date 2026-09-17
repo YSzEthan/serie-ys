@@ -15,7 +15,7 @@ use crate::{
         RefsOrigin,
     },
     widget::{
-        commit_list::{CommitListState, MatchQuery},
+        commit_list::{CommitListState, MatchOptions, MatchQuery},
         ref_list::RefListState,
     },
 };
@@ -441,6 +441,7 @@ pub struct ListRefreshViewContext {
     pub scroll_to_top: bool,
     #[default = true]
     pub show_remote_refs: bool,
+    pub search_options: Option<MatchOptions>,
     pub search: Option<MatchQuery>,
     pub filter: Option<MatchQuery>,
 }
@@ -458,6 +459,7 @@ impl From<&CommitListState<'_>> for ListRefreshViewContext {
             height,
             scroll_to_top,
             show_remote_refs: list_state.show_remote_refs(),
+            search_options: Some(list_state.search_options()),
             search: list_state.search_refresh_context(),
             filter: list_state.filter_refresh_context(),
         }

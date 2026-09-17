@@ -65,6 +65,10 @@ impl<'a> ListView<'a> {
                     self.as_mut_list_state().toggle_filter_fuzzy();
                     self.update_filter_query();
                 }
+                InputAction::TargetToggle => {
+                    self.as_mut_list_state().toggle_filter_target();
+                    self.update_filter_query();
+                }
                 InputAction::TextInput => {
                     self.as_mut_list_state().handle_filter_input(key);
                     self.update_filter_query();
@@ -90,6 +94,10 @@ impl<'a> ListView<'a> {
                 }
                 InputAction::FuzzyToggle => {
                     self.as_mut_list_state().toggle_fuzzy();
+                    self.update_search_query();
+                }
+                InputAction::TargetToggle => {
+                    self.as_mut_list_state().toggle_target();
                     self.update_search_query();
                 }
                 InputAction::TextInput => {
@@ -191,6 +199,18 @@ impl<'a> ListView<'a> {
             }
             UserEvent::DeleteTag => {
                 self.tx.send(AppEvent::OpenDeleteTag);
+            }
+            UserEvent::IgnoreCaseToggle => {
+                self.as_mut_list_state().toggle_ignore_case();
+                self.update_search_options_message();
+            }
+            UserEvent::FuzzyToggle => {
+                self.as_mut_list_state().toggle_fuzzy();
+                self.update_search_options_message();
+            }
+            UserEvent::TargetToggle => {
+                self.as_mut_list_state().toggle_target();
+                self.update_search_options_message();
             }
             UserEvent::RemoteRefsToggle => {
                 let show = self.as_mut_list_state().toggle_remote_refs();
@@ -338,6 +358,21 @@ impl<'a> ListView<'a> {
         }
     }
 
+    /// 瀏覽模式切換搜尋選項後的畫面回饋。`Applied`（有一組套用中的搜尋結果）時
+    /// 沿用既有的 `update_matched_message()`——它會顯示 `Match X of Y (query: "...")
+    /// [ignore-case] [substring]`，這正是使用者這時候最想看的資訊，不應該被別的
+    /// 通知蓋掉。`Inactive` 時沒有搜尋結果可講，改用一句單純的選項摘要。
+    fn update_search_options_message(&self) {
+        if let SearchState::Applied { .. } = self.as_list_state().search_state() {
+            self.update_matched_message();
+        } else {
+            self.tx.send(AppEvent::NotifyInfo(format!(
+                "Search: {}",
+                self.as_list_state().search_options().status_string()
+            )));
+        }
+    }
+
     fn copy_commit_short_hash(&self) {
         if self.as_list_state().is_virtual_row_selected() {
             return;
@@ -395,6 +430,9 @@ impl<'a> ListView<'a> {
     ///    上一步的頂端。
     /// 4. `restore_search`——要讀 `current_selected_raw()`，必須排在
     ///    selection 還原之後。
+    ///
+    /// `set_search_options` 只寫欄位，不讀、也不動 selection 或 filter，不受上面的
+    /// 順序限制。
     pub fn reset_commit_list_with(&mut self, list_context: &ListRefreshViewContext) {
         let ListRefreshViewContext {
             commit_hash,
@@ -402,12 +440,16 @@ impl<'a> ListView<'a> {
             height,
             scroll_to_top,
             show_remote_refs,
+            search_options,
             search,
             filter,
         } = list_context;
         let list_state = self.as_mut_list_state();
         list_state.reset_height(*height);
         list_state.set_show_remote_refs(*show_remote_refs);
+        if let Some(options) = search_options {
+            list_state.set_search_options(*options);
+        }
         if let Some(filter) = filter {
             list_state.restore_filter(filter);
         }
@@ -434,6 +476,7 @@ enum InputAction {
     Cancel,
     IgnoreCaseToggle,
     FuzzyToggle,
+    TargetToggle,
     TextInput,
 }
 
@@ -445,6 +488,7 @@ fn resolve_input_action(event: UserEvent, key: KeyEvent) -> InputAction {
         UserEvent::Cancel => InputAction::Cancel,
         UserEvent::IgnoreCaseToggle => InputAction::IgnoreCaseToggle,
         UserEvent::FuzzyToggle => InputAction::FuzzyToggle,
+        UserEvent::TargetToggle => InputAction::TargetToggle,
         _ => InputAction::TextInput,
     }
 }

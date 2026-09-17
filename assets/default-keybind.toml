@@ -36,6 +36,7 @@ filter = ["'"]
 
 ignore_case_toggle = ["alt-c"]
 fuzzy_toggle = ["x"]
+target_toggle = ["alt-t"]
 refresh = ["r"]
 
 # copy part of information, ex: copy the short commit hash not all

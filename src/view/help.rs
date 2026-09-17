@@ -298,6 +298,7 @@ fn help_blocks(
         b(vec![UserEvent::GoToPrevious],                          "上一個符合項",        "Go to previous search match"),
         b(vec![UserEvent::FuzzyToggle],                           "切換模糊比對",        "Toggle fuzzy match"),
         b(vec![UserEvent::IgnoreCaseToggle],                      "切換大小寫忽略",      "Toggle ignore case"),
+        b(vec![UserEvent::TargetToggle],                          "切換比對欄位",        "Toggle match target field"),
         b(vec![UserEvent::ShortCopy],                             "複製 commit short hash", "Copy commit short hash"),
         b(vec![UserEvent::FullCopy],                              "複製 commit subject", "Copy commit subject"),
         b(vec![UserEvent::BranchCopy],                            "複製 branch 名稱（優先 local）", "Copy branch name (prefer local)"),

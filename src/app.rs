@@ -35,7 +35,7 @@ use crate::{
     update::UpdateSettings,
     view::{dispatch_delete_branch, RefreshViewContext, RefsOrigin, View, ViewContext},
     widget::{
-        commit_list::{CommitInfo, CommitListState, RawCommitIdx},
+        commit_list::{CommitInfo, CommitListState, MatchOptions, RawCommitIdx},
         pending_overlay::PendingOverlay,
     },
     CompactType, GraphWidthType,
@@ -322,8 +322,11 @@ impl<'a> App<'a> {
             head_commit_hash,
             head,
             ref_name_to_commit_index_map,
-            ctx.core_config.search.ignore_case,
-            ctx.core_config.search.fuzzy,
+            MatchOptions {
+                ignore_case: ctx.core_config.search.ignore_case,
+                fuzzy: ctx.core_config.search.fuzzy,
+                target: ctx.core_config.search.target,
+            },
             filtered_graph,
             filtered_colors,
             remote_only_commits,
