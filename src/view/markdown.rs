@@ -189,17 +189,20 @@ pub fn render(body: &str, width: usize) -> Vec<Line<'static>> {
     out
 }
 
-/// 區段分隔線，寬度會被限制住，在窄預覽視窗裡也不會換行。
-/// 用灰色——渲染出的 markdown 內部分隔線維持中性色調。
+/// markdown 內容本身的水平線／code fence 分隔線，寬度被限制住，在窄
+/// 預覽視窗裡也不會換行。用灰色——維持中性色調。
 pub(super) fn rule_line(width: usize) -> Line<'static> {
-    rule_line_colored(width, Color::DarkGray)
+    Line::styled(
+        "─".repeat(RULE_WIDTH.min(width)),
+        Style::default().fg(Color::DarkGray),
+    )
 }
 
-/// 顏色可由呼叫端指定的 [`rule_line`]，用於分隔預覽區段，
-/// 而非 markdown 內容本身的分隔線。
+/// 區段分隔線（body／留言／commit／review 之間），顏色可由呼叫端指定，
+/// 打滿整個可用寬度——這條線在畫的是預覽區的版面結構，不是 markdown
+/// 內容本身，沒有理由跟內文的水平線共用同一個窄寬度上限。
 pub(super) fn rule_line_colored(width: usize, color: Color) -> Line<'static> {
-    let n = RULE_WIDTH.min(width);
-    Line::styled("─".repeat(n), Style::default().fg(color))
+    Line::styled("─".repeat(width), Style::default().fg(color))
 }
 
 /// `[label]: url`——渲染後的 markdown 看不到。
@@ -955,6 +958,23 @@ mod tests {
     fn rule_line_respects_narrow_width() {
         let lines = super::render("---", 10);
         assert_eq!(lines[0].width(), 10);
+    }
+
+    /// markdown 內容本身的水平線／code fence 分隔線維持窄上限——寬預覽
+    /// 視窗裡不該跟著整區拉滿，那是 `rule_line_colored`（區段分隔線）
+    /// 的行為。
+    #[test]
+    fn rule_line_caps_at_rule_width_on_wide_preview() {
+        let lines = super::render("---", 100);
+        assert_eq!(lines[0].width(), RULE_WIDTH);
+    }
+
+    /// 區段分隔線（body／留言／commit／review 之間）打滿整個可用寬度，
+    /// 不受 `RULE_WIDTH` 限制。
+    #[test]
+    fn rule_line_colored_fills_full_width() {
+        let line = super::rule_line_colored(80, Color::Red);
+        assert_eq!(line.width(), 80);
     }
 
     /// 促成以上所有測試的留言型態：一則 Vercel 部署 bot 貼文，

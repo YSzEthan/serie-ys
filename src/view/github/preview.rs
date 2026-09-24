@@ -8,7 +8,10 @@ use crate::github::Mergeable;
 
 use super::{
     render::{label_spans, state_color},
-    timeline::{build_timeline, mergeable_marker, TimelineEntry, TimelineLoad, TimelineStage},
+    timeline::{
+        build_timeline, diff_stat_spans, mergeable_marker, TimelineEntry, TimelineLoad,
+        TimelineStage,
+    },
     GitHubTab, Section,
 };
 
@@ -66,6 +69,7 @@ pub(super) fn build_preview_content(
     if let SelectedItemExtra::PullRequest {
         base_ref_name,
         head_ref_name,
+        diff_stat,
     } = item.extra
     {
         let mut spans = vec![
@@ -76,6 +80,7 @@ pub(super) fn build_preview_content(
         if let Some((text, color)) = mergeable_marker(input.entry.and_then(|e| e.mergeable)) {
             spans.push(Span::styled(text, Style::default().fg(color)));
         }
+        spans.extend(diff_stat_spans(diff_stat));
         lines.push(Line::from(spans));
     }
 
@@ -185,6 +190,7 @@ pub(super) enum SelectedItemExtra<'v> {
     PullRequest {
         base_ref_name: &'v str,
         head_ref_name: &'v str,
+        diff_stat: crate::github::DiffStat,
     },
 }
 
@@ -381,6 +387,7 @@ mod tests {
                 extra: SelectedItemExtra::PullRequest {
                     base_ref_name: "main",
                     head_ref_name: "topic",
+                    diff_stat: crate::github::DiffStat::default(),
                 },
             }),
         }

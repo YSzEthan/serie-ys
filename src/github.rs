@@ -151,6 +151,17 @@ pub struct GhPullRequest {
     pub updated_at: String,
     #[serde(default, rename = "closingIssuesReferences")]
     pub linked_issues: Vec<GhRelatedIssue>,
+    pub diff_stat: DiffStat,
+}
+
+/// PR 的變更行數，跟 `baseRefName` 一樣是 PR 本身的屬性，隨 PR 清單查詢
+/// 一起拿——不像 `mergeable` 是 GitHub 事後才算出來、會變動的狀態，不需要
+/// 額外走 timeline 查詢。
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DiffStat {
+    pub additions: u32,
+    pub deletions: u32,
 }
 
 /// GitHub issue／PR 列表的完整快照，`App` 與 `GitHubView` 之間交接資料用的
@@ -397,7 +408,7 @@ pub fn list_pull_requests(
                 pullRequests(first:50,after:$after,states:{states},orderBy:{{field:CREATED_AT,direction:DESC}}){{
                     pageInfo {{ hasNextPage endCursor }}
                     nodes {{
-                        number title state body url closedAt updatedAt headRefName baseRefName isDraft isCrossRepository
+                        number title state body url closedAt updatedAt headRefName baseRefName isDraft isCrossRepository additions deletions
                         author {{ login }}
                         labels(first:20) {{ nodes {{ name color }} }}
                         closingIssuesReferences(first:20) {{ nodes {{ number title state url }} }}
@@ -505,6 +516,8 @@ struct GqlPrNode {
     author: Option<GhAuthor>,
     labels: GqlConnection<GhLabel>,
     closing_issues_references: GqlConnection<GhRelatedIssue>,
+    #[serde(flatten)]
+    diff_stat: DiffStat,
 }
 
 impl GqlPrNode {
@@ -532,6 +545,7 @@ impl GqlPrNode {
             closed_at: self.closed_at,
             updated_at: self.updated_at.unwrap_or_default(),
             linked_issues: self.closing_issues_references.nodes,
+            diff_stat: self.diff_stat,
         }
     }
 }
@@ -1645,7 +1659,9 @@ mod tests {
                                 "isCrossRepository": false,
                                 "author": {"login": "alice"},
                                 "labels": {"nodes": []},
-                                "closingIssuesReferences": {"nodes": []}
+                                "closingIssuesReferences": {"nodes": []},
+                                "additions": 600,
+                                "deletions": 71
                             },
                             {
                                 "number": 2,
@@ -1657,7 +1673,9 @@ mod tests {
                                 "isCrossRepository": true,
                                 "author": {"login": "bob"},
                                 "labels": {"nodes": []},
-                                "closingIssuesReferences": {"nodes": []}
+                                "closingIssuesReferences": {"nodes": []},
+                                "additions": 0,
+                                "deletions": 0
                             },
                             {
                                 "number": 3,
@@ -1669,7 +1687,9 @@ mod tests {
                                 "isCrossRepository": false,
                                 "author": {"login": "carol"},
                                 "labels": {"nodes": []},
-                                "closingIssuesReferences": {"nodes": []}
+                                "closingIssuesReferences": {"nodes": []},
+                                "additions": 0,
+                                "deletions": 0
                             }
                         ]
                     }
@@ -1680,6 +1700,13 @@ mod tests {
         assert!(page.items[0].head_branch_deletable);
         assert!(!page.items[1].head_branch_deletable);
         assert!(!page.items[2].head_branch_deletable);
+        assert_eq!(
+            page.items[0].diff_stat,
+            DiffStat {
+                additions: 600,
+                deletions: 71
+            }
+        );
     }
 
     /// resolved 狀態不在 `PullRequestReviewComment` 上，是這裡拿平行查詢的
