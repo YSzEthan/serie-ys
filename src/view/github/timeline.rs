@@ -3,7 +3,7 @@ use ratatui::{
     text::{Line, Span},
 };
 
-use crate::github::{GhTimelineItem, Mergeable};
+use crate::github::{DiffStat, GhTimelineItem, Mergeable};
 
 use super::Section;
 
@@ -30,6 +30,8 @@ pub(super) struct TimelineEntry {
     /// `None`——兩者都代表「沒有標記」。每一頁都帶著自己的副本，所以後面
     /// 的頁面只是冪等地覆蓋掉這個值。
     pub(super) mergeable: Option<Mergeable>,
+    /// 同 `mergeable`：Issue 是 `None`，每一頁都帶自己的副本、冪等覆蓋。
+    pub(super) diff_stat: Option<DiffStat>,
     /// 每次有新一頁資料落地（不管是首頁替換還是續接）就 +1。`PreviewKey`
     /// 靠這個欄位偵測「commit 數／mergeable 都沒變，但內容變了」——CI 狀態
     /// 從 PENDING 換成 SUCCESS 正是這種情況，其他既有欄位偵測不到。
@@ -364,6 +366,29 @@ fn commit_ci_marker(state: Option<&str>) -> (&'static str, Color) {
     }
 }
 
+/// `base ← head` 那一列右側的 `+新增 -刪除 =總和`。總和達到危險門檻時改紅字加粗。
+pub(super) fn diff_stat_spans(stat: DiffStat) -> Vec<Span<'static>> {
+    let total_style = if stat.is_danger() {
+        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White)
+    };
+    vec![
+        Span::raw("  "),
+        Span::styled(
+            format!("+{}", stat.added),
+            Style::default().fg(Color::Green),
+        ),
+        Span::raw(" "),
+        Span::styled(
+            format!("-{}", stat.deleted),
+            Style::default().fg(Color::Red),
+        ),
+        Span::raw(" "),
+        Span::styled(format!("={}", stat.total()), total_style),
+    ]
+}
+
 /// `base ← head` 那一列的合併狀態標記文字 + 顏色。`None`（不是 PR，或
 /// GitHub 回傳 `UNKNOWN`）代表完全沒有標記。
 pub(super) fn mergeable_marker(state: Option<Mergeable>) -> Option<(&'static str, Color)> {
@@ -400,6 +425,30 @@ pub(super) enum TimelineStage {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn spans_text(spans: &[Span<'_>]) -> String {
+        spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn diff_stat_spans_shows_added_deleted_total_and_reds_the_total_at_threshold() {
+        let spans = diff_stat_spans(DiffStat {
+            added: 120,
+            deleted: 45,
+        });
+        assert_eq!(spans_text(&spans), "  +120 -45 =165");
+        assert_eq!(spans[1].style.fg, Some(Color::Green));
+        assert_eq!(spans[3].style.fg, Some(Color::Red));
+        assert_eq!(spans[5].style.fg, Some(Color::White));
+
+        let spans = diff_stat_spans(DiffStat {
+            added: 9000,
+            deleted: 1000,
+        });
+        assert_eq!(spans_text(&spans), "  +9000 -1000 =10000");
+        assert_eq!(spans[5].style.fg, Some(Color::Red));
+        assert!(spans[5].style.add_modifier.contains(Modifier::BOLD));
+    }
 
     #[test]
     fn mergeable_marker_covers_all_states() {

@@ -638,11 +638,34 @@ impl Mergeable {
     }
 }
 
+/// 總和（新增 + 刪除）達到這個行數就視為「太大」，預覽標題列改用紅色標示。
+pub const DIFF_STAT_DANGER_THRESHOLD: u32 = 10000;
+
+/// PR 的新增／刪除行數，取自 GitHub 的 `additions`／`deletions`——與 PR 頁面
+/// 「Files changed」的數字一致，base 用的是該 PR 實際的 base 分支。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct DiffStat {
+    pub added: u32,
+    pub deleted: u32,
+}
+
+impl DiffStat {
+    pub fn total(&self) -> u32 {
+        self.added.saturating_add(self.deleted)
+    }
+
+    pub fn is_danger(&self) -> bool {
+        self.total() >= DIFF_STAT_DANGER_THRESHOLD
+    }
+}
+
 #[derive(Debug, Default)]
 pub struct GhTimelinePage {
     pub items: Vec<GhTimelineItem>,
     pub next_cursor: Option<String>,
     pub mergeable: Option<Mergeable>,
+    /// Issue 沒有這個欄位，一律 `None`。
+    pub diff_stat: Option<DiffStat>,
 }
 
 /// issue 與 PR 的 timeline 是兩個不同的 union：`Issue.timelineItems` 給的是
@@ -660,6 +683,8 @@ fn build_timeline_query(kind: GhItemKind) -> String {
             // 本身沒有這個欄位，只在 `PullRequestReviewThread` 上。跟 timelineItems
             // 平行查詢，回應裡靠 comment id 對應回去（見 parse_timeline_graphql）。
             r#"mergeable
+                    additions
+                    deletions
                     reviewThreads(first:100) {
                         nodes { isResolved comments(first:20) { nodes { id } } }
                     }"#,
@@ -755,6 +780,10 @@ fn parse_timeline_graphql(json: &str, kind: GhItemKind) -> Result<GhTimelinePage
         items,
         next_cursor,
         mergeable: container.mergeable.as_deref().and_then(Mergeable::from_api),
+        diff_stat: container
+            .additions
+            .zip(container.deletions)
+            .map(|(added, deleted)| DiffStat { added, deleted }),
     })
 }
 
@@ -779,6 +808,10 @@ struct GqlTimelineRepo {
 struct GqlTimelineContainer {
     #[serde(default)]
     mergeable: Option<String>,
+    #[serde(default)]
+    additions: Option<u32>,
+    #[serde(default)]
+    deletions: Option<u32>,
     timeline_items: GqlTimelineConn,
     #[serde(default)]
     review_threads: GqlConnection<GqlReviewThread>,
@@ -1508,6 +1541,49 @@ mod tests {
         assert_eq!(page.mergeable, None);
     }
 
+    fn timeline_json_with_stat(stat_fields: &str) -> String {
+        format!(
+            r#"{{
+                "data": {{
+                    "repository": {{
+                        "pullRequest": {{
+                            {stat_fields}
+                            "timelineItems": {{
+                                "pageInfo": {{"hasNextPage": false, "endCursor": null}},
+                                "nodes": []
+                            }}
+                        }}
+                    }}
+                }}
+            }}"#
+        )
+    }
+
+    #[test]
+    fn parse_timeline_diff_stat() {
+        let json = timeline_json_with_stat(r#""additions": 600, "deletions": 71,"#);
+        let page = parse_timeline_graphql(&json, GhItemKind::PullRequest).unwrap();
+        let stat = page.diff_stat.unwrap();
+        assert_eq!((stat.added, stat.deleted, stat.total()), (600, 71, 671));
+        assert!(!stat.is_danger());
+
+        // 缺欄位（或只有其中一個）不顯示，而不是顯示成 +0 -0。
+        let json = timeline_json_with_stat("");
+        let page = parse_timeline_graphql(&json, GhItemKind::PullRequest).unwrap();
+        assert_eq!(page.diff_stat, None);
+        let json = timeline_json_with_stat(r#""additions": 5,"#);
+        let page = parse_timeline_graphql(&json, GhItemKind::PullRequest).unwrap();
+        assert_eq!(page.diff_stat, None);
+    }
+
+    #[test]
+    fn diff_stat_danger_starts_at_threshold() {
+        let stat = |added, deleted| DiffStat { added, deleted };
+        assert!(!stat(9000, 999).is_danger());
+        assert!(stat(9000, 1000).is_danger());
+        assert!(stat(u32::MAX, u32::MAX).is_danger());
+    }
+
     /// issue 的 timeline union 不含 `PullRequestCommit`，也沒有 `mergeable`。
     /// 只要有一項漏了分岔，GitHub 就會退回整個查詢，detail 畫面只剩
     /// "comments failed"。
@@ -1518,12 +1594,16 @@ mod tests {
         assert!(!q.contains("PullRequestCommit"));
         assert!(!q.contains("PULL_REQUEST_COMMIT"));
         assert!(!q.contains("mergeable"));
+        assert!(!q.contains("additions"));
+        assert!(!q.contains("deletions"));
         assert!(!q.contains("PullRequestReview"));
         assert!(!q.contains("PULL_REQUEST_REVIEW"));
         assert!(!q.contains("reviewThreads"));
 
         let q = build_timeline_query(GhItemKind::PullRequest);
         assert!(q.contains("pullRequest(number:$number)"));
+        assert!(q.contains("additions"));
+        assert!(q.contains("deletions"));
         assert!(q.contains("PullRequestCommit"));
         assert!(q.contains("PULL_REQUEST_COMMIT"));
         assert!(q.contains("mergeable"));

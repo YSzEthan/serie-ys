@@ -4,11 +4,14 @@ use ratatui::{
     widgets::{Paragraph, Wrap},
 };
 
-use crate::github::Mergeable;
+use crate::github::{DiffStat, Mergeable};
 
 use super::{
     render::{label_spans, state_color},
-    timeline::{build_timeline, mergeable_marker, TimelineEntry, TimelineLoad, TimelineStage},
+    timeline::{
+        build_timeline, diff_stat_spans, mergeable_marker, TimelineEntry, TimelineLoad,
+        TimelineStage,
+    },
     GitHubTab, Section,
 };
 
@@ -75,6 +78,9 @@ pub(super) fn build_preview_content(
         ];
         if let Some((text, color)) = mergeable_marker(input.entry.and_then(|e| e.mergeable)) {
             spans.push(Span::styled(text, Style::default().fg(color)));
+        }
+        if let Some(stat) = input.entry.and_then(|e| e.diff_stat) {
+            spans.extend(diff_stat_spans(stat));
         }
         lines.push(Line::from(spans));
     }
@@ -156,6 +162,7 @@ impl PreviewInput<'_> {
             has_more: self.entry.is_some_and(|e| e.next_cursor.is_some()),
             loading_more: self.entry.is_some_and(|e| e.loading_more),
             mergeable: self.entry.and_then(|e| e.mergeable),
+            diff_stat: self.entry.and_then(|e| e.diff_stat),
             rev: self.entry.map_or(0, |e| e.rev),
             expand_commits: self.expand_commits,
             body_rev: self.body_rev,
@@ -201,6 +208,7 @@ struct PreviewKey {
     has_more: bool,
     loading_more: bool,
     mergeable: Option<Mergeable>,
+    diff_stat: Option<DiffStat>,
     /// entry.rev——item_count/mergeable 在 CI 狀態變化前後可能完全不變，
     /// 沒有這個欄位，原地替換後的新內容會被舊 cache 蓋住，畫面不動。
     rev: u64,
@@ -425,6 +433,41 @@ mod tests {
                 .any(|l| l.spans.iter().any(|s| s.content.contains("(mergeable)"))),
             "rebuilt content must reflect the new mergeable state, got: {:?}",
             cache.lines()
+        );
+    }
+
+    /// diff_stat 同樣掛在 TimelineEntry 上：cache key 要獨立追蹤它，且統計
+    /// 要出現在 `base ← head` 那一列的 mergeable 標記右邊。
+    #[test]
+    fn get_or_build_rebuilds_and_shows_diff_stat_on_the_branch_line() {
+        let mut cache = PreviewCache::default();
+
+        cache.get_or_build(&pr_input(&loaded_entry(Some(Mergeable::Mergeable))));
+        let mut entry = loaded_entry(Some(Mergeable::Mergeable));
+        entry.diff_stat = Some(DiffStat {
+            added: 600,
+            deleted: 71,
+        });
+        cache.get_or_build(&pr_input(&entry));
+
+        assert_eq!(
+            cache.build_count, 2,
+            "diff_stat change must invalidate the cache"
+        );
+        let branch_line: String = cache
+            .lines()
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .find(|t| t.contains("(mergeable)"))
+            .expect("branch line present");
+        assert!(
+            branch_line.ends_with("(mergeable)  +600 -71 =671"),
+            "got: {branch_line:?}"
         );
     }
 

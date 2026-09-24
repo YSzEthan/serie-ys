@@ -471,6 +471,7 @@ impl<'a> GitHubView<'a> {
         entry.items.extend(page.items);
         entry.next_cursor = page.next_cursor;
         entry.mergeable = page.mergeable;
+        entry.diff_stat = page.diff_stat;
         entry.state = TimelineLoad::Loaded;
         entry.loading_more = false;
         entry.refreshing = false;
@@ -1103,6 +1104,7 @@ mod tests {
             items,
             next_cursor,
             mergeable: None,
+            diff_stat: None,
         }
     }
 
