@@ -1,6 +1,6 @@
 [package]
 name = "ysgit"
-version = "4.1.0"
+version = "4.2.0"
 description = "Git Graph in Terminal"
 authors = ["YSEthan"]
 homepage = "https://github.com/YSzEthan/serie-ys"

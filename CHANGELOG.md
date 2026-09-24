@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.2.0](https://github.com/YSzEthan/serie-ys/compare/v4.1.0...v4.2.0) (2026-09-24)
+
+
+### Features
+
+* PR preview base ← head 列顯示變更行數，內容區段分隔線打滿寬度 (#106) (#108) ([3da21ac](https://github.com/YSzEthan/serie-ys/commit/3da21ac6ab9b3f195db3d0de499355639a01aaed))
+
 ## [4.1.0](https://github.com/YSzEthan/serie-ys/compare/v4.0.0...v4.1.0) (2026-09-17)
 
 
