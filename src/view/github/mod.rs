@@ -606,7 +606,7 @@ impl<'a> GitHubView<'a> {
     /// 對別的模組是私有的，而「哪些狀態組合會長出不同提示」也只有這個模組知道。
     #[cfg(test)]
     pub(crate) fn every_status_hint() -> Vec<HintSpec> {
-        use crate::github::{GhAuthor, GhRelatedIssue};
+        use crate::github::{DiffStat, GhAuthor, GhRelatedIssue};
 
         let author = || GhAuthor {
             login: "alice".to_string(),
@@ -648,6 +648,7 @@ impl<'a> GitHubView<'a> {
             closed_at: None,
             updated_at: String::new(),
             linked_issues,
+            diff_stat: DiffStat::default(),
         };
 
         let data = GitHubData {
@@ -886,6 +887,7 @@ impl<'a> GitHubView<'a> {
                 extra: SelectedItemExtra::PullRequest {
                     base_ref_name: pr.base_ref_name.as_str(),
                     head_ref_name: pr.head_ref_name.as_str(),
+                    diff_stat: pr.diff_stat,
                 },
             }),
         };
@@ -907,7 +909,7 @@ mod tests {
     use ratatui::{backend::TestBackend, Terminal};
 
     use crate::github::{
-        GhAuthor, GhCommit, GhReviewComment, GhReviewCommentConn, GhStatusCheckRollup,
+        DiffStat, GhAuthor, GhCommit, GhReviewComment, GhReviewCommentConn, GhStatusCheckRollup,
         GhTimelineItem, Mergeable,
     };
 
@@ -1018,6 +1020,7 @@ mod tests {
             closed_at: None,
             updated_at: String::new(),
             linked_issues: Vec::new(),
+            diff_stat: DiffStat::default(),
         };
 
         let (tx, rx) = Sender::channel_for_test();
@@ -1984,6 +1987,27 @@ mod tests {
         assert_eq!(
             rendered_mergeable_marker(&view),
             Some(("  (conflicts)".to_string(), Some(Color::Red)))
+        );
+    }
+
+    /// 行數來自 PR 清單本身（`pr.diff_stat`），不是 timeline——不用先
+    /// `append_timeline_items` 就該渲染出來。
+    #[test]
+    fn diff_stat_renders_into_the_base_head_line() {
+        let mut view = view_with_body("body".to_string());
+        view.pull_requests[0].diff_stat = DiffStat {
+            additions: 600,
+            deletions: 71,
+        };
+        let (lines, _) = build_preview_content(&view.preview_input(40));
+        let rendered: String = lines
+            .iter()
+            .find(|l| l.spans.iter().any(|s| s.content.contains("←")))
+            .map(|l| l.spans.iter().map(|s| s.content.to_string()).collect())
+            .unwrap_or_default();
+        assert!(
+            rendered.contains("+600") && rendered.contains("-71") && rendered.contains("=671"),
+            "base ← head line must carry the diff stat, got: {rendered:?}"
         );
     }
 

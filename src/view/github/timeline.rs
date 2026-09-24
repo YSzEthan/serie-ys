@@ -3,7 +3,7 @@ use ratatui::{
     text::{Line, Span},
 };
 
-use crate::github::{GhTimelineItem, Mergeable};
+use crate::github::{DiffStat, GhTimelineItem, Mergeable};
 
 use super::Section;
 
@@ -374,6 +374,31 @@ pub(super) fn mergeable_marker(state: Option<Mergeable>) -> Option<(&'static str
     }
 }
 
+/// 總和達到這個門檻，代表這個 PR 通常該拆分——用紅色加粗標示出來。
+const DIFF_STAT_DANGER: u32 = 10_000;
+
+/// `base ← head` 那一列的變更行數：`+新增 -刪除 =總和`。總和達到
+/// [`DIFF_STAT_DANGER`] 時改紅色加粗。
+pub(super) fn diff_stat_spans(stat: DiffStat) -> [Span<'static>; 3] {
+    let total = stat.additions.saturating_add(stat.deletions);
+    let total_style = if total >= DIFF_STAT_DANGER {
+        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(Color::White)
+    };
+    [
+        Span::styled(
+            format!("  +{}", stat.additions),
+            Style::default().fg(Color::Green),
+        ),
+        Span::styled(
+            format!(" -{}", stat.deletions),
+            Style::default().fg(Color::Red),
+        ),
+        Span::styled(format!(" ={total}"), total_style),
+    ]
+}
+
 fn commit_line(oid: &str, headline: &str, ci_state: Option<&str>, width: usize) -> Line<'static> {
     let (marker, marker_color) = commit_ci_marker(ci_state);
     let prefix_width = console::measure_text_width(marker) + console::measure_text_width(oid) + 2;
@@ -414,6 +439,41 @@ mod tests {
         // GitHub 的 `UNKNOWN` 跟「這是 Issue 不是 PR」都會變成 `None`——
         // 兩者都不該顯示標記。
         assert_eq!(mergeable_marker(None), None);
+    }
+
+    #[test]
+    fn diff_stat_spans_colors_additions_and_deletions() {
+        let spans = diff_stat_spans(DiffStat {
+            additions: 600,
+            deletions: 71,
+        });
+        assert_eq!(spans[0].content, "  +600");
+        assert_eq!(spans[0].style.fg, Some(Color::Green));
+        assert_eq!(spans[1].content, " -71");
+        assert_eq!(spans[1].style.fg, Some(Color::Red));
+        assert_eq!(spans[2].content, " =671");
+    }
+
+    #[test]
+    fn diff_stat_spans_total_below_danger_threshold_is_white() {
+        let spans = diff_stat_spans(DiffStat {
+            additions: 9999,
+            deletions: 0,
+        });
+        assert_eq!(spans[2].content, " =9999");
+        assert_eq!(spans[2].style.fg, Some(Color::White));
+        assert!(!spans[2].style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn diff_stat_spans_total_at_danger_threshold_is_red_and_bold() {
+        let spans = diff_stat_spans(DiffStat {
+            additions: 9000,
+            deletions: 1000,
+        });
+        assert_eq!(spans[2].content, " =10000");
+        assert_eq!(spans[2].style.fg, Some(Color::Red));
+        assert!(spans[2].style.add_modifier.contains(Modifier::BOLD));
     }
 
     #[test]
