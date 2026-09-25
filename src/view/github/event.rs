@@ -138,6 +138,11 @@ impl<'a> GitHubView<'a> {
             UserEvent::ToggleCommitLog if matches!(self.active_tab, GitHubTab::PullRequests) => {
                 self.toggle_commit_log();
             }
+            // `t` 在這個 view 沒有既有用途（`CreateTag` 只在 commit 清單有意義），
+            // 借用來切換 label 顯示模式，見 `super::LabelMode` 的註解。
+            UserEvent::CreateTag => {
+                self.toggle_label_mode();
+            }
             UserEvent::Refresh => {
                 self.dispatch_refresh();
             }
@@ -266,6 +271,10 @@ impl<'a> GitHubView<'a> {
             }
             UserEvent::ToggleCommitLog if matches!(self.active_tab, GitHubTab::PullRequests) => {
                 self.toggle_commit_log();
+            }
+            // 同上（list 那份 arm）：借用 `CreateTag` 切換 label 顯示模式。
+            UserEvent::CreateTag => {
+                self.toggle_label_mode();
             }
             _ => {}
         }

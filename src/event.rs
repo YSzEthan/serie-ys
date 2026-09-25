@@ -1089,7 +1089,7 @@ impl UserEvent {
             UserEvent::GoToNext => "下一個符合項",
             UserEvent::GoToPrevious => "上一個符合項",
             UserEvent::Confirm => "確認",
-            UserEvent::RefList => "開啟 refs 清單",
+            UserEvent::RefList => "開啟／關閉 refs 清單",
             UserEvent::Search => "開始搜尋",
             UserEvent::Filter => "開始過濾",
             UserEvent::UserCommand(_) => return None,

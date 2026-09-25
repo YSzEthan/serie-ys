@@ -81,7 +81,7 @@ fn build_hotkey_hints(view: &View, ctx: &AppContext) -> Line<'static> {
             h(&[UserEvent::DeleteRef], "delete"),
             h(&[UserEvent::Refresh], "refresh"),
             h(&[UserEvent::HelpToggle], "help"),
-            h(&[UserEvent::Cancel], "close"),
+            h(&[UserEvent::Cancel, UserEvent::RefList], "close"),
         ],
         View::CreateTag(_) | View::DeleteTag(_) | View::DeleteRef(_) => vec![
             h(&[UserEvent::Confirm], "confirm"),

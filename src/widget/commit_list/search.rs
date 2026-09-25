@@ -314,9 +314,9 @@ impl<'a> CommitListState<'a> {
     }
 
     /// 重算比對結果並重建 `Applied`。刻意不移動游標：
-    /// `select_current_or_next_match_index` 會把目標釘到 viewport 最上緣，這裡
-    /// 不要這個副作用。`restore_search` 與 `update_search_after_change`
-    /// 的 `Applied` 分支共用。
+    /// `select_current_or_next_match_index` 會把目標放到距上緣 scrolloff
+    /// 列的位置，這裡不要這個副作用。`restore_search` 與
+    /// `update_search_after_change` 的 `Applied` 分支共用。
     fn reapply_search(&mut self) {
         self.update_search_matches();
         self.search_state = SearchState::Applied {
@@ -855,6 +855,7 @@ mod tests {
             None,
             FxHashSet::default(),
             None,
+            0,
         );
         state.reset_height(10);
         f(&mut state)

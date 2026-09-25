@@ -33,7 +33,7 @@ use crate::{
     keybind::KeyBind,
     process::run_with_timeout,
     update::UpdateSettings,
-    view::{dispatch_delete_branch, RefreshViewContext, RefsOrigin, View, ViewContext},
+    view::{dispatch_delete_branch, LabelMode, RefreshViewContext, RefsOrigin, View, ViewContext},
     widget::{
         commit_list::{CommitInfo, CommitListState, MatchOptions, RawCommitIdx},
         pending_overlay::PendingOverlay,
@@ -202,6 +202,11 @@ pub struct App<'a> {
     /// `None` 代表資料現在活在開著的 `GitHubView` 裡；兩者不會同時各存一份。
     github_data: Option<crate::github::GitHubData>,
     github_load: GitHubLoad,
+    /// GitHub 模式 labels 顯示名稱還是色塊（`t` 切換，重用 `CreateTag`
+    /// 事件——理由見 `view::github::LabelMode` 的註解）。session 內記住，
+    /// `open_github`/`close_github` 跟開著的 `GitHubView` 互相同步；重啟
+    /// serie 回預設（`LabelMode::default()`）。
+    github_label_mode: LabelMode,
     ctx: Rc<AppContext>,
     ec: &'a EventController,
     marquee_frame: u64,
@@ -331,6 +336,7 @@ impl<'a> App<'a> {
             filtered_colors,
             remote_only_commits,
             working_changes_opt,
+            ctx.ui_config.list.scrolloff as usize,
         );
         if let InitialSelection::Head = initial_selection {
             match repository.head() {
@@ -353,6 +359,7 @@ impl<'a> App<'a> {
             notice_message: None,
             github_data: None,
             github_load: GitHubLoad::Idle,
+            github_label_mode: LabelMode::default(),
             ctx,
             ec,
             marquee_frame: 0,
@@ -1299,10 +1306,10 @@ impl App<'_> {
         let Some(commit_list_state) = commit_list_state else {
             return;
         };
-        let refs: Vec<Ref> = self.repository.all_refs().into_iter().cloned().collect();
+        let refs = self.repository.all_refs();
         self.view = View::of_refs(
             commit_list_state,
-            refs,
+            &refs,
             origin,
             self.ctx.clone(),
             self.ec.sender(),
@@ -1406,11 +1413,9 @@ impl App<'_> {
                 return;
             };
             let ref_list_state = view.take_ref_list_state();
-            let refs = view.take_refs();
             self.view = View::of_delete_ref(
                 commit_list_state,
                 ref_list_state,
-                refs,
                 self.repository.path().to_path_buf(),
                 ref_name,
                 ref_type,
@@ -1428,11 +1433,9 @@ impl App<'_> {
                 return;
             };
             let ref_list_state = view.take_ref_list_state();
-            let refs = view.take_refs();
             self.view = View::of_refs_with_state(
                 commit_list_state,
                 ref_list_state,
-                refs,
                 refs_origin,
                 self.ctx.clone(),
                 self.ec.sender(),
@@ -1540,7 +1543,7 @@ impl App<'_> {
         };
 
         let before_view = std::mem::take(&mut self.view);
-        self.view = View::of_github(before_view, data, self.ec.sender());
+        self.view = View::of_github(before_view, data, self.github_label_mode, self.ec.sender());
     }
 
     fn on_github_data_loaded(&mut self, data: crate::github::GitHubData, warnings: Vec<String>) {
@@ -1723,6 +1726,7 @@ impl App<'_> {
 
     fn close_github(&mut self) {
         if let View::GitHub(ref mut view) = self.view {
+            self.github_label_mode = view.label_mode();
             self.github_data = Some(view.take_data());
             self.view = view.take_before_view();
             self.view.request_graph_clear();

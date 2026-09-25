@@ -348,7 +348,7 @@ fn help_blocks(
     ];
 
     let refs = vec![
-        b(vec![UserEvent::Cancel],                    "關閉 refs 清單",         "Close refs list"),
+        b(vec![UserEvent::Cancel, UserEvent::RefList], "關閉 refs 清單",        "Close refs list"),
         b(vec![UserEvent::NavigateDown, UserEvent::SelectDown], "向下移動",     "Move down"),
         b(vec![UserEvent::NavigateUp,   UserEvent::SelectUp],   "向上移動",     "Move up"),
         b(vec![UserEvent::NavigateRight],             "展開節點",               "Open node"),
@@ -382,6 +382,7 @@ fn help_blocks(
         b(vec![UserEvent::ToggleIssueState],          "關閉／重開 issue 或 PR",  "Close/reopen issue or PR"),
         b(vec![UserEvent::TogglePrDraft],             "PR 定案／打回草稿",       "Mark PR ready / back to draft"),
         b(vec![UserEvent::ToggleCommitLog],           "展開／摺疊 commit 記錄",  "Expand/collapse commit log"),
+        b(vec![UserEvent::CreateTag],                 "label 顯示名稱／色塊",    "Toggle label names / color swatches"),
     ];
 
     let create_tag = vec![

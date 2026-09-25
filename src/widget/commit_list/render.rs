@@ -16,6 +16,7 @@ use crate::{
     config::UserListColumnType,
     git::{CommitHash, Head, Ref},
     graph::{Glyph, GlyphSet, TextCell},
+    widget::scroll,
 };
 
 use super::layout;
@@ -201,16 +202,13 @@ impl CommitList<'_> {
     fn update_state(&self, area: Rect, state: &mut CommitListState<'_>) {
         state.height = (area.height as usize).saturating_sub(state.inline_detail_height as usize);
 
-        if state.total > state.height && state.total - state.height < state.offset {
-            let diff = state.offset - (state.total - state.height);
-            state.selected += diff;
-            state.offset -= diff;
-        }
-        if state.selected >= state.height {
-            let diff = state.selected - state.height + 1;
-            state.selected -= diff;
-            state.offset += diff;
-        }
+        // resize 安全網：終端機縮放讓 height 變化時，把游標拉回可視範圍內。
+        // 跟游標移動共用同一個 `scroll::scrolled_offset`，scrolloff 傳 0——
+        // render 時不重新套用邊距（`state.scrolloff` 是移動／跳轉才有的
+        // 手感，resize 只需要保證游標沒有跑出畫面）。
+        let cursor = state.offset + state.selected;
+        state.offset = scroll::scrolled_offset(cursor, state.height, state.total, state.offset, 0);
+        state.selected = cursor.saturating_sub(state.offset);
         // 可見列的 text cell 是由 build_visible_rows 透過 rendering_commit_info_iter()
         // 隨需計算的，這也是「哪些列可見」的唯一真相來源 —— 不需要另外的
         // preload pass。
@@ -1181,6 +1179,7 @@ mod tests {
                 None,
                 FxHashSet::default(),
                 working,
+                0,
             );
             if opts.filtered {
                 state.set_show_remote_refs(false);
@@ -1701,6 +1700,7 @@ mod tests {
                 None,
                 FxHashSet::default(),
                 None,
+                0,
             );
             state.set_layout(CellWidthType::Double, false);
             state.set_show_remote_refs(false);

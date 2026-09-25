@@ -12,7 +12,7 @@ use crate::{
         create_tag::CreateTagView, delete_ref::DeleteRefView, delete_tag::DeleteTagView,
         detail::DetailView, github::GitHubView, help::HelpView, list::ListView, refs::RefsView,
         release_notes::ReleaseNotesView, shell::ShellView, user_command::UserCommandView,
-        RefsOrigin,
+        LabelMode, RefsOrigin,
     },
     widget::{
         commit_list::{CommitListState, MatchOptions, MatchQuery},
@@ -198,7 +198,7 @@ impl<'a> View<'a> {
 
     pub fn of_refs(
         commit_list_state: CommitListState<'a>,
-        refs: Vec<Ref>,
+        refs: &[&Ref],
         origin: RefsOrigin,
         ctx: Rc<AppContext>,
         tx: Sender,
@@ -215,7 +215,6 @@ impl<'a> View<'a> {
     pub fn of_refs_with_state(
         commit_list_state: CommitListState<'a>,
         ref_list_state: RefListState,
-        refs: Vec<Ref>,
         origin: RefsOrigin,
         ctx: Rc<AppContext>,
         tx: Sender,
@@ -223,7 +222,6 @@ impl<'a> View<'a> {
         View::Refs(Box::new(RefsView::with_state(
             commit_list_state,
             ref_list_state,
-            refs,
             origin,
             ctx,
             tx,
@@ -267,7 +265,6 @@ impl<'a> View<'a> {
     pub fn of_delete_ref(
         commit_list_state: CommitListState<'a>,
         ref_list_state: RefListState,
-        refs: Vec<Ref>,
         repo_path: PathBuf,
         ref_name: String,
         ref_type: RefType,
@@ -278,7 +275,6 @@ impl<'a> View<'a> {
         View::DeleteRef(Box::new(DeleteRefView::new(
             commit_list_state,
             ref_list_state,
-            refs,
             repo_path,
             ref_name,
             ref_type,
@@ -292,8 +288,15 @@ impl<'a> View<'a> {
         View::Help(Box::new(HelpView::new(before, ctx, tx)))
     }
 
-    pub fn of_github(before: View<'a>, data: crate::github::GitHubData, tx: Sender) -> Self {
-        View::GitHub(Box::new(GitHubView::new(before, data, tx)))
+    pub fn of_github(
+        before: View<'a>,
+        data: crate::github::GitHubData,
+        label_mode: LabelMode,
+        tx: Sender,
+    ) -> Self {
+        View::GitHub(Box::new(
+            GitHubView::new(before, data, tx).with_label_mode(label_mode),
+        ))
     }
 
     pub fn of_release_notes(

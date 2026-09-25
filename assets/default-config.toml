@@ -67,6 +67,7 @@ date_format = "%Y-%m-%d"
 date_width = 10
 date_local = true
 name_width = 20
+scrolloff = 15  # 游標與清單上下緣至少保留的列數，實際不超過清單高度的一半
 
 [ui.detail]
 date_format = "%Y-%m-%d %H:%M:%S %z"

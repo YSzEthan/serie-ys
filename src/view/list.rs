@@ -287,8 +287,8 @@ impl<'a> ListView<'a> {
         }
     }
 
-    /// child picker 選定候選後跳過去。用 `step_to_commit_hash`（保留 scroll
-    /// margin）而不是 `select_commit_hash`（會把目標釘到畫面最上緣）——跟
+    /// child picker 選定候選後跳過去。用 `step_to_commit_hash`（最小捲動）
+    /// 而不是 `select_commit_hash`（會把目標放到距上緣 scrolloff 列）——跟
     /// 剛好一個 child 時 `select_child()` 直接跳的手感要一致。
     pub fn select_commit_by_hash(&mut self, hash: &CommitHash) {
         self.as_mut_list_state().step_to_commit_hash(hash);
@@ -419,15 +419,16 @@ impl<'a> ListView<'a> {
     }
 
     /// 順序有影響，四步缺一不可：
-    /// 1. `reset_height` 先寫——`compute_selection`（selection 唯一入口）在
-    ///    `height == 0` 時永遠回 `None`，後面幾步的 `set_visible_selection`
-    ///    才會是有意義的動作，不是靠「height 還沒設，反正也是 no-op」撐著。
+    /// 1. `reset_height` 先寫——`place`（selection 唯一入口）在
+    ///    `height == 0` 時整個 no-op，後面幾步的 `set_visible_selection` /
+    ///    `restore_selected_row` 才會是有意義的動作，不是靠「height 還沒
+    ///    設，反正也是 no-op」撐著。
     /// 2. `set_show_remote_refs` + `restore_filter`——兩者都會重建
     ///    `filtered_indices`（改變 `total`）並把游標壓到 `VisibleIdx(0)`，
     ///    必須在動 selection *之前*。
-    /// 3. selection 還原（`select_first` / `select_commit_hash`）——目標被
-    ///    還原的 filter 藏起來時 `select_commit_hash` 自然不動，游標留在
-    ///    上一步的頂端。
+    /// 3. selection 還原（`select_first` / `select_commit_hash` +
+    ///    `restore_selected_row`）——目標被還原的 filter 藏起來時
+    ///    `select_commit_hash` 自然不動，游標留在上一步的頂端。
     /// 4. `restore_search`——要讀 `current_selected_raw()`，必須排在
     ///    selection 還原之後。
     ///
@@ -457,9 +458,7 @@ impl<'a> ListView<'a> {
             list_state.select_first();
         } else {
             list_state.select_commit_hash(commit_hash);
-            for _ in 0..*selected {
-                list_state.scroll_up();
-            }
+            list_state.restore_selected_row(*selected);
         }
         if let Some(search) = search {
             list_state.restore_search(search);

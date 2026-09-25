@@ -10,7 +10,7 @@ use crate::github::{GhIssue, GhPullRequest};
 
 use super::{
     preview::{borrow_lines, RowData},
-    GitHubFocus, GitHubTab, GitHubView, LoadState,
+    GitHubFocus, GitHubTab, GitHubView, LabelMode, LoadState,
 };
 
 /// 列表列的欄位配置：paragraph padding (1) + indicator (2)。
@@ -231,13 +231,13 @@ impl<'a> GitHubView<'a> {
             GitHubTab::Issues => self
                 .issues
                 .iter()
-                .map(|i| labels_display_width(&i.labels))
+                .map(|i| labels_display_width(&i.labels, self.label_mode))
                 .max()
                 .unwrap_or(0),
             GitHubTab::PullRequests => self
                 .pull_requests
                 .iter()
-                .map(|p| labels_display_width(&p.labels))
+                .map(|p| labels_display_width(&p.labels, self.label_mode))
                 .max()
                 .unwrap_or(0),
         }
@@ -258,8 +258,14 @@ impl<'a> GitHubView<'a> {
         let make_issue = |issue: &GhIssue, vis_i: usize| -> (RowData, bool) {
             let is_selected = vis_i == self.selected_index;
             let frame = is_selected.then_some(marquee_frame);
-            let (line, did_scroll) =
-                render_issue_line(issue, is_selected, pad, content_width, frame);
+            let (line, did_scroll) = render_issue_line(
+                issue,
+                is_selected,
+                self.label_mode,
+                pad,
+                content_width,
+                frame,
+            );
             (
                 RowData {
                     line,
@@ -272,7 +278,8 @@ impl<'a> GitHubView<'a> {
         let make_pr = |pr: &GhPullRequest, vis_i: usize| -> (RowData, bool) {
             let is_selected = vis_i == self.selected_index;
             let frame = is_selected.then_some(marquee_frame);
-            let (line, did_scroll) = render_pr_line(pr, is_selected, pad, content_width, frame);
+            let (line, did_scroll) =
+                render_pr_line(pr, is_selected, self.label_mode, pad, content_width, frame);
             (
                 RowData {
                     line,
@@ -500,6 +507,14 @@ fn hex_to_color(hex: &str) -> Color {
     Color::Yellow
 }
 
+fn label_color(label: &crate::github::GhLabel) -> Color {
+    label
+        .color
+        .as_deref()
+        .map(hex_to_color)
+        .unwrap_or(Color::Yellow)
+}
+
 pub(super) fn state_color(state: &str) -> Color {
     match state {
         "OPEN" => Color::Green,
@@ -515,12 +530,10 @@ pub(super) fn label_spans(labels: &[crate::github::GhLabel]) -> Vec<Span<'static
     }
     let mut spans = vec![Span::raw(" [")];
     for (i, label) in labels.iter().enumerate() {
-        let color = label
-            .color
-            .as_deref()
-            .map(hex_to_color)
-            .unwrap_or(Color::Yellow);
-        spans.push(Span::styled(label.name.clone(), Style::default().fg(color)));
+        spans.push(Span::styled(
+            label.name.clone(),
+            Style::default().fg(label_color(label)),
+        ));
         if i < labels.len() - 1 {
             spans.push(Span::raw(", "));
         }
@@ -529,11 +542,53 @@ pub(super) fn label_spans(labels: &[crate::github::GhLabel]) -> Vec<Span<'static
     spans
 }
 
+/// 精簡模式：每個 label 一個該顏色的方塊，緊密排列，不顯示名稱。用 `▮`
+/// （U+25AE，East Asian Width = Neutral）而不是看起來更方正的 `■`
+/// （U+25A0，Ambiguous）——CJK 終端機把 ambiguous 字元設成寬字元時，`■`
+/// 會佔 2 格但 `Span::width` 只算 1 格，label 一多 pad 就整排錯位。
+fn label_swatch_spans(labels: &[crate::github::GhLabel]) -> Vec<Span<'static>> {
+    if labels.is_empty() {
+        return vec![];
+    }
+    let mut spans = vec![Span::raw(" ")];
+    for label in labels {
+        spans.push(Span::styled("▮", Style::default().fg(label_color(label))));
+    }
+    spans
+}
+
+/// 依 `mode` 選擇 label 的呈現方式，是 render 這行跟量寬度唯一的共用來源
+/// ——`labels_display_width` 直接加總這裡吐出的 span 寬度，不會另外手算
+/// 一次公式，兩邊就不會漂移。
+fn row_label_spans(labels: &[crate::github::GhLabel], mode: LabelMode) -> Vec<Span<'static>> {
+    match mode {
+        LabelMode::Names => label_spans(labels),
+        LabelMode::Swatches => label_swatch_spans(labels),
+    }
+}
+
+/// `row_label_spans(labels, mode)` 之後補上 pad 空格跟一個分隔空格，
+/// `render_issue_line` / `render_pr_line` 共用。
+fn label_cell(
+    labels: &[crate::github::GhLabel],
+    mode: LabelMode,
+    pad: usize,
+) -> Vec<Span<'static>> {
+    let mut spans = row_label_spans(labels, mode);
+    let used = spans.iter().map(Span::width).sum::<usize>();
+    if pad > used {
+        spans.push(Span::raw(" ".repeat(pad - used)));
+    }
+    spans.push(Span::raw(" "));
+    spans
+}
+
 /// 回傳 `(line, scrolled)`。`scrolled=true` 代表 title+author 尾段因溢出
 /// 而套用了跑馬燈效果——呼叫端要讓跑馬燈計時器繼續跳動。
 fn render_issue_line(
     issue: &GhIssue,
     selected: bool,
+    label_mode: LabelMode,
     labels_pad_width: usize,
     content_width: usize,
     marquee_frame: Option<u64>,
@@ -561,12 +616,7 @@ fn render_issue_line(
             Style::default().fg(state_color),
         ),
     ];
-    spans.extend(label_spans(&issue.labels));
-    let used = labels_display_width(&issue.labels);
-    if labels_pad_width > used {
-        spans.push(Span::raw(" ".repeat(labels_pad_width - used)));
-    }
-    spans.push(Span::raw(" "));
+    spans.extend(label_cell(&issue.labels, label_mode, labels_pad_width));
 
     let tail = format!("{}  @{}", issue.title, issue.author.login);
     // 2 (indicator) + 7 (#N 區塊 `#XXXXX `) + 6 (state `{:<6}`) + labels_pad + 1 (空格)
@@ -609,6 +659,7 @@ fn tail_spans(
 fn render_pr_line(
     pr: &GhPullRequest,
     selected: bool,
+    label_mode: LabelMode,
     labels_pad_width: usize,
     content_width: usize,
     marquee_frame: Option<u64>,
@@ -642,12 +693,7 @@ fn render_pr_line(
             Style::default().fg(state_color),
         ),
     ];
-    spans.extend(label_spans(&pr.labels));
-    let used = labels_display_width(&pr.labels);
-    if labels_pad_width > used {
-        spans.push(Span::raw(" ".repeat(labels_pad_width - used)));
-    }
-    spans.push(Span::raw(" "));
+    spans.extend(label_cell(&pr.labels, label_mode, labels_pad_width));
 
     let tail = format!("{}  ← {}  @{}", pr.title, pr.head_ref_name, pr.author.login);
     let prefix_width = 2 + 7 + 6 + labels_pad_width + 1;
@@ -661,16 +707,9 @@ fn render_pr_line(
     (Line::from(spans), scrolled)
 }
 
-/// `label_spans(labels)` 佔用的可視格數總和：`" [a, b]"`。
-fn labels_display_width(labels: &[crate::github::GhLabel]) -> usize {
-    if labels.is_empty() {
-        return 0;
-    }
-    let names: usize = labels
-        .iter()
-        .map(|l| console::measure_text_width(&l.name))
-        .sum();
-    let seps = labels.len().saturating_sub(1) * 2; // ", " 分隔符
-                                                   // " [" + names + seps + "]"
-    3 + names + seps
+/// `row_label_spans(labels, mode)` 佔用的可視格數總和。直接加總 span 寬度
+/// 而不是另外手算一次公式，是唯一的寬度來源——不然色塊格式（例如 `▮`
+/// 之間要不要留空白）改了，這裡忘記同步就會悄悄跟畫面上的實際寬度脫鉤。
+fn labels_display_width(labels: &[crate::github::GhLabel], mode: LabelMode) -> usize {
+    row_label_spans(labels, mode).iter().map(Span::width).sum()
 }

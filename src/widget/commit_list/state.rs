@@ -6,12 +6,10 @@ use tui_input::Input;
 
 use crate::git::{CommitHash, Head, Ref, WorkingChanges};
 use crate::graph::{CellWidthType, Graph, TextCell};
+use crate::widget::scroll;
 
 use super::search::{FilterState, MatchOptions, SearchMatch, SearchState};
 use super::{ChildPickOption, CommitInfo, FilteredIdx, RawCommitIdx, VisibleIdx};
-
-/// 游標與 viewport 上下邊緣保持的最小距離；撞進這個 margin 時改由 offset 滾動。
-const CURSOR_SCROLL_MARGIN: usize = 15;
 
 /// `CommitListState::select_child` 的結果。標 `#[must_use]`：忽略回傳值等於
 /// 假裝分支點一定只有一個 child，`Ambiguous` 那份候選清單會被靜靜丟掉。
@@ -104,6 +102,10 @@ pub struct CommitListState<'a> {
     pub(super) offset: usize,
     pub(super) total: usize,
     pub(super) height: usize,
+    /// 游標與清單上下緣至少保留的列數（`ui.list.scrolloff`，0 = 沒有邊距）。
+    /// 實際生效值見 `effective_scrolloff()`——矮畫面會再夾一次，不能直接用
+    /// 這個原始值算邊界。
+    pub(super) scrolloff: usize,
 
     pub(super) inline_detail_height: u16,
 
@@ -131,6 +133,7 @@ impl<'a> CommitListState<'a> {
         filtered_graph_colors: Option<FxHashMap<CommitHash, Color>>,
         remote_only_commits: FxHashSet<CommitHash>,
         working_changes: Option<WorkingChanges>,
+        scrolloff: usize,
     ) -> CommitListState<'a> {
         let commit_count = commits.len();
         let has_virtual_row = working_changes.as_ref().is_some_and(|wc| !wc.is_empty());
@@ -181,6 +184,7 @@ impl<'a> CommitListState<'a> {
             offset: 0,
             total,
             height: 0,
+            scrolloff,
             inline_detail_height: 0,
             show_remote_refs: true,
             remote_only_commits,
@@ -343,8 +347,11 @@ impl<'a> CommitListState<'a> {
     }
 
     // --- 座標系 accessor / 轉換 ---------------------------------------------
-    // 不變式：`self.offset` 與 `self.selected` 的任何直接賦值都必須走
-    // `set_visible_selection`，避免 offset + selected 越過 `total`。
+    // 不變式：`self.offset` 與 `self.selected` 只能透過 `place`（或呼叫它的
+    // `set_visible_selection` / `select_visible_index`）寫入，避免
+    // offset + selected 越過 `total`。唯一例外是 `rebuild_filtered_indices`
+    // 開頭的歸零——`total` 可能因 filter 縮到 0，這時 `place` 是 no-op，
+    // 要靠那兩行防止殘留舊值。
 
     pub(super) fn commit(&self, idx: RawCommitIdx) -> &CommitInfo<'a> {
         &self.commits[idx.0]
@@ -385,12 +392,39 @@ impl<'a> CommitListState<'a> {
         VisibleIdx(self.offset + self.selected)
     }
 
-    /// 唯一允許寫 `self.offset` / `self.selected` 的入口（相對位移除外）。
+    /// 跳轉：把 `target` 放到距上緣 `effective_scrolloff()` 列的位置（傳給
+    /// `place` 的 `prev_offset` 是 `usize::MAX`，一定會被夾到這個位置，等
+    /// 同「捲到能看見 target 的最小 offset」）。`select_ref`／
+    /// `select_commit_hash`／搜尋 n／N／filter 重建都走這裡。
     pub(super) fn set_visible_selection(&mut self, target: VisibleIdx) {
-        if let Some((offset, selected)) = compute_selection(target, self.total, self.height) {
-            self.offset = offset;
-            self.selected = selected;
+        self.place(target, usize::MAX);
+    }
+
+    /// 移動：以目前 `self.offset` 為捲動基準，只在 `target` 即將超出可視
+    /// margin 範圍時才捲動一格。`select_next`／`select_prev`／`step_to_raw`
+    /// 都走這裡，跟 `set_visible_selection` 的差異只在傳給 `place` 的
+    /// `prev_offset`。
+    fn select_visible_index(&mut self, target: VisibleIdx) {
+        self.place(target, self.offset);
+    }
+
+    /// 唯一寫 `self.offset`／`self.selected` 的地方，見上方不變式註解。
+    /// `prev_offset` 決定 `scroll::scrolled_offset` 的捲動基準：
+    /// `usize::MAX` 得到「跳轉」語意（永遠會被夾到 margin 邊界），
+    /// `self.offset` 得到「移動」語意（最小捲動）。`target >= self.total`
+    /// 或 `height == 0` 時整個 no-op，維持 `selected < height` 的不變式。
+    fn place(&mut self, target: VisibleIdx, prev_offset: usize) {
+        if target.0 >= self.total || self.height == 0 {
+            return;
         }
+        self.offset = scroll::scrolled_offset(
+            target.0,
+            self.height,
+            self.total,
+            prev_offset,
+            self.scrolloff,
+        );
+        self.selected = target.0 - self.offset;
     }
 
     pub fn working_changes(&self) -> Option<&WorkingChanges> {
@@ -434,26 +468,15 @@ impl<'a> CommitListState<'a> {
         self.set_visible_selection(VisibleIdx(clamped));
     }
 
-    fn effective_scroll_margin(&self) -> usize {
-        CURSOR_SCROLL_MARGIN.min(self.height / 3)
+    /// `self.scrolloff` 的實際生效值：矮畫面會再夾到 `(height-1)/2`，避免
+    /// 上下邊距互相矛盾。
+    fn effective_scrolloff(&self) -> usize {
+        scroll::effective_scrolloff(self.scrolloff, self.height)
     }
 
     pub fn select_next(&mut self) {
-        if self.total == 0 || self.height == 0 {
-            return;
-        }
-        if self.offset + self.selected + 1 >= self.total {
-            return;
-        }
-        let margin = self.effective_scroll_margin();
-        let can_scroll_more = self.offset + self.height < self.total;
-        let at_bottom_margin = self.selected + margin + 1 >= self.height;
-
-        if at_bottom_margin && can_scroll_more {
-            self.offset += 1;
-        } else {
-            self.selected += 1;
-        }
+        let next = self.current_visible().0 + 1;
+        self.select_visible_index(VisibleIdx(next)); // 越界或 height==0 交給 place 擋
     }
 
     pub fn select_parent(&mut self) {
@@ -466,22 +489,15 @@ impl<'a> CommitListState<'a> {
         self.step_to_raw(raw);
     }
 
-    /// 逐格把游標移到 `raw` 所在的可視列，沿用 select_next / select_prev 的
-    /// scroll margin 行為。`raw` 被 filter 濾掉時靜默不動。迭代次數算好
-    /// 才跑（而非以「游標到了沒」當終止條件），`height == 0` 時
-    /// select_next / select_prev 各自是 no-op，迴圈跑完游標原地不動——
-    /// 不需要額外的早退,也不會有選不到就空轉的風險。
+    /// 把游標移到 `raw` 所在的可視列，沿用 `select_next`／`select_prev` 的
+    /// scrolloff 手感——以目前 offset 為基準做最小捲動，不會像
+    /// `set_visible_selection` 那樣把目標釘到距上緣 margin 列。`raw` 被
+    /// filter 濾掉時靜默不動。
     fn step_to_raw(&mut self, raw: RawCommitIdx) {
         let Some(target) = self.raw_to_visible(raw) else {
             return;
         };
-        let current = self.current_visible().0;
-        for _ in target.0..current {
-            self.select_prev();
-        }
-        for _ in current..target.0 {
-            self.select_next();
-        }
+        self.select_visible_index(target);
     }
 
     pub fn selected_commit_parent_hash(&self) -> Option<&CommitHash> {
@@ -548,17 +564,8 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn select_prev(&mut self) {
-        if self.height == 0 {
-            return;
-        }
-        let at_top_margin = self.selected < self.effective_scroll_margin();
-
-        if at_top_margin && self.offset > 0 {
-            self.offset -= 1;
-        } else if self.selected > 0 {
-            self.selected -= 1;
-        } else if self.offset > 0 {
-            self.offset -= 1;
+        if let Some(prev) = self.current_visible().0.checked_sub(1) {
+            self.select_visible_index(VisibleIdx(prev)); // height==0 交給 place 擋
         }
     }
 
@@ -574,11 +581,13 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn scroll_down(&mut self) {
+        if self.height == 0 {
+            return;
+        }
         if self.offset + self.height < self.total {
             self.offset += 1;
-            if self.selected > 0 {
-                self.selected -= 1;
-            }
+            let margin = self.effective_scrolloff();
+            self.selected = self.selected.saturating_sub(1).max(margin);
         }
     }
 
@@ -588,9 +597,8 @@ impl<'a> CommitListState<'a> {
         }
         if self.offset > 0 {
             self.offset -= 1;
-            if self.selected < self.height - 1 {
-                self.selected += 1;
-            }
+            let margin = self.effective_scrolloff();
+            self.selected = (self.selected + 1).min(self.height - 1 - margin);
         }
     }
 
@@ -633,6 +641,22 @@ impl<'a> CommitListState<'a> {
         self.height = height;
     }
 
+    /// refresh 還原：把目前選中的 commit（`current_visible()`，不重新查
+    /// hash——commit 若已經不在了，呼叫端的 `select_commit_hash` 早就沒有
+    /// 移動游標，這裡只重新定位捲動視窗）放回螢幕上第 `row` 列。
+    ///
+    /// `prev_offset = target - row` 正是「offset 使得 selected == row」的
+    /// 算式，交給 `place` 再過一次 `scroll::scrolled_offset` 的邊界檢查——
+    /// `row` 落在 margin 帶內、或目標剛好在最後一頁時，會被自動修正，不
+    /// 會像舊版 `scroll_up()` 迴圈那樣在最後一頁選到別的 commit（total=100,
+    /// height=10, offset=90, row=9 這組輸入下，舊版會把 offset 拉到 81，
+    /// 選取的 commit 就換了）。
+    pub fn restore_selected_row(&mut self, row: usize) {
+        let target = self.current_visible();
+        let prev_offset = target.0.saturating_sub(row);
+        self.place(target, prev_offset);
+    }
+
     pub fn select_ref(&mut self, ref_name: &str) {
         let Some(&raw) = self.ref_name_to_commit_index_map.get(ref_name) else {
             return;
@@ -651,12 +675,12 @@ impl<'a> CommitListState<'a> {
         }
     }
 
-    /// 跟 `select_commit_hash` 的差異在捲動手感：這支走 `step_to_raw`，比照
-    /// 上下移動的 scroll margin 規則捲動；`select_commit_hash` 走
-    /// `set_visible_selection`，會把目標釘到畫面最上緣。`select_head` 與
-    /// `select_child`（分支點選完 picker 之後）都要跟一般移動手感一致，
-    /// 用這支；`reset_commit_list_with` 重整後還原視角那個「釘頂」是刻意
-    /// 的，繼續用 `select_commit_hash`，不要互換。
+    /// 跟 `select_commit_hash` 的差異在捲動手感：這支走 `step_to_raw`，用
+    /// 最小捲動比照上下移動的手感；`select_commit_hash` 走
+    /// `set_visible_selection`，會把目標放到距上緣 `effective_scrolloff()`
+    /// 列的位置。`select_head` 與 `select_child`（分支點選完 picker 之後）
+    /// 都要跟一般移動手感一致，用這支；refresh 還原視角改用
+    /// `restore_selected_row`，不要跟這兩支混用。
     pub fn step_to_commit_hash(&mut self, commit_hash: &CommitHash) {
         let Some(&raw) = self.commit_hash_to_raw.get(commit_hash) else {
             return;
@@ -664,7 +688,7 @@ impl<'a> CommitListState<'a> {
         self.step_to_raw(raw);
     }
 
-    /// 把游標移到 HEAD 指向的 commit,畫面比照上下移動的 scroll margin 規則捲動
+    /// 把游標移到 HEAD 指向的 commit,畫面比照上下移動的最小捲動手感
     /// (不把 HEAD 硬拉到最上面)。HEAD 不存在或被 filter 濾掉時靜默不動。
     pub fn select_head(&mut self) {
         let Some(head) = self.head_commit_hash.clone() else {
@@ -732,16 +756,22 @@ fn resolve_filtered_to_raw(
     }
 }
 
-/// Pure：給定 (target, total, height) 算出 (offset, selected)。
-/// target 越界或 height=0 回 None（caller 不動游標）。
-/// 合併 `total > height` 與 `total <= height` 兩分支成單一公式：
-/// `total <= height` 時 `max_offset = 0`，自動退化成 `selected = target.0`。
-fn compute_selection(target: VisibleIdx, total: usize, height: usize) -> Option<(usize, usize)> {
+/// Pure：`place(target, usize::MAX)` 的等價算法，只給測試用（不必真的建
+/// 一個 `CommitListState` 就能驗證跳轉座標數學）。target 越界或 height=0
+/// 回 None（caller 不動游標）。委派給 `scroll::scrolled_offset`，不另寫
+/// 一套公式——`prev_offset = usize::MAX` 保證結果一定被夾到「距上緣
+/// scrolloff 列」那個跳轉語意。
+#[cfg(test)]
+fn compute_selection(
+    target: VisibleIdx,
+    total: usize,
+    height: usize,
+    scrolloff: usize,
+) -> Option<(usize, usize)> {
     if target.0 >= total || height == 0 {
         return None;
     }
-    let max_offset = total.saturating_sub(height);
-    let offset = target.0.min(max_offset);
+    let offset = scroll::scrolled_offset(target.0, height, total, usize::MAX, scrolloff);
     let selected = target.0 - offset;
     debug_assert!(selected < height);
     Some((offset, selected))
@@ -750,7 +780,7 @@ fn compute_selection(target: VisibleIdx, total: usize, height: usize) -> Option<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::Commit;
+    use crate::git::{Commit, FileChange};
 
     // --- 座標系 regression tests ---------------------------------------------
     // 這些 test 聚焦在 pure function（`resolve_*` / `compute_selection`），
@@ -820,14 +850,14 @@ mod tests {
     fn compute_selection_within_first_page() {
         // total=10, height=5, target=2：total > height 時，畫面從 target 開始捲，
         // 游標 pin 在畫面頂端（offset=target, selected=0）—— 與原版 select_index 行為一致。
-        let (offset, selected) = compute_selection(VisibleIdx(2), 10, 5).unwrap();
+        let (offset, selected) = compute_selection(VisibleIdx(2), 10, 5, 0).unwrap();
         assert_eq!((offset, selected), (2, 0));
     }
 
     #[test]
     fn compute_selection_beyond_first_page_pins_max_offset() {
         // total=10, height=5, target=8 → offset pin 到 max_offset=5，selected=3
-        let (offset, selected) = compute_selection(VisibleIdx(8), 10, 5).unwrap();
+        let (offset, selected) = compute_selection(VisibleIdx(8), 10, 5, 0).unwrap();
         assert_eq!((offset, selected), (5, 3));
         assert!(offset + selected < 10);
         assert!(selected < 5);
@@ -836,41 +866,45 @@ mod tests {
     #[test]
     fn compute_selection_total_le_height_uses_selected_only() {
         // total=3, height=10（height 比 total 大）→ 公式退化成 offset=0
-        let (offset, selected) = compute_selection(VisibleIdx(2), 3, 10).unwrap();
+        let (offset, selected) = compute_selection(VisibleIdx(2), 3, 10, 0).unwrap();
         assert_eq!((offset, selected), (0, 2));
     }
 
     #[test]
     fn compute_selection_out_of_range_returns_none() {
         // target >= total：不動游標（防呆原 panic 場景）
-        assert!(compute_selection(VisibleIdx(10), 10, 5).is_none());
-        assert!(compute_selection(VisibleIdx(309), 234, 50).is_none());
+        assert!(compute_selection(VisibleIdx(10), 10, 5, 0).is_none());
+        assert!(compute_selection(VisibleIdx(309), 234, 50, 0).is_none());
     }
 
     #[test]
     fn compute_selection_zero_height_returns_none() {
         // height=0（例如畫面尚未配置）→ 不動游標
-        assert!(compute_selection(VisibleIdx(0), 10, 0).is_none());
+        assert!(compute_selection(VisibleIdx(0), 10, 0, 0).is_none());
     }
 
     #[test]
     fn compute_selection_never_puts_cursor_off_screen() {
-        // 窮舉：任何合法 target 都應產生 offset + selected < total、selected < height
+        // 窮舉：任何合法 target、任何 scrolloff 都應產生
+        // offset + selected < total、selected < height。
         for total in 1..30 {
             for height in 1..20 {
-                for t in 0..total {
-                    let Some((offset, selected)) = compute_selection(VisibleIdx(t), total, height)
-                    else {
-                        continue;
-                    };
-                    assert!(
-                        offset + selected < total,
-                        "invariant: offset+selected < total (t={t}, total={total}, h={height})"
-                    );
-                    assert!(
-                        selected < height,
-                        "invariant: selected < height (t={t}, total={total}, h={height})"
-                    );
+                for scrolloff in [0, 1, 2, 5, 100] {
+                    for t in 0..total {
+                        let Some((offset, selected)) =
+                            compute_selection(VisibleIdx(t), total, height, scrolloff)
+                        else {
+                            continue;
+                        };
+                        assert!(
+                            offset + selected < total,
+                            "invariant: offset+selected < total (t={t}, total={total}, h={height}, so={scrolloff})"
+                        );
+                        assert!(
+                            selected < height,
+                            "invariant: selected < height (t={t}, total={total}, h={height}, so={scrolloff})"
+                        );
+                    }
                 }
             }
         }
@@ -891,9 +925,231 @@ mod tests {
         // 再走 compute_selection 必得合法 (offset, selected)。
         let in_filter = resolve_raw_to_filtered(&filtered, 500, RawCommitIdx(100)).unwrap();
         // filtered total = 234 + vr(0); height=50；target=100
-        let (offset, selected) = compute_selection(VisibleIdx(in_filter.0), 234, 50).unwrap();
+        let (offset, selected) = compute_selection(VisibleIdx(in_filter.0), 234, 50, 0).unwrap();
         assert!(offset + selected < 234);
         assert!(selected < 50);
+    }
+
+    // --- ui.list.scrolloff 回歸測試 -------------------------------------------
+    // `current_list_status()` 回傳 `(selected, offset, height)`。
+
+    /// `n` 個互不相關的 commit，全部可見，游標停在第一列，`height`／
+    /// `scrolloff` 照呼叫端指定的值設定。
+    fn scrolloff_fixture(
+        commits: &[Commit],
+        height: usize,
+        scrolloff: usize,
+    ) -> CommitListState<'_> {
+        let visible: Vec<usize> = (0..commits.len()).collect();
+        let mut state = build_state_visible_raws(commits, &visible);
+        state.scrolloff = scrolloff;
+        state.reset_height(height);
+        state.select_first();
+        state
+    }
+
+    fn commits_fixture(n: usize) -> Vec<Commit> {
+        (0..n)
+            .map(|i| commit_fixture(&format!("c{i}"), &[]))
+            .collect()
+    }
+
+    #[test]
+    fn scrolloff_keeps_context_for_selection_and_single_row_scrolling() {
+        let commits = commits_fixture(12);
+        let mut state = scrolloff_fixture(&commits, 6, 2);
+
+        for _ in 0..4 {
+            state.select_next();
+        }
+        assert_eq!(state.current_list_status(), (3, 1, 6));
+
+        state.select_prev();
+        state.select_prev();
+        assert_eq!(state.current_list_status(), (2, 0, 6));
+
+        state.set_visible_selection(VisibleIdx(7));
+        assert_eq!(state.current_list_status(), (2, 5, 6));
+
+        state.scroll_down();
+        assert_eq!(state.current_list_status(), (2, 6, 6));
+        state.scroll_up();
+        assert_eq!(state.current_list_status(), (3, 5, 6));
+
+        state.select_last();
+        assert_eq!(state.current_list_status(), (5, 6, 6));
+        state.select_prev();
+        assert_eq!(state.current_list_status(), (4, 6, 6));
+    }
+
+    #[test]
+    fn scrolloff_is_limited_by_list_height() {
+        let commits = commits_fixture(8);
+        let mut state = scrolloff_fixture(&commits, 2, 10);
+
+        state.select_next();
+        state.select_next();
+        assert_eq!(state.current_list_status(), (1, 1, 2));
+
+        state.set_visible_selection(VisibleIdx(6));
+        assert_eq!(state.current_list_status(), (0, 6, 2));
+
+        state.restore_selected_row(1);
+        assert_eq!(state.current_list_status(), (1, 5, 2));
+    }
+
+    #[test]
+    fn refresh_restores_selected_row_with_scrolloff() {
+        let commits = commits_fixture(30);
+        let mut state = scrolloff_fixture(&commits, 10, 2);
+
+        state.set_visible_selection(VisibleIdx(15));
+        assert_eq!(state.current_list_status(), (2, 13, 10));
+        let target_hash = state.selected_commit_hash().clone();
+
+        state.restore_selected_row(7);
+        assert_eq!(state.current_list_status(), (7, 8, 10));
+        assert_eq!(*state.selected_commit_hash(), target_hash);
+    }
+
+    /// refresh 還原在最後一頁不會換選到別的 commit——舊版 `scroll_up()`
+    /// 迴圈在這個場景（offset=90, height=10, row=9）會把 offset 拉到 81，
+    /// 選取的 commit 就換了。so=0／so=15 都要成立。
+    #[test]
+    fn restore_selected_row_on_last_page_keeps_same_commit() {
+        for scrolloff in [0, 15] {
+            let commits = commits_fixture(100);
+            let mut state = scrolloff_fixture(&commits, 10, scrolloff);
+
+            state.select_last();
+            assert_eq!(state.current_list_status(), (9, 90, 10), "so={scrolloff}");
+            let target_hash = state.selected_commit_hash().clone();
+
+            state.restore_selected_row(9);
+            assert_eq!(state.current_list_status(), (9, 90, 10), "so={scrolloff}");
+            assert_eq!(*state.selected_commit_hash(), target_hash, "so={scrolloff}");
+        }
+    }
+
+    #[test]
+    fn restore_selected_row_clamps_row_to_height() {
+        let commits = commits_fixture(30);
+        let mut state = scrolloff_fixture(&commits, 10, 0);
+
+        state.set_visible_selection(VisibleIdx(20));
+        assert_eq!(state.current_list_status(), (0, 20, 10));
+
+        state.restore_selected_row(50);
+        assert_eq!(state.current_list_status(), (9, 11, 10));
+    }
+
+    #[test]
+    fn restore_selected_row_inside_margin_is_pushed_out() {
+        let commits = commits_fixture(30);
+        let mut state = scrolloff_fixture(&commits, 10, 2);
+
+        state.set_visible_selection(VisibleIdx(15));
+        assert_eq!(state.current_list_status(), (2, 13, 10));
+
+        state.restore_selected_row(0);
+        assert_eq!(state.current_list_status(), (2, 13, 10));
+    }
+
+    #[test]
+    fn default_scrolloff_15_in_tall_viewport() {
+        let commits = commits_fixture(100);
+        let mut state = scrolloff_fixture(&commits, 40, 15);
+
+        for _ in 0..24 {
+            state.select_next();
+        }
+        assert_eq!(state.current_list_status(), (24, 0, 40));
+        state.select_next();
+        assert_eq!(state.current_list_status(), (24, 1, 40));
+    }
+
+    #[test]
+    fn step_to_commit_hash_scrolls_minimally_but_select_commit_hash_pins_at_margin() {
+        let commits = commits_fixture(50);
+
+        let mut stepped = scrolloff_fixture(&commits, 10, 2);
+        stepped.step_to_commit_hash(&CommitHash::from("c20"));
+        assert_eq!(stepped.current_list_status(), (7, 13, 10));
+        stepped.step_to_commit_hash(&CommitHash::from("c16"));
+        assert_eq!(stepped.current_list_status(), (3, 13, 10));
+
+        let mut pinned = scrolloff_fixture(&commits, 10, 2);
+        pinned.select_commit_hash(&CommitHash::from("c20"));
+        assert_eq!(pinned.current_list_status(), (2, 18, 10));
+    }
+
+    #[test]
+    fn scroll_down_is_noop_when_height_zero() {
+        let commits = commits_fixture(10);
+        let mut state = scrolloff_fixture(&commits, 10, 0);
+        state.reset_height(0);
+
+        state.scroll_down();
+
+        assert_eq!(state.current_list_status(), (0, 0, 0));
+    }
+
+    /// shift-j 在游標本來就落在 margin 帶內（例如剛釘頂）時，不能讓
+    /// `selected` 一路掉到 0 破壞邊距——`scroll_down` 的 `.max(margin)`
+    /// 就是為了擋這個。
+    #[test]
+    fn scroll_down_does_not_collapse_margin_when_cursor_starts_inside_it() {
+        let commits = commits_fixture(30);
+        let mut state = scrolloff_fixture(&commits, 10, 2);
+
+        state.scroll_down();
+
+        assert!(state.current_list_status().0 >= 2);
+    }
+
+    #[test]
+    fn virtual_row_at_visible_zero_respects_scrolloff() {
+        let commits = commits_fixture(20);
+        let infos = commits
+            .iter()
+            .map(|c| CommitInfo::new(c, Vec::new(), Color::Reset))
+            .collect();
+        let graph = Graph {
+            commit_hashes: Vec::new(),
+            commit_pos_map: FxHashMap::default(),
+            edges: Vec::new(),
+            max_pos_x: 0,
+        };
+        let working_changes = WorkingChanges {
+            unstaged: vec![FileChange::Untracked {
+                path: "new.txt".into(),
+                stats: None,
+            }],
+            staged: Vec::new(),
+        };
+        let mut state = CommitListState::new(
+            infos,
+            Rc::new(graph),
+            Vec::new(),
+            None,
+            Head::None,
+            FxHashMap::default(),
+            MatchOptions::default(),
+            None,
+            None,
+            FxHashSet::default(),
+            Some(working_changes),
+            2,
+        );
+        state.reset_height(10);
+
+        state.select_first();
+        assert!(state.is_virtual_row_selected());
+        assert_eq!(state.current_list_status(), (0, 0, 10));
+
+        state.set_visible_selection(VisibleIdx(1));
+        assert!(!state.is_virtual_row_selected());
+        assert_eq!(state.current_list_status().1, 0);
     }
 
     // --- select_parent() / select_child() 回歸測試 ----------------------------
@@ -934,6 +1190,7 @@ mod tests {
             None,
             FxHashSet::default(),
             None,
+            0,
         );
         state.filtered_indices = visible_raw.iter().copied().map(RawCommitIdx).collect();
         state.total = state.filtered_indices.len();
