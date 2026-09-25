@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.3.0](https://github.com/YSzEthan/serie-ys/compare/v4.2.0...v4.3.0) (2026-09-25)
+
+
+### Features
+
+* GitHub label 色塊顯示、commit list 捲動邊距與多項清理 (#109, #110, #111, #112) (#113) ([b246447](https://github.com/YSzEthan/serie-ys/commit/b24644770e864b63a9b298c9cf5dcbd0e1fa41a5))
+
 ## [4.2.0](https://github.com/YSzEthan/serie-ys/compare/v4.1.0...v4.2.0) (2026-09-24)
 
 
