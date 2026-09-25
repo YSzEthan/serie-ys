@@ -62,7 +62,8 @@
             },
             "max_count": {
               "type": "integer",
-              "description": "The maximum number of commits to render. Unset renders all commits. The value specified in the command line argument takes precedence."
+              "description": "The maximum number of commits to render. Unset renders all commits. The value specified in the command line argument takes precedence.",
+              "minimum": 0
             }
           },
           "additionalProperties": false
@@ -178,6 +179,8 @@
             "tab_width": {
               "type": "integer",
               "description": "The number of spaces to replace tabs in the user command output.",
+              "minimum": 0,
+              "maximum": 65535,
               "default": 4
             }
           },
@@ -188,7 +191,8 @@
               "properties": {
                 "name": {
                   "type": "string",
-                  "description": "The name of the command to be displayed."
+                  "description": "The name of the command to be displayed.",
+                  "minLength": 1
                 },
                 "type": {
                   "type": "string",
@@ -204,8 +208,10 @@
                   "type": "array",
                   "description": "The command and its arguments to execute.",
                   "items": {
-                    "type": "string"
-                  }
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "minItems": 1
                 },
                 "refresh": {
                   "type": "boolean",
@@ -246,8 +252,10 @@
                           "type": "array",
                           "description": "A custom command that receives text via stdin.",
                           "items": {
-                            "type": "string"
-                          }
+                            "type": "string",
+                            "minLength": 1
+                          },
+                          "minItems": 1
                         }
                       },
                       "required": [
@@ -275,8 +283,10 @@
               "type": "array",
               "description": "The `[program, flags...]` used to run commands, e.g. [\"zsh\", \"-i\", \"-c\"]. Unset auto-detects per platform / $SHELL: POSIX shells (sh/bash/zsh/dash/ksh/mksh/ash) get an extra \"-i\" so the command line can see aliases/functions defined in shell rc files; Windows uses [\"cmd\", \"/C\"]. If set, the last element must be a flag that accepts a command string (\"-c\" for POSIX shells).",
               "items": {
-                "type": "string"
-              }
+                "type": "string",
+                "minLength": 1
+              },
+              "minItems": 1
             }
           },
           "additionalProperties": false
@@ -316,6 +326,8 @@
         "refs_width": {
           "type": "integer",
           "description": "The width of the refs list area.",
+          "minimum": 1,
+          "maximum": 65535,
           "default": 26
         },
         "pane_height": {
@@ -325,16 +337,22 @@
             "detail": {
               "type": "integer",
               "description": "The height of the commit detail area.",
+              "minimum": 1,
+              "maximum": 65535,
               "default": 20
             },
             "diff": {
               "type": "integer",
               "description": "The height of the file diff area.",
+              "minimum": 1,
+              "maximum": 65535,
               "default": 20
             },
             "user_command": {
               "type": "integer",
               "description": "The height of the user command area.",
+              "minimum": 1,
+              "maximum": 65535,
               "default": 20
             }
           },
@@ -350,6 +368,7 @@
               "items": {
                 "$ref": "#/definitions/userListColumnType"
               },
+              "minItems": 1,
               "default": [
                 "graph",
                 "marker",
@@ -362,16 +381,21 @@
             "subject_min_width": {
               "type": "integer",
               "description": "The minimum width of a subject in the commit list.",
+              "minimum": 1,
+              "maximum": 65535,
               "default": 20
             },
             "date_format": {
               "type": "string",
               "description": "The date format for the author date in strftime format.",
+              "minLength": 1,
               "default": "%Y-%m-%d"
             },
             "date_width": {
               "type": "integer",
               "description": "The width of the author date column.",
+              "minimum": 0,
+              "maximum": 65535,
               "default": 10
             },
             "date_local": {
@@ -382,6 +406,8 @@
             "name_width": {
               "type": "integer",
               "description": "The width of the author name column.",
+              "minimum": 0,
+              "maximum": 65535,
               "default": 20
             }
           },
@@ -394,6 +420,7 @@
             "date_format": {
               "type": "string",
               "description": "The date format for author/committer dates in strftime format.",
+              "minLength": 1,
               "default": "%Y-%m-%d %H:%M:%S %z"
             },
             "date_local": {
@@ -637,6 +664,7 @@
                 "type": "string",
                 "pattern": "^#[0-9a-fA-F]{6}([0-9a-fA-F]{2})?$"
               },
+              "minItems": 1,
               "default": [
                 "#E06C76",
                 "#98C379",
@@ -702,6 +730,12 @@
           "$ref": "#/definitions/keybindArray"
         },
         "go_to_head": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "scroll_up": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "scroll_down": {
           "$ref": "#/definitions/keybindArray"
         },
         "page_up": {
@@ -780,6 +814,9 @@
         "github_toggle": {
           "$ref": "#/definitions/keybindArray"
         },
+        "shell_toggle": {
+          "$ref": "#/definitions/keybindArray"
+        },
         "task_list_toggle": {
           "$ref": "#/definitions/keybindArray"
         },
@@ -811,6 +848,10 @@
       "patternProperties": {
         "^user_command_[0-9]+$": {
           "description": "Keybinding to toggle a specific user command view, where the number corresponds to the command in 'core.user_command'.",
+          "$ref": "#/definitions/keybindArray"
+        },
+        "^user_command_view_toggle_[0-9]+$": {
+          "description": "Alias of 'user_command_{n}'.",
           "$ref": "#/definitions/keybindArray"
         }
       },

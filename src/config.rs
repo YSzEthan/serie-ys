@@ -1442,4 +1442,40 @@ mod tests {
         let auto_fetch = CoreAutoFetchConfig::default();
         assert!(auto_fetch.validate().is_ok());
     }
+
+    /// `assets/default-keybind.toml` 裡實際綁定的每個 action 都要在
+    /// `config.schema.json` 的 `keybind` 底下有宣告——用跟設定檔範例相同的
+    /// `assert_keys_declared_in_schema`。之前 `scroll_up`／`scroll_down`／
+    /// `shell_toggle` 三個 action 就是這樣漏掉的：檔案裡有寫、程式碼認得，
+    /// 但編輯器會把它們標成 schema 錯誤。
+    #[test]
+    fn default_keybind_actions_are_declared_in_schema() {
+        let keybind_toml = include_str!("../assets/default-keybind.toml");
+        let table: toml::Table = toml::from_str(keybind_toml).unwrap();
+
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../config.schema.json")).unwrap();
+        let keybind_schema = &schema["properties"]["keybind"];
+
+        assert_keys_declared_in_schema(&table, keybind_schema, "keybind.");
+    }
+
+    /// 反方向：schema 裡宣告的每個 keybind 都要是 `KeyBind` 真的認得的
+    /// action，不能留著已經改名或拿掉的死鍵誤導使用者。空陣列本身合法
+    /// （見 `empty_array_disables_the_action`），拿來當測試值不會誤判。
+    #[test]
+    fn every_schema_keybind_property_is_a_real_action() {
+        let schema: serde_json::Value =
+            serde_json::from_str(include_str!("../config.schema.json")).unwrap();
+        let properties = schema["properties"]["keybind"]["properties"]
+            .as_object()
+            .unwrap();
+
+        for key in properties.keys() {
+            let toml = format!("{key} = []");
+            toml::from_str::<KeyBind>(&toml).unwrap_or_else(|e| {
+                panic!("config.schema.json 的 keybind.{key} 不是合法 action: {e}")
+            });
+        }
+    }
 }
