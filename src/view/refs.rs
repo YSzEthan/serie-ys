@@ -76,7 +76,7 @@ impl<'a> RefsView<'a> {
         let count = event_with_count.count;
 
         match event {
-            UserEvent::Cancel => {
+            UserEvent::Cancel | UserEvent::RefList => {
                 self.tx.send(AppEvent::CloseRefs);
             }
             UserEvent::NavigateDown | UserEvent::SelectDown => {

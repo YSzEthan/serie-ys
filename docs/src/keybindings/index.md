@@ -100,7 +100,7 @@
 
 | 按鍵 | 說明 | 設定鍵名 |
 | --- | --- | --- |
-| <kbd>n</kbd> <kbd>Esc</kbd> | 關閉 refs 清單 | `cancel` |
+| <kbd>n</kbd> <kbd>Esc</kbd> <kbd>Tab</kbd> | 關閉 refs 清單 | `cancel` `ref_list` |
 | <kbd>Down</kbd> <kbd>j</kbd> <kbd>J</kbd> | 向下移動 | `navigate_down` `select_down` |
 | <kbd>Up</kbd> <kbd>k</kbd> <kbd>K</kbd> | 向上移動 | `navigate_up` `select_up` |
 | <kbd>Right</kbd> <kbd>l</kbd> | 展開節點 | `navigate_right` |

@@ -348,7 +348,7 @@ fn help_blocks(
     ];
 
     let refs = vec![
-        b(vec![UserEvent::Cancel],                    "關閉 refs 清單",         "Close refs list"),
+        b(vec![UserEvent::Cancel, UserEvent::RefList], "關閉 refs 清單",        "Close refs list"),
         b(vec![UserEvent::NavigateDown, UserEvent::SelectDown], "向下移動",     "Move down"),
         b(vec![UserEvent::NavigateUp,   UserEvent::SelectUp],   "向上移動",     "Move up"),
         b(vec![UserEvent::NavigateRight],             "展開節點",               "Open node"),
