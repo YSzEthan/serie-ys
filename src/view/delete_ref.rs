@@ -14,7 +14,7 @@ use crate::{
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
     git::{
         delete_branch, delete_branch_force, delete_remote_branch, delete_remote_tag, delete_tag,
-        Ref, RefType,
+        RefType,
     },
     view::{ListRefreshViewContext, RefreshViewContext, RefsOrigin},
     widget::{
@@ -28,7 +28,6 @@ use crate::{
 pub struct DeleteRefView<'a> {
     commit_list_state: Option<CommitListState<'a>>,
     ref_list_state: RefListState,
-    refs: Vec<Ref>,
     repo_path: PathBuf,
 
     ref_name: String,
@@ -47,11 +46,9 @@ pub struct DeleteRefView<'a> {
 }
 
 impl<'a> DeleteRefView<'a> {
-    #[allow(clippy::too_many_arguments)]
     pub fn new(
         commit_list_state: CommitListState<'a>,
         ref_list_state: RefListState,
-        refs: Vec<Ref>,
         repo_path: PathBuf,
         ref_name: String,
         ref_type: RefType,
@@ -62,7 +59,6 @@ impl<'a> DeleteRefView<'a> {
         DeleteRefView {
             commit_list_state: Some(commit_list_state),
             ref_list_state,
-            refs,
             repo_path,
             ref_name,
             ref_type,
@@ -224,7 +220,7 @@ impl<'a> DeleteRefView<'a> {
         let commit_list = CommitList::new(self.ctx.clone(), 0);
         f.render_stateful_widget(commit_list, list_area, list_state);
 
-        let ref_list = crate::widget::ref_list::RefList::new(&self.refs, self.ctx.clone());
+        let ref_list = crate::widget::ref_list::RefList::new(self.ctx.clone());
         f.render_stateful_widget(ref_list, refs_area, &mut self.ref_list_state);
 
         let dialog_width = 50u16.min(area.width.saturating_sub(4));
@@ -320,10 +316,6 @@ impl<'a> DeleteRefView<'a> {
 
     pub fn take_ref_list_state(&mut self) -> RefListState {
         std::mem::take(&mut self.ref_list_state)
-    }
-
-    pub fn take_refs(&mut self) -> Vec<Ref> {
-        std::mem::take(&mut self.refs)
     }
 
     pub fn refresh(&self) {

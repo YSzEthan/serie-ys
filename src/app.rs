@@ -1300,10 +1300,10 @@ impl App<'_> {
         let Some(commit_list_state) = commit_list_state else {
             return;
         };
-        let refs: Vec<Ref> = self.repository.all_refs().into_iter().cloned().collect();
+        let refs = self.repository.all_refs();
         self.view = View::of_refs(
             commit_list_state,
-            refs,
+            &refs,
             origin,
             self.ctx.clone(),
             self.ec.sender(),
@@ -1407,11 +1407,9 @@ impl App<'_> {
                 return;
             };
             let ref_list_state = view.take_ref_list_state();
-            let refs = view.take_refs();
             self.view = View::of_delete_ref(
                 commit_list_state,
                 ref_list_state,
-                refs,
                 self.repository.path().to_path_buf(),
                 ref_name,
                 ref_type,
@@ -1429,11 +1427,9 @@ impl App<'_> {
                 return;
             };
             let ref_list_state = view.take_ref_list_state();
-            let refs = view.take_refs();
             self.view = View::of_refs_with_state(
                 commit_list_state,
                 ref_list_state,
-                refs,
                 refs_origin,
                 self.ctx.clone(),
                 self.ec.sender(),
