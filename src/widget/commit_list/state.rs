@@ -475,14 +475,8 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn select_next(&mut self) {
-        if self.total == 0 || self.height == 0 {
-            return;
-        }
-        let cur = self.current_visible().0;
-        if cur + 1 >= self.total {
-            return;
-        }
-        self.select_visible_index(VisibleIdx(cur + 1));
+        let next = self.current_visible().0 + 1;
+        self.select_visible_index(VisibleIdx(next)); // 越界或 height==0 交給 place 擋
     }
 
     pub fn select_parent(&mut self) {
@@ -570,14 +564,9 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn select_prev(&mut self) {
-        if self.height == 0 {
-            return;
+        if let Some(prev) = self.current_visible().0.checked_sub(1) {
+            self.select_visible_index(VisibleIdx(prev)); // height==0 交給 place 擋
         }
-        let cur = self.current_visible().0;
-        if cur == 0 {
-            return;
-        }
-        self.select_visible_index(VisibleIdx(cur - 1));
     }
 
     pub fn select_first(&mut self) {
