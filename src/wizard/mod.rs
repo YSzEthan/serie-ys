@@ -221,6 +221,10 @@ struct ResolvedDefaults {
     /// `UserEvent::UserCommand(n)` 顯示成人看得懂的指令名，不是
     /// 「user command 3」。
     user_commands: BTreeMap<usize, String>,
+    /// `ui.list.scrolloff` 目前有效值。跟其餘欄位不同，`NumberField::ListScrolloff`
+    /// 沒有對應的 CLI 旗標，`current()` 直接讀這裡＋`draft.edits`，不經
+    /// `draft.args`。
+    list_scrolloff: u16,
     /// `true` = 設定檔載入失敗（讀不到／解析失敗／garde 驗證不過），
     /// `theme`／`keybind_patch` 都是內建硬預設，不是使用者的真實設定——
     /// 顏色編輯器與 keybind 編輯器都要據此在畫面上講清楚，不能默默顯示
@@ -230,11 +234,17 @@ struct ResolvedDefaults {
 
 impl ResolvedDefaults {
     fn from_core(core: &config::CoreConfig) -> Self {
-        Self::from_parts(core, ColorTheme::default(), None)
+        Self::from_parts(
+            core,
+            &config::UiConfig::default(),
+            ColorTheme::default(),
+            None,
+        )
     }
 
     fn from_parts(
         core: &config::CoreConfig,
+        ui: &config::UiConfig,
         theme: ColorTheme,
         keybind_patch: Option<keybind::KeyBind>,
     ) -> Self {
@@ -270,6 +280,7 @@ impl ResolvedDefaults {
             theme,
             keybind_patch: keybind_patch.unwrap_or_default(),
             user_commands,
+            list_scrolloff: ui.list.scrolloff,
             config_is_fallback: false,
         }
     }
@@ -278,7 +289,9 @@ impl ResolvedDefaults {
     /// 退回內建硬預設，精靈仍然開得起來。這條路徑不能用 `?`。
     fn load() -> Self {
         match config::load() {
-            Ok((core, _ui, theme, keybind_patch)) => Self::from_parts(&core, theme, keybind_patch),
+            Ok((core, ui, theme, keybind_patch)) => {
+                Self::from_parts(&core, &ui, theme, keybind_patch)
+            }
             Err(_) => {
                 let mut defaults = Self::from_core(&config::CoreConfig::default());
                 defaults.config_is_fallback = true;
@@ -349,6 +362,7 @@ const CORE_OPTION: &[&str] = &["core", "option"];
 const CORE_UPDATE: &[&str] = &["core", "update"];
 const CORE_AUTO_FETCH: &[&str] = &["core", "auto_fetch"];
 const CORE_FETCH: &[&str] = &["core", "fetch"];
+const UI_LIST: &[&str] = &["ui", "list"];
 const COLOR: &[&str] = &["color"];
 const COLOR_GRAPH: &[&str] = &["color", "graph"];
 const KEYBIND: &[&str] = &["keybind"];
@@ -504,6 +518,9 @@ enum NumberField {
     MaxCount,
     UpdateInterval,
     AutoFetchInterval,
+    /// `ui.list.scrolloff`——跟其餘三個不同，沒有對應的 CLI 旗標，
+    /// `commit()` 不寫 `draft.args`，只寫 `draft.edits`。
+    ListScrolloff,
 }
 
 impl NumberField {
@@ -521,6 +538,10 @@ impl NumberField {
                 table: CORE_AUTO_FETCH,
                 key: "interval_secs".into(),
             },
+            NumberField::ListScrolloff => ConfigKey {
+                table: UI_LIST,
+                key: "scrolloff".into(),
+            },
         }
     }
 
@@ -529,6 +550,7 @@ impl NumberField {
             NumberField::MaxCount => "-n, --max-count <NUMBER>",
             NumberField::UpdateInterval => "--update-interval <HOURS>",
             NumberField::AutoFetchInterval => "--auto-fetch-interval <SECONDS>",
+            NumberField::ListScrolloff => "[SCROLLOFF]",
         }
     }
 
@@ -537,6 +559,7 @@ impl NumberField {
             NumberField::MaxCount => "要渲染的最大 commit 數量",
             NumberField::UpdateInterval => "自動更新的檢查間隔",
             NumberField::AutoFetchInterval => "自動 fetch 的輪詢間隔",
+            NumberField::ListScrolloff => "commit 清單游標上下保留的列數",
         }
     }
 
@@ -557,35 +580,51 @@ impl NumberField {
                 min: auto_fetch::MIN_INTERVAL_SECS as usize,
                 max: auto_fetch::MAX_INTERVAL_SECS as usize,
             },
+            NumberField::ListScrolloff => NumberSpec {
+                title: "游標與清單上下緣保留的列數（實際不超過清單高度一半）",
+                min: 0,
+                max: u16::MAX as usize,
+            },
         }
     }
 
-    /// 目前有效值，也是彈窗開啟時的起始內容。`None` 只有 `max_count` 會發生
-    /// （「不限制」）——`update_interval`／`auto_fetch_interval` 一定解得出
-    /// 一個數字。
-    fn current(self, draft: &Draft, defaults: &ResolvedDefaults) -> Option<usize> {
+    /// 清空（彈窗按 Enter 送出空字串）時要顯示的值：`SmartDefault`／內建
+    /// 常數，不是這次啟動前設定檔裡的舊值——寫回時這個鍵會被移除，效果
+    /// 就是退回這個值，畫面要如實反映。`None` 只有 `MaxCount` 會發生
+    /// （「不限制」）。
+    fn builtin_default(self) -> Option<usize> {
         match self {
-            NumberField::MaxCount => draft.args.max_count.or(defaults.max_count),
-            NumberField::UpdateInterval => Some(
-                draft
-                    .args
-                    .update_interval
-                    .unwrap_or(defaults.update_interval) as usize,
-            ),
-            NumberField::AutoFetchInterval => Some(
-                draft
-                    .args
-                    .auto_fetch_interval
-                    .unwrap_or(defaults.auto_fetch_interval) as usize,
-            ),
+            NumberField::MaxCount => None,
+            NumberField::UpdateInterval => Some(update::DEFAULT_INTERVAL_HOURS as usize),
+            NumberField::AutoFetchInterval => Some(auto_fetch::DEFAULT_INTERVAL_SECS as usize),
+            NumberField::ListScrolloff => Some(config::UiListConfig::default().scrolloff as usize),
+        }
+    }
+
+    /// 還沒被本次 session 碰過時的起始值：設定檔裡目前的值。
+    fn file_value(self, defaults: &ResolvedDefaults) -> Option<usize> {
+        match self {
+            NumberField::MaxCount => defaults.max_count,
+            NumberField::UpdateInterval => Some(defaults.update_interval as usize),
+            NumberField::AutoFetchInterval => Some(defaults.auto_fetch_interval as usize),
+            NumberField::ListScrolloff => Some(defaults.list_scrolloff as usize),
+        }
+    }
+
+    /// 目前有效值，也是彈窗開啟時的起始內容。三種情況對應 `draft.edits`
+    /// 的三態（見 `Draft` 的說明）：本次 session 設過值、本次 session
+    /// 明確清空過、完全沒碰過。統一走 `edits` 而不是 `draft.args`——後者
+    /// 對「清空」跟「從沒開過」都是 `None`，分不出這兩種情況，曾經讓
+    /// `UpdateInterval` 清空後的標籤停在清空前的設定檔舊值。
+    fn current(self, draft: &Draft, defaults: &ResolvedDefaults) -> Option<usize> {
+        match draft.edits.get(&self.config_key()) {
+            Some(Some(v)) => v.as_integer().map(|n| n as usize),
+            Some(None) => self.builtin_default(),
+            None => self.file_value(defaults),
         }
     }
 
     fn current_label(self, draft: &Draft, defaults: &ResolvedDefaults) -> String {
-        // `current()` 對 UpdateInterval／AutoFetchInterval 一定回 `Some`
-        // （見該函式），`None` 只有 MaxCount 會發生；不在這裡重算一次
-        // `defaults.*` 這些已經在 `current()` 算過的後備值，避免同一條規則
-        // 兩處真值。
         let Some(n) = self.current(draft, defaults) else {
             return "不限制".to_string();
         };
@@ -593,11 +632,13 @@ impl NumberField {
             NumberField::MaxCount => n.to_string(),
             NumberField::UpdateInterval => format!("{n} 小時"),
             NumberField::AutoFetchInterval => format!("{n} 秒"),
+            NumberField::ListScrolloff => format!("{n} 列"),
         }
     }
 
     /// 使用者在彈窗按下 Enter。`None` = 明確清空，寫回時要移除該鍵——這跟
     /// 「從沒開過這個彈窗」（`edits` 裡根本沒有這個鍵）是兩件不同的事。
+    /// `ListScrolloff` 沒有對應的 `Args` 欄位，不寫 `draft.args`。
     fn commit(self, draft: &mut Draft, value: Option<usize>) {
         match self {
             NumberField::MaxCount => draft.args.max_count = value,
@@ -605,6 +646,7 @@ impl NumberField {
             NumberField::AutoFetchInterval => {
                 draft.args.auto_fetch_interval = value.map(|n| n as u64)
             }
+            NumberField::ListScrolloff => {}
         }
         draft
             .edits
@@ -720,6 +762,7 @@ const ROWS: &[RowAction] = &[
     RowAction::Edit(Editor::Dialog(Dialog::Number(
         NumberField::AutoFetchInterval,
     ))),
+    RowAction::Edit(Editor::Dialog(Dialog::Number(NumberField::ListScrolloff))),
     RowAction::Edit(Editor::Dialog(Dialog::ColorMenu)),
     RowAction::Edit(Editor::Dialog(Dialog::KeyBindMenu)),
     RowAction::Launch,
@@ -1419,6 +1462,42 @@ mod tests {
     }
 
     #[test]
+    fn enter_on_scrolloff_row_requests_number_input() {
+        let mut s = test_state();
+        let idx = row_of_number(NumberField::ListScrolloff);
+        move_to_row(&mut s, idx);
+        assert!(matches!(
+            s.on_key(key(KeyCode::Enter)),
+            Flow::OpenEditor(Dialog::Number(NumberField::ListScrolloff))
+        ));
+    }
+
+    /// 標籤三態：沒碰過顯示設定檔目前的值（這裡是 `SmartDefault` 15，因為
+    /// `test_state()` 用的是 `CoreConfig::default()`／`UiConfig::default()`）；
+    /// 設過值顯示那個值；明確清空要回到 `SmartDefault`，不能停在清空前的值。
+    #[test]
+    fn scrolloff_label_tracks_config_edit_and_clear() {
+        let mut s = test_state();
+        assert_eq!(
+            NumberField::ListScrolloff.current_label(&s.draft, &s.defaults),
+            "15 列"
+        );
+
+        NumberField::ListScrolloff.commit(&mut s.draft, Some(7));
+        assert_eq!(
+            NumberField::ListScrolloff.current_label(&s.draft, &s.defaults),
+            "7 列"
+        );
+
+        NumberField::ListScrolloff.commit(&mut s.draft, None);
+        assert_eq!(
+            NumberField::ListScrolloff.current_label(&s.draft, &s.defaults),
+            "15 列",
+            "清空要回到 SmartDefault，不能停在清空前的值"
+        );
+    }
+
+    #[test]
     fn update_mode_row_cycles_and_skips_the_current_variant() {
         let mut s = test_state();
         let idx = row_of_field(CycleField::UpdateMode);
@@ -1793,6 +1872,27 @@ mod tests {
         assert!(updated.contains("auto_restart = \"on\""), "{updated}");
     }
 
+    #[test]
+    fn apply_touched_settings_writes_and_removes_ui_list_scrolloff() {
+        let mut s = test_state();
+        NumberField::ListScrolloff.commit(&mut s.draft, Some(5));
+        let existing = "[ui.list]\nname_width = 20\n";
+        let updated = apply_touched_settings(&s.draft, existing).unwrap();
+        assert!(updated.contains("scrolloff = 5"), "{updated}");
+        assert!(
+            updated.contains("name_width = 20"),
+            "同表其他鍵要原封不動：{updated}"
+        );
+
+        NumberField::ListScrolloff.commit(&mut s.draft, None);
+        let updated2 = apply_touched_settings(&s.draft, &updated).unwrap();
+        assert!(
+            !updated2.contains("scrolloff"),
+            "清空要移除這個鍵，不是寫回預設值：{updated2}"
+        );
+        assert!(updated2.contains("name_width = 20"), "{updated2}");
+    }
+
     // ── 新架構釘住的不變式：ConfigKey 對應表、空 edits、PATH 的隔離 ──
 
     /// 每個項目全部碰過一遍，寫回、再用真正的設定檔 parser（不是自己重抄
@@ -1822,9 +1922,11 @@ mod tests {
         NumberField::MaxCount.commit(&mut s.draft, Some(123));
         NumberField::UpdateInterval.commit(&mut s.draft, Some(12));
         NumberField::AutoFetchInterval.commit(&mut s.draft, Some(45));
+        NumberField::ListScrolloff.commit(&mut s.draft, Some(7));
 
         let updated = apply_touched_settings(&s.draft, "").unwrap();
         let core = config::parse_core(&updated).unwrap();
+        let ui = config::parse_ui(&updated).unwrap();
 
         assert_eq!(core.option.order, s.draft.args.order);
         assert_eq!(core.option.graph_width, s.draft.args.graph_width);
@@ -1845,6 +1947,10 @@ mod tests {
             s.draft.args.auto_fetch_interval
         );
         assert_eq!(core.fetch.prune, s.draft.args.fetch_prune);
+        assert_eq!(
+            ui.list.scrolloff, 7,
+            "ListScrolloff 沒有 draft.args 可比對，直接比寫回的值"
+        );
     }
 
     /// 新架構才有的保證：`edits` 是空的，`apply_touched_settings` 一次

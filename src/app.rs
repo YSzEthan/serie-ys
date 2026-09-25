@@ -331,6 +331,7 @@ impl<'a> App<'a> {
             filtered_colors,
             remote_only_commits,
             working_changes_opt,
+            ctx.ui_config.list.scrolloff as usize,
         );
         if let InitialSelection::Head = initial_selection {
             match repository.head() {

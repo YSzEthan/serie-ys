@@ -16,6 +16,7 @@ use crate::{
     color::ColorTheme,
     git::{Commit, CommitHash, DiffTarget, FileChange, Ref, WorkingChanges},
     graph::GlyphSet,
+    widget::scroll::scrolled_offset,
 };
 
 const ICON_FILE: &str = "\u{f0214} ";
@@ -127,6 +128,7 @@ impl CommitDetailState {
                     self.files_window_height,
                     rows.len(),
                     self.right_offset,
+                    FILE_TREE_SCROLLOFF,
                 );
                 return true;
             }
@@ -151,6 +153,7 @@ impl CommitDetailState {
                 self.files_window_height,
                 rows_len,
                 self.right_offset,
+                FILE_TREE_SCROLLOFF,
             );
         }
     }
@@ -162,37 +165,6 @@ impl CommitDetailState {
     pub fn subject_overflows(&self) -> bool {
         self.subject_overflows.get()
     }
-}
-
-/// 標準 vim 風格 scrolloff：游標與視窗上/下緣保持 `FILE_TREE_SCROLLOFF` 列邊距，
-/// 但清單頭/尾不強制留邊（沒有更多內容可留，標準 clamp）。這是檔案樹視窗位置
-/// 的唯一計算點——游標移動與 resize 後的安全網都呼叫這個。
-fn scrolled_offset(
-    cursor: usize,
-    window_height: usize,
-    rows_len: usize,
-    prev_offset: usize,
-) -> usize {
-    if window_height == 0 {
-        return 0;
-    }
-    let max_offset = rows_len.saturating_sub(window_height);
-    if max_offset == 0 {
-        return 0;
-    }
-
-    let scrolloff = FILE_TREE_SCROLLOFF.min(window_height.saturating_sub(1) / 2);
-    let min_offset_for_cursor = cursor.saturating_sub(window_height - 1 - scrolloff);
-    let max_offset_for_cursor = cursor.saturating_sub(scrolloff).min(max_offset);
-
-    let mut offset = prev_offset.min(max_offset);
-    if offset > max_offset_for_cursor {
-        offset = max_offset_for_cursor;
-    }
-    if offset < min_offset_for_cursor {
-        offset = min_offset_for_cursor.min(max_offset);
-    }
-    offset
 }
 
 pub struct CommitDetail<'a> {

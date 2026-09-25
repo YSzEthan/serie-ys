@@ -409,6 +409,13 @@
               "minimum": 0,
               "maximum": 65535,
               "default": 20
+            },
+            "scrolloff": {
+              "type": "integer",
+              "description": "Minimum number of rows to keep visible above and below the cursor, up to half the list height. Applies to cursor movement, jumps (search, refs, HEAD) and refresh restore.",
+              "minimum": 0,
+              "maximum": 65535,
+              "default": 15
             }
           },
           "additionalProperties": false

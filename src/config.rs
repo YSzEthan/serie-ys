@@ -132,6 +132,13 @@ pub(crate) fn parse_color(content: &str) -> Result<ColorTheme> {
     Ok(parse_config(content)?.color)
 }
 
+/// 只給測試用：精靈的往返測試同一個理由——用真正的 parser 讀回來，不自己
+/// 重抄反序列化邏輯。
+#[cfg(test)]
+pub(crate) fn parse_ui(content: &str) -> Result<UiConfig> {
+    Ok(parse_config(content)?.ui)
+}
+
 #[optional(derives = [Deserialize])]
 #[derive(Debug, Default, Clone, PartialEq, Eq, Validate)]
 struct Config {
@@ -475,6 +482,12 @@ pub struct UiListConfig {
     #[garde(range(min = 0))]
     #[default = 20]
     pub name_width: u16,
+    /// 游標與清單上下緣至少保留的列數，實際生效值不超過清單高度的一半
+    /// （見 `widget::scroll::effective_scrolloff`）。上下移動、跳轉
+    /// （搜尋、refs、HEAD）與 refresh 還原都套用。
+    #[garde(range(min = 0))]
+    #[default = 15]
+    pub scrolloff: u16,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -842,6 +855,7 @@ mod tests {
                     date_width: 10,
                     date_local: true,
                     name_width: 20,
+                    scrolloff: 15,
                 },
                 detail: UiDetailConfig {
                     date_format: "%Y-%m-%d %H:%M:%S %z".into(),
@@ -885,6 +899,7 @@ mod tests {
             date_width = 20
             date_local = false
             name_width = 30
+            scrolloff = 3
             [ui.detail]
             date_format = "%Y/%m/%d %H:%M:%S"
             date_local = false
@@ -989,6 +1004,7 @@ mod tests {
                     date_width: 20,
                     date_local: false,
                     name_width: 30,
+                    scrolloff: 3,
                 },
                 detail: UiDetailConfig {
                     date_format: "%Y/%m/%d %H:%M:%S".into(),

@@ -4,6 +4,7 @@ pub mod marquee;
 pub mod output_pane;
 pub mod pending_overlay;
 pub mod ref_list;
+pub(crate) mod scroll;
 
 use ratatui::{
     style::{Color, Style},

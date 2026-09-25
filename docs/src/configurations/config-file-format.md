@@ -75,6 +75,7 @@ date_format = "%Y-%m-%d"
 date_width = 10
 date_local = true
 name_width = 20
+scrolloff = 15
 
 [ui.detail]
 date_format = "%Y-%m-%d %H:%M:%S %z"
@@ -494,6 +495,15 @@ Commit 清單中 author name 的寬度。
 
 - 型別：`u16`
 - 預設值：`20`
+
+### `ui.list.scrolloff`
+
+游標與 commit 清單上下緣至少保留的列數，清單頭尾不強制留邊（沒有更多內容
+可留）。實際生效值不超過清單高度的一半。上下移動（含 shift-j/k 單列捲動）、
+跳轉（搜尋 n/N、refs、HEAD）與 refresh 還原視角都會套用。
+
+- 型別：`u16`
+- 預設值：`15`
 
 ### `ui.detail.date_format`
 
