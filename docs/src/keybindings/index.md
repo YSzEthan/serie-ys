@@ -136,6 +136,7 @@
 | <kbd>X</kbd> | 關閉／重開 issue 或 PR | `toggle_issue_state` |
 | <kbd>P</kbd> | PR 定案／打回草稿 | `toggle_pr_draft` |
 | <kbd>z</kbd> | 展開／摺疊 commit 記錄 | `toggle_commit_log` |
+| <kbd>t</kbd> | label 顯示名稱／色塊 | `create_tag` |
 
 ### Create Tag
 

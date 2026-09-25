@@ -13,6 +13,7 @@ mod release_notes;
 pub(crate) mod shell;
 pub(crate) mod user_command;
 
+pub(crate) use github::LabelMode;
 pub use refs::RefsOrigin;
 pub use views::*;
 

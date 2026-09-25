@@ -382,6 +382,7 @@ fn help_blocks(
         b(vec![UserEvent::ToggleIssueState],          "關閉／重開 issue 或 PR",  "Close/reopen issue or PR"),
         b(vec![UserEvent::TogglePrDraft],             "PR 定案／打回草稿",       "Mark PR ready / back to draft"),
         b(vec![UserEvent::ToggleCommitLog],           "展開／摺疊 commit 記錄",  "Expand/collapse commit log"),
+        b(vec![UserEvent::CreateTag],                 "label 顯示名稱／色塊",    "Toggle label names / color swatches"),
     ];
 
     let create_tag = vec![

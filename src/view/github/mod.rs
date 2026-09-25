@@ -91,6 +91,19 @@ enum LoadState {
     Error(String),
 }
 
+/// GitHub 模式列表 labels 的顯示方式，`t` 切換。色塊模式讓標題有更多空間，
+/// 代價是看不到 label 名稱——preview 永遠顯示完整名稱，不受這個設定影響。
+///
+/// 沒有另外分配鍵位：`t` 在 GitHub 模式下沒有既有用途（`create_tag` 只在
+/// commit 清單有意義），直接重用 `UserEvent::CreateTag` 觸發，省一個新的
+/// config 鍵名，`t` 在 commit 清單仍照舊是建立 tag。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub(crate) enum LabelMode {
+    #[default]
+    Names,
+    Swatches,
+}
+
 #[derive(Debug)]
 pub struct GitHubView<'a> {
     before: View<'a>,
@@ -143,6 +156,10 @@ pub struct GitHubView<'a> {
     /// commit log 是逐筆顯示還是收合成單一摘要列。全有全無（`z` 切換整個
     /// log），不是逐筆切換。
     expand_commits: bool,
+    /// labels 顯示名稱還是色塊，`t` 切換（重用 `CreateTag`，理由見上面
+    /// `LabelMode` 的註解）。session 內由 `App::github_label_mode` 保存
+    /// （關掉 GitHub 模式再開仍維持），重啟 serie 回預設。
+    label_mode: LabelMode,
 
     tx: Sender,
 }
@@ -183,6 +200,7 @@ impl<'a> GitHubView<'a> {
             preview_cache: PreviewCache::default(),
             preview_height: 0,
             expand_commits: true,
+            label_mode: LabelMode::default(),
             tx,
         }
     }
@@ -222,6 +240,18 @@ impl<'a> GitHubView<'a> {
 
     pub fn state_filter(&self) -> StateFilter {
         self.state_filter
+    }
+
+    pub fn label_mode(&self) -> LabelMode {
+        self.label_mode
+    }
+
+    /// 只給 `View::of_github` 在建構時設定初始值（從 `App::github_label_mode`
+    /// 帶入 session 記住的選擇）——消費 `self` 讓「只能在建構時用一次」
+    /// 直接寫進型別，不用靠註解自律；其餘地方一律用 `toggle_label_mode`。
+    pub(crate) fn with_label_mode(mut self, mode: LabelMode) -> Self {
+        self.label_mode = mode;
+        self
     }
 
     pub fn next_cursor(&self, kind: GhItemKind) -> Option<String> {
@@ -590,6 +620,7 @@ impl<'a> GitHubView<'a> {
                     h(&[UserEvent::TagCopy], "#num"),
                 ]);
                 hints.extend(self.commit_log_hint());
+                hints.extend(self.label_mode_hint());
                 if self.selected_has_related() {
                     hints.push(h(&[UserEvent::DetailPaneToggle], "related"));
                 }
@@ -672,12 +703,15 @@ impl<'a> GitHubView<'a> {
         ] {
             for tab in [GitHubTab::Issues, GitHubTab::PullRequests] {
                 for expand in [false, true] {
-                    view.focus = focus;
-                    view.active_tab = tab;
-                    view.expand_commits = expand;
-                    for i in 0..view.current_list_len() {
-                        view.selected_index = i;
-                        all.extend(view.status_hints());
+                    for label_mode in [LabelMode::Names, LabelMode::Swatches] {
+                        view.focus = focus;
+                        view.active_tab = tab;
+                        view.expand_commits = expand;
+                        view.label_mode = label_mode;
+                        for i in 0..view.current_list_len() {
+                            view.selected_index = i;
+                            all.extend(view.status_hints());
+                        }
                     }
                 }
             }
@@ -704,6 +738,13 @@ impl<'a> GitHubView<'a> {
     /// 那種時刻。`render_preview` 裡既有的 clamp 會擋住捲過新結尾的情況。
     fn toggle_commit_log(&mut self) {
         self.expand_commits = !self.expand_commits;
+    }
+
+    fn toggle_label_mode(&mut self) {
+        self.label_mode = match self.label_mode {
+            LabelMode::Names => LabelMode::Swatches,
+            LabelMode::Swatches => LabelMode::Names,
+        };
     }
 
     /// 就地更新 draft 狀態。`RefreshGitHub` 是非同步的，成功通知到列表刷新之間
@@ -767,6 +808,12 @@ impl<'a> GitHubView<'a> {
             "expand commits"
         };
         Some(h(&[UserEvent::ToggleCommitLog], label))
+    }
+
+    /// 只在色塊模式下顯示——名稱模式是預設，不需要提示佔狀態列空間。
+    fn label_mode_hint(&self) -> Option<HintSpec> {
+        (self.label_mode == LabelMode::Swatches)
+            .then(|| h(&[UserEvent::CreateTag], "show label names"))
     }
 
     pub fn jump_to_issue(&mut self, number: u64) -> bool {
@@ -908,6 +955,7 @@ mod tests {
     use super::*;
     use ratatui::{backend::TestBackend, Terminal};
 
+    use crate::event::UserEventWithCount;
     use crate::github::{
         DiffStat, GhAuthor, GhCommit, GhReviewComment, GhReviewCommentConn, GhStatusCheckRollup,
         GhTimelineItem, Mergeable,
@@ -1052,7 +1100,13 @@ mod tests {
     }
 
     fn render_to_string(view: &mut GitHubView<'_>) -> String {
-        let mut terminal = Terminal::new(TestBackend::new(TERM_W, TERM_H)).unwrap();
+        render_to_string_at_width(view, TERM_W)
+    }
+
+    /// 跟 `render_to_string` 一樣，但欄寬可調——labels 的寬度測試需要比
+    /// 標準 60 欄更寬的畫面，才不會連 label 名稱本身都被切斷。
+    fn render_to_string_at_width(view: &mut GitHubView<'_>, width: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, TERM_H)).unwrap();
         terminal
             .draw(|f| {
                 let area = f.area();
@@ -2072,6 +2126,147 @@ mod tests {
 
         view.handle_list_event(UserEvent::ToggleCommitLog, 1);
         assert!(view.expand_commits);
+    }
+
+    /// 跟 `view_with_body` 共用同一個 PR fixture，只覆寫這個測試在乎的
+    /// 兩個欄位——避免整段複製 `GhPullRequest` 建構，`GhPullRequest` 之後
+    /// 加欄位時只有一處要跟著改。
+    fn view_with_pr_labels(
+        labels: Vec<crate::github::GhLabel>,
+        title: &str,
+    ) -> GitHubView<'static> {
+        let mut view = view_with_body(String::new());
+        view.pull_requests[0].labels = labels;
+        view.pull_requests[0].title = title.to_string();
+        view
+    }
+
+    /// #112：labels 一多就把標題擠到看不見。色塊模式（`t`）要顯示每個
+    /// label 對應顏色的方塊、不顯示名稱，讓出來的欄寬要能讓標題露出更多。
+    #[test]
+    fn compact_label_mode_hides_names_and_frees_title_space() {
+        let labels = vec![
+            crate::github::GhLabel {
+                name: "alpha".to_string(),
+                color: Some("00ff00".to_string()),
+            },
+            crate::github::GhLabel {
+                name: "beta".to_string(),
+                color: Some("ff0000".to_string()),
+            },
+        ];
+        let title = "This is a genuinely long pull request title that needs room";
+        let mut view = view_with_pr_labels(labels, title);
+        assert_eq!(view.label_mode, LabelMode::Names);
+
+        // preview（`│` 右側）一律顯示完整 label 名稱與標題，不受這個設定
+        // 影響——斷言只看 list 那一欄（`│` 左側），才是真正在測的東西。
+        let list_row = |screen: &str| -> String {
+            screen
+                .lines()
+                .find(|l| l.contains("#1") && l.contains("open"))
+                .unwrap()
+                .split('│')
+                .next()
+                .unwrap()
+                .to_string()
+        };
+
+        let names_screen = render_to_string_at_width(&mut view, 100);
+        let names_row = list_row(&names_screen);
+        assert!(
+            names_row.contains("alpha") && names_row.contains("beta"),
+            "names mode must show label text in the list row:\n{names_row}"
+        );
+        assert!(
+            !names_row.contains('▮'),
+            "names mode must not draw swatches:\n{names_row}"
+        );
+
+        view.toggle_label_mode();
+        assert_eq!(view.label_mode, LabelMode::Swatches);
+        let swatch_screen = render_to_string_at_width(&mut view, 100);
+        let swatch_row = list_row(&swatch_screen);
+        assert!(
+            !swatch_row.contains("alpha") && !swatch_row.contains("beta"),
+            "swatch mode must hide label text in the list row:\n{swatch_row}"
+        );
+        assert!(
+            swatch_row.contains("▮▮"),
+            "swatch mode must draw one block per label, tight-packed:\n{swatch_row}"
+        );
+
+        // 色塊比 "[alpha, beta]" 短很多，讓出來的欄寬應該讓標題露出更多字。
+        let title_prefix = &title[..10];
+        assert!(
+            !names_row.contains(title_prefix),
+            "names mode is the regression case: title should still be cut off in the list row:\n{names_row}"
+        );
+        assert!(
+            swatch_row.contains(title_prefix),
+            "swatch mode should free up enough width to show more of the title in the list row:\n{swatch_row}"
+        );
+    }
+
+    /// `t` 在 Issues／PRs 兩個分頁都要生效——不像 `z`（commit log）只對 PR
+    /// 有意義，labels 精簡顯示兩個分頁都有需求。
+    #[test]
+    fn label_compact_toggle_flips_on_both_tabs_and_both_foci() {
+        let mut pr_view = view_with_body("body".to_string());
+        assert_eq!(pr_view.label_mode, LabelMode::Names);
+        pr_view.handle_list_event(UserEvent::CreateTag, 1);
+        assert_eq!(pr_view.label_mode, LabelMode::Swatches);
+        pr_view.handle_preview_event(UserEvent::CreateTag, 1);
+        assert_eq!(pr_view.label_mode, LabelMode::Names);
+
+        let mut issue_view = view_with_issue("issue body".to_string());
+        assert_eq!(issue_view.label_mode, LabelMode::Names);
+        issue_view.handle_list_event(UserEvent::CreateTag, 1);
+        assert_eq!(issue_view.label_mode, LabelMode::Swatches);
+        issue_view.handle_preview_event(UserEvent::CreateTag, 1);
+        assert_eq!(issue_view.label_mode, LabelMode::Names);
+    }
+
+    /// 搜尋 prompt 裡打字母 `t`：要進 search_input，不能被攔截去切換
+    /// label 顯示模式——這是重用既有事件最容易踩的雷，`event.rs::handle_prompt_event`
+    /// 的 fallback 分支理論上會處理對，這裡直接鎖住行為。
+    #[test]
+    fn typing_t_in_prompt_focus_reaches_search_input_not_label_toggle() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent};
+
+        let mut view = view_with_body("body".to_string());
+        view.focus = GitHubFocus::Prompt;
+        assert_eq!(view.label_mode, LabelMode::Names);
+
+        view.handle_event(
+            UserEventWithCount::new(UserEvent::CreateTag, 1),
+            KeyEvent::from(KeyCode::Char('t')),
+        );
+
+        assert_eq!(
+            view.label_mode,
+            LabelMode::Names,
+            "typing inside the search prompt must not toggle label mode"
+        );
+        assert_eq!(view.search_input.value(), "t");
+    }
+
+    /// 色塊模式的提示只在使用者真的切換過去時才出現，平常（預設的名稱
+    /// 模式）不佔狀態列空間。
+    #[test]
+    fn label_mode_hint_only_shown_in_swatch_mode() {
+        let mut view = view_with_body("body".to_string());
+        view.focus = GitHubFocus::List;
+
+        let has_hint = |view: &GitHubView<'_>| {
+            view.status_hints()
+                .iter()
+                .any(|(events, _)| events.contains(&UserEvent::CreateTag))
+        };
+
+        assert!(!has_hint(&view), "names mode must not show the hint");
+        view.toggle_label_mode();
+        assert!(has_hint(&view), "swatch mode must show the hint");
     }
 
     /// `r` 在 List 跟 Preview 兩個 focus 都要能觸發同一個刷新動作——
