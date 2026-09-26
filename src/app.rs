@@ -279,39 +279,23 @@ impl<'a> App<'a> {
             .iter()
             .map(|c| c.to_ratatui_color())
             .collect();
-        let head_commit_hash = crate::resolve_head_commit_hash(repository);
+        let head_raw = crate::resolve_head_commit_hash(repository)
+            .and_then(|h| repository.index_of(&h))
+            .map(RawCommitIdx);
 
         let mut ref_name_to_commit_index_map = FxHashMap::default();
-        let commits = graph
-            .commit_hashes
+        let commits = repository
+            .all_commits()
             .iter()
             .enumerate()
-            .map(|(i, commit_hash)| {
-                let commit = repository
-                    .commit(commit_hash)
-                    .expect("commit hash from graph must exist in repository");
-                let refs = repository.refs(commit_hash);
+            .map(|(i, commit)| {
+                let refs = repository.refs(&commit.commit_hash);
                 for r in &refs {
                     ref_name_to_commit_index_map.insert(r.name().to_string(), RawCommitIdx(i));
                 }
-                let (pos_x, _) = graph.commit_pos_map[commit_hash];
-                let graph_color = graph_color_set.get(pos_x).to_ratatui_color();
-                CommitInfo::new(commit, refs, graph_color)
+                CommitInfo::new(commit, refs)
             })
             .collect();
-        let filtered_colors: Option<FxHashMap<CommitHash, ratatui::style::Color>> =
-            filtered_graph.as_ref().map(|fg| {
-                fg.commit_hashes
-                    .iter()
-                    .map(|commit_hash| {
-                        let (pos_x, _) = fg.commit_pos_map[commit_hash];
-                        (
-                            commit_hash.clone(),
-                            graph_color_set.get(pos_x).to_ratatui_color(),
-                        )
-                    })
-                    .collect()
-            });
 
         let head = repository.head().clone();
         let working_changes = repository.working_changes().clone();
@@ -324,7 +308,7 @@ impl<'a> App<'a> {
             commits,
             Rc::clone(graph),
             graph_colors,
-            head_commit_hash,
+            head_raw,
             head,
             ref_name_to_commit_index_map,
             MatchOptions {
@@ -333,7 +317,6 @@ impl<'a> App<'a> {
                 target: ctx.core_config.search.target,
             },
             filtered_graph,
-            filtered_colors,
             remote_only_commits,
             working_changes_opt,
             ctx.ui_config.list.scrolloff as usize,

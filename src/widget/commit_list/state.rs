@@ -54,7 +54,7 @@ pub struct CommitListState<'a> {
     // `GraphColorSet` / `Repository` 建出來的，所以只有一份，
     // 不是每個 graph 各配一份。
     graph_colors: Vec<Color>,
-    pub(super) head_commit_hash: Option<CommitHash>,
+    pub(super) head_raw: Option<RawCommitIdx>,
     cell_width_type: CellWidthType,
     /// 緊湊模式：commit 文字貼齊該列 graph 實際畫到的最右邊，marker 欄與
     /// graph 右側留白都拿掉。跟 `cell_width_type` 一樣，每幀由
@@ -69,10 +69,6 @@ pub struct CommitListState<'a> {
 
     // Filtered graph（remote-only commits 被隱藏時使用）
     filtered: Option<Rc<Graph>>,
-    // Marker-overlay 的顏色對照表（commit_hash -> color），鍵的方式跟上面的
-    // `graph_colors`（以 pos_x 為索引的調色盤）不同。雖然名稱相近，
-    // 但不是同一個概念 -- 不要合併。
-    filtered_graph_colors: Option<FxHashMap<CommitHash, Color>>,
 
     ref_name_to_commit_index_map: FxHashMap<String, RawCommitIdx>,
 
@@ -126,12 +122,11 @@ impl<'a> CommitListState<'a> {
         commits: Vec<CommitInfo<'a>>,
         graph: Rc<Graph>,
         graph_colors: Vec<Color>,
-        head_commit_hash: Option<CommitHash>,
+        head_raw: Option<RawCommitIdx>,
         head: Head,
         ref_name_to_commit_index_map: FxHashMap<String, RawCommitIdx>,
         search_defaults: MatchOptions,
         filtered: Option<Rc<Graph>>,
-        filtered_graph_colors: Option<FxHashMap<CommitHash, Color>>,
         remote_only_commits: RemoteOnly,
         working_changes: Option<WorkingChanges>,
         scrolloff: usize,
@@ -155,7 +150,7 @@ impl<'a> CommitListState<'a> {
             commit_hash_to_raw,
             graph,
             graph_colors,
-            head_commit_hash,
+            head_raw,
             // 佔位值：`CommitList::render` 在第一次繪製時就會透過
             // `set_layout` 依實際 `area.width` 覆寫，這裡的值只是讓 struct
             // 在那之前保持合法狀態。
@@ -164,7 +159,6 @@ impl<'a> CommitListState<'a> {
             selected_text_x: 0,
             head,
             filtered,
-            filtered_graph_colors,
             ref_name_to_commit_index_map,
             search_state: SearchState::Inactive,
             search_input: Input::default(),
@@ -218,7 +212,7 @@ impl<'a> CommitListState<'a> {
 
     /// 每幀由 `CommitList::render` 呼叫，寫入依 `area.width` 重新決定的
     /// 寬度／緊湊設定。要在 `build_visible_rows`（它內部呼叫的
-    /// `text_cells_for_hash`／`is_compact` 都讀這兩個欄位）之前呼叫。
+    /// `text_cells_for_raw`／`is_compact` 都讀這兩個欄位）之前呼叫。
     pub(super) fn set_layout(&mut self, cell_width_type: CellWidthType, compact: bool) {
         self.cell_width_type = cell_width_type;
         self.compact = compact;
@@ -338,13 +332,13 @@ impl<'a> CommitListState<'a> {
         self.has_virtual_row() && self.offset + self.selected == 0
     }
 
-    pub(super) fn first_visible_commit_hash(&self) -> Option<&CommitHash> {
+    pub(super) fn first_visible_raw(&self) -> Option<RawCommitIdx> {
         let idx: RawCommitIdx = if self.filtered_indices.is_empty() {
             RawCommitIdx(0)
         } else {
             *self.filtered_indices.first()?
         };
-        self.commits.get(idx.0).map(|c| &c.commit.commit_hash)
+        (idx.0 < self.commits.len()).then_some(idx)
     }
 
     // --- 座標系 accessor / 轉換 ---------------------------------------------
@@ -688,10 +682,10 @@ impl<'a> CommitListState<'a> {
     /// 把游標移到 HEAD 指向的 commit,畫面比照上下移動的最小捲動手感
     /// (不把 HEAD 硬拉到最上面)。HEAD 不存在或被 filter 濾掉時靜默不動。
     pub fn select_head(&mut self) {
-        let Some(head) = self.head_commit_hash.clone() else {
+        let Some(head) = self.head_raw else {
             return;
         };
-        self.step_to_commit_hash(&head);
+        self.step_to_raw(head);
     }
 
     fn current_graph(&self) -> &Graph {
@@ -703,24 +697,34 @@ impl<'a> CommitListState<'a> {
         &self.graph
     }
 
-    pub(super) fn text_cells_for_hash(&self, hash: &CommitHash) -> Option<Vec<TextCell>> {
-        crate::graph::text_cells(
-            self.current_graph(),
-            hash,
+    /// `raw` 在目前 graph 上的 text cells；不在這張 graph 裡時回 `None`。
+    pub(super) fn text_cells_for_raw(&self, raw: RawCommitIdx) -> Option<Vec<TextCell>> {
+        let graph = self.current_graph();
+        let row = graph.row_of(raw.0)?;
+        Some(crate::graph::text_cells(
+            graph,
+            row,
             &self.graph_colors,
             self.cell_width_type,
-        )
+        ))
     }
 
-    pub(super) fn marker_color(&self, commit_info: &CommitInfo<'_>) -> Color {
-        if !self.show_remote_refs {
-            if let Some(ref colors) = self.filtered_graph_colors {
-                if let Some(&color) = colors.get(commit_info.commit_hash()) {
-                    return color;
-                }
-            }
-        }
-        commit_info.graph_color
+    /// `raw` 的 dot 在目前 graph 上的起始 cell（不是 char）；不在這張 graph 裡時回 `None`。
+    pub(super) fn dot_cell(&self, raw: RawCommitIdx) -> Option<usize> {
+        let graph = self.current_graph();
+        let row = graph.row_of(raw.0)?;
+        Some(graph.col(row) * self.cell_width_type.cells_per_column())
+    }
+
+    /// marker 跟 dot 同色：取 commit 所在欄的調色盤顏色。filtered graph 裡沒有
+    /// 這個 commit 時退回主 graph 的欄。
+    pub(super) fn marker_color(&self, raw: RawCommitIdx) -> Color {
+        let col = [self.current_graph(), &self.graph]
+            .into_iter()
+            .find_map(|g| g.row_of(raw.0).map(|row| g.col(row)));
+        col.map_or(Color::Reset, |col| {
+            crate::graph::palette_color(&self.graph_colors, col)
+        })
     }
 }
 
@@ -1109,14 +1113,9 @@ mod tests {
         let commits = commits_fixture(20);
         let infos = commits
             .iter()
-            .map(|c| CommitInfo::new(c, Vec::new(), Color::Reset))
+            .map(|c| CommitInfo::new(c, Vec::new()))
             .collect();
-        let graph = Graph {
-            commit_hashes: Vec::new(),
-            commit_pos_map: FxHashMap::default(),
-            edges: Vec::new(),
-            max_pos_x: 0,
-        };
+        let graph = Graph::from_materialized(commits.len(), Vec::new(), Vec::new());
         let working_changes = WorkingChanges {
             unstaged: vec![FileChange::Untracked {
                 path: "new.txt".into(),
@@ -1133,8 +1132,7 @@ mod tests {
             FxHashMap::default(),
             MatchOptions::default(),
             None,
-            None,
-            RemoteOnly::default(),
+            crate::RemoteOnly::default(),
             Some(working_changes),
             2,
         );
@@ -1167,14 +1165,9 @@ mod tests {
     ) -> CommitListState<'a> {
         let infos = commits
             .iter()
-            .map(|c| CommitInfo::new(c, Vec::new(), Color::Reset))
+            .map(|c| CommitInfo::new(c, Vec::new()))
             .collect();
-        let graph = Graph {
-            commit_hashes: Vec::new(),
-            commit_pos_map: FxHashMap::default(),
-            edges: Vec::new(),
-            max_pos_x: 0,
-        };
+        let graph = Graph::from_materialized(commits.len(), Vec::new(), Vec::new());
         let mut state = CommitListState::new(
             infos,
             Rc::new(graph),
@@ -1184,8 +1177,7 @@ mod tests {
             FxHashMap::default(),
             MatchOptions::default(),
             None,
-            None,
-            RemoteOnly::default(),
+            crate::RemoteOnly::default(),
             None,
             0,
         );
@@ -1324,13 +1316,13 @@ mod tests {
             target: "deadbeef".into(),
         };
 
-        let both = CommitInfo::new(&commit, vec![&branch, &tag], Color::Reset);
+        let both = CommitInfo::new(&commit, vec![&branch, &tag]);
         assert_eq!(child_pick_label(&both), "v1.0: fix things");
 
-        let branch_only = CommitInfo::new(&commit, vec![&branch], Color::Reset);
+        let branch_only = CommitInfo::new(&commit, vec![&branch]);
         assert_eq!(child_pick_label(&branch_only), "feature/x: fix things");
 
-        let none = CommitInfo::new(&commit, vec![], Color::Reset);
+        let none = CommitInfo::new(&commit, vec![]);
         assert_eq!(child_pick_label(&none), "fix things");
     }
 }

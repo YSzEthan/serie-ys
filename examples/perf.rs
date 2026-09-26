@@ -235,17 +235,24 @@ struct GraphStats {
 /// edge，所以取 commit 欄位不會改變任何一列的值，只補上孤立 commit
 /// （沒有 parent 也沒有 child）那一列，順便讓取 max 的集合永遠非空。
 fn graph_stats(graph: &Graph) -> GraphStats {
-    let mut widths: Vec<usize> = (0..graph.commit_hashes.len())
+    let mut widths: Vec<usize> = (0..graph.row_count())
         .map(|y| {
-            let commit_col = graph.commit_pos_map[&graph.commit_hashes[y]].0;
-            let edge_col = graph.edges[y].iter().map(|e| e.pos_x).max().unwrap_or(0);
+            let commit_col = graph.col(y);
+            let edge_col = graph
+                .row_edges(y)
+                .iter()
+                .map(|e| e.pos_x)
+                .max()
+                .unwrap_or(0);
             commit_col.max(edge_col) + 1
         })
         .collect();
-    let edges = graph.edges.iter().map(|row| row.len()).sum();
+    let edges = (0..graph.row_count())
+        .map(|y| graph.row_edges(y).len())
+        .sum();
     let (width_p50, width_p99, width_max) = percentiles(&mut widths);
     GraphStats {
-        rows: graph.commit_hashes.len(),
+        rows: graph.row_count(),
         cells: graph.cell_count(),
         edges,
         width_p50,

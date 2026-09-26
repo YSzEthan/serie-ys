@@ -748,7 +748,6 @@ impl<'a> CommitListState<'a> {
 
 #[cfg(test)]
 mod tests {
-    use ratatui::style::Color;
 
     use crate::git::Commit;
 
@@ -777,7 +776,7 @@ mod tests {
             message: "wip".into(),
             target: "abc1234def".into(),
         };
-        let info = CommitInfo::new(&c, vec![&branch, &stash], Color::Reset);
+        let info = CommitInfo::new(&c, vec![&branch, &stash]);
 
         let hit = |q: &str| {
             SearchMatch::new(
@@ -835,14 +834,9 @@ mod tests {
 
         let infos = commits
             .iter()
-            .map(|c| CommitInfo::new(c, Vec::new(), Color::Reset))
+            .map(|c| CommitInfo::new(c, Vec::new()))
             .collect();
-        let graph = Graph {
-            commit_hashes: Vec::new(),
-            commit_pos_map: FxHashMap::default(),
-            edges: Vec::new(),
-            max_pos_x: 0,
-        };
+        let graph = Graph::from_materialized(commits.len(), Vec::new(), Vec::new());
         let mut state = CommitListState::new(
             infos,
             Rc::new(graph),
@@ -851,7 +845,6 @@ mod tests {
             Head::None,
             FxHashMap::default(),
             MatchOptions::default(),
-            None,
             None,
             crate::RemoteOnly::default(),
             None,
@@ -1192,7 +1185,7 @@ mod tests {
             name: "apple-branch".into(),
             target: "apple123".into(),
         };
-        let info = CommitInfo::new(&c, vec![&branch], Color::Reset);
+        let info = CommitInfo::new(&c, vec![&branch]);
         let matcher = SearchMatcher::new("apple", false, false);
 
         let subject_only = SearchMatch::new(&info, &matcher, SearchTarget::Subject);
@@ -1219,7 +1212,7 @@ mod tests {
     #[test]
     fn search_match_target_ref_on_commit_without_refs_is_no_match() {
         let c = commit_fixture();
-        let info = CommitInfo::new(&c, Vec::new(), Color::Reset);
+        let info = CommitInfo::new(&c, Vec::new());
         let matcher = SearchMatcher::new("anything", false, false);
 
         let m = SearchMatch::new(&info, &matcher, SearchTarget::Ref);
@@ -1236,7 +1229,7 @@ mod tests {
             message: "wip".into(),
             target: "abc1234def".into(),
         };
-        let info = CommitInfo::new(&c, vec![&stash], Color::Reset);
+        let info = CommitInfo::new(&c, vec![&stash]);
         let matcher = SearchMatcher::new("stash@", false, false);
 
         let m = SearchMatch::new(&info, &matcher, SearchTarget::Ref);

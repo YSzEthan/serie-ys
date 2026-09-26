@@ -1528,17 +1528,18 @@ fn build_graph_snapshot_source(
 
     let double_rows = graph::build_text_graph(&graph, &colors, graph::CellWidthType::Double);
     let single_rows = graph::build_text_graph(&graph, &colors, graph::CellWidthType::Single);
-    let subjects = graph
-        .commit_hashes
-        .iter()
-        .map(|h| repository.commit(h).unwrap().subject.clone())
+    let subjects = (0..graph.row_count())
+        .map(|row| repository.all_commits()[graph.raw_of(row)].subject.clone())
+        .collect();
+    let edges = (0..graph.row_count())
+        .map(|row| graph.row_edges(row).to_vec())
         .collect();
 
     GraphSnapshotSource {
         subjects,
         double_rows,
         single_rows,
-        edges: graph.edges.clone(),
+        edges,
         colors,
     }
 }

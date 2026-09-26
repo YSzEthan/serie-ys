@@ -22,17 +22,85 @@ impl GraphDataSource for Repository {
     }
 }
 
+/// graph 的對外介面。
+///
+/// row 是 graph 裡的第幾列，raw 是 commit 在 `Repository::all_commits()` 裡的
+/// 位置。主 graph 兩者相同；filtered graph 跳過了隱藏的 commit，row 比 raw 小。
 #[derive(Debug)]
 pub struct Graph {
-    pub commit_hashes: Vec<CommitHash>,
-    pub commit_pos_map: CommitPosMap,
-    pub edges: Vec<Vec<Edge>>,
-    pub max_pos_x: usize,
+    /// row → raw。`None` 代表恆等；`Some` 時嚴格遞增，`row_of` 用 binary search。
+    raw_of: Option<Vec<u32>>,
+    /// 每列 commit 所在的欄。
+    cols: Vec<u32>,
+    /// 每列的 edge，已排序、去重。
+    edges: Vec<Vec<Edge>>,
+    max_pos_x: usize,
 }
 
 impl Graph {
+    /// 唯一的建構子。`rows[i]` 是第 i 列的 `(raw, col)`，raw 必須嚴格遞增；
+    /// `raw_count` 是 `all_commits()` 的長度，`rows` 涵蓋全部時就是恆等對應。
+    ///
+    /// edge 的排序與去重只在這裡做：`text.rs` 同 rank 平手時看 edge 順序，
+    /// 所以順序本身是 graph 的一部分。
+    pub fn from_materialized(
+        raw_count: usize,
+        rows: Vec<(usize, usize)>,
+        mut edges: Vec<Vec<Edge>>,
+    ) -> Graph {
+        debug_assert_eq!(rows.len(), edges.len());
+        debug_assert!(rows.windows(2).all(|w| w[0].0 < w[1].0));
+        debug_assert!(rows.last().is_none_or(|&(raw, _)| raw < raw_count));
+
+        for es in &mut edges {
+            es.sort_by_key(|e| (e.associated_line_pos_x, e.pos_x, e.edge_type));
+            es.dedup();
+        }
+        // detour 會讓線跑到任何 commit 都不在的欄，所以 edge 也要算進來。
+        let max_pos_x = rows
+            .iter()
+            .map(|&(_, col)| col)
+            .chain(edges.iter().flatten().map(|e| e.pos_x))
+            .max()
+            .unwrap_or(0);
+        let raw_of =
+            (rows.len() != raw_count).then(|| rows.iter().map(|&(raw, _)| raw as u32).collect());
+        let cols = rows.iter().map(|&(_, col)| col as u32).collect();
+
+        Graph {
+            raw_of,
+            cols,
+            edges,
+            max_pos_x,
+        }
+    }
+
+    pub fn row_count(&self) -> usize {
+        self.cols.len()
+    }
+
     pub fn cell_count(&self) -> usize {
         self.max_pos_x + 1
+    }
+
+    /// raw 不在這張 graph 裡（被 filter 掉，或 fixture 的 graph 比 commit 少）時回 `None`。
+    pub fn row_of(&self, raw: usize) -> Option<usize> {
+        match &self.raw_of {
+            None => (raw < self.row_count()).then_some(raw),
+            Some(raws) => raws.binary_search(&(raw as u32)).ok(),
+        }
+    }
+
+    pub fn raw_of(&self, row: usize) -> usize {
+        self.raw_of.as_ref().map_or(row, |raws| raws[row] as usize)
+    }
+
+    pub fn col(&self, row: usize) -> usize {
+        self.cols[row] as usize
+    }
+
+    pub fn row_edges(&self, row: usize) -> &[Edge] {
+        &self.edges[row]
     }
 }
 
@@ -75,21 +143,20 @@ pub fn calc_graph(
     let commits: Vec<&Commit> = repository.all_commits().iter().collect();
 
     let commit_pos_map = calc_commit_positions(&commits, repository, head_hint, reserve_head_col);
-    let (mut graph_edges, max_pos_x) = calc_edges(&commit_pos_map, &commits, repository);
+    let mut graph_edges = calc_edges(&commit_pos_map, &commits, repository);
 
     normalize_head_row_invariant(&mut graph_edges, &commit_pos_map, head_hint);
     if !repository.working_changes().is_empty() {
         anchor_head_to_virtual_row(&mut graph_edges, &commit_pos_map, head_hint);
     }
 
-    let commit_hashes = commits.iter().map(|c| c.commit_hash.clone()).collect();
-
-    Graph {
-        commit_hashes,
-        commit_pos_map,
-        edges: graph_edges,
-        max_pos_x,
-    }
+    // 主 graph 的 row 就是 raw。
+    let rows = commits
+        .iter()
+        .enumerate()
+        .map(|(raw, c)| (raw, commit_pos_map[&c.commit_hash].0))
+        .collect();
+    Graph::from_materialized(commits.len(), rows, graph_edges)
 }
 
 /// HEAD row 在 head_pos_x 不能有 Vertical（會穿透空心圓 interior）。
@@ -306,8 +373,7 @@ fn calc_edges(
     commit_pos_map: &CommitPosMap,
     commits: &[&Commit],
     source: &impl GraphDataSource,
-) -> (Vec<Vec<Edge>>, usize) {
-    let mut max_pos_x = 0;
+) -> Vec<Vec<Edge>> {
     let mut edges: Vec<Vec<WrappedEdge>> = vec![vec![]; commits.len()];
 
     for commit in commits {
@@ -390,10 +456,6 @@ fn calc_edges(
                     ));
                 }
             }
-        }
-
-        if max_pos_x < pos_x {
-            max_pos_x = pos_x;
         }
 
         // 若有 parent 但該 parent 不在 graph 中（設定 max_count 時會發生此情況），畫出 down edge
@@ -500,10 +562,6 @@ fn calc_edges(
                         pos_x,
                         hash,
                     ));
-
-                    if max_pos_x < new_pos_x {
-                        max_pos_x = new_pos_x;
-                    }
                 } else if pos_x == child_pos_x {
                     // 同 col merge 且無 overlap → 等同 commit 直線
                     draw_vertical_chain(&mut edges, pos_x, child_pos_y, pos_y, hash);
@@ -558,23 +616,12 @@ fn calc_edges(
                 }
             }
         }
-
-        if max_pos_x < pos_x {
-            max_pos_x = pos_x;
-        }
     }
 
-    let edges: Vec<Vec<Edge>> = edges
+    edges
         .into_iter()
-        .map(|es| {
-            let mut es: Vec<Edge> = es.into_iter().map(|e| e.edge).collect();
-            es.sort_by_key(|e| (e.associated_line_pos_x, e.pos_x, e.edge_type));
-            es.dedup();
-            es
-        })
-        .collect();
-
-    (edges, max_pos_x)
+        .map(|es| es.into_iter().map(|e| e.edge).collect())
+        .collect()
 }
 
 struct FilteredRelations {
@@ -626,13 +673,12 @@ pub fn calc_graph_filtered(
     head_hint: Option<&CommitHash>,
     reserve_head_col: bool,
 ) -> Graph {
-    let commits: Vec<&Commit> = repository
+    let (raws, commits): (Vec<usize>, Vec<&Commit>) = repository
         .all_commits()
         .iter()
         .enumerate()
         .filter(|&(raw, _)| !remote_only.contains(raw))
-        .map(|(_, c)| c)
-        .collect();
+        .unzip();
     let visible_hashes: FxHashSet<CommitHash> =
         commits.iter().map(|c| c.commit_hash.clone()).collect();
     let visible_hashes = &visible_hashes;
@@ -673,21 +719,19 @@ pub fn calc_graph_filtered(
     let effective_reserve = reserve_head_col && effective_head.is_some();
     let commit_pos_map =
         calc_commit_positions(&commits, &source, effective_head, effective_reserve);
-    let (mut graph_edges, max_pos_x) = calc_edges(&commit_pos_map, &commits, &source);
+    let mut graph_edges = calc_edges(&commit_pos_map, &commits, &source);
 
     normalize_head_row_invariant(&mut graph_edges, &commit_pos_map, effective_head);
     if !repository.working_changes().is_empty() {
         anchor_head_to_virtual_row(&mut graph_edges, &commit_pos_map, effective_head);
     }
 
-    let commit_hashes = commits.iter().map(|c| c.commit_hash.clone()).collect();
-
-    Graph {
-        commit_hashes,
-        commit_pos_map,
-        edges: graph_edges,
-        max_pos_x,
-    }
+    let rows = raws
+        .into_iter()
+        .zip(&commits)
+        .map(|(raw, c)| (raw, commit_pos_map[&c.commit_hash].0))
+        .collect();
+    Graph::from_materialized(repository.all_commits().len(), rows, graph_edges)
 }
 
 #[cfg(test)]
@@ -878,7 +922,7 @@ mod tests {
         pos_map.insert(CommitHash::from("a"), (1, 0));
         pos_map.insert(CommitHash::from("b"), (1, 1));
 
-        let (edges, _) = calc_edges(&pos_map, &commits, &source);
+        let edges = calc_edges(&pos_map, &commits, &source);
 
         assert!(
             has_edge(&edges, 0, 1, EdgeType::Down),
@@ -916,7 +960,7 @@ mod tests {
         pos_map.insert(CommitHash::from("Y"), (1, 3));
         pos_map.insert(CommitHash::from("P"), (1, 4));
 
-        let (edges, _) = calc_edges(&pos_map, &commits, &source);
+        let edges = calc_edges(&pos_map, &commits, &source);
 
         // 中間 rows (X, Y) 在 col 1 不能有 merge 的 pass-through Vertical
         for row in [2, 3] {
@@ -954,7 +998,7 @@ mod tests {
         pos_map.insert(CommitHash::from("P"), (1, 1));
         pos_map.insert(CommitHash::from("E"), (0, 2));
 
-        let (edges, _) = calc_edges(&pos_map, &commits, &source);
+        let edges = calc_edges(&pos_map, &commits, &source);
 
         assert!(
             has_edge(&edges, 0, 1, EdgeType::Down),
