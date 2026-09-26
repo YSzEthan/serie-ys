@@ -339,7 +339,8 @@ pub fn find_remote_only_commits(
         .collect()
 }
 
-fn compute_filtered_graph_from(
+/// 有 remote-only commit 時，算出隱藏它們之後的 filtered graph；沒有就回 `None`。
+pub fn compute_filtered_graph_from(
     repository: &git::Repository,
     full_graph: &Graph,
     remote_only: &FxHashSet<git::CommitHash>,
@@ -397,7 +398,7 @@ fn try_refresh_filtered_for_ref_change(
 ///
 /// 這裡刻意排除 `RemoteBranch`：若 detached HEAD 停在只有遠端 ref 的
 /// commit 上，使用者並沒有對應的本地把手可用，因此不把它視為值得保護的錨點。
-fn head_has_named_ref(repository: &git::Repository) -> bool {
+pub fn head_has_named_ref(repository: &git::Repository) -> bool {
     match repository.head() {
         git::Head::Branch { .. } => true,
         git::Head::Detached { target } => repository
@@ -408,7 +409,8 @@ fn head_has_named_ref(repository: &git::Repository) -> bool {
     }
 }
 
-fn resolve_head_commit_hash(repository: &git::Repository) -> Option<git::CommitHash> {
+/// 從 `repository.head()` 解析出 HEAD 目前指向的 commit hash。
+pub fn resolve_head_commit_hash(repository: &git::Repository) -> Option<git::CommitHash> {
     match repository.head() {
         git::Head::Branch { name } => {
             for (commit_hash, refs) in repository.refs_with_commits() {
