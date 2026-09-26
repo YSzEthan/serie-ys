@@ -332,7 +332,13 @@ impl<'a> View<'a> {
             View::DeleteTag(view) => view.refresh(),
             View::DeleteRef(view) => view.refresh(),
             View::Help(_) => {}
-            View::GitHub(_) => {}
+            // merge PR 流程刪本地分支後會呼叫這裡——直接送 `AppEvent::Refresh`
+            // 會把 `View::GitHub` 展開回 `before_view`（`ViewContext` 沒有 GitHub
+            // 的重建目標），等於把使用者踢回底下的畫面、丟掉還沒關閉的 GitHub
+            // 資料。改成跟 `ShellView` 一樣記旗標，延後到 `close_github` 才補做；
+            // 副作用：filesystem watcher 觸發的 `AutoRefresh` 在 GitHub view 開著
+            // 期間，原本會被整個吃掉，現在會補記成待處理。
+            View::GitHub(view) => view.mark_refresh_pending(),
             View::ReleaseNotes(_) => {}
             // 直接送 `AppEvent::Refresh` 會讓 `lib.rs` 整個重建 `App`，把還在
             // 打字／看輸出的 `ShellView` 一併炸掉——Shell 的 refresh 政策是

@@ -308,8 +308,9 @@ impl<'a> GitHubView<'a> {
         self.tx.send(AppEvent::OpenMergePrMethodPicker {
             number: pr.number,
             head_ref: pr.head_ref_name.clone(),
+            head_ref_oid: pr.head_ref_oid.clone(),
             state: self.state_filter,
-            deletable: pr.head_branch_deletable,
+            remote_deletable: pr.head_branch_deletable,
         });
     }
 

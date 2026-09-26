@@ -753,11 +753,27 @@ impl App<'_> {
                 AppEvent::OpenMergePrMethodPicker {
                     number,
                     head_ref,
+                    head_ref_oid,
                     state,
-                    deletable,
+                    remote_deletable,
                 } => {
-                    self.status_line_state
-                        .open_merge_pr_prompt(number, head_ref, state, deletable);
+                    let head_branch = match self.repository.head() {
+                        Head::Branch { name } => Some(name.as_str()),
+                        _ => None,
+                    };
+                    let local_delete = local_branch_delete_check(
+                        &self.repository.all_refs(),
+                        head_branch,
+                        &head_ref,
+                        &head_ref_oid,
+                    );
+                    self.status_line_state.open_merge_pr_prompt(
+                        number,
+                        head_ref,
+                        state,
+                        remote_deletable,
+                        local_delete,
+                    );
                 }
                 AppEvent::OpenToggleStatePrompt {
                     number,
@@ -801,6 +817,7 @@ impl App<'_> {
                     number,
                     state,
                     method,
+                    delete_local_branch,
                     delete_remote_branch,
                 } => {
                     spawn_merge_pr(
@@ -809,6 +826,7 @@ impl App<'_> {
                         number,
                         state,
                         method,
+                        delete_local_branch,
                         delete_remote_branch,
                     );
                 }
@@ -1728,7 +1746,11 @@ impl App<'_> {
         if let View::GitHub(ref mut view) = self.view {
             self.github_label_mode = view.label_mode();
             self.github_data = Some(view.take_data());
+            let refresh_pending = view.take_refresh_pending();
             self.view = view.take_before_view();
+            if refresh_pending {
+                self.view.refresh();
+            }
             self.view.request_graph_clear();
         }
     }
@@ -2022,14 +2044,50 @@ impl App<'_> {
     }
 }
 
+/// 本地是否有一條「非 HEAD」且與 PR head_ref 同名的分支，以及刪除時能不能
+/// 直接強刪：`None` = 不提供（找不到同名分支，或該分支正是目前 HEAD）；
+/// `Some(force_safe)` = 可以問，`force_safe` 為真代表本地分支 tip 等於 PR
+/// 的 `headRefOid`——內容跟被 merge 的版本完全一致，沒有任何額外、還沒進到
+/// 這次 merge 的 commit，可以不靠 `git branch -d` 的 reachability 檢查、
+/// 直接安全地強刪（`git branch -D`）。
+///
+/// 純名字比對：`GhPullRequest` 沒有暴露本地分支對應關係也沒有 fork 旗標，
+/// 找不到就靜默跳過，不跳警告（issue #126 定案）。吃最窄參數（而非整個
+/// `Repository`）是仿照 `view::dispatch_delete_branch` 已驗證過的寫法：
+/// 呼叫端自己把 `Head` 拆成 `Option<&str>`，純函式不需要 `Repository`/git
+/// 子行程就能測。
+///
+/// **不用解析 `git branch -d` 的錯誤字串來決定能不能強刪**：`-d` 失敗最常見
+/// 的原因正是「本地有還沒 push 的 commit」——這正是安全刪除要擋下來的情況，
+/// 拿它當「安全」訊號會在使用者本地多做了東西時把內容靜默丟掉；而且
+/// `run_git_command` 沒有固定 `LC_ALL=C`，非英文語系下錯誤訊息不是英文，
+/// 字串比對可能整個失效。改用 `headRefOid` 這個結構化資料判斷才可靠。
+fn local_branch_delete_check(
+    all_refs: &[&Ref],
+    head_branch: Option<&str>,
+    head_ref: &str,
+    head_ref_oid: &str,
+) -> Option<bool> {
+    if Some(head_ref) == head_branch {
+        return None;
+    }
+    all_refs.iter().find_map(|r| match r {
+        Ref::Branch { name, target } if name == head_ref => Some(target.as_str() == head_ref_oid),
+        _ => None,
+    })
+}
+
 fn spawn_merge_pr(
     repo: &Path,
     ec: &EventController,
     number: u64,
     state: StateFilter,
     method: MergeMethod,
+    delete_local_branch: Option<(String, bool)>,
     delete_remote_branch: Option<String>,
 ) {
+    use crate::git::{delete_branch, delete_branch_force};
+
     let repo_path = repo.to_path_buf();
     let tx = ec.sender();
     ec.send(AppEvent::ShowPendingOverlay {
@@ -2039,28 +2097,76 @@ fn spawn_merge_pr(
         let result = merge_pr(&repo_path, number, method.as_flag());
         match result {
             Ok(()) => {
-                // 列表不必等刪除分支——先送，讓 merge 完成立刻反映在畫面上。
+                // 刻意不送 `AppEvent::Refresh`：這個流程只會在 `View::GitHub`
+                // 開著時觸發，但 `ViewContext` 沒有 GitHub 的重建目標，送出去
+                // 會把使用者踢回底下的 commit list、丟掉還沒關閉的 GitHub 資料
+                // （見 `view/views.rs::View::refresh()` 與 `app.rs::close_github`）。
+                // 列表不必等刪分支——先送，讓 merge 完成立刻反映在畫面上。
                 tx.send(AppEvent::RefreshGitHub { state });
 
-                let merged = format!("PR #{number} merged ({})", method.display());
-                let notify = match delete_remote_branch {
-                    None => AppEvent::NotifySuccess(merged),
-                    Some(head_ref) => {
-                        tx.send(AppEvent::ShowPendingOverlay {
-                            message: "Deleting remote branch...".to_string(),
-                        });
-                        match gh_delete_remote_branch(&repo_path, &head_ref) {
-                            Ok(()) => AppEvent::NotifySuccess(format!(
-                                "{merged}, remote branch '{head_ref}' deleted"
-                            )),
-                            Err(e) => AppEvent::NotifyWarn(format!(
-                                "{merged}, but failed to delete remote branch '{head_ref}': {e}"
-                            )),
+                let mut message = format!("PR #{number} merged ({})", method.display());
+                let mut has_failure = false;
+
+                if let Some((name, force_safe)) = delete_local_branch {
+                    tx.send(AppEvent::ShowPendingOverlay {
+                        message: "Deleting local branch...".to_string(),
+                    });
+                    let result = if force_safe {
+                        delete_branch_force(&repo_path, &name)
+                    } else {
+                        delete_branch(&repo_path, &name)
+                    };
+                    match result {
+                        Ok(()) => {
+                            message.push_str(&format!(", local branch '{name}' deleted"));
+                            // 這個流程只會在 `View::GitHub` 開著時觸發，`AutoRefresh`
+                            // 對它現在會記成 `refresh_pending`（見
+                            // `GitHubView::mark_refresh_pending`），等使用者關閉
+                            // GitHub view（`close_github`）才真正刷新底下的
+                            // commit list——沿用 `spawn_git_task` 對背景 git
+                            // 操作成功的既有慣例，不必為此另開一個事件。
+                            tx.send(AppEvent::AutoRefresh);
+                        }
+                        Err(e) => {
+                            has_failure = true;
+                            // `not fully merged` 這裡純粹是附加提示文字，不影響
+                            // 任何分支邏輯——真正的強刪與否已經由 `force_safe`
+                            // （`headRefOid` 比對）決定過了。
+                            let hint = if !force_safe && e.contains("not fully merged") {
+                                format!("{e}  (branch has commits outside this merge — delete manually if intended)")
+                            } else {
+                                e
+                            };
+                            message.push_str(&format!(
+                                ", but failed to delete local branch '{name}': {hint}"
+                            ));
                         }
                     }
-                };
+                }
+
+                if let Some(head_ref) = delete_remote_branch {
+                    tx.send(AppEvent::ShowPendingOverlay {
+                        message: "Deleting remote branch...".to_string(),
+                    });
+                    match gh_delete_remote_branch(&repo_path, &head_ref) {
+                        Ok(()) => {
+                            message.push_str(&format!(", remote branch '{head_ref}' deleted"))
+                        }
+                        Err(e) => {
+                            has_failure = true;
+                            message.push_str(&format!(
+                                ", but failed to delete remote branch '{head_ref}': {e}"
+                            ));
+                        }
+                    }
+                }
+
                 tx.send(AppEvent::HidePendingOverlay);
-                tx.send(notify);
+                tx.send(if has_failure {
+                    AppEvent::NotifyWarn(message)
+                } else {
+                    AppEvent::NotifySuccess(message)
+                });
             }
             Err(e) => {
                 tx.send(AppEvent::HidePendingOverlay);
@@ -2681,5 +2787,56 @@ mod tests {
             resolve_shell_command(&cfg, None),
             vec!["sh".to_string(), "-i".to_string(), "-c".to_string()]
         );
+    }
+
+    #[test]
+    fn local_branch_delete_check_force_safe_when_tip_matches_head_ref_oid() {
+        let branch = Ref::Branch {
+            name: "feature/x".into(),
+            target: CommitHash::from("aaa111"),
+        };
+        let refs: Vec<&Ref> = vec![&branch];
+        let check = local_branch_delete_check(&refs, Some("main"), "feature/x", "aaa111");
+        assert_eq!(check, Some(true));
+    }
+
+    #[test]
+    fn local_branch_delete_check_not_force_safe_when_tip_differs() {
+        let branch = Ref::Branch {
+            name: "feature/x".into(),
+            target: CommitHash::from("bbb222"),
+        };
+        let refs: Vec<&Ref> = vec![&branch];
+        let check = local_branch_delete_check(&refs, Some("main"), "feature/x", "aaa111");
+        assert_eq!(check, Some(false));
+    }
+
+    #[test]
+    fn local_branch_delete_check_none_when_branch_is_head() {
+        let branch = Ref::Branch {
+            name: "feature/x".into(),
+            target: CommitHash::from("aaa111"),
+        };
+        let refs: Vec<&Ref> = vec![&branch];
+        let check = local_branch_delete_check(&refs, Some("feature/x"), "feature/x", "aaa111");
+        assert_eq!(check, None);
+    }
+
+    #[test]
+    fn local_branch_delete_check_none_when_branch_not_found_locally() {
+        let refs: Vec<&Ref> = vec![];
+        let check = local_branch_delete_check(&refs, Some("main"), "feature/x", "aaa111");
+        assert_eq!(check, None);
+    }
+
+    #[test]
+    fn local_branch_delete_check_some_even_when_head_is_detached() {
+        let branch = Ref::Branch {
+            name: "feature/x".into(),
+            target: CommitHash::from("aaa111"),
+        };
+        let refs: Vec<&Ref> = vec![&branch];
+        let check = local_branch_delete_check(&refs, None, "feature/x", "aaa111");
+        assert_eq!(check, Some(true));
     }
 }
