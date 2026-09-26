@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.4.0](https://github.com/YSzEthan/serie-ys/compare/v4.3.0...v4.4.0) (2026-09-26)
+
+
+### Features
+
+* GitHub 模式 merge PR 後可一併刪除本地分支 (#126) (#127) ([6440200](https://github.com/YSzEthan/serie-ys/commit/64402002766960b4fb89ced14c4f4d70c6433ccc))
+
 ## [4.3.0](https://github.com/YSzEthan/serie-ys/compare/v4.2.0...v4.3.0) (2026-09-25)
 
 
