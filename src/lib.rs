@@ -725,7 +725,7 @@ pub fn run() -> Result<()> {
                     // App 必須先釋放對 &repository 的借用，才能進行修改。
                     (filtered_graph, remote_only_commits) = app.into_parts();
                     repository.update_metadata_from(new_repo);
-                    // 這裡不需要更新 head_commit_hash：App::new 會重新
+                    // 這裡不需要更新 head_raw：App::new 會重新
                     // 從 `repository` 計算，而 update_metadata_from
                     // 剛把它更新到最新狀態（複製了 ref_map/head/working_changes）。
 

@@ -7,8 +7,6 @@ pub use render::CommitList;
 pub use search::{FilterState, MatchOptions, MatchQuery, SearchState};
 pub use state::{ChildJump, CommitListState};
 
-use ratatui::style::Color;
-
 use crate::git::{Commit, CommitHash, Ref};
 
 /// 索引到 `commits: Vec<CommitInfo>` 與 `search_matches: Vec<SearchMatch>` 的位置。
@@ -34,16 +32,11 @@ enum MatchStep {
 pub struct CommitInfo<'a> {
     commit: &'a Commit,
     refs: Vec<&'a Ref>,
-    graph_color: Color,
 }
 
 impl<'a> CommitInfo<'a> {
-    pub fn new(commit: &'a Commit, refs: Vec<&'a Ref>, graph_color: Color) -> Self {
-        Self {
-            commit,
-            refs,
-            graph_color,
-        }
+    pub fn new(commit: &'a Commit, refs: Vec<&'a Ref>) -> Self {
+        Self { commit, refs }
     }
 
     pub fn commit_hash(&self) -> &CommitHash {
