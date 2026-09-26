@@ -1,0 +1,7 @@
+0 col=0 Down@0/0 Right@0/1 RightTop@1/1
+1 col=1 Vertical@0/0 Up@1/1 Down@1/1
+2 col=0 Up@0/0 Down@0/0 Vertical@1/1 Right@0/2 Horizontal@1/2 RightTop@2/2
+3 col=2 Vertical@0/0 Vertical@1/1 Up@2/2 Down@2/2
+4 col=0 Up@0/0 Down@0/0 Right@0/1 RightBottom@1/1 Vertical@2/2
+5 col=0 Up@0/0 Down@0/0 Vertical@2/2
+6 col=0 Up@0/0 Right@0/2 Horizontal@1/2 RightBottom@2/2
