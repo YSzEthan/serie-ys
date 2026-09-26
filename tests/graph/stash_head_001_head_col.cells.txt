@@ -1,8 +1,8 @@
 # double
- -  - ●1  -  WIP on master: 0bf5423 002
- -  - ●1  -  002
- -  - ●1  -  001
+│0  - ●1  -  WIP on master: 0bf5423 002
+●0 ─1 ╯1  -  002
+●0  -  -  -  001
 # single
- - ●1  WIP on master: 0bf5423 002
- - ●1  002
- - ●1  001
+│0 ●1  WIP on master: 0bf5423 002
+●0 ╯1  002
+●0  -  001

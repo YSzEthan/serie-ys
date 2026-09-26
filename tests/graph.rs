@@ -1267,11 +1267,11 @@ fn head_behind_001() -> TestResult {
 
     git.log();
 
-    let options = &[GenerateGraphOption::new(
-        "head_behind_001_head_col",
-        git::SortCommit::Chronological,
-    )
-    .with_head_col()];
+    let options =
+        &[
+            GenerateGraphOption::new("head_behind_001_head_col", git::SortCommit::Chronological)
+                .with_head_col(),
+        ];
 
     copy_git_dir(repo_path, "head_behind_001");
 
@@ -1303,11 +1303,11 @@ fn head_behind_002() -> TestResult {
 
     git.log();
 
-    let options = &[GenerateGraphOption::new(
-        "head_behind_002_head_col",
-        git::SortCommit::Chronological,
-    )
-    .with_head_col()];
+    let options =
+        &[
+            GenerateGraphOption::new("head_behind_002_head_col", git::SortCommit::Chronological)
+                .with_head_col(),
+        ];
 
     copy_git_dir(repo_path, "head_behind_002");
 
@@ -1340,12 +1340,12 @@ fn head_behind_003() -> TestResult {
 
     git.log();
 
-    let options = &[GenerateGraphOption::new(
-        "head_behind_003_head_col",
-        git::SortCommit::Chronological,
-    )
-    .with_head_col()
-    .with_cells()];
+    let options =
+        &[
+            GenerateGraphOption::new("head_behind_003_head_col", git::SortCommit::Chronological)
+                .with_head_col()
+                .with_cells(),
+        ];
 
     copy_git_dir(repo_path, "head_behind_003");
 
@@ -1375,12 +1375,12 @@ fn stash_head_001() -> TestResult {
 
     git.log();
 
-    let options = &[GenerateGraphOption::new(
-        "stash_head_001_head_col",
-        git::SortCommit::Chronological,
-    )
-    .with_head_col()
-    .with_cells()];
+    let options =
+        &[
+            GenerateGraphOption::new("stash_head_001_head_col", git::SortCommit::Chronological)
+                .with_head_col()
+                .with_cells(),
+        ];
 
     copy_git_dir(repo_path, "stash_head_001");
 

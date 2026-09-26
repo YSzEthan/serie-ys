@@ -1,24 +1,72 @@
-use rustc_hash::{FxHashMap, FxHashSet};
+use std::ops::Range;
 
 use crate::{
-    git::{Commit, CommitHash, Repository},
+    git::{CommitHash, Repository},
     RemoteOnly,
 };
 
-type CommitPosMap = FxHashMap<CommitHash, (usize, usize)>;
+use super::lanes::{self, Lanes, NOT_LOADED};
 
-pub trait GraphDataSource {
-    fn children_hash(&self, hash: &CommitHash) -> Vec<&CommitHash>;
-    fn parents_hash(&self, hash: &CommitHash) -> Vec<&CommitHash>;
+/// 產生 edge 的來源。正式 build 只有 `Lanes`；`Fixed` 只給測試手寫 edge
+/// 用——很多 fixture（例如只測寬度、不含任何 edge 的 graph）沒有對應的
+/// 真實 commit 拓樸，改用 CSR 表達反而會失真。
+#[derive(Debug)]
+enum RowEdges {
+    Lanes(Lanes),
+    #[cfg(test)]
+    Fixed {
+        cols: Vec<u32>,
+        edges: Vec<Vec<Edge>>,
+        cell_count: usize,
+    },
 }
 
-impl GraphDataSource for Repository {
-    fn children_hash(&self, hash: &CommitHash) -> Vec<&CommitHash> {
-        self.children_hash(hash)
+impl RowEdges {
+    fn row_count(&self) -> usize {
+        match self {
+            RowEdges::Lanes(l) => l.row_count(),
+            #[cfg(test)]
+            RowEdges::Fixed { cols, .. } => cols.len(),
+        }
     }
 
-    fn parents_hash(&self, hash: &CommitHash) -> Vec<&CommitHash> {
-        self.parents_hash(hash)
+    fn cell_count(&self) -> usize {
+        match self {
+            RowEdges::Lanes(l) => l.cell_count(),
+            #[cfg(test)]
+            RowEdges::Fixed { cell_count, .. } => *cell_count,
+        }
+    }
+
+    fn col(&self, row: usize) -> usize {
+        match self {
+            RowEdges::Lanes(l) => l.col(row),
+            #[cfg(test)]
+            RowEdges::Fixed { cols, .. } => cols[row] as usize,
+        }
+    }
+
+    fn row_edges(&self, row: usize) -> Vec<Edge> {
+        match self {
+            RowEdges::Lanes(l) => l.row_edges(row),
+            #[cfg(test)]
+            RowEdges::Fixed { edges, .. } => edges[row].clone(),
+        }
+    }
+
+    fn for_each_row_edges(&self, range: Range<usize>, f: impl FnMut(usize, &[Edge])) {
+        match self {
+            RowEdges::Lanes(l) => l.row_edges_in(range, f),
+            // 只有這個分支需要呼叫 `f`，`mut` 只在這裡要求；簽名維持 `f`
+            // 不宣告 `mut`，正式 build（沒有這個分支）才不會多一個 unused_mut。
+            #[cfg(test)]
+            RowEdges::Fixed { edges, .. } => {
+                let mut f = f;
+                for row in range {
+                    f(row, &edges[row]);
+                }
+            }
+        }
     }
 }
 
@@ -30,19 +78,19 @@ impl GraphDataSource for Repository {
 pub struct Graph {
     /// row → raw。`None` 代表恆等；`Some` 時嚴格遞增，`row_of` 用 binary search。
     raw_of: Option<Vec<u32>>,
-    /// 每列 commit 所在的欄。
-    cols: Vec<u32>,
-    /// 每列的 edge，已排序、去重。
-    edges: Vec<Vec<Edge>>,
-    max_pos_x: usize,
+    rows: RowEdges,
 }
 
 impl Graph {
-    /// 唯一的建構子。`rows[i]` 是第 i 列的 `(raw, col)`，raw 必須嚴格遞增；
-    /// `raw_count` 是 `all_commits()` 的長度，`rows` 涵蓋全部時就是恆等對應。
+    /// 給測試手寫 edge 用的建構子，正式 build 不會呼叫（`calc_graph`／
+    /// `calc_graph_filtered` 一律走 lane 引擎，見 [`from_lanes`]）。
     ///
-    /// edge 的排序與去重只在這裡做：`text.rs` 同 rank 平手時看 edge 順序，
-    /// 所以順序本身是 graph 的一部分。
+    /// `rows[i]` 是第 i 列的 `(raw, col)`，raw 必須嚴格遞增；`raw_count` 是
+    /// `all_commits()` 的長度，`rows` 涵蓋全部時就是恆等對應。
+    ///
+    /// edge 的排序、去重在這裡做：`text.rs` 同 rank 平手時看 edge 順序，
+    /// 所以順序本身是 graph 的一部分（lane 引擎的排序在 `row_edges_in` 裡）。
+    #[cfg(test)]
     pub fn from_materialized(
         raw_count: usize,
         rows: Vec<(usize, usize)>,
@@ -56,31 +104,40 @@ impl Graph {
             es.sort_by_key(|e| (e.associated_line_pos_x, e.pos_x, e.edge_type));
             es.dedup();
         }
-        // detour 會讓線跑到任何 commit 都不在的欄，所以 edge 也要算進來。
-        let max_pos_x = rows
+        // 手寫的 edge 可能落在沒有 commit 的欄，所以也要算進來。
+        let cell_count = rows
             .iter()
             .map(|&(_, col)| col)
             .chain(edges.iter().flatten().map(|e| e.pos_x))
             .max()
-            .unwrap_or(0);
+            .map_or(0, |m| m + 1);
         let raw_of =
             (rows.len() != raw_count).then(|| rows.iter().map(|&(raw, _)| raw as u32).collect());
         let cols = rows.iter().map(|&(_, col)| col as u32).collect();
 
         Graph {
             raw_of,
-            cols,
-            edges,
-            max_pos_x,
+            rows: RowEdges::Fixed {
+                cols,
+                edges,
+                cell_count,
+            },
+        }
+    }
+
+    fn from_lanes(raw_of: Option<Vec<u32>>, lanes: Lanes) -> Graph {
+        Graph {
+            raw_of,
+            rows: RowEdges::Lanes(lanes),
         }
     }
 
     pub fn row_count(&self) -> usize {
-        self.cols.len()
+        self.rows.row_count()
     }
 
     pub fn cell_count(&self) -> usize {
-        self.max_pos_x + 1
+        self.rows.cell_count()
     }
 
     /// raw 不在這張 graph 裡（被 filter 掉，或 fixture 的 graph 比 commit 少）時回 `None`。
@@ -96,11 +153,18 @@ impl Graph {
     }
 
     pub fn col(&self, row: usize) -> usize {
-        self.cols[row] as usize
+        self.rows.col(row)
     }
 
-    pub fn row_edges(&self, row: usize) -> &[Edge] {
-        &self.edges[row]
+    pub fn row_edges(&self, row: usize) -> Vec<Edge> {
+        self.rows.row_edges(row)
+    }
+
+    /// 批次走過 `range` 內每一列排序過的 edge，只從最近的 checkpoint 重播
+    /// 一次。給需要走完整張圖的呼叫端用（perf 統計、golden 產生）——逐列
+    /// 呼叫 `row_edges` 會在範圍內重複從 checkpoint 重播，範圍越大越浪費。
+    pub fn for_each_row_edges(&self, range: Range<usize>, f: impl FnMut(usize, &[Edge])) {
+        self.rows.for_each_row_edges(range, f);
     }
 }
 
@@ -140,489 +204,14 @@ pub fn calc_graph(
     head_hint: Option<&CommitHash>,
     reserve_head_col: bool,
 ) -> Graph {
-    let commits: Vec<&Commit> = repository.all_commits().iter().collect();
+    let (parent_start, parent_idx) = repository.parent_csr();
+    let reserved_head = head_hint
+        .filter(|_| reserve_head_col)
+        .and_then(|h| repository.index_of(h))
+        .map(|raw| raw as u32);
 
-    let commit_pos_map = calc_commit_positions(&commits, repository, head_hint, reserve_head_col);
-    let mut graph_edges = calc_edges(&commit_pos_map, &commits, repository);
-
-    normalize_head_row_invariant(&mut graph_edges, &commit_pos_map, head_hint);
-
-    // 主 graph 的 row 就是 raw。
-    let rows = commits
-        .iter()
-        .enumerate()
-        .map(|(raw, c)| (raw, commit_pos_map[&c.commit_hash].0))
-        .collect();
-    Graph::from_materialized(commits.len(), rows, graph_edges)
-}
-
-/// HEAD row 在 head_pos_x 不能有 Vertical（會穿透空心圓 interior）。
-/// Graph invariant：HEAD 是 commit endpoint，不是 pass-through。永遠呼叫。
-fn normalize_head_row_invariant(
-    edges: &mut [Vec<Edge>],
-    commit_pos_map: &CommitPosMap,
-    head_hint: Option<&CommitHash>,
-) {
-    let Some(head_hash) = head_hint else { return };
-    let Some(&(head_pos_x, head_pos_y)) = commit_pos_map.get(head_hash) else {
-        return;
-    };
-    edges[head_pos_y].retain(|e| !(e.pos_x == head_pos_x && e.edge_type == EdgeType::Vertical));
-
-    debug_assert!(
-        !edges[head_pos_y].iter().any(|e| e.pos_x == head_pos_x
-            && matches!(e.edge_type, EdgeType::Vertical | EdgeType::Horizontal)),
-        "HEAD row invariant: pos_x must not contain pass-through edges"
-    );
-}
-
-fn calc_commit_positions(
-    commits: &[&Commit],
-    source: &impl GraphDataSource,
-    head_hint: Option<&CommitHash>,
-    reserve_head_col: bool,
-) -> CommitPosMap {
-    // 在 HEAD 被放置之前，保留 pos_x = HEAD_RESERVED_COL 給 HEAD
-    //（讓 uncommitted row 與 HEAD 圓圈保持在最左邊那條線上）。只有在呼叫端
-    // 透過 `reserve_head_col` 選擇加入時才會套用（代表 HEAD 有 branch/tag）。
-    const HEAD_RESERVED_COL: usize = 0;
-
-    let mut commit_pos_map: CommitPosMap = FxHashMap::default();
-    let mut commit_line_state: Vec<Option<CommitHash>> = Vec::new();
-    // 反向索引：hash → pos_x，用來做 O(1) 查詢，避免線性掃描
-    let mut hash_to_pos: FxHashMap<CommitHash, usize> = FxHashMap::default();
-    let mut head_col_pending =
-        reserve_head_col && head_hint.is_some_and(|h| commits.iter().any(|c| c.commit_hash == *h));
-
-    for (pos_y, commit) in commits.iter().enumerate() {
-        let is_head = head_hint.is_some_and(|h| *h == commit.commit_hash);
-        let filtered_children_hash = filtered_children_hash(commit, source);
-        if filtered_children_hash.is_empty() {
-            let pos_x = if is_head && reserve_head_col {
-                HEAD_RESERVED_COL
-            } else {
-                let start = if head_col_pending {
-                    HEAD_RESERVED_COL + 1
-                } else {
-                    0
-                };
-                get_first_vacant_line_from(&commit_line_state, start)
-            };
-            add_commit_line(commit, &mut commit_line_state, &mut hash_to_pos, pos_x);
-            commit_pos_map.insert(commit.commit_hash.clone(), (pos_x, pos_y));
-        } else {
-            let pos_x = update_commit_line(
-                commit,
-                &mut commit_line_state,
-                &mut hash_to_pos,
-                &filtered_children_hash,
-            );
-            commit_pos_map.insert(commit.commit_hash.clone(), (pos_x, pos_y));
-        }
-        if is_head {
-            head_col_pending = false;
-        }
-    }
-
-    commit_pos_map
-}
-
-fn filtered_children_hash<'a>(
-    commit: &Commit,
-    source: &'a impl GraphDataSource,
-) -> Vec<&'a CommitHash> {
-    source
-        .children_hash(&commit.commit_hash)
-        .into_iter()
-        .filter(|child_hash| {
-            let child_parents_hash = source.parents_hash(child_hash);
-            !child_parents_hash.is_empty() && *child_parents_hash[0] == commit.commit_hash
-        })
-        .collect()
-}
-
-fn get_first_vacant_line_from(commit_line_state: &[Option<CommitHash>], start: usize) -> usize {
-    commit_line_state
-        .iter()
-        .enumerate()
-        .skip(start)
-        .find_map(|(i, c)| c.is_none().then_some(i))
-        .unwrap_or_else(|| commit_line_state.len().max(start))
-}
-
-fn add_commit_line(
-    commit: &Commit,
-    commit_line_state: &mut Vec<Option<CommitHash>>,
-    hash_to_pos: &mut FxHashMap<CommitHash, usize>,
-    pos_x: usize,
-) {
-    if commit_line_state.len() < pos_x {
-        commit_line_state.resize(pos_x, None);
-    }
-    if commit_line_state.len() == pos_x {
-        commit_line_state.push(Some(commit.commit_hash.clone()));
-    } else {
-        commit_line_state[pos_x] = Some(commit.commit_hash.clone());
-    }
-    hash_to_pos.insert(commit.commit_hash.clone(), pos_x);
-}
-
-// TODO: column 分配不知 pending merge edge，同 col merge 靠 calc_edges detour 繞道。
-// 根本修復：此處加 merge edge reservation 讓 column 分配避開被預訂的 column。
-fn update_commit_line(
-    commit: &Commit,
-    commit_line_state: &mut [Option<CommitHash>],
-    hash_to_pos: &mut FxHashMap<CommitHash, usize>,
-    target_commit_hashes: &[&CommitHash],
-) -> usize {
-    if commit_line_state.is_empty() {
-        return 0;
-    }
-    let mut min_pos_x = commit_line_state.len().saturating_sub(1);
-    for target_hash in target_commit_hashes {
-        if let Some(pos_x) = hash_to_pos.remove(*target_hash) {
-            commit_line_state[pos_x] = None;
-            if min_pos_x > pos_x {
-                min_pos_x = pos_x;
-            }
-        }
-    }
-    commit_line_state[min_pos_x] = Some(commit.commit_hash.clone());
-    hash_to_pos.insert(commit.commit_hash.clone(), min_pos_x);
-    min_pos_x
-}
-
-#[derive(Debug, Clone)]
-struct WrappedEdge<'a> {
-    edge: Edge,
-    edge_parent_hash: &'a CommitHash,
-}
-
-impl<'a> WrappedEdge<'a> {
-    fn new(
-        edge_type: EdgeType,
-        pos_x: usize,
-        line_pos_x: usize,
-        edge_parent_hash: &'a CommitHash,
-    ) -> Self {
-        Self {
-            edge: Edge::new(edge_type, pos_x, line_pos_x),
-            edge_parent_hash,
-        }
-    }
-}
-
-/// 畫 Up/Vertical/Down 直線（parent 到 child 同 col 或 merge 同 col 無 overlap）。
-fn draw_vertical_chain<'a>(
-    edges: &mut [Vec<WrappedEdge<'a>>],
-    col: usize,
-    child_row: usize,
-    parent_row: usize,
-    hash: &'a CommitHash,
-) {
-    edges[parent_row].push(WrappedEdge::new(EdgeType::Up, col, col, hash));
-    for y in ((child_row + 1)..parent_row).rev() {
-        edges[y].push(WrappedEdge::new(EdgeType::Vertical, col, col, hash));
-    }
-    edges[child_row].push(WrappedEdge::new(EdgeType::Down, col, col, hash));
-}
-
-fn calc_edges(
-    commit_pos_map: &CommitPosMap,
-    commits: &[&Commit],
-    source: &impl GraphDataSource,
-) -> Vec<Vec<Edge>> {
-    let mut edges: Vec<Vec<WrappedEdge>> = vec![vec![]; commits.len()];
-
-    for commit in commits {
-        let (pos_x, pos_y) = commit_pos_map[&commit.commit_hash];
-        let hash = &commit.commit_hash;
-
-        for child_hash in source.children_hash(hash) {
-            let (child_pos_x, child_pos_y) = commit_pos_map[child_hash];
-
-            debug_assert!(!commits[child_pos_y].parent_commit_hashes.is_empty());
-            let child_first_parent_hash = &commits[child_pos_y].parent_commit_hashes[0];
-            let is_first_parent = *child_first_parent_hash == *hash;
-
-            match (pos_x == child_pos_x, is_first_parent) {
-                (true, true) => {
-                    // commit: first-parent 且同 col → 直線
-                    draw_vertical_chain(&mut edges, pos_x, child_pos_y, pos_y, hash);
-                }
-                (_, false) => {
-                    // merge: 交給第二 loop detour（忽略 col 相等與否）
-                }
-                (false, true) => {
-                    // branch: first-parent 不同 col → 斜線
-                    if pos_x < child_pos_x {
-                        edges[pos_y].push(WrappedEdge::new(
-                            EdgeType::Right,
-                            pos_x,
-                            child_pos_x,
-                            hash,
-                        ));
-                        for x in (pos_x + 1)..child_pos_x {
-                            edges[pos_y].push(WrappedEdge::new(
-                                EdgeType::Horizontal,
-                                x,
-                                child_pos_x,
-                                hash,
-                            ));
-                        }
-                        edges[pos_y].push(WrappedEdge::new(
-                            EdgeType::RightBottom,
-                            child_pos_x,
-                            child_pos_x,
-                            hash,
-                        ));
-                    } else {
-                        edges[pos_y].push(WrappedEdge::new(
-                            EdgeType::Left,
-                            pos_x,
-                            child_pos_x,
-                            hash,
-                        ));
-                        for x in (child_pos_x + 1)..pos_x {
-                            edges[pos_y].push(WrappedEdge::new(
-                                EdgeType::Horizontal,
-                                x,
-                                child_pos_x,
-                                hash,
-                            ));
-                        }
-                        edges[pos_y].push(WrappedEdge::new(
-                            EdgeType::LeftBottom,
-                            child_pos_x,
-                            child_pos_x,
-                            hash,
-                        ));
-                    }
-                    for y in ((child_pos_y + 1)..pos_y).rev() {
-                        edges[y].push(WrappedEdge::new(
-                            EdgeType::Vertical,
-                            child_pos_x,
-                            child_pos_x,
-                            hash,
-                        ));
-                    }
-                    edges[child_pos_y].push(WrappedEdge::new(
-                        EdgeType::Down,
-                        child_pos_x,
-                        child_pos_x,
-                        hash,
-                    ));
-                }
-            }
-        }
-
-        // 若有 parent 但該 parent 不在 graph 中（設定 max_count 時會發生此情況），畫出 down edge
-        if !commit.parent_commit_hashes.is_empty()
-            && !commit_pos_map.contains_key(&commit.parent_commit_hashes[0])
-        {
-            edges[pos_y].push(WrappedEdge::new(EdgeType::Down, pos_x, pos_x, hash));
-            ((pos_y + 1)..commits.len()).for_each(|y| {
-                edges[y].push(WrappedEdge::new(EdgeType::Vertical, pos_x, pos_x, hash));
-            });
-        }
-    }
-
-    for commit in commits {
-        let (pos_x, pos_y) = commit_pos_map[&commit.commit_hash];
-        let hash = &commit.commit_hash;
-
-        for child_hash in source.children_hash(hash) {
-            let (child_pos_x, child_pos_y) = commit_pos_map[child_hash];
-
-            let child_first_parent_hash = &commits[child_pos_y].parent_commit_hashes[0];
-            if *child_first_parent_hash == *hash {
-                // commit or branch — 已由第一 loop 處理
-            } else {
-                // merge（同 col 或不同 col 統一處理）
-                let mut overlap = false;
-                let mut new_pos_x = pos_x;
-
-                let mut skip_judge_overlap = true;
-                for y in (child_pos_y + 1)..pos_y {
-                    let processing_commit_pos_x =
-                        commit_pos_map.get(&commits[y].commit_hash).unwrap().0;
-                    if processing_commit_pos_x == new_pos_x {
-                        skip_judge_overlap = false;
-                        break;
-                    }
-                    if edges[y]
-                        .iter()
-                        .filter(|e| e.edge.pos_x == pos_x)
-                        .filter(|e| matches!(e.edge.edge_type, EdgeType::Vertical))
-                        .any(|e| e.edge_parent_hash != hash)
-                    {
-                        skip_judge_overlap = false;
-                        break;
-                    }
-                }
-
-                if !skip_judge_overlap {
-                    for y in (child_pos_y + 1)..pos_y {
-                        let processing_commit_pos_x =
-                            commit_pos_map.get(&commits[y].commit_hash).unwrap().0;
-                        if processing_commit_pos_x == new_pos_x {
-                            overlap = true;
-                            if new_pos_x < processing_commit_pos_x + 1 {
-                                new_pos_x = processing_commit_pos_x + 1;
-                            }
-                        }
-                        for edge in &edges[y] {
-                            if edge.edge.pos_x >= new_pos_x
-                                && edge.edge_parent_hash != hash
-                                && matches!(edge.edge.edge_type, EdgeType::Vertical)
-                            {
-                                overlap = true;
-                                if new_pos_x < edge.edge.pos_x + 1 {
-                                    new_pos_x = edge.edge.pos_x + 1;
-                                }
-                            }
-                        }
-                    }
-                }
-
-                if overlap {
-                    // 繞道
-                    edges[pos_y].push(WrappedEdge::new(EdgeType::Right, pos_x, pos_x, hash));
-                    for x in (pos_x + 1)..new_pos_x {
-                        edges[pos_y].push(WrappedEdge::new(EdgeType::Horizontal, x, pos_x, hash));
-                    }
-                    edges[pos_y].push(WrappedEdge::new(
-                        EdgeType::RightBottom,
-                        new_pos_x,
-                        pos_x,
-                        hash,
-                    ));
-                    for y in ((child_pos_y + 1)..pos_y).rev() {
-                        edges[y].push(WrappedEdge::new(EdgeType::Vertical, new_pos_x, pos_x, hash));
-                    }
-                    edges[child_pos_y].push(WrappedEdge::new(
-                        EdgeType::RightTop,
-                        new_pos_x,
-                        pos_x,
-                        hash,
-                    ));
-                    for x in (child_pos_x + 1)..new_pos_x {
-                        edges[child_pos_y].push(WrappedEdge::new(
-                            EdgeType::Horizontal,
-                            x,
-                            pos_x,
-                            hash,
-                        ));
-                    }
-                    edges[child_pos_y].push(WrappedEdge::new(
-                        EdgeType::Right,
-                        child_pos_x,
-                        pos_x,
-                        hash,
-                    ));
-                } else if pos_x == child_pos_x {
-                    // 同 col merge 且無 overlap → 等同 commit 直線
-                    draw_vertical_chain(&mut edges, pos_x, child_pos_y, pos_y, hash);
-                } else {
-                    edges[pos_y].push(WrappedEdge::new(EdgeType::Up, pos_x, pos_x, hash));
-                    for y in ((child_pos_y + 1)..pos_y).rev() {
-                        edges[y].push(WrappedEdge::new(EdgeType::Vertical, pos_x, pos_x, hash));
-                    }
-                    if pos_x < child_pos_x {
-                        edges[child_pos_y].push(WrappedEdge::new(
-                            EdgeType::LeftTop,
-                            pos_x,
-                            pos_x,
-                            hash,
-                        ));
-                        for x in (pos_x + 1)..child_pos_x {
-                            edges[child_pos_y].push(WrappedEdge::new(
-                                EdgeType::Horizontal,
-                                x,
-                                pos_x,
-                                hash,
-                            ));
-                        }
-                        edges[child_pos_y].push(WrappedEdge::new(
-                            EdgeType::Left,
-                            child_pos_x,
-                            pos_x,
-                            hash,
-                        ));
-                    } else {
-                        edges[child_pos_y].push(WrappedEdge::new(
-                            EdgeType::RightTop,
-                            pos_x,
-                            pos_x,
-                            hash,
-                        ));
-                        for x in (child_pos_x + 1)..pos_x {
-                            edges[child_pos_y].push(WrappedEdge::new(
-                                EdgeType::Horizontal,
-                                x,
-                                pos_x,
-                                hash,
-                            ));
-                        }
-                        edges[child_pos_y].push(WrappedEdge::new(
-                            EdgeType::Right,
-                            child_pos_x,
-                            pos_x,
-                            hash,
-                        ));
-                    }
-                }
-            }
-        }
-    }
-
-    edges
-        .into_iter()
-        .map(|es| es.into_iter().map(|e| e.edge).collect())
-        .collect()
-}
-
-struct FilteredRelations {
-    children_map: FxHashMap<CommitHash, Vec<CommitHash>>,
-    parents_map: FxHashMap<CommitHash, Vec<CommitHash>>,
-}
-
-impl GraphDataSource for FilteredRelations {
-    fn children_hash(&self, hash: &CommitHash) -> Vec<&CommitHash> {
-        self.children_map
-            .get(hash)
-            .map(|hs| hs.iter().collect())
-            .unwrap_or_default()
-    }
-
-    fn parents_hash(&self, hash: &CommitHash) -> Vec<&CommitHash> {
-        self.parents_map
-            .get(hash)
-            .map(|hs| hs.iter().collect())
-            .unwrap_or_default()
-    }
-}
-
-/// 往上追溯 ancestors，找出最近的 visible parent。
-fn find_nearest_visible_parent(
-    start: &CommitHash,
-    repository: &Repository,
-    visible: &FxHashSet<CommitHash>,
-) -> Option<CommitHash> {
-    let mut stack = vec![start.clone()];
-    let mut visited: FxHashSet<CommitHash> = FxHashSet::default();
-    visited.insert(start.clone());
-    while let Some(current) = stack.pop() {
-        if visible.contains(&current) && current != *start {
-            return Some(current);
-        }
-        for parent in repository.parents_hash(&current) {
-            if visited.insert(parent.clone()) {
-                stack.push(parent.clone());
-            }
-        }
-    }
-    None
+    let lanes = lanes::build(parent_start, parent_idx, reserved_head);
+    Graph::from_lanes(None, lanes)
 }
 
 pub fn calc_graph_filtered(
@@ -631,385 +220,46 @@ pub fn calc_graph_filtered(
     head_hint: Option<&CommitHash>,
     reserve_head_col: bool,
 ) -> Graph {
-    let (raws, commits): (Vec<usize>, Vec<&Commit>) = repository
-        .all_commits()
-        .iter()
-        .enumerate()
-        .filter(|&(raw, _)| !remote_only.contains(raw))
-        .unzip();
-    let visible_hashes: FxHashSet<CommitHash> =
-        commits.iter().map(|c| c.commit_hash.clone()).collect();
-    let visible_hashes = &visible_hashes;
+    let total = repository.all_commits().len();
+    let (parent_start_raw, parent_idx_raw) = repository.parent_csr();
 
-    // 建立改寫後的 parent/children maps
-    let mut parents_map: FxHashMap<CommitHash, Vec<CommitHash>> = FxHashMap::default();
-    let mut children_map: FxHashMap<CommitHash, Vec<CommitHash>> = FxHashMap::default();
-
-    for commit in &commits {
-        let mut rewritten_parents = Vec::new();
-        for orig_parent in &commit.parent_commit_hashes {
-            if visible_hashes.contains(orig_parent) {
-                rewritten_parents.push(orig_parent.clone());
-            } else if let Some(ancestor) =
-                find_nearest_visible_parent(orig_parent, repository, visible_hashes)
-            {
-                if !rewritten_parents.contains(&ancestor) {
-                    rewritten_parents.push(ancestor);
-                }
-            }
-        }
-        for parent in &rewritten_parents {
-            children_map
-                .entry(parent.clone())
-                .or_default()
-                .push(commit.commit_hash.clone());
-        }
-        parents_map.insert(commit.commit_hash.clone(), rewritten_parents);
-    }
-
-    let source = FilteredRelations {
-        children_map,
-        parents_map,
-    };
-
-    let effective_head = head_hint.filter(|h| visible_hashes.contains(*h));
-    // 若 anchor HEAD 在這個 filtered view 中不可見，就不為它保留 col 0。
-    let effective_reserve = reserve_head_col && effective_head.is_some();
-    let commit_pos_map =
-        calc_commit_positions(&commits, &source, effective_head, effective_reserve);
-    let mut graph_edges = calc_edges(&commit_pos_map, &commits, &source);
-
-    normalize_head_row_invariant(&mut graph_edges, &commit_pos_map, effective_head);
-
-    let rows = raws
-        .into_iter()
-        .zip(&commits)
-        .map(|(raw, c)| (raw, commit_pos_map[&c.commit_hash].0))
-        .collect();
-    Graph::from_materialized(repository.all_commits().len(), rows, graph_edges)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    fn head_hash() -> CommitHash {
-        CommitHash::from("headhash")
-    }
-
-    fn pos_map_for_head(head_pos_x: usize, head_pos_y: usize) -> CommitPosMap {
-        let mut map = CommitPosMap::default();
-        map.insert(head_hash(), (head_pos_x, head_pos_y));
-        map
-    }
-
-    #[test]
-    fn invariant_no_head_hint_leaves_edges_untouched() {
-        let mut edges: Vec<Vec<Edge>> = vec![
-            vec![Edge::new(EdgeType::Vertical, 1, 1)],
-            vec![Edge::new(EdgeType::Up, 1, 1)],
-        ];
-        let before = edges.clone();
-        normalize_head_row_invariant(&mut edges, &pos_map_for_head(1, 1), None);
-        assert_eq!(edges, before);
-    }
-
-    #[test]
-    fn invariant_removes_vertical_at_head_pos_x() {
-        let head = head_hash();
-        let pos = pos_map_for_head(1, 2);
-        // Row 2 在 HEAD 所在欄位上有一條穿透的 Vertical —— 這就是穿刺的源頭。
-        let mut edges: Vec<Vec<Edge>> = vec![
-            vec![Edge::new(EdgeType::Vertical, 0, 0)],
-            vec![Edge::new(EdgeType::Vertical, 0, 0)],
-            vec![
-                Edge::new(EdgeType::Vertical, 0, 0),
-                Edge::new(EdgeType::Vertical, 1, 1),
-                Edge::new(EdgeType::Up, 1, 1),
-                Edge::new(EdgeType::Down, 1, 1),
-            ],
-        ];
-        normalize_head_row_invariant(&mut edges, &pos, Some(&head));
-        assert!(
-            !edges[2]
-                .iter()
-                .any(|e| e.pos_x == 1 && e.edge_type == EdgeType::Vertical),
-            "Vertical at head_pos_x on head row must be removed"
-        );
-        // col 0 上非 HEAD 的 Vertical 不受影響。
-        assert!(edges[2]
-            .iter()
-            .any(|e| e.pos_x == 0 && e.edge_type == EdgeType::Vertical));
-        assert_eq!(edges[0].len(), 1);
-        assert_eq!(edges[1].len(), 1);
-    }
-
-    #[test]
-    fn invariant_head_pos_y_zero_still_retains() {
-        let head = head_hash();
-        let pos = pos_map_for_head(0, 0);
-        let mut edges: Vec<Vec<Edge>> = vec![vec![
-            Edge::new(EdgeType::Vertical, 0, 0),
-            Edge::new(EdgeType::Down, 0, 0),
-        ]];
-        normalize_head_row_invariant(&mut edges, &pos, Some(&head));
-        assert!(
-            !edges[0]
-                .iter()
-                .any(|e| e.pos_x == 0 && e.edge_type == EdgeType::Vertical),
-            "pierce fix must run even at head_pos_y=0"
-        );
-    }
-
-    #[test]
-    fn normalize_leaves_no_stray_vertical_above_head() {
-        // 迴歸測試：graph 本身不帶 virtual row 的連線（那條線由
-        // `text_cells` 疊上去），HEAD 那一欄在 HEAD 上方的 rows 不能多出 Vertical。
-        let head = head_hash();
-        let pos = pos_map_for_head(1, 3);
-        let mut edges: Vec<Vec<Edge>> = vec![
-            vec![Edge::new(EdgeType::Vertical, 0, 0)],
-            vec![Edge::new(EdgeType::Vertical, 0, 0)],
-            vec![Edge::new(EdgeType::Vertical, 0, 0)],
-            vec![
-                Edge::new(EdgeType::Up, 1, 1),
-                Edge::new(EdgeType::Down, 1, 1),
-            ],
-        ];
-        normalize_head_row_invariant(&mut edges, &pos, Some(&head));
-        for (i, row) in edges.iter().enumerate().take(3) {
-            assert!(
-                !row.iter()
-                    .any(|e| e.pos_x == 1 && e.edge_type == EdgeType::Vertical),
-                "row {i} must not have Vertical at HEAD's col"
-            );
+    // 可見集合對祖先封閉（`find_remote_only_commits` 從本地 ref 沿 loaded
+    // parent 走訪，走得到的才可見，不可能走到一個「parent 可見、自己不可
+    // 見」的矛盾狀態），所以只要把 CSR 重新編號到 row 空間，不必改寫拓樸。
+    let mut raw_to_row = vec![NOT_LOADED; total];
+    let mut raws: Vec<u32> = Vec::new();
+    for (raw, row) in raw_to_row.iter_mut().enumerate() {
+        if !remote_only.contains(raw) {
+            *row = raws.len() as u32;
+            raws.push(raw as u32);
         }
     }
 
-    // --- calc_edges 測試 ---
-
-    fn make_commit(hash: &str, parents: &[&str]) -> Commit {
-        Commit {
-            commit_hash: CommitHash::from(hash),
-            parent_commit_hashes: parents.iter().map(|h| CommitHash::from(*h)).collect(),
-            ..Default::default()
+    let mut parent_start = Vec::with_capacity(raws.len() + 1);
+    let mut parent_idx = Vec::with_capacity(parent_idx_raw.len());
+    parent_start.push(0);
+    for &raw in &raws {
+        let range =
+            parent_start_raw[raw as usize] as usize..parent_start_raw[raw as usize + 1] as usize;
+        for &p in &parent_idx_raw[range] {
+            let mapped = if p == NOT_LOADED {
+                NOT_LOADED
+            } else {
+                let row = raw_to_row[p as usize];
+                debug_assert_ne!(row, NOT_LOADED, "可見 commit 的已載入 parent 一定可見");
+                row
+            };
+            parent_idx.push(mapped);
         }
+        parent_start.push(parent_idx.len() as u32);
     }
 
-    struct MockSource {
-        children: FxHashMap<CommitHash, Vec<CommitHash>>,
-        parents: FxHashMap<CommitHash, Vec<CommitHash>>,
-    }
+    let reserved_head = head_hint
+        .filter(|_| reserve_head_col)
+        .and_then(|h| repository.index_of(h))
+        .filter(|&raw| !remote_only.contains(raw))
+        .map(|raw| raw_to_row[raw]);
 
-    impl MockSource {
-        fn from_commits(commits: &[&Commit]) -> Self {
-            let mut children: FxHashMap<CommitHash, Vec<CommitHash>> = FxHashMap::default();
-            let mut parents: FxHashMap<CommitHash, Vec<CommitHash>> = FxHashMap::default();
-            for commit in commits {
-                parents.insert(
-                    commit.commit_hash.clone(),
-                    commit.parent_commit_hashes.clone(),
-                );
-                for parent in &commit.parent_commit_hashes {
-                    children
-                        .entry(parent.clone())
-                        .or_default()
-                        .push(commit.commit_hash.clone());
-                }
-            }
-            Self { children, parents }
-        }
-    }
-
-    impl GraphDataSource for MockSource {
-        fn children_hash(&self, hash: &CommitHash) -> Vec<&CommitHash> {
-            self.children
-                .get(hash)
-                .map(|hs| hs.iter().collect())
-                .unwrap_or_default()
-        }
-        fn parents_hash(&self, hash: &CommitHash) -> Vec<&CommitHash> {
-            self.parents
-                .get(hash)
-                .map(|hs| hs.iter().collect())
-                .unwrap_or_default()
-        }
-    }
-
-    fn has_edge(edges: &[Vec<Edge>], row: usize, col: usize, et: EdgeType) -> bool {
-        edges[row]
-            .iter()
-            .any(|e| e.pos_x == col && e.edge_type == et)
-    }
-
-    /// 同 col first-parent → 直線 Vertical（原有行為）
-    #[test]
-    fn edges_same_col_first_parent_draws_vertical() {
-        // A (y=0, col=1) ← B (y=1, col=1)，是 first parent
-        let a = make_commit("a", &["b"]);
-        let b = make_commit("b", &[]);
-        let commits = vec![&a, &b];
-        let source = MockSource::from_commits(&commits);
-        let mut pos_map = CommitPosMap::default();
-        pos_map.insert(CommitHash::from("a"), (1, 0));
-        pos_map.insert(CommitHash::from("b"), (1, 1));
-
-        let edges = calc_edges(&pos_map, &commits, &source);
-
-        assert!(
-            has_edge(&edges, 0, 1, EdgeType::Down),
-            "child row should have Down"
-        );
-        assert!(
-            has_edge(&edges, 1, 1, EdgeType::Up),
-            "parent row should have Up"
-        );
-    }
-
-    /// 同 col merge 且中間有其他 commit → 應 detour 繞道，不穿透
-    #[test]
-    fn edges_same_col_merge_with_intermediate_detours() {
-        // 拓樸結構 (模擬 scanoo-web 的 bug)：
-        //   y=0: M (merge, col=1) parents=[E, P]  first-parent=E
-        //   y=1: E (col=0)                        M 的 first-parent（相鄰，branch 不生中間 Vertical）
-        //   y=2: X (col=1) parents=[Y]            同 col 上不相關的 commit
-        //   y=3: Y (col=1) parents=[]             同 col 上不相關的 commit
-        //   y=4: P (col=1) parents=[]             merge 的 second-parent
-        //
-        // P→M 是 merge（non-first-parent），同 col 1，中間有 X, Y 在 col 1
-        // 應該 detour 到 col≥2，不在 col 1 rows 2-3 畫穿透 Vertical
-        let m = make_commit("M", &["E", "P"]);
-        let e = make_commit("E", &[]);
-        let x = make_commit("X", &["Y"]);
-        let y_c = make_commit("Y", &[]);
-        let p = make_commit("P", &[]);
-        let commits = vec![&m, &e, &x, &y_c, &p];
-        let source = MockSource::from_commits(&commits);
-        let mut pos_map = CommitPosMap::default();
-        pos_map.insert(CommitHash::from("M"), (1, 0));
-        pos_map.insert(CommitHash::from("E"), (0, 1));
-        pos_map.insert(CommitHash::from("X"), (1, 2));
-        pos_map.insert(CommitHash::from("Y"), (1, 3));
-        pos_map.insert(CommitHash::from("P"), (1, 4));
-
-        let edges = calc_edges(&pos_map, &commits, &source);
-
-        // 中間 rows (X, Y) 在 col 1 不能有 merge 的 pass-through Vertical
-        for row in [2, 3] {
-            assert!(
-                !edges[row]
-                    .iter()
-                    .any(|e| e.pos_x == 1 && e.edge_type == EdgeType::Vertical),
-                "row {row} col 1 must NOT have pass-through Vertical from merge"
-            );
-        }
-        // detour 應在 col≥2 有 Vertical
-        for row in [2, 3] {
-            assert!(
-                edges[row]
-                    .iter()
-                    .any(|e| e.pos_x >= 2 && e.edge_type == EdgeType::Vertical),
-                "row {row} should have detour Vertical at col≥2"
-            );
-        }
-    }
-
-    /// 同 col merge 且相鄰（無中間 commit）→ 直接 Up/Down
-    #[test]
-    fn edges_same_col_merge_adjacent_draws_up_down() {
-        // y=0: M (merge, col=1) parents=[E, P]  first-parent=E
-        // y=1: P (col=1)                       merge 的 second-parent
-        // y=2: E (col=0)                       merge 的 first-parent
-        let m = make_commit("M", &["E", "P"]);
-        let p = make_commit("P", &[]);
-        let e = make_commit("E", &[]);
-        let commits = vec![&m, &p, &e];
-        let source = MockSource::from_commits(&commits);
-        let mut pos_map = CommitPosMap::default();
-        pos_map.insert(CommitHash::from("M"), (1, 0));
-        pos_map.insert(CommitHash::from("P"), (1, 1));
-        pos_map.insert(CommitHash::from("E"), (0, 2));
-
-        let edges = calc_edges(&pos_map, &commits, &source);
-
-        assert!(
-            has_edge(&edges, 0, 1, EdgeType::Down),
-            "child row should have Down at col 1"
-        );
-        assert!(
-            has_edge(&edges, 1, 1, EdgeType::Up),
-            "parent row should have Up at col 1"
-        );
-    }
-
-    // --- calc_commit_positions：HEAD col 保留 ---
-
-    /// HEAD 無 branch/tag (reserve=false)：第一個 leaf 從 col 0 開始，不再被擠。
-    #[test]
-    fn positions_no_reserve_leaf_takes_col_0() {
-        let head = make_commit("head", &[]);
-        let a = make_commit("a", &[]);
-        let b = make_commit("b", &[]);
-        let commits = vec![&head, &a, &b];
-        let source = MockSource::from_commits(&commits);
-        let head_hash = CommitHash::from("head");
-
-        let map = calc_commit_positions(&commits, &source, Some(&head_hash), false);
-
-        assert_eq!(map[&CommitHash::from("head")].0, 0);
-        assert_eq!(map[&CommitHash::from("a")].0, 1);
-        assert_eq!(map[&CommitHash::from("b")].0, 2);
-    }
-
-    /// HEAD 有 branch/tag (reserve=true)：HEAD 保留 col 0，其他 leaf 從 col 1 起。
-    #[test]
-    fn positions_reserve_pushes_others_right_then_releases() {
-        // commits 順序：a (leaf, y=0) → b (leaf, y=1) → head (leaf, y=2) → c (leaf, y=3)
-        // reserve=true 時 a/b 被擠到 col 1,2；head 落在 col 0；c 放完 head 後可拿 col 0 之後首個空位。
-        let a = make_commit("a", &[]);
-        let b = make_commit("b", &[]);
-        let head = make_commit("head", &[]);
-        let c = make_commit("c", &[]);
-        let commits = vec![&a, &b, &head, &c];
-        let source = MockSource::from_commits(&commits);
-        let head_hash = CommitHash::from("head");
-
-        let map = calc_commit_positions(&commits, &source, Some(&head_hash), true);
-
-        assert_eq!(
-            map[&CommitHash::from("a")].0,
-            1,
-            "other leaf starts at col 1"
-        );
-        assert_eq!(map[&CommitHash::from("b")].0, 2);
-        assert_eq!(map[&CommitHash::from("head")].0, 0, "HEAD takes col 0");
-        // HEAD 放置後，head_col_pending=false → c 可以從 col 0 開始掃描。
-        // Col 0,1,2 已被 head,a,b 佔用 → c 落在 col 3。
-        assert_eq!(map[&CommitHash::from("c")].0, 3);
-    }
-
-    /// 釘住：HEAD 被 merge 回去時不補救，跟子 commit 欄位走。
-    #[test]
-    fn positions_merged_head_follows_child_col_regression() {
-        // child (y=0) parents=[head, other]
-        // head (y=1) — HEAD，被 child first-parent 指到
-        // other (y=2) — child 的 second-parent
-        let child = make_commit("child", &["head", "other"]);
-        let head = make_commit("head", &[]);
-        let other = make_commit("other", &[]);
-        let commits = vec![&child, &head, &other];
-        let source = MockSource::from_commits(&commits);
-        let head_hash = CommitHash::from("head");
-
-        let map = calc_commit_positions(&commits, &source, Some(&head_hash), true);
-
-        // reserve=true 但 child 走 leaf 分支前，HEAD 尚未放 → child 是 leaf → 從 col 1 起
-        // child 在 col 1；head 透過 update_commit_line 繼承 child 的 col 1；head 不在 col 0。
-        assert_eq!(map[&CommitHash::from("child")].0, 1);
-        assert_eq!(
-            map[&CommitHash::from("head")].0,
-            1,
-            "merged HEAD follows child col, not forced to 0"
-        );
-    }
+    let lanes = lanes::build(&parent_start, &parent_idx, reserved_head);
+    Graph::from_lanes(Some(raws), lanes)
 }
