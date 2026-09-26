@@ -295,22 +295,21 @@ pub(crate) fn text_cells(
 ) -> Vec<TextCell> {
     let col = graph.col(row);
     let cell_count = graph.cell_count();
-    let edges = graph.row_edges(row);
-    match virtual_head_row.and_then(|head_row| virtual_row_edge(graph, head_row, row)) {
-        Some(extra) => {
+    let mut edges = graph.row_edges(row);
+    if let Some(head_row) = virtual_head_row {
+        if let Some(extra) = virtual_row_edge(graph, &edges, head_row, row) {
             // 接在排序後的 edge 之後：同 rank 平手時看 edge 順序。
-            let mut edges = edges.to_vec();
             edges.push(extra);
-            build_text_cells(col, cell_count, &edges, colors, width)
         }
-        None => build_text_cells(col, cell_count, edges, colors, width),
     }
+    build_text_cells(col, cell_count, &edges, colors, width)
 }
 
 /// virtual row 連到 HEAD 的線在 `row` 這一列的那一段：HEAD 上方是 `Vertical`，
 /// HEAD 那列是 `Up`。HEAD 在第 0 列時兩者直接相鄰，不用補；該列已經有同樣的
-/// edge 時也不補。
-fn virtual_row_edge(graph: &Graph, head_row: usize, row: usize) -> Option<Edge> {
+/// edge 時也不補。`edges` 是 `row` 這一列已經查過的 edge（lane 引擎每查一次
+/// 都要從最近的 checkpoint 重播，這裡不重查第二次）。
+fn virtual_row_edge(graph: &Graph, edges: &[Edge], head_row: usize, row: usize) -> Option<Edge> {
     if head_row == 0 || row > head_row {
         return None;
     }
@@ -320,8 +319,7 @@ fn virtual_row_edge(graph: &Graph, head_row: usize, row: usize) -> Option<Edge> 
     } else {
         EdgeType::Up
     };
-    let exists = graph
-        .row_edges(row)
+    let exists = edges
         .iter()
         .any(|e| e.pos_x == head_col && e.edge_type == edge_type);
     (!exists).then(|| Edge::new(edge_type, head_col, head_col))
@@ -668,11 +666,21 @@ mod tests {
     fn virtual_row_edge_connects_head_to_top() {
         let graph = head_below_graph();
         let vertical = Some(Edge::new(EdgeType::Vertical, 1, 1));
-        assert_eq!(virtual_row_edge(&graph, 3, 0), vertical);
-        assert_eq!(virtual_row_edge(&graph, 3, 1), None, "already has one");
-        assert_eq!(virtual_row_edge(&graph, 3, 2), vertical);
         assert_eq!(
-            virtual_row_edge(&graph, 3, 3),
+            virtual_row_edge(&graph, &graph.row_edges(0), 3, 0),
+            vertical
+        );
+        assert_eq!(
+            virtual_row_edge(&graph, &graph.row_edges(1), 3, 1),
+            None,
+            "already has one"
+        );
+        assert_eq!(
+            virtual_row_edge(&graph, &graph.row_edges(2), 3, 2),
+            vertical
+        );
+        assert_eq!(
+            virtual_row_edge(&graph, &graph.row_edges(3), 3, 3),
             Some(Edge::new(EdgeType::Up, 1, 1))
         );
     }
@@ -680,8 +688,8 @@ mod tests {
     #[test]
     fn virtual_row_edge_skips_rows_below_head_and_head_on_top() {
         let graph = head_below_graph();
-        assert_eq!(virtual_row_edge(&graph, 2, 3), None);
-        assert_eq!(virtual_row_edge(&graph, 0, 0), None);
+        assert_eq!(virtual_row_edge(&graph, &graph.row_edges(3), 2, 3), None);
+        assert_eq!(virtual_row_edge(&graph, &graph.row_edges(0), 0, 0), None);
     }
 
     /// overlay 接在排序後的 edge 之後，而且不存進 graph。
