@@ -146,9 +146,6 @@ pub fn calc_graph(
     let mut graph_edges = calc_edges(&commit_pos_map, &commits, repository);
 
     normalize_head_row_invariant(&mut graph_edges, &commit_pos_map, head_hint);
-    if !repository.working_changes().is_empty() {
-        anchor_head_to_virtual_row(&mut graph_edges, &commit_pos_map, head_hint);
-    }
 
     // 主 graph 的 row 就是 raw。
     let rows = commits
@@ -176,45 +173,6 @@ fn normalize_head_row_invariant(
         !edges[head_pos_y].iter().any(|e| e.pos_x == head_pos_x
             && matches!(e.edge_type, EdgeType::Vertical | EdgeType::Horizontal)),
         "HEAD row invariant: pos_x must not contain pass-through edges"
-    );
-}
-
-/// 延伸 HEAD column 往上，讓 virtual uncommitted row 能視覺連下來。
-/// 僅在 working tree 有變動（需要顯示 virtual row）時呼叫。
-fn anchor_head_to_virtual_row(
-    edges: &mut [Vec<Edge>],
-    commit_pos_map: &CommitPosMap,
-    head_hint: Option<&CommitHash>,
-) {
-    let Some(head_hash) = head_hint else { return };
-    let Some(&(head_pos_x, head_pos_y)) = commit_pos_map.get(head_hash) else {
-        return;
-    };
-    if head_pos_y == 0 {
-        return;
-    }
-
-    for row in edges.iter_mut().take(head_pos_y) {
-        if !row
-            .iter()
-            .any(|e| e.pos_x == head_pos_x && e.edge_type == EdgeType::Vertical)
-        {
-            row.push(Edge::new(EdgeType::Vertical, head_pos_x, head_pos_x));
-        }
-    }
-    let head_row = &mut edges[head_pos_y];
-    if !head_row
-        .iter()
-        .any(|e| e.pos_x == head_pos_x && e.edge_type == EdgeType::Up)
-    {
-        head_row.push(Edge::new(EdgeType::Up, head_pos_x, head_pos_x));
-    }
-
-    debug_assert!(
-        head_row
-            .iter()
-            .any(|e| e.pos_x == head_pos_x && e.edge_type == EdgeType::Up),
-        "anchor_head_to_virtual_row must leave Up endpoint on head_row"
     );
 }
 
@@ -722,9 +680,6 @@ pub fn calc_graph_filtered(
     let mut graph_edges = calc_edges(&commit_pos_map, &commits, &source);
 
     normalize_head_row_invariant(&mut graph_edges, &commit_pos_map, effective_head);
-    if !repository.working_changes().is_empty() {
-        anchor_head_to_virtual_row(&mut graph_edges, &commit_pos_map, effective_head);
-    }
 
     let rows = raws
         .into_iter()
@@ -807,9 +762,9 @@ mod tests {
     }
 
     #[test]
-    fn anchor_not_called_leaves_no_stray_vertical_above_head() {
-        // 迴歸測試：沒有 anchor 時（乾淨的 working tree），HEAD 那一欄
-        // 在 HEAD 上方的 rows 不能多出額外的 Vertical。
+    fn normalize_leaves_no_stray_vertical_above_head() {
+        // 迴歸測試：graph 本身不帶 virtual row 的連線（那條線由
+        // `text_cells` 疊上去），HEAD 那一欄在 HEAD 上方的 rows 不能多出 Vertical。
         let head = head_hash();
         let pos = pos_map_for_head(1, 3);
         let mut edges: Vec<Vec<Edge>> = vec![
@@ -826,32 +781,9 @@ mod tests {
             assert!(
                 !row.iter()
                     .any(|e| e.pos_x == 1 && e.edge_type == EdgeType::Vertical),
-                "row {i} must not have Vertical at HEAD's col without anchor"
+                "row {i} must not have Vertical at HEAD's col"
             );
         }
-    }
-
-    #[test]
-    fn anchor_adds_vertical_above_and_up_on_head_row() {
-        let head = head_hash();
-        let pos = pos_map_for_head(1, 3);
-        let mut edges: Vec<Vec<Edge>> = vec![
-            vec![Edge::new(EdgeType::Vertical, 0, 0)],
-            vec![Edge::new(EdgeType::Vertical, 0, 0)],
-            vec![Edge::new(EdgeType::Vertical, 0, 0)],
-            vec![Edge::new(EdgeType::Down, 1, 1)],
-        ];
-        anchor_head_to_virtual_row(&mut edges, &pos, Some(&head));
-        for (i, row) in edges.iter().enumerate().take(3) {
-            assert!(
-                row.iter()
-                    .any(|e| e.pos_x == 1 && e.edge_type == EdgeType::Vertical),
-                "row {i} must have Vertical at HEAD's col after anchor"
-            );
-        }
-        assert!(edges[3]
-            .iter()
-            .any(|e| e.pos_x == 1 && e.edge_type == EdgeType::Up));
     }
 
     // --- calc_edges 測試 ---

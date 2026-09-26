@@ -704,9 +704,18 @@ impl<'a> CommitListState<'a> {
         Some(crate::graph::text_cells(
             graph,
             row,
+            self.virtual_head_row(),
             &self.graph_colors,
             self.cell_width_type,
         ))
+    }
+
+    /// virtual row 顯示中時，HEAD 在目前 graph 的列（`text_cells` 從這裡往上補線）。
+    fn virtual_head_row(&self) -> Option<usize> {
+        if !self.has_virtual_row() {
+            return None;
+        }
+        self.current_graph().row_of(self.head_raw?.0)
     }
 
     /// `raw` 的 dot 在目前 graph 上的起始 cell（不是 char）；不在這張 graph 裡時回 `None`。

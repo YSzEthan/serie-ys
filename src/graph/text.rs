@@ -280,34 +280,65 @@ pub enum GraphStyle {
 
 /// 共用的「一列 → 它的 text cells」查詢，逐幀渲染路徑
 ///（`CommitListState::text_cells_for_raw`）與批次快照產生器（`build_text_graph`）
-/// 都走這裡。只留一份定義，兩個呼叫端就不可能在欄位、edge、`cell_count`
-/// 怎麼推出來這件事上悄悄分岔。
+/// 都走這裡。只留一份定義，兩個呼叫端就不可能在欄位、edge、virtual row 的
+/// 連線怎麼推出來這件事上悄悄分岔。
+///
+/// `virtual_head_row` 是 HEAD 在這張 graph 的列，只在工作區有變更（virtual row
+/// 顯示中）時給：HEAD 欄從第 0 列到 HEAD 補一條線，接到最上面的 virtual row。
+/// 這條線不存進 graph，graph 因此不依賴 working changes。
 pub(crate) fn text_cells(
     graph: &Graph,
     row: usize,
+    virtual_head_row: Option<usize>,
     colors: &[RatatuiColor],
     width: CellWidthType,
 ) -> Vec<TextCell> {
-    build_text_cells(
-        graph.col(row),
-        graph.cell_count(),
-        graph.row_edges(row),
-        colors,
-        width,
-    )
+    let col = graph.col(row);
+    let cell_count = graph.cell_count();
+    let edges = graph.row_edges(row);
+    match virtual_head_row.and_then(|head_row| virtual_row_edge(graph, head_row, row)) {
+        Some(extra) => {
+            // 接在排序後的 edge 之後：同 rank 平手時看 edge 順序。
+            let mut edges = edges.to_vec();
+            edges.push(extra);
+            build_text_cells(col, cell_count, &edges, colors, width)
+        }
+        None => build_text_cells(col, cell_count, edges, colors, width),
+    }
+}
+
+/// virtual row 連到 HEAD 的線在 `row` 這一列的那一段：HEAD 上方是 `Vertical`，
+/// HEAD 那列是 `Up`。HEAD 在第 0 列時兩者直接相鄰，不用補；該列已經有同樣的
+/// edge 時也不補。
+fn virtual_row_edge(graph: &Graph, head_row: usize, row: usize) -> Option<Edge> {
+    if head_row == 0 || row > head_row {
+        return None;
+    }
+    let head_col = graph.col(head_row);
+    let edge_type = if row < head_row {
+        EdgeType::Vertical
+    } else {
+        EdgeType::Up
+    };
+    let exists = graph
+        .row_edges(row)
+        .iter()
+        .any(|e| e.pos_x == head_col && e.edge_type == edge_type);
+    (!exists).then(|| Edge::new(edge_type, head_col, head_col))
 }
 
 /// 依列的順序，把 `graph` 的每一列都批次渲染成文字。
 ///
 /// 給 `tests/graph.rs` 的快照測試用 —— 它要的是一次拿到整張圖，而不是 UI 那種
-/// 逐列查詢。
+/// 逐列查詢。`virtual_head_row` 同 `text_cells`。
 pub fn build_text_graph(
     graph: &Graph,
+    virtual_head_row: Option<usize>,
     colors: &[RatatuiColor],
     width: CellWidthType,
 ) -> Vec<Vec<TextCell>> {
     (0..graph.row_count())
-        .map(|row| text_cells(graph, row, colors, width))
+        .map(|row| text_cells(graph, row, virtual_head_row, colors, width))
         .collect()
 }
 
@@ -614,6 +645,57 @@ pub fn graph_cell_width(graph: &Graph, width: CellWidthType) -> u16 {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// HEAD 在第 3 列第 1 欄；第 1 列本來就有第 1 欄的 Vertical（例如別條線剛好
+    /// 經過），不能重複補。
+    fn head_below_graph() -> Graph {
+        Graph::from_materialized(
+            4,
+            vec![(0, 0), (1, 0), (2, 0), (3, 1)],
+            vec![
+                vec![Edge::new(EdgeType::Vertical, 0, 0)],
+                vec![
+                    Edge::new(EdgeType::Vertical, 0, 0),
+                    Edge::new(EdgeType::Vertical, 1, 1),
+                ],
+                vec![Edge::new(EdgeType::Vertical, 0, 0)],
+                vec![Edge::new(EdgeType::Down, 1, 1)],
+            ],
+        )
+    }
+
+    #[test]
+    fn virtual_row_edge_connects_head_to_top() {
+        let graph = head_below_graph();
+        let vertical = Some(Edge::new(EdgeType::Vertical, 1, 1));
+        assert_eq!(virtual_row_edge(&graph, 3, 0), vertical);
+        assert_eq!(virtual_row_edge(&graph, 3, 1), None, "already has one");
+        assert_eq!(virtual_row_edge(&graph, 3, 2), vertical);
+        assert_eq!(
+            virtual_row_edge(&graph, 3, 3),
+            Some(Edge::new(EdgeType::Up, 1, 1))
+        );
+    }
+
+    #[test]
+    fn virtual_row_edge_skips_rows_below_head_and_head_on_top() {
+        let graph = head_below_graph();
+        assert_eq!(virtual_row_edge(&graph, 2, 3), None);
+        assert_eq!(virtual_row_edge(&graph, 0, 0), None);
+    }
+
+    /// overlay 接在排序後的 edge 之後，而且不存進 graph。
+    #[test]
+    fn text_cells_overlays_virtual_row_line_without_touching_graph() {
+        let graph = head_below_graph();
+        let colors = [RatatuiColor::Red, RatatuiColor::Green];
+        let with = text_cells(&graph, 0, Some(3), &colors, CellWidthType::Single);
+        let without = text_cells(&graph, 0, None, &colors, CellWidthType::Single);
+        assert_eq!(with[1].glyph, Glyph::Vert);
+        assert_eq!(with[1].color, RatatuiColor::Green);
+        assert_eq!(without[1].glyph, Glyph::Blank);
+        assert_eq!(graph.row_edges(0).len(), 1);
+    }
 
     #[test]
     fn text_cells_simple_vertical() {

@@ -1247,6 +1247,47 @@ fn virtual_row_001() -> TestResult {
     Ok(())
 }
 
+/// graph 不依賴 working changes：同一個 repo 乾淨／有變更各算一次，每列的
+/// edge 都一樣。以前 virtual row 的連線存在 graph 裡，fast path 沿用舊 graph
+/// 時，`git restore` 之後線會留在畫面上。
+#[test]
+fn graph_ignores_working_changes() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let repo_path = dir.path();
+
+    let git = &GitRepository::new(repo_path);
+
+    git.init();
+
+    git.commit("001", "2024-01-01");
+    git.commit("002", "2024-01-02");
+
+    git.checkout_b("10");
+    git.commit("011", "2024-01-03");
+
+    git.checkout("master");
+    git.commit("003", "2024-01-04");
+
+    git.checkout("10");
+
+    let row_edges = || -> Result<Vec<Vec<graph::Edge>>, Box<dyn std::error::Error>> {
+        let repository = git::Repository::load(repo_path, git::SortCommit::Chronological, None)?;
+        let head = ysgit::resolve_head_commit_hash(&repository);
+        let graph = graph::calc_graph(&repository, head.as_ref(), true);
+        Ok((0..graph.row_count())
+            .map(|row| graph.row_edges(row).to_vec())
+            .collect())
+    };
+
+    let clean = row_edges()?;
+    git.dirty();
+    let dirty_repo = git::Repository::load(repo_path, git::SortCommit::Chronological, None)?;
+    assert!(!dirty_repo.working_changes().is_empty());
+    assert_eq!(row_edges()?, clean);
+
+    Ok(())
+}
+
 /// filtered graph + 工作區有變更：HEAD 上方有被隱藏的 remote-only commit，
 /// 所以 filtered graph 的 row 與 raw index 不同，anchor 要落在 filtered 的列上。
 #[test]
@@ -1517,6 +1558,14 @@ fn build_graph_snapshot_source(
     } else {
         full
     };
+    // 工作區有變更時 virtual row 會顯示，HEAD 欄要補線接上去（跟 app 走同一條路）。
+    let virtual_head_row = if repository.working_changes().is_empty() {
+        None
+    } else {
+        ysgit::resolve_head_commit_hash(&repository)
+            .and_then(|h| repository.index_of(&h))
+            .and_then(|raw| graph.row_of(raw))
+    };
 
     let graph_colors = color::GraphColors::default();
     let graph_color_set = color::GraphColorSet::new(&graph_colors);
@@ -1526,8 +1575,18 @@ fn build_graph_snapshot_source(
         .map(|c| c.to_ratatui_color())
         .collect::<Vec<_>>();
 
-    let double_rows = graph::build_text_graph(&graph, &colors, graph::CellWidthType::Double);
-    let single_rows = graph::build_text_graph(&graph, &colors, graph::CellWidthType::Single);
+    let double_rows = graph::build_text_graph(
+        &graph,
+        virtual_head_row,
+        &colors,
+        graph::CellWidthType::Double,
+    );
+    let single_rows = graph::build_text_graph(
+        &graph,
+        virtual_head_row,
+        &colors,
+        graph::CellWidthType::Single,
+    );
     let subjects = (0..graph.row_count())
         .map(|row| repository.all_commits()[graph.raw_of(row)].subject.clone())
         .collect();
