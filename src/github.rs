@@ -138,6 +138,11 @@ pub struct GhPullRequest {
     pub labels: Vec<GhLabel>,
     pub author: GhAuthor,
     pub head_ref_name: String,
+    /// PR head branch 目前指向的 commit id（GraphQL `headRefOid`）。用來判斷
+    /// 本地同名分支的 tip 是不是就是這次被 merge 的版本——相同才能安全強刪
+    /// 本地分支，不必依賴 `git branch -d` 自己的 reachability 判斷（見
+    /// `app::local_branch_delete_check`）。
+    pub head_ref_oid: String,
     pub base_ref_name: String,
     pub is_draft: bool,
     pub head_branch_deletable: bool,
@@ -408,7 +413,7 @@ pub fn list_pull_requests(
                 pullRequests(first:50,after:$after,states:{states},orderBy:{{field:CREATED_AT,direction:DESC}}){{
                     pageInfo {{ hasNextPage endCursor }}
                     nodes {{
-                        number title state body url closedAt updatedAt headRefName baseRefName isDraft isCrossRepository additions deletions
+                        number title state body url closedAt updatedAt headRefName headRefOid baseRefName isDraft isCrossRepository additions deletions
                         author {{ login }}
                         labels(first:20) {{ nodes {{ name color }} }}
                         closingIssuesReferences(first:20) {{ nodes {{ number title state url }} }}
@@ -506,6 +511,7 @@ struct GqlPrNode {
     #[serde(default)]
     url: Option<String>,
     head_ref_name: String,
+    head_ref_oid: String,
     base_ref_name: String,
     is_draft: bool,
     is_cross_repository: bool,
@@ -537,6 +543,7 @@ impl GqlPrNode {
                 login: "ghost".to_string(),
             }),
             head_ref_name: self.head_ref_name,
+            head_ref_oid: self.head_ref_oid,
             base_ref_name: self.base_ref_name,
             is_draft: self.is_draft,
             head_branch_deletable,
@@ -1654,6 +1661,7 @@ mod tests {
                                 "title": "same repo",
                                 "state": "OPEN",
                                 "headRefName": "feature/x",
+                                "headRefOid": "aaa111",
                                 "baseRefName": "main",
                                 "isDraft": false,
                                 "isCrossRepository": false,
@@ -1668,6 +1676,7 @@ mod tests {
                                 "title": "fork",
                                 "state": "OPEN",
                                 "headRefName": "feature/y",
+                                "headRefOid": "bbb222",
                                 "baseRefName": "main",
                                 "isDraft": false,
                                 "isCrossRepository": true,
@@ -1682,6 +1691,7 @@ mod tests {
                                 "title": "head is default branch",
                                 "state": "OPEN",
                                 "headRefName": "main",
+                                "headRefOid": "ccc333",
                                 "baseRefName": "release/1.x",
                                 "isDraft": false,
                                 "isCrossRepository": false,

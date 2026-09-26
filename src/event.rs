@@ -188,10 +188,13 @@ pub enum AppEvent {
     OpenMergePrMethodPicker {
         number: u64,
         head_ref: String,
+        /// PR head branch 目前指向的 commit id（GraphQL `headRefOid`），供
+        /// `app::local_branch_delete_check` 判斷本地同名分支能不能直接強刪。
+        head_ref_oid: String,
         state: crate::github::StateFilter,
         /// false = fork／head 是 default branch／head==base，UI 直接跳過
-        /// delete-branch 那一問，見 `github::head_branch_deletable`。
-        deletable: bool,
+        /// delete-remote-branch 那一問，見 `github::head_branch_deletable`。
+        remote_deletable: bool,
     },
     OpenToggleStatePrompt {
         number: u64,
@@ -272,6 +275,11 @@ pub enum AppEvent {
         number: u64,
         state: crate::github::StateFilter,
         method: crate::github::MergeMethod,
+        /// `Some((name, force_safe))` = 要刪本地的這條 branch；`force_safe`
+        /// 由 `app::local_branch_delete_check` 依 `headRefOid` 算好，不是
+        /// 使用者選項——`true` 代表本地 tip 就是這次被 merge 的版本，可以
+        /// 直接 `-D`；`false` 代表本地有額外內容，只能嘗試安全的 `-d`。
+        delete_local_branch: Option<(String, bool)>,
         /// `Some(head_ref)` = 要刪遠端的這條 branch；`None` = 不刪。
         delete_remote_branch: Option<String>,
     },

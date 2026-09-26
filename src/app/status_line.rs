@@ -128,27 +128,75 @@ fn build_hotkey_hints(view: &View, ctx: &AppContext) -> Line<'static> {
 #[derive(Debug, Clone, Copy)]
 enum MergePrStage {
     PickMethod,
-    AskDeleteBranch {
+    AskDeleteLocal {
         method: MergeMethod,
+    },
+    AskDeleteRemote {
+        method: MergeMethod,
+        delete_local: BranchDelete,
     },
     Confirm {
         method: MergeMethod,
-        delete: RemoteBranchDelete,
+        delete_local: BranchDelete,
+        delete_remote: BranchDelete,
     },
 }
 
-/// merge PR 時遠端 head branch 的處置。三個狀態而非兩個 bool——
-/// `deletable` 與「使用者按了 y/n」疊在一起會出現不可達的組合
-/// （不可刪卻標記要刪），寫成三態就沒有這種狀態。分支名本來就活在
-/// `MergePrPrompt.head_ref`，`Confirmed` 不必再帶一份。
+/// merge PR 時（本地或遠端）head branch 的處置，local 與 remote 共用同一組
+/// 三態語意。三個狀態而非兩個 bool——「不可刪」與「使用者按了 y/n」疊在一起
+/// 會出現不可達的組合（不可刪卻標記要刪），寫成三態就沒有這種狀態。分支名
+/// 本來就活在 `MergePrPrompt.head_ref`，`Confirmed` 不必再帶一份。
 #[derive(Debug, Clone, Copy)]
-enum RemoteBranchDelete {
-    /// fork／head 是 default branch／head==base，UI 直接跳過這一問
+enum BranchDelete {
+    /// 不可刪（remote：fork／head 是 default branch／head==base；
+    /// local：找不到同名分支，或該分支正是目前 HEAD），UI 直接跳過這一問
     NotOffered,
     /// 使用者按 n
     Declined,
     /// 使用者按 y
     Confirmed,
+}
+
+/// `PickMethod` 選完 method 後的下一站：local 排在 remote 之前，兩者各自
+/// 依 `*_deletable` 獨立決定跳過與否（issue #126 定案）。
+fn next_stage_after_pick_method(
+    method: MergeMethod,
+    local_deletable: bool,
+    remote_deletable: bool,
+) -> MergePrStage {
+    if local_deletable {
+        MergePrStage::AskDeleteLocal { method }
+    } else {
+        next_stage_after_ask_local(method, BranchDelete::NotOffered, remote_deletable)
+    }
+}
+
+fn next_stage_after_ask_local(
+    method: MergeMethod,
+    delete_local: BranchDelete,
+    remote_deletable: bool,
+) -> MergePrStage {
+    if remote_deletable {
+        MergePrStage::AskDeleteRemote {
+            method,
+            delete_local,
+        }
+    } else {
+        MergePrStage::Confirm {
+            method,
+            delete_local,
+            delete_remote: BranchDelete::NotOffered,
+        }
+    }
+}
+
+/// `AskDeleteLocal`／`AskDeleteRemote` 共用的 y/n 判斷。
+fn branch_delete_answer(code: KeyCode) -> Option<BranchDelete> {
+    match code {
+        KeyCode::Char('y') | KeyCode::Char('Y') => Some(BranchDelete::Confirmed),
+        KeyCode::Char('n') | KeyCode::Char('N') => Some(BranchDelete::Declined),
+        _ => None,
+    }
 }
 
 /// 單階段 y/n 確認的答案。
@@ -192,7 +240,12 @@ enum StatusLine {
         number: u64,
         head_ref: String,
         state: StateFilter,
-        deletable: bool,
+        remote_deletable: bool,
+        /// `None` = 本地找不到同名分支，或該分支正是目前 HEAD——`AskDeleteLocal`
+        /// 跳過。`Some(force_safe)` = 可以問，`force_safe` 由
+        /// `app::local_branch_delete_check` 依 `headRefOid` 算好帶進來，
+        /// 不是使用者選項，決定送出 `MergePrRequested` 時要不要強刪。
+        local_delete: Option<bool>,
         stage: MergePrStage,
     },
     ToggleStatePrompt {
@@ -306,13 +359,15 @@ impl StatusLineState {
         number: u64,
         head_ref: String,
         state: StateFilter,
-        deletable: bool,
+        remote_deletable: bool,
+        local_delete: Option<bool>,
     ) {
         self.line = StatusLine::MergePrPrompt {
             number,
             head_ref,
             state,
-            deletable,
+            remote_deletable,
+            local_delete,
             stage: MergePrStage::PickMethod,
         };
     }
@@ -659,7 +714,8 @@ impl StatusLineState {
             number,
             ref head_ref,
             state,
-            deletable,
+            remote_deletable,
+            local_delete,
             stage,
         } = self.line
         else {
@@ -668,7 +724,7 @@ impl StatusLineState {
         let head_ref = head_ref.clone();
 
         // 每個 stage 先消化自己的答案鍵（優先於全域 cancel，因為 cancel 預設含 'n'，
-        // 會與 AskDeleteBranch 的「no」撞鍵），回傳「下一個 stage」；
+        // 會與 AskDeleteLocal/AskDeleteRemote 的「no」撞鍵），回傳「下一個 stage」；
         // Confirm 是終點（執行/取消），自行早退。
         let next = match stage {
             MergePrStage::PickMethod => match key.code {
@@ -678,34 +734,42 @@ impl StatusLineState {
                 _ => None,
             }
             .map(|method| {
-                if deletable {
-                    MergePrStage::AskDeleteBranch { method }
-                } else {
-                    MergePrStage::Confirm {
-                        method,
-                        delete: RemoteBranchDelete::NotOffered,
-                    }
-                }
+                next_stage_after_pick_method(method, local_delete.is_some(), remote_deletable)
             }),
 
-            MergePrStage::AskDeleteBranch { method } => match key.code {
-                KeyCode::Char('y') | KeyCode::Char('Y') => Some(RemoteBranchDelete::Confirmed),
-                KeyCode::Char('n') | KeyCode::Char('N') => Some(RemoteBranchDelete::Declined),
-                _ => None,
+            MergePrStage::AskDeleteLocal { method } => {
+                branch_delete_answer(key.code).map(|delete_local| {
+                    next_stage_after_ask_local(method, delete_local, remote_deletable)
+                })
             }
-            .map(|delete| MergePrStage::Confirm { method, delete }),
 
-            MergePrStage::Confirm { method, delete } => {
+            MergePrStage::AskDeleteRemote {
+                method,
+                delete_local,
+            } => branch_delete_answer(key.code).map(|delete_remote| MergePrStage::Confirm {
+                method,
+                delete_local,
+                delete_remote,
+            }),
+
+            MergePrStage::Confirm {
+                method,
+                delete_local,
+                delete_remote,
+            } => {
                 let is_confirm = matches!(self.ctx.keybind.get(&key), Some(UserEvent::Confirm))
                     || matches!(key.code, KeyCode::Enter);
                 if is_confirm {
                     self.line = StatusLine::None;
+                    let delete_local_branch = matches!(delete_local, BranchDelete::Confirmed)
+                        .then(|| (head_ref.clone(), local_delete == Some(true)));
                     let delete_remote_branch =
-                        matches!(delete, RemoteBranchDelete::Confirmed).then(|| head_ref.clone());
+                        matches!(delete_remote, BranchDelete::Confirmed).then(|| head_ref.clone());
                     self.tx.send(AppEvent::MergePrRequested {
                         number,
                         state,
                         method,
+                        delete_local_branch,
                         delete_remote_branch,
                     });
                 } else if matches!(self.ctx.keybind.get(&key), Some(UserEvent::Cancel)) {
@@ -720,7 +784,8 @@ impl StatusLineState {
                 number,
                 head_ref,
                 state,
-                deletable,
+                remote_deletable,
+                local_delete,
                 stage,
             };
         } else if matches!(self.ctx.keybind.get(&key), Some(UserEvent::Cancel)) {
@@ -1036,7 +1101,18 @@ impl StatusLineState {
                 "ebase  ".into(),
                 "(Esc cancel)".fg(hint_fg),
             ]),
-            MergePrStage::AskDeleteBranch { method } => Line::from(vec![
+            MergePrStage::AskDeleteLocal { method } => Line::from(vec![
+                format!(
+                    "Delete local branch '{head_ref}' after {} merge? ",
+                    method.display()
+                )
+                .into(),
+                "[y]es".fg(hint_fg),
+                " / ".into(),
+                "[n]o".fg(hint_fg),
+                "  (Esc cancel)".fg(hint_fg),
+            ]),
+            MergePrStage::AskDeleteRemote { method, .. } => Line::from(vec![
                 format!(
                     "Delete remote branch '{head_ref}' after {} merge? ",
                     method.display()
@@ -1047,13 +1123,25 @@ impl StatusLineState {
                 "[n]o".fg(hint_fg),
                 "  (Esc cancel)".fg(hint_fg),
             ]),
-            MergePrStage::Confirm { method, delete } => {
-                let del_suffix = match delete {
-                    RemoteBranchDelete::Confirmed => ", delete remote branch: yes",
-                    RemoteBranchDelete::Declined => ", delete remote branch: no",
-                    RemoteBranchDelete::NotOffered => "",
+            MergePrStage::Confirm {
+                method,
+                delete_local,
+                delete_remote,
+            } => {
+                let local_suffix = match delete_local {
+                    BranchDelete::Confirmed => ", delete local branch: yes",
+                    BranchDelete::Declined => ", delete local branch: no",
+                    BranchDelete::NotOffered => "",
                 };
-                let prompt = format!("Merge #{number} with {}{del_suffix}  ", method.display());
+                let remote_suffix = match delete_remote {
+                    BranchDelete::Confirmed => ", delete remote branch: yes",
+                    BranchDelete::Declined => ", delete remote branch: no",
+                    BranchDelete::NotOffered => "",
+                };
+                let prompt = format!(
+                    "Merge #{number} with {}{local_suffix}{remote_suffix}  ",
+                    method.display()
+                );
                 confirm_line(prompt, "execute", &self.ctx)
             }
         }
@@ -1306,21 +1394,25 @@ mod tests {
     }
 
     fn merge_pr_prompt() -> StatusLine {
-        merge_pr_prompt_with_deletable(true)
+        merge_pr_prompt_with_deletable(true, Some(false))
     }
 
-    fn merge_pr_prompt_with_deletable(deletable: bool) -> StatusLine {
+    fn merge_pr_prompt_with_deletable(
+        remote_deletable: bool,
+        local_delete: Option<bool>,
+    ) -> StatusLine {
         StatusLine::MergePrPrompt {
             number: 42,
             head_ref: "feature/x".into(),
             state: StateFilter::Open,
-            deletable,
+            remote_deletable,
+            local_delete,
             stage: MergePrStage::PickMethod,
         }
     }
 
     #[test]
-    fn merge_pr_prompt_advances_through_all_three_stages_and_sends_request() {
+    fn merge_pr_prompt_advances_through_all_four_stages_and_sends_request() {
         let (mut state, rx) = test_state();
         state.line = merge_pr_prompt();
 
@@ -1328,7 +1420,7 @@ mod tests {
         assert!(matches!(
             state.line,
             StatusLine::MergePrPrompt {
-                stage: MergePrStage::AskDeleteBranch {
+                stage: MergePrStage::AskDeleteLocal {
                     method: MergeMethod::Squash
                 },
                 ..
@@ -1341,9 +1433,22 @@ mod tests {
         assert!(matches!(
             state.line,
             StatusLine::MergePrPrompt {
+                stage: MergePrStage::AskDeleteRemote {
+                    method: MergeMethod::Squash,
+                    delete_local: BranchDelete::Declined,
+                },
+                ..
+            }
+        ));
+
+        state.handle_merge_pr_prompt_key(char_key('n'));
+        assert!(matches!(
+            state.line,
+            StatusLine::MergePrPrompt {
                 stage: MergePrStage::Confirm {
                     method: MergeMethod::Squash,
-                    delete: RemoteBranchDelete::Declined,
+                    delete_local: BranchDelete::Declined,
+                    delete_remote: BranchDelete::Declined,
                 },
                 ..
             }
@@ -1356,26 +1461,31 @@ mod tests {
             Ok(AppEvent::MergePrRequested {
                 number: 42,
                 method: MergeMethod::Squash,
+                delete_local_branch: None,
                 delete_remote_branch: None,
                 ..
             })
         ));
     }
 
-    /// `y` 路徑要帶著 `head_ref` 一起送出，不是單純的 bool。
+    /// `y` 路徑要帶著 `head_ref` 一起送出，不是單純的 bool；本地那份還要
+    /// 帶著 `local_delete` 的 force_safe 值（由 `app::local_branch_delete_check`
+    /// 算好，這裡用 helper 傳入的 `Some(false)` 驗證有原樣傳出去，不是被重算）。
     #[test]
-    fn merge_pr_prompt_yes_sends_head_ref_to_delete() {
+    fn merge_pr_prompt_yes_yes_sends_head_ref_to_delete_both() {
         let (mut state, rx) = test_state();
         state.line = merge_pr_prompt();
 
         state.handle_merge_pr_prompt_key(char_key('s'));
-        state.handle_merge_pr_prompt_key(char_key('y'));
+        state.handle_merge_pr_prompt_key(char_key('y')); // local
+        state.handle_merge_pr_prompt_key(char_key('y')); // remote
         assert!(matches!(
             state.line,
             StatusLine::MergePrPrompt {
                 stage: MergePrStage::Confirm {
                     method: MergeMethod::Squash,
-                    delete: RemoteBranchDelete::Confirmed,
+                    delete_local: BranchDelete::Confirmed,
+                    delete_remote: BranchDelete::Confirmed,
                 },
                 ..
             }
@@ -1385,18 +1495,20 @@ mod tests {
         assert!(matches!(
             rx.try_recv(),
             Ok(AppEvent::MergePrRequested {
-                delete_remote_branch: Some(b),
+                delete_local_branch: Some((local, false)),
+                delete_remote_branch: Some(remote),
                 ..
-            }) if b == "feature/x"
+            }) if local == "feature/x" && remote == "feature/x"
         ));
     }
 
-    /// `deletable: false`（fork／default branch／head==base）時，`AskDeleteBranch`
-    /// 這個 stage 根本不該出現——直接跳進 `Confirm { delete: NotOffered }`。
+    /// `local_delete: None`／`remote_deletable: false`（本地找不到對應
+    /// 分支、遠端 fork／default branch／head==base）時，兩個 `Ask*` stage
+    /// 都不該出現——直接跳進 `Confirm { NotOffered, NotOffered }`。
     #[test]
-    fn merge_pr_prompt_not_deletable_skips_ask_delete_branch_stage() {
+    fn merge_pr_prompt_neither_deletable_skips_both_ask_stages() {
         let (mut state, rx) = test_state();
-        state.line = merge_pr_prompt_with_deletable(false);
+        state.line = merge_pr_prompt_with_deletable(false, None);
 
         state.handle_merge_pr_prompt_key(char_key('s'));
         assert!(matches!(
@@ -1404,7 +1516,8 @@ mod tests {
             StatusLine::MergePrPrompt {
                 stage: MergePrStage::Confirm {
                     method: MergeMethod::Squash,
-                    delete: RemoteBranchDelete::NotOffered,
+                    delete_local: BranchDelete::NotOffered,
+                    delete_remote: BranchDelete::NotOffered,
                 },
                 ..
             }
@@ -1414,9 +1527,73 @@ mod tests {
         assert!(matches!(
             rx.try_recv(),
             Ok(AppEvent::MergePrRequested {
+                delete_local_branch: None,
                 delete_remote_branch: None,
                 ..
             })
+        ));
+    }
+
+    /// `local_delete: None`（本地找不到對應分支，或該分支正是 HEAD）
+    /// 時，只跳過 `AskDeleteLocal`，`AskDeleteRemote` 照常出現。
+    #[test]
+    fn merge_pr_prompt_local_not_deletable_skips_ask_delete_local_stage() {
+        let (mut state, rx) = test_state();
+        state.line = merge_pr_prompt_with_deletable(true, None);
+
+        state.handle_merge_pr_prompt_key(char_key('s'));
+        assert!(matches!(
+            state.line,
+            StatusLine::MergePrPrompt {
+                stage: MergePrStage::AskDeleteRemote {
+                    method: MergeMethod::Squash,
+                    delete_local: BranchDelete::NotOffered,
+                },
+                ..
+            }
+        ));
+
+        state.handle_merge_pr_prompt_key(char_key('y'));
+        state.handle_merge_pr_prompt_key(key(KeyCode::Enter));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AppEvent::MergePrRequested {
+                delete_local_branch: None,
+                delete_remote_branch: Some(remote),
+                ..
+            }) if remote == "feature/x"
+        ));
+    }
+
+    /// `remote_deletable: false`（fork／default branch／head==base）時，
+    /// 只跳過 `AskDeleteRemote`，`AskDeleteLocal` 照常出現。
+    #[test]
+    fn merge_pr_prompt_remote_not_deletable_skips_ask_delete_remote_stage() {
+        let (mut state, rx) = test_state();
+        state.line = merge_pr_prompt_with_deletable(false, Some(false));
+
+        state.handle_merge_pr_prompt_key(char_key('s'));
+        state.handle_merge_pr_prompt_key(char_key('y')); // local
+        assert!(matches!(
+            state.line,
+            StatusLine::MergePrPrompt {
+                stage: MergePrStage::Confirm {
+                    method: MergeMethod::Squash,
+                    delete_local: BranchDelete::Confirmed,
+                    delete_remote: BranchDelete::NotOffered,
+                },
+                ..
+            }
+        ));
+
+        state.handle_merge_pr_prompt_key(key(KeyCode::Enter));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AppEvent::MergePrRequested {
+                delete_local_branch: Some((local, false)),
+                delete_remote_branch: None,
+                ..
+            }) if local == "feature/x"
         ));
     }
 
@@ -1424,6 +1601,28 @@ mod tests {
     fn merge_pr_prompt_cancel_mid_flow_clears_without_sending() {
         let (mut state, rx) = test_state();
         state.line = merge_pr_prompt();
+
+        state.handle_merge_pr_prompt_key(key(KeyCode::Esc));
+
+        assert!(matches!(state.line, StatusLine::None));
+        assert!(rx.try_recv().is_err());
+    }
+
+    /// `AskDeleteLocal` 的 `n` 跟全域 cancel 撞鍵，這裡驗證 Esc（不撞鍵）
+    /// 在這個新階段一樣能正常取消，不會被「這階段認得的答案」誤吃。
+    #[test]
+    fn merge_pr_prompt_cancel_at_ask_delete_local_clears_without_sending() {
+        let (mut state, rx) = test_state();
+        state.line = merge_pr_prompt();
+
+        state.handle_merge_pr_prompt_key(char_key('s'));
+        assert!(matches!(
+            state.line,
+            StatusLine::MergePrPrompt {
+                stage: MergePrStage::AskDeleteLocal { .. },
+                ..
+            }
+        ));
 
         state.handle_merge_pr_prompt_key(key(KeyCode::Esc));
 
