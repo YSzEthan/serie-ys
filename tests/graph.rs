@@ -1141,13 +1141,11 @@ fn remote_only_001_commits() -> TestResult {
     build_remote_only_001(git);
 
     let repository = git::Repository::load(repo_path, git::SortCommit::Chronological, None)?;
-    let head = ysgit::resolve_head_commit_hash(&repository);
-    let full = graph::calc_graph(&repository, head.as_ref(), true);
-    let remote_only = ysgit::find_remote_only_commits(&repository, &full);
+    let remote_only = ysgit::find_remote_only_commits(&repository);
 
     let mut subjects: Vec<String> = remote_only
         .iter()
-        .map(|h| repository.commit(h).unwrap().subject.clone())
+        .map(|raw| repository.all_commits()[raw].subject.clone())
         .collect();
     subjects.sort();
     assert_eq!(subjects, ["005", "021", "Merge branch '10' into tmp"]);
@@ -1513,8 +1511,8 @@ fn build_graph_snapshot_source(
         option.reserve_head_col,
     ));
     let graph = if option.filtered {
-        let remote_only = ysgit::find_remote_only_commits(&repository, &full);
-        ysgit::compute_filtered_graph_from(&repository, &full, &remote_only)
+        let remote_only = ysgit::find_remote_only_commits(&repository);
+        ysgit::compute_filtered_graph_from(&repository, &remote_only)
             .expect("filtered case must have remote-only commits")
     } else {
         full

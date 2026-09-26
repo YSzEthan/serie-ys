@@ -828,7 +828,7 @@ mod tests {
     fn with_commits<R>(commits: Vec<Commit>, f: impl FnOnce(&mut CommitListState<'_>) -> R) -> R {
         use std::rc::Rc;
 
-        use rustc_hash::{FxHashMap, FxHashSet};
+        use rustc_hash::FxHashMap;
 
         use crate::git::Head;
         use crate::graph::Graph;
@@ -853,7 +853,7 @@ mod tests {
             MatchOptions::default(),
             None,
             None,
-            FxHashSet::default(),
+            crate::RemoteOnly::default(),
             None,
             0,
         );

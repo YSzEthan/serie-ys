@@ -9,7 +9,7 @@ use ratatui::{
     widgets::Block,
     DefaultTerminal, Frame,
 };
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 
 use crate::{
     auto_fetch,
@@ -38,7 +38,7 @@ use crate::{
         commit_list::{CommitInfo, CommitListState, MatchOptions, RawCommitIdx},
         pending_overlay::PendingOverlay,
     },
-    CompactType, GraphWidthType,
+    CompactType, GraphWidthType, RemoteOnly,
 };
 
 use status_line::StatusLineState;
@@ -267,7 +267,7 @@ impl<'a> App<'a> {
         repository: &'a Repository,
         graph: &Rc<Graph>,
         filtered_graph: Option<Rc<Graph>>,
-        remote_only_commits: FxHashSet<CommitHash>,
+        remote_only_commits: RemoteOnly,
         graph_color_set: &'a GraphColorSet,
         initial_selection: InitialSelection,
         ctx: Rc<AppContext>,
@@ -375,7 +375,7 @@ impl<'a> App<'a> {
         app
     }
 
-    pub fn into_parts(self) -> (Option<Rc<Graph>>, FxHashSet<CommitHash>) {
+    pub fn into_parts(self) -> (Option<Rc<Graph>>, RemoteOnly) {
         self.view.into_commit_list_state().into_graph_parts()
     }
 }
