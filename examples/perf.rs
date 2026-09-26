@@ -235,21 +235,16 @@ struct GraphStats {
 /// edge，所以取 commit 欄位不會改變任何一列的值，只補上孤立 commit
 /// （沒有 parent 也沒有 child）那一列，順便讓取 max 的集合永遠非空。
 fn graph_stats(graph: &Graph) -> GraphStats {
-    let mut widths: Vec<usize> = (0..graph.row_count())
-        .map(|y| {
-            let commit_col = graph.col(y);
-            let edge_col = graph
-                .row_edges(y)
-                .iter()
-                .map(|e| e.pos_x)
-                .max()
-                .unwrap_or(0);
-            commit_col.max(edge_col) + 1
-        })
-        .collect();
-    let edges = (0..graph.row_count())
-        .map(|y| graph.row_edges(y).len())
-        .sum();
+    // 一次走完整張圖：`for_each_row_edges` 只從 checkpoint 重播一次，逐列
+    // 呼叫 `row_edges` 會讓每一列都各自重播一次，範圍越大越浪費。
+    let mut widths: Vec<usize> = Vec::with_capacity(graph.row_count());
+    let mut edges = 0usize;
+    graph.for_each_row_edges(0..graph.row_count(), |y, es| {
+        let commit_col = graph.col(y);
+        let edge_col = es.iter().map(|e| e.pos_x).max().unwrap_or(0);
+        widths.push(commit_col.max(edge_col) + 1);
+        edges += es.len();
+    });
     let (width_p50, width_p99, width_max) = percentiles(&mut widths);
     GraphStats {
         rows: graph.row_count(),

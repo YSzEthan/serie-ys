@@ -1,3 +1,3 @@
 0 col=1 Down@1/1
-1 col=1 Up@1/1 Down@1/1
-2 col=1 Up@1/1
+1 col=0 Down@0/0 Right@0/1 RightBottom@1/1
+2 col=0 Up@0/0

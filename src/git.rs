@@ -133,7 +133,6 @@ pub enum SortCommit {
 }
 
 type CommitIndex = FxHashMap<CommitHash, usize>;
-type CommitsMap = FxHashMap<CommitHash, Vec<CommitHash>>;
 
 type RefMap = FxHashMap<CommitHash, Vec<Ref>>;
 
@@ -148,8 +147,6 @@ pub struct Repository {
     /// index／untracked commit）是 `PARENT_NOT_LOADED`。
     parent_start: Vec<u32>,
     parent_idx: Vec<u32>,
-
-    children_map: CommitsMap,
 
     ref_map: RefMap,
     head: Head,
@@ -191,7 +188,6 @@ impl Repository {
         head: Head,
         working_changes: WorkingChanges,
     ) -> Self {
-        let children_map = build_children_map(&commits);
         let commit_index = build_commit_index(&commits);
         let (parent_start, parent_idx) = build_parent_csr(&commits, &commit_index);
         Self {
@@ -200,7 +196,6 @@ impl Repository {
             commit_index,
             parent_start,
             parent_idx,
-            children_map,
             ref_map,
             head,
             working_changes,
@@ -231,6 +226,14 @@ impl Repository {
             .map(|&p| p as usize)
     }
 
+    /// raw 空間的 parent CSR：`parent_idx[parent_start[raw]..parent_start[raw + 1]]`
+    /// 是第 `raw` 個 commit 的 parent raw index，順序同 `parent_commit_hashes`；
+    /// 沒載入的 parent 是 `u32::MAX`。給 `graph::lanes::build` 用，主 graph
+    /// 的 row 就是 raw，不需要另外轉換。
+    pub fn parent_csr(&self) -> (&[u32], &[u32]) {
+        (&self.parent_start, &self.parent_idx)
+    }
+
     /// 比較 commit hash 序列，檢查 commit 圖是否有變化。
     pub fn same_commits(&self, other: &Self) -> bool {
         self.commits
@@ -240,24 +243,11 @@ impl Repository {
     }
 
     /// 從另一個 repository 更新 refs、head 與 working changes，
-    /// commits 與衍生資料（index、children_map）維持不變。
+    /// commits 與衍生資料（index、parent CSR）維持不變。
     pub fn update_metadata_from(&mut self, other: Self) {
         self.ref_map = other.ref_map;
         self.head = other.head;
         self.working_changes = other.working_changes;
-    }
-
-    pub fn parents_hash(&self, commit_hash: &CommitHash) -> Vec<&CommitHash> {
-        self.commit(commit_hash)
-            .map(|c| c.parent_commit_hashes.iter().collect())
-            .unwrap_or_default()
-    }
-
-    pub fn children_hash(&self, commit_hash: &CommitHash) -> Vec<&CommitHash> {
-        self.children_map
-            .get(commit_hash)
-            .map(|hs| hs.iter().collect::<Vec<&CommitHash>>())
-            .unwrap_or_default()
     }
 
     pub fn refs(&self, commit_hash: &CommitHash) -> Vec<&Ref> {
@@ -571,20 +561,6 @@ fn parse_parent_commit_hashes(s: &str) -> Vec<CommitHash> {
         return Vec::new();
     }
     s.split(' ').map(|s| s.into()).collect()
-}
-
-fn build_children_map(commits: &[Commit]) -> CommitsMap {
-    let mut children_map: CommitsMap = FxHashMap::default();
-    for commit in commits {
-        let hash = &commit.commit_hash;
-        for parent_hash in &commit.parent_commit_hashes {
-            children_map
-                .entry(parent_hash.clone())
-                .or_default()
-                .push(hash.clone());
-        }
-    }
-    children_map
 }
 
 fn build_commit_index(commits: &[Commit]) -> CommitIndex {

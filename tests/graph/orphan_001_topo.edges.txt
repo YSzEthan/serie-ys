@@ -4,5 +4,5 @@
 3 col=1 Up@1/1 Down@1/1
 4 col=1 Up@1/1 Down@1/1
 5 col=1 Up@1/1
-6 col=2 Down@2/2
-7 col=2 Up@2/2
+6 col=0 Down@0/0
+7 col=0 Up@0/0
