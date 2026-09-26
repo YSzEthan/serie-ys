@@ -1,0 +1,5 @@
+0 col=1 LeftTop@0/0 Left@1/0 Down@1/1
+1 col=1 Vertical@0/0 Up@1/1 Down@1/1
+2 col=0 Up@0/0 Down@0/0 Vertical@1/1
+3 col=0 Up@0/0 Down@0/0 Right@0/1 RightBottom@1/1
+4 col=0 Up@0/0
