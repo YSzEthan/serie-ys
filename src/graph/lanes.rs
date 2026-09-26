@@ -662,4 +662,133 @@ mod tests {
         assert_eq!(lanes.col(0), 1, "child 是 leaf，pend 期間落在 col 1");
         assert_eq!(lanes.col(1), 0, "HEAD 固定 col 0，不再跟著 child 的欄");
     }
+
+    // --- 結構性回歸：merge 密集的合成 DAG 不會重蹈舊引擎的覆轍 ---
+
+    /// 固定 seed 的簡易 xorshift，只給下面的合成 DAG 產生器用，不需要
+    /// 密碼學等級的隨機性，不加外部依賴。
+    struct Xorshift64(u64);
+
+    impl Xorshift64 {
+        fn new(seed: u64) -> Self {
+            Self(seed | 1) // 避免卡在 0
+        }
+
+        fn next_u64(&mut self) -> u64 {
+            let mut x = self.0;
+            x ^= x << 13;
+            x ^= x >> 7;
+            x ^= x << 17;
+            self.0 = x;
+            x
+        }
+
+        fn next_range(&mut self, bound: u32) -> u32 {
+            if bound == 0 {
+                return 0;
+            }
+            (self.next_u64() % u64::from(bound)) as u32
+        }
+    }
+
+    /// 合成一個 merge 密集的 DAG（row 空間 parent CSR）：commit `y` 的
+    /// parent 一定是 index 更大（更舊）的 commit，first parent 偏好緊接
+    /// 在下面的位置；`merge_prob_pct`（0～100）機率再加 1～2 個更舊的
+    /// commit 當 merge parent，模擬真實 repo 分支／merge 密集的程度。
+    fn gen_merge_dense(n: usize, seed: u64, merge_prob_pct: u32) -> (Vec<u32>, Vec<u32>) {
+        let mut rng = Xorshift64::new(seed);
+        let mut parent_start = vec![0u32];
+        let mut parent_idx = Vec::new();
+        for y in 0..n {
+            let mut parents: Vec<u32> = Vec::new();
+            if y + 1 < n {
+                let span = (n - y - 2).min(3) as u32;
+                let fp = (y + 1 + rng.next_range(span + 1) as usize).min(n - 1) as u32;
+                parents.push(fp);
+                if rng.next_range(100) < merge_prob_pct && (fp as usize) + 1 < n {
+                    let extra = 1 + rng.next_range(2);
+                    for _ in 0..extra {
+                        let range = (n - fp as usize - 1) as u32;
+                        let p2 = fp + 1 + rng.next_range(range);
+                        if !parents.contains(&p2) {
+                            parents.push(p2);
+                        }
+                    }
+                }
+            }
+            parent_idx.extend_from_slice(&parents);
+            parent_start.push(parent_idx.len() as u32);
+        }
+        (parent_start, parent_idx)
+    }
+
+    /// 從 `row_edges_in` 給的 edge 反推「這一列開始前，開著幾條 lane」：
+    /// commit 自己那欄若有 `Up` 就算一條，收斂（`RightBottom`／
+    /// `LeftBottom`）跟一般 `Vertical` 各算一條——這就是驗收公式要的
+    /// 「同時跨越的 edge 數」。
+    fn open_before(edges: &[Edge], col: usize) -> usize {
+        let has_up = edges
+            .iter()
+            .any(|e| e.edge_type == EdgeType::Up && e.pos_x == col);
+        let converging = edges
+            .iter()
+            .filter(|e| matches!(e.edge_type, EdgeType::RightBottom | EdgeType::LeftBottom))
+            .count();
+        let vertical = edges
+            .iter()
+            .filter(|e| e.edge_type == EdgeType::Vertical)
+            .count();
+        usize::from(has_up) + converging + vertical
+    }
+
+    /// 上界＝任一列同時跨越的 edge 數 + root 數 + 1（這裡沒有 `max_count`
+    /// 截斷，截斷數是 0）。舊引擎在同一種產生器上量出 516 對 82（issue
+    /// #118 的量測記錄）；這裡驗的是新引擎不會重蹈覆轍。
+    #[test]
+    fn cell_count_stays_within_structural_bound() {
+        for (n, seed) in [(2_000, 1), (2_000, 2), (5_000, 3), (5_000, 4), (10_000, 5)] {
+            let (parent_start, parent_idx) = gen_merge_dense(n, seed, 35);
+            let lanes = build(&parent_start, &parent_idx, None);
+
+            let roots = (0..n)
+                .filter(|&y| parent_start[y] == parent_start[y + 1])
+                .count();
+            let mut max_open = 0usize;
+            lanes.row_edges_in(0..n, |y, es| {
+                max_open = max_open.max(open_before(es, lanes.col(y)) + 1);
+            });
+
+            let bound = max_open + roots + 1;
+            assert!(
+                lanes.cell_count() <= bound,
+                "n={n} seed={seed}: cell_count={} 超過上界 {bound}",
+                lanes.cell_count()
+            );
+        }
+    }
+
+    /// 1M 規模，只驗結構不驗時間：debug build 慢上數十倍，CI 機器也不
+    /// 穩定，拿時間做斷言遲早會誤報。時間驗收見 linux 的實測（PR 說明）。
+    #[test]
+    #[ignore]
+    fn cell_count_stays_within_bound_at_1m_scale() {
+        let n = 1_000_000;
+        let (parent_start, parent_idx) = gen_merge_dense(n, 42, 5);
+        let lanes = build(&parent_start, &parent_idx, None);
+
+        let roots = (0..n)
+            .filter(|&y| parent_start[y] == parent_start[y + 1])
+            .count();
+        let mut max_open = 0usize;
+        lanes.row_edges_in(0..n, |y, es| {
+            max_open = max_open.max(open_before(es, lanes.col(y)) + 1);
+        });
+
+        let bound = max_open + roots + 1;
+        assert!(
+            lanes.cell_count() <= bound,
+            "cell_count={} 超過上界 {bound}",
+            lanes.cell_count()
+        );
+    }
 }
