@@ -229,9 +229,6 @@ impl CommitList<'_> {
         let head_raw = state.head_raw;
         let head_col = head_raw.and_then(|raw| state.dot_cell(raw));
         let virtual_row_visible = state.has_virtual_row() && state.offset == 0;
-        // 走過 HEAD 之後就設回 None —— 它同時是「這條連接線畫在哪一欄」
-        // 和「還要不要畫」。
-        let mut head_line_col = head_col.filter(|_| virtual_row_visible);
 
         let mut rows = Vec::new();
 
@@ -265,24 +262,13 @@ impl CommitList<'_> {
         for (display_i, raw, info) in self.rendering_commit_info_iter(state) {
             // 這裡的 `None` 只代表一種情況：`raw` 不在 `current_graph()` 裡 ——
             // 也就是 graph 跟 commit list 不同步了。因為 text cell 是隨需計算的，
-            // 已經沒有「還沒 preload」這種情況存在了。
-            let Some(mut cells) = state.text_cells_for_raw(raw) else {
+            // 已經沒有「還沒 preload」這種情況存在了。HEAD 上方接到 virtual row
+            // 的線也在 cells 裡（`text_cells` 的 `virtual_head_row`），
+            // `cells_extent` 與 spacer 都看得到它。
+            let Some(cells) = state.text_cells_for_raw(raw) else {
                 continue;
             };
             let is_head = head_raw == Some(raw);
-            // 排在 HEAD 前面、virtual row 又可見時，HEAD 欄位上要有一條
-            // 向上的連接線，virtual row 的 ◯ 看起來才會連到 HEAD。寫進
-            // cells，`cells_extent` 與 spacer 才看得到它。
-            if is_head {
-                head_line_col = None;
-            } else if let Some(hc) =
-                head_line_col.filter(|&hc| cells.get(hc).is_some_and(|c| c.glyph == Glyph::Blank))
-            {
-                cells[hc] = TextCell {
-                    glyph: Glyph::Vert,
-                    color: VIRTUAL_ROW_COLOR,
-                };
-            }
 
             let text_x = if compact { cells_extent(&cells) } else { 0 };
             let y_offset = if gap > 0 && display_i > state.selected {
@@ -1600,8 +1586,8 @@ mod tests {
             // 專用的 2-commit graph，重複使用 `text_graph_commits()` 的前兩個：
             // c0 完全沒有 edge（它的 column-0 cell 是空的），c1（HEAD）
             // 落在欄位 0。virtual row 的 dot 會落在 HEAD 的欄位上；
-            // build_visible_rows 必須在 c0 的空白 cell 上寫進一個灰色的
-            // 連接線，這條線看起來才會是連續的。
+            // `text_cells` 必須在 c0 的空白 cell 上疊一條連接線，這條線看起來
+            // 才會是連續的。線的顏色是 HEAD 那條 lane 的顏色，跟 HEAD 的 dot 一樣。
             let all_commits = text_graph_commits();
             let commits = &all_commits[..2];
             let graph =
@@ -1620,9 +1606,10 @@ mod tests {
             // Virtual row 的 dot 在 HEAD 的欄位（c1 在 pos_x=0 -> idx 0）。
             assert_eq!(buf[(0, 1)].symbol(), "◯");
             // c0 這一列在欄位 0 沒有 edge，所以沒有連接線的話這個 cell 會是
-            // 空白的。它必須被填上灰色的 `│`。
+            // 空白的。它必須被填上 HEAD lane 顏色的 `│`。
             assert_eq!(buf[(0, 2)].symbol(), "│");
-            assert_eq!(buf[(0, 2)].fg, Color::Gray);
+            assert_eq!(buf[(0, 2)].fg, buf[(0, 3)].fg);
+            assert_ne!(buf[(0, 2)].fg, VIRTUAL_ROW_COLOR);
             // c1（HEAD）本身，不受連接線邏輯影響。
             assert_eq!(buf[(0, 3)].symbol(), "◯");
             assert!(buf[(0, 3)].modifier.contains(Modifier::BOLD));
@@ -1708,6 +1695,30 @@ mod tests {
                 filtered_color,
                 "c2 sits in different columns in the two graphs"
             );
+        }
+
+        /// virtual row 的線要以 HEAD 在「目前 graph」的列為準：filtered 裡
+        /// HEAD（c2）是 row 1、欄 0，所以 c0 那列的欄 0 要有 HEAD lane 色的 `│`。
+        #[test]
+        fn virtual_row_line_uses_head_row_of_filtered_graph() {
+            let commits = text_graph_commits();
+            let mut state = build_state(
+                &commits,
+                text_graph(&commits),
+                Opts {
+                    head_hash: Some(2),
+                    working_changes: true,
+                    filtered: Some(text_graph_hiding_c1),
+                    remote_only: &[1],
+                    ..Default::default()
+                },
+            );
+            state.set_layout(CellWidthType::Single, false);
+
+            let head_cells = state.text_cells_for_raw(RawCommitIdx(2)).unwrap();
+            let c0_cells = state.text_cells_for_raw(RawCommitIdx(0)).unwrap();
+            assert_eq!(c0_cells[0].glyph, Glyph::Vert);
+            assert_eq!(c0_cells[0].color, dot_color(&head_cells));
         }
 
         #[test]
@@ -1878,11 +1889,10 @@ mod tests {
             assert_eq!(buf[(2, 2)].symbol(), "│");
         }
 
-        /// HEAD 不是第一列時，`build_visible_rows` 會在排在它前面、
-        /// `cells[hc]` 是 Blank 的列上合成一條向上連接線（`hc` = HEAD
-        /// 自己的 dot 欄）。這條線寫進 `cells` 而不是渲染時另外補畫，
-        /// `cells_extent` 才看得到它 —— 否則 `text_x` 會算得太小，讓
-        /// subject 的文字直接畫過去把它蓋掉。
+        /// HEAD 不是第一列時，`text_cells` 會在排在它前面的列上，於 HEAD
+        /// 自己的 dot 欄疊一條向上連接線。這條線在 `cells` 裡而不是渲染時
+        /// 另外補畫，`cells_extent` 才看得到它 —— 否則 `text_x` 會算得太小，
+        /// 讓 subject 的文字直接畫過去把它蓋掉。
         fn head_not_first_graph(commits: &[Commit]) -> Graph {
             Graph::from_materialized(
                 commits.len(),
@@ -1906,15 +1916,15 @@ mod tests {
             let buf = render_commit_list_compact(&mut state, 10, GraphWidthType::Double);
 
             // c0（row0，y=2）自己只有一顆 dot 在欄 0；HEAD（c1，pos_x=3）
-            // 的 dot 欄是 double-width 的 cell index 6。c0 那一列在欄 6
-            // 是 Blank，所以會合成一條灰色 │。若 text_x 沒把它算進去，
+            // 的 dot 欄是 double-width 的 cell index 6，c0 那一列在欄 6
+            // 會疊一條 HEAD lane 顏色的 │。若 text_x 沒把它算進去，
             // 這格會被 subject 的文字蓋掉。
             assert_eq!(
                 buf[(6, 2)].symbol(),
                 "│",
                 "HEAD 上方那條合成連接線沒被緊湊模式的文字蓋掉"
             );
-            assert_eq!(buf[(6, 2)].fg, Color::Gray, "VIRTUAL_ROW_COLOR");
+            assert_eq!(buf[(6, 2)].fg, buf[(6, 3)].fg, "HEAD lane 的顏色");
         }
 
         /// 合成的向上連接線跟其他線一樣要穿過 spacer row —— 它就住在選取列的
@@ -1938,13 +1948,14 @@ mod tests {
             state.select_next(); // virtual row -> c0
             let buf = render_commit_list(&mut state, 10);
 
-            // c0（選取列，y=2）在欄 6 是合成的灰 │：HEAD（c1，pos_x=3）的
-            // dot 欄在 double-width 下是 cell index 6，而 c0 那一列本來是 Blank。
+            // c0（選取列，y=2）在欄 6 是合成的 │：HEAD（c1，pos_x=3）的
+            // dot 欄在 double-width 下是 cell index 6，顏色是 HEAD lane 的顏色。
+            let head_lane = buf[(6, 4)].fg;
             assert_eq!(buf[(6, 2)].symbol(), "│");
-            assert_eq!(buf[(6, 2)].fg, Color::Gray);
+            assert_eq!(buf[(6, 2)].fg, head_lane);
             // gap=1 的 spacer 在 y=3。
             assert_eq!(buf[(6, 3)].symbol(), "│", "合成連接線要穿過 spacer row");
-            assert_eq!(buf[(6, 3)].fg, Color::Gray);
+            assert_eq!(buf[(6, 3)].fg, head_lane);
             // HEAD 自己被 gap 往下推一格，落在 y=4。
             assert_eq!(buf[(6, 4)].symbol(), "◯");
         }
