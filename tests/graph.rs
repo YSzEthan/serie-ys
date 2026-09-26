@@ -413,6 +413,8 @@ fn merge_001() -> TestResult {
     let options = &[
         GenerateGraphOption::new("merge_001_chrono", git::SortCommit::Chronological),
         GenerateGraphOption::new("merge_001_topo", git::SortCommit::Topological),
+        GenerateGraphOption::new("merge_001_head_col", git::SortCommit::Chronological)
+            .with_head_col(),
     ];
 
     copy_git_dir(repo_path, "merge_001");
@@ -691,6 +693,8 @@ fn stash_001() -> TestResult {
     let options = &[
         GenerateGraphOption::new("stash_001_chrono", git::SortCommit::Chronological),
         GenerateGraphOption::new("stash_001_topo", git::SortCommit::Topological),
+        GenerateGraphOption::new("stash_001_head_col", git::SortCommit::Chronological)
+            .with_head_col(),
     ];
 
     copy_git_dir(repo_path, "stash_001");
@@ -1199,6 +1203,193 @@ fn head_merge_001() -> TestResult {
     Ok(())
 }
 
+/// HEAD 本身就是上方一個 merge 的第二個 parent（不是被別的分支間接指到）：
+/// `master` 把 `10` merge 進來之後，HEAD 停在 `10` 的尖端，也就是那個 merge
+/// commit 的 second parent。
+#[test]
+fn head_merge_002() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let repo_path = dir.path();
+
+    let git = &GitRepository::new(repo_path);
+
+    git.init();
+
+    git.commit("001", "2024-01-01");
+    git.commit("002", "2024-01-02");
+
+    git.checkout_b("10");
+    git.commit("011", "2024-01-03");
+
+    git.checkout("master");
+    git.commit("003", "2024-01-04");
+    git.merge(&["10"], "2024-01-05");
+
+    git.checkout("10");
+
+    git.log();
+
+    let options = &[
+        GenerateGraphOption::new("head_merge_002_chrono", git::SortCommit::Chronological)
+            .with_head(),
+        GenerateGraphOption::new("head_merge_002_head_col", git::SortCommit::Chronological)
+            .with_head_col(),
+    ];
+
+    copy_git_dir(repo_path, "head_merge_002");
+
+    generate_and_output_text_graphs(repo_path, options);
+    assert_text_graphs(options);
+
+    Ok(())
+}
+
+/// HEAD 保留欄，HEAD 的 first-parent 後代領先 HEAD 1 個 commit（例如 fetch
+/// 之後 origin/main 領先 main 1 個）：領先的那個 commit 不能因為它的 parent
+/// 是 HEAD 就被錯誤地放行到 col 0——col 0 在 HEAD 落地之前只留給 HEAD 自己，
+/// 這條領先的線收斂進 HEAD 那一列才轉進 col 0。
+#[test]
+fn head_behind_001() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let repo_path = dir.path();
+
+    let git = &GitRepository::new(repo_path);
+
+    git.init();
+
+    git.commit("001", "2024-01-01");
+    git.commit("002", "2024-01-02");
+
+    git.checkout_b("ahead");
+    git.commit("003", "2024-01-03");
+
+    git.checkout("master");
+
+    git.log();
+
+    let options = &[GenerateGraphOption::new(
+        "head_behind_001_head_col",
+        git::SortCommit::Chronological,
+    )
+    .with_head_col()];
+
+    copy_git_dir(repo_path, "head_behind_001");
+
+    generate_and_output_text_graphs(repo_path, options);
+    assert_text_graphs(options);
+
+    Ok(())
+}
+
+/// 同上，但領先 2 個 commit：中間那個 commit 一路延續同一條非 col-0 的
+/// lane，直到 HEAD 那一列才收斂，不會提前落進 col 0。
+#[test]
+fn head_behind_002() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let repo_path = dir.path();
+
+    let git = &GitRepository::new(repo_path);
+
+    git.init();
+
+    git.commit("001", "2024-01-01");
+    git.commit("002", "2024-01-02");
+
+    git.checkout_b("ahead");
+    git.commit("003", "2024-01-03");
+    git.commit("004", "2024-01-04");
+
+    git.checkout("master");
+
+    git.log();
+
+    let options = &[GenerateGraphOption::new(
+        "head_behind_002_head_col",
+        git::SortCommit::Chronological,
+    )
+    .with_head_col()];
+
+    copy_git_dir(repo_path, "head_behind_002");
+
+    generate_and_output_text_graphs(repo_path, options);
+    assert_text_graphs(options);
+
+    Ok(())
+}
+
+/// 同上（領先 2 個），且工作區有變更：virtual row 的線接在 HEAD 欄（col 0），
+/// col 0 在 HEAD 上方全空，所以這條線不會穿過領先分支的任何 commit 圓圈。
+#[test]
+fn head_behind_003() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let repo_path = dir.path();
+
+    let git = &GitRepository::new(repo_path);
+
+    git.init();
+
+    git.commit("001", "2024-01-01");
+    git.commit("002", "2024-01-02");
+
+    git.checkout_b("ahead");
+    git.commit("003", "2024-01-03");
+    git.commit("004", "2024-01-04");
+
+    git.checkout("master");
+    git.dirty();
+
+    git.log();
+
+    let options = &[GenerateGraphOption::new(
+        "head_behind_003_head_col",
+        git::SortCommit::Chronological,
+    )
+    .with_head_col()
+    .with_cells()];
+
+    copy_git_dir(repo_path, "head_behind_003");
+
+    generate_and_output_text_graphs(repo_path, options);
+    assert_text_graphs(options);
+
+    Ok(())
+}
+
+/// stash 疊在 HEAD 上，且工作區另外還有未 commit 的變更：stash 的 first
+/// parent 就是 HEAD，很容易被誤判成「HEAD 的後代」而放行到 col 0。virtual
+/// row 的線要接在 HEAD 欄，不能穿過 stash 的圓圈。
+#[test]
+fn stash_head_001() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let repo_path = dir.path();
+
+    let git = &GitRepository::new(repo_path);
+
+    git.init();
+
+    git.commit("001", "2024-01-01");
+    git.commit("002", "2024-01-02");
+
+    git.stash("2024-01-03");
+    git.dirty();
+
+    git.log();
+
+    let options = &[GenerateGraphOption::new(
+        "stash_head_001_head_col",
+        git::SortCommit::Chronological,
+    )
+    .with_head_col()
+    .with_cells()];
+
+    copy_git_dir(repo_path, "stash_head_001");
+
+    generate_and_output_text_graphs(repo_path, options);
+    assert_text_graphs(options);
+
+    Ok(())
+}
+
 /// 工作區有變更、HEAD 不在第一列：HEAD 欄從第 0 列到 HEAD 要有接到 virtual
 /// row 的線。HEAD 上方有 merge，交會處的顏色與 junction 由 cells 快照釘住。
 #[test]
@@ -1498,6 +1689,14 @@ impl GenerateGraphOption {
         format!("{OUTPUT_DIR}/{}.cells.txt", self.output_name)
     }
 
+    fn edges_golden(&self) -> String {
+        format!("{SNAPSHOT_DIR}/{}.edges.txt", self.output_name)
+    }
+
+    fn edges_actual(&self) -> String {
+        format!("{OUTPUT_DIR}/{}.edges.txt", self.output_name)
+    }
+
     /// 這個案例擁有的每一份 snapshot：每種欄寬各一份。
     fn keys(&self) -> impl Iterator<Item = SnapshotKey> {
         let name = self.output_name;
@@ -1519,8 +1718,11 @@ struct GraphSnapshotSource {
     single_rows: Vec<Vec<graph::TextCell>>,
     /// 保留下來是為了讓跨欄寬的不變性檢查能夠逐欄判斷 `Double` 當初是
     /// 否被允許合併它。若從渲染後的 cell 反推，只會是把實作邏輯重講
-    /// 一遍而已。
+    /// 一遍而已。也是 `render_edges` 的資料來源：這是引擎的原始契約
+    /// （含排序），比渲染後的字元更早釘住 regression。
     edges: Vec<Vec<graph::Edge>>,
+    /// 每列 commit 自己的欄，`render_edges` 用來標出每列的錨點。
+    cols: Vec<usize>,
     colors: Vec<ratatui::style::Color>,
 }
 
@@ -1593,12 +1795,14 @@ fn build_graph_snapshot_source(
     let edges = (0..graph.row_count())
         .map(|row| graph.row_edges(row).to_vec())
         .collect();
+    let cols = (0..graph.row_count()).map(|row| graph.col(row)).collect();
 
     GraphSnapshotSource {
         subjects,
         double_rows,
         single_rows,
         edges,
+        cols,
         colors,
     }
 }
@@ -1648,6 +1852,26 @@ fn render_cells(source: &GraphSnapshotSource) -> String {
             out.push_str(subject);
             out.push('\n');
         }
+    }
+    out
+}
+
+/// 每一列的原始 edge 契約（排序、去重之後）：commit 自己的欄，加上每條 edge
+/// 的 `type@pos_x/associated_line_pos_x`，就是 `text.rs` 拿去畫圖的完整輸入。
+/// glyph golden 只看得到渲染後的結果；lane 引擎換掉 merge 繞道時，欄位、
+/// edge 順序、`associated_line_pos_x`（決定顏色）都可能在渲染結果不變的情況
+/// 下悄悄改變，所以另外存一份原始資料當 regression 防線。
+fn render_edges(source: &GraphSnapshotSource) -> String {
+    let mut out = String::new();
+    for (row, (&col, edges)) in source.cols.iter().zip(&source.edges).enumerate() {
+        out.push_str(&format!("{row} col={col}"));
+        for e in edges {
+            out.push_str(&format!(
+                " {:?}@{}/{}",
+                e.edge_type, e.pos_x, e.associated_line_pos_x
+            ));
+        }
+        out.push('\n');
     }
     out
 }
@@ -1831,6 +2055,7 @@ fn generate_and_output_text_graphs(repo_path: &Path, options: &[GenerateGraphOpt
         if option.cells {
             std::fs::write(option.cells_actual(), render_cells(&source)).unwrap();
         }
+        std::fs::write(option.edges_actual(), render_edges(&source)).unwrap();
     }
 }
 
@@ -1926,6 +2151,9 @@ fn assert_text_graphs(options: &[GenerateGraphOption]) {
                 errors.push(e);
             }
         }
+        if let Err(e) = compare_snapshot_files(&option.edges_golden(), &option.edges_actual()) {
+            errors.push(e);
+        }
     }
     if !errors.is_empty() {
         panic!("{}", errors.join("\n"));
@@ -1944,6 +2172,7 @@ fn update_text_snapshots(options: &[GenerateGraphOption]) {
         if option.cells {
             std::fs::copy(option.cells_actual(), option.cells_golden()).unwrap();
         }
+        std::fs::copy(option.edges_actual(), option.edges_golden()).unwrap();
     }
 }
 
