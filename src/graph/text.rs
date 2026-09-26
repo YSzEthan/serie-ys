@@ -2,10 +2,7 @@ use clap::ValueEnum;
 use ratatui::style::Color as RatatuiColor;
 use serde::Deserialize;
 
-use crate::{
-    git::CommitHash,
-    graph::{Edge, EdgeType, Graph},
-};
+use crate::graph::{Edge, EdgeType, Graph};
 
 /// 文字圖 glyph 的語義角色，跟 `GlyphSet` 把它解成哪個字元無關。分開這一層，
 /// `glyph_priority` 與 `Glyph::extends_downward` 才能依語義比對而不是比字元 ——
@@ -281,39 +278,36 @@ pub enum GraphStyle {
     Ascii,
 }
 
-/// 共用的「一個 commit → 它的 text cells」查詢，逐幀渲染路徑
-///（`CommitListState::text_cells_for_hash`）與批次快照產生器（`build_text_graph`）
-/// 都走這裡。只留一份定義，兩個呼叫端就不可能在 `pos_x`／`pos_y`／`cell_count`
+/// 共用的「一列 → 它的 text cells」查詢，逐幀渲染路徑
+///（`CommitListState::text_cells_for_raw`）與批次快照產生器（`build_text_graph`）
+/// 都走這裡。只留一份定義，兩個呼叫端就不可能在欄位、edge、`cell_count`
 /// 怎麼推出來這件事上悄悄分岔。
 pub(crate) fn text_cells(
     graph: &Graph,
-    commit_hash: &CommitHash,
+    row: usize,
     colors: &[RatatuiColor],
     width: CellWidthType,
-) -> Option<Vec<TextCell>> {
-    let &(pos_x, pos_y) = graph.commit_pos_map.get(commit_hash)?;
-    let edges = &graph.edges[pos_y];
-    let cell_count = graph.cell_count();
-    Some(build_text_cells(pos_x, cell_count, edges, colors, width))
+) -> Vec<TextCell> {
+    build_text_cells(
+        graph.col(row),
+        graph.cell_count(),
+        graph.row_edges(row),
+        colors,
+        width,
+    )
 }
 
-/// 依 `commit_hashes` 的順序，把 `graph` 裡每個 commit 都批次渲染成文字。
+/// 依列的順序，把 `graph` 的每一列都批次渲染成文字。
 ///
 /// 給 `tests/graph.rs` 的快照測試用 —— 它要的是一次拿到整張圖，而不是 UI 那種
-/// 逐 commit 查詢。若 `graph.commit_hashes` 與 `graph.commit_pos_map` 不同步就
-/// panic（兩者在 `calc.rs` 是一起建的，所以實務上不該觸發）。
+/// 逐列查詢。
 pub fn build_text_graph(
     graph: &Graph,
     colors: &[RatatuiColor],
     width: CellWidthType,
 ) -> Vec<Vec<TextCell>> {
-    graph
-        .commit_hashes
-        .iter()
-        .map(|hash| {
-            text_cells(graph, hash, colors, width)
-                .expect("commit_hashes / commit_pos_map out of sync")
-        })
+    (0..graph.row_count())
+        .map(|row| text_cells(graph, row, colors, width))
         .collect()
 }
 
@@ -338,18 +332,21 @@ pub(crate) fn build_text_cells(
 ) -> Vec<TextCell> {
     // 空調色盤會讓每條 edge 都是 `Reset`，於是每一欄都被判為同色，`Double` 會
     // 到處取聯集。只有測試走得到。
-    let color_of = |idx: usize| -> RatatuiColor {
-        if colors.is_empty() {
-            RatatuiColor::Reset
-        } else {
-            colors[idx % colors.len()]
-        }
-    };
+    let color_of = |idx: usize| palette_color(colors, idx);
 
     let columns = accumulate_columns(cell_count, edges, color_of);
     match width {
         CellWidthType::Double => double_cells(&columns, commit_pos_x, edges, color_of),
         CellWidthType::Single => single_cells(&columns, commit_pos_x, color_of(commit_pos_x)),
+    }
+}
+
+/// 第 `idx` 欄 lane 的顏色：調色盤循環使用。空調色盤一律 `Reset`（只有測試走得到）。
+pub(crate) fn palette_color(colors: &[RatatuiColor], idx: usize) -> RatatuiColor {
+    if colors.is_empty() {
+        RatatuiColor::Reset
+    } else {
+        colors[idx % colors.len()]
     }
 }
 
