@@ -142,6 +142,12 @@ pub struct Repository {
     path: PathBuf,
     commits: Vec<Commit>,
     commit_index: CommitIndex,
+    /// parent 的 CSR 索引：第 i 個 commit 的 parent 在
+    /// `parent_idx[parent_start[i]..parent_start[i + 1]]`，順序同
+    /// `parent_commit_hashes`。沒載入的 parent（`max_count` 截斷、stash 的
+    /// index／untracked commit）是 `PARENT_NOT_LOADED`。
+    parent_start: Vec<u32>,
+    parent_idx: Vec<u32>,
 
     children_map: CommitsMap,
 
@@ -164,9 +170,6 @@ impl Repository {
 
         let commits = merge_stashes_to_commits(commits, stashes);
 
-        let children_map = build_children_map(&commits);
-        let commit_index = build_commit_index(&commits);
-
         let stash_ref_map = load_stashes_as_refs(path);
         merge_ref_maps(&mut ref_map, stash_ref_map);
 
@@ -175,27 +178,28 @@ impl Repository {
         Ok(Self::new(
             path.to_path_buf(),
             commits,
-            commit_index,
-            children_map,
             ref_map,
             head,
             working_changes,
         ))
     }
 
-    pub fn new(
+    fn new(
         path: PathBuf,
         commits: Vec<Commit>,
-        commit_index: CommitIndex,
-        children_map: CommitsMap,
         ref_map: RefMap,
         head: Head,
         working_changes: WorkingChanges,
     ) -> Self {
+        let children_map = build_children_map(&commits);
+        let commit_index = build_commit_index(&commits);
+        let (parent_start, parent_idx) = build_parent_csr(&commits, &commit_index);
         Self {
             path,
             commits,
             commit_index,
+            parent_start,
+            parent_idx,
             children_map,
             ref_map,
             head,
@@ -211,6 +215,20 @@ impl Repository {
 
     pub fn all_commits(&self) -> &[Commit] {
         &self.commits
+    }
+
+    /// `commit_hash` 在 `all_commits()` 裡的位置（raw index）。
+    pub fn index_of(&self, commit_hash: &CommitHash) -> Option<usize> {
+        self.commit_index.get(commit_hash).copied()
+    }
+
+    /// 第 `raw` 個 commit 有載入的 parent 的 raw index，順序同 `parent_commit_hashes`。
+    pub fn loaded_parents(&self, raw: usize) -> impl Iterator<Item = usize> + '_ {
+        let range = self.parent_start[raw] as usize..self.parent_start[raw + 1] as usize;
+        self.parent_idx[range]
+            .iter()
+            .filter(|&&p| p != PARENT_NOT_LOADED)
+            .map(|&p| p as usize)
     }
 
     /// 比較 commit hash 序列，檢查 commit 圖是否有變化。
@@ -575,6 +593,24 @@ fn build_commit_index(commits: &[Commit]) -> CommitIndex {
         .enumerate()
         .map(|(i, commit)| (commit.commit_hash.clone(), i))
         .collect()
+}
+
+const PARENT_NOT_LOADED: u32 = u32::MAX;
+
+fn build_parent_csr(commits: &[Commit], commit_index: &CommitIndex) -> (Vec<u32>, Vec<u32>) {
+    let mut parent_start = Vec::with_capacity(commits.len() + 1);
+    let mut parent_idx = Vec::with_capacity(commits.len());
+    parent_start.push(0);
+    for commit in commits {
+        parent_idx.extend(
+            commit
+                .parent_commit_hashes
+                .iter()
+                .map(|h| commit_index.get(h).map_or(PARENT_NOT_LOADED, |&i| i as u32)),
+        );
+        parent_start.push(parent_idx.len() as u32);
+    }
+    (parent_start, parent_idx)
 }
 
 fn merge_stashes_to_commits(commits: Vec<Commit>, stashes: Vec<Commit>) -> Vec<Commit> {
@@ -1230,6 +1266,49 @@ mod tests {
             .iter()
             .any(|a| a.contains("prune")));
         assert!(FetchPrune::On.fetch_all_args().contains(&"--prune"));
+    }
+
+    fn commit_with_parents(hash: &str, parents: &str) -> Commit {
+        let date = "2026-07-31T10:00:00+08:00";
+        let line = [
+            hash,
+            "A",
+            "a@example.com",
+            date,
+            "A",
+            "a@example.com",
+            date,
+            "s",
+            "",
+            parents,
+        ]
+        .join("\x1f");
+        parse_commit_line(&line, CommitType::Commit).unwrap()
+    }
+
+    /// 沒載入的 parent（`max_count` 截掉的、stash 的 index／untracked commit）
+    /// 在 CSR 裡是 `PARENT_NOT_LOADED`，位置跟 `parent_commit_hashes` 對齊。
+    #[test]
+    fn parent_csr_marks_unloaded_parents() {
+        let commits = vec![
+            commit_with_parents("s", "b idx untracked"),
+            commit_with_parents("b", "a"),
+            commit_with_parents("a", "cut"),
+        ];
+        let index = build_commit_index(&commits);
+        let (start, idx) = build_parent_csr(&commits, &index);
+
+        assert_eq!(start, [0, 3, 4, 5]);
+        assert_eq!(
+            idx,
+            [
+                1,
+                PARENT_NOT_LOADED,
+                PARENT_NOT_LOADED,
+                2,
+                PARENT_NOT_LOADED
+            ]
+        );
     }
 
     #[test]
