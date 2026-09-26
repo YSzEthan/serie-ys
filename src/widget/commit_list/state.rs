@@ -1,12 +1,13 @@
 use std::{cell::Cell, rc::Rc};
 
 use ratatui::{layout::Rect, style::Color};
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use tui_input::Input;
 
 use crate::git::{CommitHash, Head, Ref, WorkingChanges};
 use crate::graph::{CellWidthType, Graph, TextCell};
 use crate::widget::scroll;
+use crate::RemoteOnly;
 
 use super::search::{FilterState, MatchOptions, SearchMatch, SearchState};
 use super::{ChildPickOption, CommitInfo, FilteredIdx, RawCommitIdx, VisibleIdx};
@@ -110,7 +111,7 @@ pub struct CommitListState<'a> {
     pub(super) inline_detail_height: u16,
 
     pub(super) show_remote_refs: bool,
-    remote_only_commits: FxHashSet<CommitHash>,
+    remote_only_commits: RemoteOnly,
     needs_graph_clear: bool,
 
     name_cell_width: u16,
@@ -131,7 +132,7 @@ impl<'a> CommitListState<'a> {
         search_defaults: MatchOptions,
         filtered: Option<Rc<Graph>>,
         filtered_graph_colors: Option<FxHashMap<CommitHash, Color>>,
-        remote_only_commits: FxHashSet<CommitHash>,
+        remote_only_commits: RemoteOnly,
         working_changes: Option<WorkingChanges>,
         scrolloff: usize,
     ) -> CommitListState<'a> {
@@ -195,7 +196,7 @@ impl<'a> CommitListState<'a> {
         }
     }
 
-    pub fn into_graph_parts(self) -> (Option<Rc<Graph>>, FxHashSet<CommitHash>) {
+    pub fn into_graph_parts(self) -> (Option<Rc<Graph>>, RemoteOnly) {
         (self.filtered, self.remote_only_commits)
     }
 
@@ -449,11 +450,7 @@ impl<'a> CommitListState<'a> {
 
             if has_remote_filter {
                 self.filtered_indices = base
-                    .filter(|raw| {
-                        !self
-                            .remote_only_commits
-                            .contains(self.commits[raw.0].commit_hash())
-                    })
+                    .filter(|raw| !self.remote_only_commits.contains(raw.0))
                     .collect();
             } else {
                 self.filtered_indices = base.collect();
@@ -1137,7 +1134,7 @@ mod tests {
             MatchOptions::default(),
             None,
             None,
-            FxHashSet::default(),
+            RemoteOnly::default(),
             Some(working_changes),
             2,
         );
@@ -1188,7 +1185,7 @@ mod tests {
             MatchOptions::default(),
             None,
             None,
-            FxHashSet::default(),
+            RemoteOnly::default(),
             None,
             0,
         );

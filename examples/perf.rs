@@ -346,7 +346,7 @@ fn main() {
     stage.end();
 
     let stage = Stage::begin("remote_only");
-    let remote_only = find_remote_only_commits(&repo, &graph);
+    let remote_only = find_remote_only_commits(&repo);
     stage.end();
     let remote_only_count = remote_only.len();
 
@@ -355,7 +355,7 @@ fn main() {
         None
     } else {
         let stage = Stage::begin("filtered");
-        let filtered = compute_filtered_graph_from(&repo, &graph, &remote_only);
+        let filtered = compute_filtered_graph_from(&repo, &remote_only);
         stage.end();
         filtered
     };

@@ -1,6 +1,9 @@
 use rustc_hash::{FxHashMap, FxHashSet};
 
-use crate::git::{Commit, CommitHash, Repository};
+use crate::{
+    git::{Commit, CommitHash, Repository},
+    RemoteOnly,
+};
 
 type CommitPosMap = FxHashMap<CommitHash, (usize, usize)>;
 
@@ -619,15 +622,20 @@ fn find_nearest_visible_parent(
 
 pub fn calc_graph_filtered(
     repository: &Repository,
-    visible_hashes: &FxHashSet<CommitHash>,
+    remote_only: &RemoteOnly,
     head_hint: Option<&CommitHash>,
     reserve_head_col: bool,
 ) -> Graph {
     let commits: Vec<&Commit> = repository
         .all_commits()
         .iter()
-        .filter(|c| visible_hashes.contains(&c.commit_hash))
+        .enumerate()
+        .filter(|&(raw, _)| !remote_only.contains(raw))
+        .map(|(_, c)| c)
         .collect();
+    let visible_hashes: FxHashSet<CommitHash> =
+        commits.iter().map(|c| c.commit_hash.clone()).collect();
+    let visible_hashes = &visible_hashes;
 
     // 建立改寫後的 parent/children maps
     let mut parents_map: FxHashMap<CommitHash, Vec<CommitHash>> = FxHashMap::default();

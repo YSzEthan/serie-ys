@@ -19,7 +19,6 @@ mod widget;
 mod wizard;
 
 use std::{
-    collections::VecDeque,
     env,
     io::{IsTerminal, Write},
     path::Path,
@@ -31,7 +30,6 @@ use auto_fetch::AutoFetch;
 use clap::{CommandFactory, Parser, ValueEnum};
 use git::FetchPrune;
 use graph::Graph;
-use rustc_hash::FxHashSet;
 use serde::Deserialize;
 use update::{AutoRestart, ReleaseNotes, UpdateMode};
 
@@ -285,92 +283,102 @@ impl From<Option<InitialSelection>> for app::InitialSelection {
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-/// 從所有本地 ref 開始執行 BFS，找出只能從遠端分支到達的 commit。
-pub fn find_remote_only_commits(
-    repository: &git::Repository,
-    full_graph: &Graph,
-) -> FxHashSet<git::CommitHash> {
-    let all_hashes: FxHashSet<git::CommitHash> = full_graph.commit_hashes.iter().cloned().collect();
+/// 只有 remote ref 走得到的 commit，以 raw index（`Repository::all_commits()`
+/// 的位置）為索引。
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
+pub struct RemoteOnly {
+    bits: Vec<bool>,
+    count: usize,
+}
 
-    // 收集 BFS 起始點：帶有本地 ref（Branch、Tag、Stash）的 commit + HEAD
-    let mut seeds: Vec<git::CommitHash> = Vec::new();
-    for (commit_hash, refs) in repository.refs_with_commits() {
-        if !all_hashes.contains(commit_hash) {
-            continue;
+impl RemoteOnly {
+    pub fn contains(&self, raw: usize) -> bool {
+        self.bits.get(raw).copied().unwrap_or(false)
+    }
+
+    pub fn len(&self) -> usize {
+        self.count
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.count == 0
+    }
+
+    pub(crate) fn from_bits(bits: Vec<bool>) -> Self {
+        let count = bits.iter().filter(|&&hidden| hidden).count();
+        Self { bits, count }
+    }
+
+    pub fn iter(&self) -> impl Iterator<Item = usize> + '_ {
+        self.bits
+            .iter()
+            .enumerate()
+            .filter_map(|(raw, &hidden)| hidden.then_some(raw))
+    }
+}
+
+/// 從所有本地 ref 開始沿 parent 走訪，走不到的就是只能從遠端分支到達的 commit。
+pub fn find_remote_only_commits(repository: &git::Repository) -> RemoteOnly {
+    let mut reachable = vec![false; repository.all_commits().len()];
+    let mut stack: Vec<usize> = Vec::new();
+    let mut visit = |raw: usize, stack: &mut Vec<usize>| {
+        if !reachable[raw] {
+            reachable[raw] = true;
+            stack.push(raw);
         }
+    };
+
+    // 起始點：帶有本地 ref（Branch、Tag、Stash）的 commit + detached HEAD
+    for (commit_hash, refs) in repository.refs_with_commits() {
         let has_local_ref = refs.iter().any(|r| {
             matches!(
                 r,
                 git::Ref::Branch { .. } | git::Ref::Tag { .. } | git::Ref::Stash { .. }
             )
         });
-        if has_local_ref {
-            seeds.push(commit_hash.clone());
+        if let Some(raw) = has_local_ref
+            .then(|| repository.index_of(commit_hash))
+            .flatten()
+        {
+            visit(raw, &mut stack);
         }
     }
-
-    // 同時加入 HEAD 指向的目標
     if let git::Head::Detached { target } = repository.head() {
-        if all_hashes.contains(target) {
-            seeds.push(target.clone());
+        if let Some(raw) = repository.index_of(target) {
+            visit(raw, &mut stack);
         }
     }
 
-    // 從起始點開始執行 BFS，沿著 parent 連結走訪
-    let mut reachable: FxHashSet<git::CommitHash> = FxHashSet::default();
-    let mut queue: VecDeque<git::CommitHash> = VecDeque::new();
-    for seed in seeds {
-        if reachable.insert(seed.clone()) {
-            queue.push_back(seed);
-        }
-    }
-    while let Some(hash) = queue.pop_front() {
-        for parent in repository.parents_hash(&hash) {
-            if all_hashes.contains(parent) && reachable.insert(parent.clone()) {
-                queue.push_back(parent.clone());
-            }
+    while let Some(raw) = stack.pop() {
+        for parent in repository.loaded_parents(raw) {
+            visit(parent, &mut stack);
         }
     }
 
-    // Remote-only = 在圖形中但無法從本地 ref 到達
-    all_hashes
-        .into_iter()
-        .filter(|h| !reachable.contains(h))
-        .collect()
+    RemoteOnly::from_bits(reachable.into_iter().map(|r| !r).collect())
 }
 
 /// 有 remote-only commit 時，算出隱藏它們之後的 filtered graph；沒有就回 `None`。
 pub fn compute_filtered_graph_from(
     repository: &git::Repository,
-    full_graph: &Graph,
-    remote_only: &FxHashSet<git::CommitHash>,
+    remote_only: &RemoteOnly,
 ) -> Option<Rc<Graph>> {
     if remote_only.is_empty() {
         return None;
     }
 
-    let visible_hashes: FxHashSet<git::CommitHash> = full_graph
-        .commit_hashes
-        .iter()
-        .filter(|h| !remote_only.contains(h))
-        .cloned()
-        .collect();
-
     let head = resolve_head_commit_hash(repository);
     Some(Rc::new(graph::calc_graph_filtered(
         repository,
-        &visible_hashes,
+        remote_only,
         head.as_ref(),
         head_has_named_ref(repository),
     )))
 }
 
-fn build_graph_artifacts(
-    repository: &git::Repository,
-    graph: &Rc<Graph>,
-) -> (Option<Rc<Graph>>, FxHashSet<git::CommitHash>) {
-    let remote_only = find_remote_only_commits(repository, graph);
-    let filtered = compute_filtered_graph_from(repository, graph, &remote_only);
+fn build_graph_artifacts(repository: &git::Repository) -> (Option<Rc<Graph>>, RemoteOnly) {
+    let remote_only = find_remote_only_commits(repository);
+    let filtered = compute_filtered_graph_from(repository, &remote_only);
     (filtered, remote_only)
 }
 
@@ -379,15 +387,14 @@ fn build_graph_artifacts(
 /// 回傳是否真的發生了重建（若有，呼叫端會清空畫面）。
 fn try_refresh_filtered_for_ref_change(
     repository: &git::Repository,
-    graph: &Graph,
-    remote_only_commits: &mut FxHashSet<git::CommitHash>,
+    remote_only_commits: &mut RemoteOnly,
     filtered_graph: &mut Option<Rc<Graph>>,
 ) -> bool {
-    let new_remote_only = find_remote_only_commits(repository, graph);
+    let new_remote_only = find_remote_only_commits(repository);
     if &new_remote_only == remote_only_commits {
         return false;
     }
-    *filtered_graph = compute_filtered_graph_from(repository, graph, &new_remote_only);
+    *filtered_graph = compute_filtered_graph_from(repository, &new_remote_only);
     *remote_only_commits = new_remote_only;
     true
 }
@@ -676,7 +683,7 @@ pub fn run() -> Result<()> {
         resolve_head_commit_hash(&repository).as_ref(),
         head_has_named_ref(&repository),
     ));
-    let (mut filtered_graph, mut remote_only_commits) = build_graph_artifacts(&repository, &graph);
+    let (mut filtered_graph, mut remote_only_commits) = build_graph_artifacts(&repository);
 
     let ret = loop {
         if terminal.is_none() {
@@ -724,7 +731,6 @@ pub fn run() -> Result<()> {
 
                     let filtered_changed = try_refresh_filtered_for_ref_change(
                         &repository,
-                        &graph,
                         &mut remote_only_commits,
                         &mut filtered_graph,
                     );
@@ -743,8 +749,7 @@ pub fn run() -> Result<()> {
                         resolve_head_commit_hash(&repository).as_ref(),
                         head_has_named_ref(&repository),
                     ));
-                    (filtered_graph, remote_only_commits) =
-                        build_graph_artifacts(&repository, &graph);
+                    (filtered_graph, remote_only_commits) = build_graph_artifacts(&repository);
 
                     if let Some(t) = terminal.as_mut() {
                         t.clear()?;

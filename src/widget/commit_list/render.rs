@@ -931,6 +931,7 @@ mod tests {
     // 的命名衝突。
     mod render_graph_tests {
         use super::*;
+        use crate::RemoteOnly;
         use crate::{
             color::{GraphColorSet, GraphColors},
             config::{CoreConfig, UiConfig},
@@ -938,7 +939,6 @@ mod tests {
             graph::{CellWidthType, Edge, EdgeType, Graph, GraphStyle},
             keybind::KeyBind,
         };
-        use rustc_hash::FxHashSet;
 
         const TERM_W: u16 = 80;
 
@@ -1177,7 +1177,7 @@ mod tests {
                 MatchOptions::default(),
                 filtered,
                 None,
-                FxHashSet::default(),
+                RemoteOnly::default(),
                 working,
                 0,
             );
@@ -1698,7 +1698,7 @@ mod tests {
                 MatchOptions::default(),
                 Some(Rc::new(filtered)),
                 None,
-                FxHashSet::default(),
+                RemoteOnly::default(),
                 None,
                 0,
             );
