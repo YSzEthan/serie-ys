@@ -68,6 +68,8 @@ date_width = 10
 date_local = true
 name_width = 20
 scrolloff = 15  # 游標與清單上下緣至少保留的列數，實際不超過清單高度的一半
+graph_edge_max_rows = 100  # 超寬 graph 的長線截斷：線長超過這麼多列就畫 ↓／↑，中間不畫（最小 3）
+graph_max_width_percent = 50  # 超寬 graph 最多佔清單寬度的百分比，超出的 lane 收進溢位欄（10～100）
 
 [ui.detail]
 date_format = "%Y-%m-%d %H:%M:%S %z"

@@ -74,39 +74,54 @@ pub(crate) fn required_width(
 /// 規則二（緊湊）：`auto` 時，選好的寬度在非緊湊預算下放不下就開；
 /// `on`／`off` 照使用者指定（`on` 但版面排不出來時，規則一已經把
 /// `compact_pref` 降級成 `Off`，所以這裡也不會真的打開）。
+///
+/// 欄寬上限（`max_width_percent`，只在長線截斷啟用的圖才給）：graph 最多佔
+/// `area_width` 的這個比例，回傳的第三個值是實際畫得下的欄數 `cols`（超出
+/// 時最後一欄是溢位欄）。寬度用還沒套上限的 `cell_count` 判斷——用套過上限
+/// 的欄數，寬圖會從 `Single` 被誤判成 `Double`，能顯示的 lane 少一半；但
+/// `Double` 也必須在上限內畫得完，否則 `Single` 本來畫得完的圖反而溢位。
+/// 緊湊則用 `cols` 判斷，那才是實際畫出來的寬度。
 pub(crate) fn decide(
     columns: &[UserListColumnType],
     cell_count: usize,
     area_width: u16,
     width_pref: Option<GraphWidthType>,
     compact_pref: Option<CompactType>,
+    max_width_percent: Option<u16>,
     subject_min_width: u16,
     name_width: u16,
     date_width: u16,
-) -> (CellWidthType, bool) {
+) -> (CellWidthType, bool, usize) {
     let compact_pref = if compact_possible(columns) {
         compact_pref
     } else {
         Some(CompactType::Off)
     };
 
-    let req = |w: CellWidthType, compact: bool| {
+    let req = |w: CellWidthType, cols: usize, compact: bool| {
         required_width(
             columns,
-            (cell_count * w.cells_per_column()) as u16,
+            (cols * w.cells_per_column()) as u16,
             compact,
             subject_min_width,
             name_width,
             date_width,
         )
     };
+    // graph 最多能佔的格數；沒有上限時等於不限。
+    let cap_width = max_width_percent.map_or(usize::MAX, |pct| {
+        usize::from(area_width) * usize::from(pct) / 100
+    });
+    let fits_cap = |w: CellWidthType| cell_count * w.cells_per_column() <= cap_width;
 
     let assume_compact = compact_pref != Some(CompactType::Off);
     let width = match width_pref {
         Some(GraphWidthType::Double) => CellWidthType::Double,
         Some(GraphWidthType::Single) => CellWidthType::Single,
         Some(GraphWidthType::Auto) | None => {
-            if req(CellWidthType::Double, assume_compact) <= area_width {
+            if req(CellWidthType::Double, cell_count, assume_compact) <= area_width
+                && fits_cap(CellWidthType::Double)
+            {
                 CellWidthType::Double
             } else {
                 CellWidthType::Single
@@ -114,13 +129,16 @@ pub(crate) fn decide(
         }
     };
 
+    // 至少留一欄 lane 加一欄溢位欄。
+    let cols = cell_count.min((cap_width / width.cells_per_column()).max(2));
+
     let compact = match compact_pref {
         Some(CompactType::On) => true,
         Some(CompactType::Off) => false,
-        Some(CompactType::Auto) | None => req(width, false) > area_width,
+        Some(CompactType::Auto) | None => req(width, cols, false) > area_width,
     };
 
-    (width, compact)
+    (width, compact, cols)
 }
 
 /// Subject 以外每個欄位的實際寬度（依 `compact` 與 `columns` 決定 Graph／
@@ -279,12 +297,13 @@ mod tests {
     #[test]
     fn decide_auto_auto_prefers_double_using_the_compact_budget() {
         // c=8: 雙倍緊湊 = 16+63=79 <= 80 -> Double；79 > ? 非緊湊 2c+2+F=81>80 -> compact
-        let (w, c) = decide(
+        let (w, c, _) = decide(
             &default_columns(),
             8,
             80,
             Some(GraphWidthType::Auto),
             Some(CompactType::Auto),
+            None,
             20,
             20,
             10,
@@ -296,12 +315,13 @@ mod tests {
     #[test]
     fn decide_auto_off_uses_the_non_compact_budget_and_never_compacts() {
         // c=8 非緊湊 2c+2+F=81>80 -> Single；-c off 全程不開緊湊
-        let (w, c) = decide(
+        let (w, c, _) = decide(
             &default_columns(),
             8,
             80,
             Some(GraphWidthType::Auto),
             Some(CompactType::Off),
+            None,
             20,
             20,
             10,
@@ -312,12 +332,13 @@ mod tests {
 
     #[test]
     fn decide_auto_on_always_compacts_when_possible() {
-        let (w, c) = decide(
+        let (w, c, _) = decide(
             &default_columns(),
             3,
             80,
             Some(GraphWidthType::Auto),
             Some(CompactType::On),
+            None,
             20,
             20,
             10,
@@ -329,12 +350,13 @@ mod tests {
     #[test]
     fn decide_on_is_downgraded_to_off_when_compact_is_not_possible() {
         let non_adjacent = [UserListColumnType::Subject, UserListColumnType::Graph];
-        let (_, c) = decide(
+        let (_, c, _) = decide(
             &non_adjacent,
             20,
             10,
             Some(GraphWidthType::Auto),
             Some(CompactType::On),
+            None,
             20,
             20,
             10,
@@ -344,12 +366,13 @@ mod tests {
 
     #[test]
     fn decide_explicit_width_is_never_overridden() {
-        let (w, _) = decide(
+        let (w, _, _) = decide(
             &default_columns(),
             100,
             80,
             Some(GraphWidthType::Double),
             Some(CompactType::Auto),
+            None,
             20,
             20,
             10,
@@ -359,17 +382,128 @@ mod tests {
 
     #[test]
     fn decide_falls_back_to_the_narrowest_combo_when_nothing_fits() {
-        let (w, c) = decide(
+        let (w, c, _) = decide(
             &default_columns(),
             1000,
             1,
             Some(GraphWidthType::Auto),
             Some(CompactType::Auto),
+            None,
             20,
             20,
             10,
         );
         assert_eq!(w, CellWidthType::Single);
         assert!(c, "永遠不會拒絕啟動（#21），放不下就用最窄的組合截斷");
+    }
+
+    // ---- decide：欄寬上限 ------------------------------------------------------
+
+    #[test]
+    fn decide_without_cap_draws_every_column() {
+        let (_, _, cols) = decide(
+            &default_columns(),
+            300,
+            80,
+            Some(GraphWidthType::Auto),
+            Some(CompactType::Auto),
+            None,
+            20,
+            20,
+            10,
+        );
+        assert_eq!(cols, 300, "一般 repo（沒套上限）行為跟以前一樣");
+    }
+
+    #[test]
+    fn decide_caps_columns_to_the_percentage_of_the_area() {
+        // 200 格的 50% = 100 格；Single 一欄一格 -> 100 欄。
+        let (w, _, cols) = decide(
+            &default_columns(),
+            300,
+            200,
+            Some(GraphWidthType::Auto),
+            Some(CompactType::Auto),
+            Some(50),
+            20,
+            20,
+            10,
+        );
+        assert_eq!(w, CellWidthType::Single);
+        assert_eq!(cols, 100);
+    }
+
+    /// `req(Double)` 放得下，但 Double 在上限內畫不完、Single 畫得完：選
+    /// Single，不要為了 Double 讓圖溢位。
+    #[test]
+    fn decide_prefers_single_when_only_single_fits_the_cap() {
+        // 60 欄：Double 要 120 格 > 上限 100；Single 60 格放得下。
+        // req(Double, 緊湊) = 120 + 63 = 183 <= 200。
+        let (w, _, cols) = decide(
+            &default_columns(),
+            60,
+            200,
+            Some(GraphWidthType::Auto),
+            Some(CompactType::Auto),
+            Some(50),
+            20,
+            20,
+            10,
+        );
+        assert_eq!(w, CellWidthType::Single);
+        assert_eq!(cols, 60, "Single 畫得完，沒有溢位欄");
+    }
+
+    /// 寬度用套上限之前的欄數判斷：用套過上限的欄數（100）的話，Double
+    /// 會被誤判成放得下，能顯示的 lane 反而少一半。
+    #[test]
+    fn decide_picks_width_from_the_uncapped_count() {
+        let (w, _, cols) = decide(
+            &default_columns(),
+            300,
+            400,
+            Some(GraphWidthType::Auto),
+            Some(CompactType::Auto),
+            Some(50),
+            20,
+            20,
+            10,
+        );
+        assert_eq!(w, CellWidthType::Single);
+        assert_eq!(cols, 200);
+    }
+
+    /// 緊湊用套上限之後的欄數判斷：套完上限放得下就不必開緊湊。
+    #[test]
+    fn decide_compacts_based_on_the_capped_width() {
+        // 上限 100 欄，非緊湊 100 + 2 + 63 = 165 <= 200。
+        let (_, c, _) = decide(
+            &default_columns(),
+            300,
+            200,
+            Some(GraphWidthType::Auto),
+            Some(CompactType::Auto),
+            Some(50),
+            20,
+            20,
+            10,
+        );
+        assert!(!c);
+    }
+
+    #[test]
+    fn decide_cap_keeps_at_least_one_lane_and_the_overflow_column() {
+        let (_, _, cols) = decide(
+            &default_columns(),
+            300,
+            1,
+            Some(GraphWidthType::Auto),
+            Some(CompactType::Auto),
+            Some(10),
+            20,
+            20,
+            10,
+        );
+        assert_eq!(cols, 2);
     }
 }
