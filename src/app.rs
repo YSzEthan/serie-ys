@@ -1096,12 +1096,7 @@ impl<'a> App<'a> {
         }
         let selected = cls.selected_commit_hash().clone();
         let (commit, extra, changes) = self.repository.commit_detail(&selected);
-        let refs: Vec<Ref> = self
-            .repository
-            .refs(&selected)
-            .into_iter()
-            .cloned()
-            .collect();
+        let (_, refs) = self.repository.commit_refs(&selected);
         let commit = commit.clone();
         self.view = View::of_detail(
             cls,
