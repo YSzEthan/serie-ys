@@ -450,6 +450,29 @@ fn is_bare_repository(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// 沒有 commit-graph 時，光是排序就要走完整段歷史；供 `lib.rs` 決定要不要
+/// 在狀態列提示一次 `git commit-graph write --reachable`。不用
+/// `GitDirs::resolve`：它靠 `--show-toplevel` 判斷，bare repo（例如
+/// `linux.git`）沒有 toplevel 會回 `None`，這裡要在 bare repo 一樣能用。
+pub fn has_commit_graph(path: &Path) -> bool {
+    let Ok(output) = git_read(path)
+        .arg("rev-parse")
+        .arg("--git-path")
+        .arg("objects/info/commit-graph")
+        .arg("--git-path")
+        .arg("objects/info/commit-graphs")
+        .output()
+    else {
+        return false;
+    };
+    if !output.status.success() {
+        return false;
+    }
+    String::from_utf8_lossy(&output.stdout)
+        .lines()
+        .any(|line| path.join(line).exists())
+}
+
 /// watcher 需要監看、也需要拿來分類事件路徑的三個目錄。`git_dir` 是「自己
 /// 這個 worktree」的 git dir——linked worktree 底下是
 /// `common_dir/worktrees/<name>`；`common_dir` 才是所有 worktree 共用、
@@ -1797,5 +1820,19 @@ mod tests {
 
         let (_, head) = load_refs(path);
         assert_parallel_matches_single(path, SortCommit::Chronological, &head, None);
+    }
+
+    #[test]
+    fn has_commit_graph_reflects_whether_it_was_written() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        git_env(path, &["init", "-q", "-b", "main"], &[]);
+        commit_at(path, "A", "2026-01-01T00:00:01+00:00");
+
+        assert!(!has_commit_graph(path));
+
+        git_env(path, &["commit-graph", "write", "--reachable"], &[]);
+
+        assert!(has_commit_graph(path));
     }
 }
