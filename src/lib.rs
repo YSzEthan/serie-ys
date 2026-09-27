@@ -742,48 +742,63 @@ pub fn run() -> Result<()> {
             Ok(Ret::Refresh(request)) => {
                 refresh_view_context = Some(request.context);
 
-                let new_repo = git::Repository::load(Path::new(&args.path), order, max_count)?;
+                let full_started = reloader.full_started();
+                match git::Repository::load(Path::new(&args.path), order, max_count) {
+                    Ok(new_repo) => {
+                        let old_head = resolve_head_commit_hash(&repository);
+                        let new_head = resolve_head_commit_hash(&new_repo);
+                        let layout_inputs_same = old_head == new_head
+                            && head_has_named_ref(&repository) == head_has_named_ref(&new_repo);
+                        if repository.same_commits(&new_repo) && layout_inputs_same {
+                            // 快速路徑：commit 沒有變化 — 重用現有圖形，
+                            // 讓畫面在 watcher 觸發的重新整理時不會閃爍。
+                            // App 必須先釋放對 &repository 的借用，才能進行修改。
+                            (filtered_graph, remote_only_commits) = app.into_parts();
+                            repository.update_metadata_from(new_repo);
+                            // 這裡不需要更新 head_raw：App::new 會重新
+                            // 從 `repository` 計算，而 update_metadata_from
+                            // 剛把它更新到最新狀態（複製了 ref_map/head）。
 
-                let old_head = resolve_head_commit_hash(&repository);
-                let new_head = resolve_head_commit_hash(&new_repo);
-                let layout_inputs_same = old_head == new_head;
-                if repository.same_commits(&new_repo) && layout_inputs_same {
-                    // 快速路徑：commit 沒有變化 — 重用現有圖形，
-                    // 讓畫面在 watcher 觸發的重新整理時不會閃爍。
-                    // App 必須先釋放對 &repository 的借用，才能進行修改。
-                    (filtered_graph, remote_only_commits) = app.into_parts();
-                    repository.update_metadata_from(new_repo);
-                    // 這裡不需要更新 head_raw：App::new 會重新
-                    // 從 `repository` 計算，而 update_metadata_from
-                    // 剛把它更新到最新狀態（複製了 ref_map/head）。
+                            let filtered_changed = try_refresh_filtered_for_ref_change(
+                                &repository,
+                                &mut remote_only_commits,
+                                &mut filtered_graph,
+                                trunc,
+                            );
+                            if filtered_changed {
+                                if let Some(t) = terminal.as_mut() {
+                                    t.clear()?;
+                                }
+                            }
+                        } else {
+                            // 慢速路徑：commit 有變化 — 釋放 app、重建圖形，
+                            // 並清空畫面區域以準備繪製新的一幀。
+                            drop(app);
+                            repository = new_repo;
+                            graph = Rc::new(graph::calc_graph(
+                                &repository,
+                                resolve_head_commit_hash(&repository).as_ref(),
+                                head_has_named_ref(&repository),
+                                trunc,
+                            ));
+                            (filtered_graph, remote_only_commits) =
+                                build_graph_artifacts(&repository, trunc);
 
-                    let filtered_changed = try_refresh_filtered_for_ref_change(
-                        &repository,
-                        &mut remote_only_commits,
-                        &mut filtered_graph,
-                        trunc,
-                    );
-                    if filtered_changed {
-                        if let Some(t) = terminal.as_mut() {
-                            t.clear()?;
+                            if let Some(t) = terminal.as_mut() {
+                                t.clear()?;
+                            }
                         }
                     }
-                } else {
-                    // 慢速路徑：commit 有變化 — 釋放 app、重建圖形，
-                    // 並清空畫面區域以準備繪製新的一幀。
-                    drop(app);
-                    repository = new_repo;
-                    graph = Rc::new(graph::calc_graph(
-                        &repository,
-                        resolve_head_commit_hash(&repository).as_ref(),
-                        head_has_named_ref(&repository),
-                        trunc,
-                    ));
-                    (filtered_graph, remote_only_commits) =
-                        build_graph_artifacts(&repository, trunc);
-
-                    if let Some(t) = terminal.as_mut() {
-                        t.clear()?;
+                    Err(e) => {
+                        // 重載失敗：保留舊的 repository／graph，只通知、不結束
+                        // 程式——`mv .git`、暫時性的檔案系統錯誤都不該讓整個
+                        // TUI 消失（也跳過了 terminal restore）。`app` 一樣要
+                        // 釋放對 `&repository` 的借用，跟快速路徑同一個理由：
+                        // graph 沒有重建，直接沿用它剛剛可能改過的
+                        // filtered_graph／remote_only_commits。
+                        (filtered_graph, remote_only_commits) = app.into_parts();
+                        ec.sender()
+                            .send(event::AppEvent::NotifyError(e.to_string()));
                     }
                 }
 
@@ -794,6 +809,9 @@ pub fn run() -> Result<()> {
                 // 為了這個同步等一次 `git status` 划算。
                 reloader.request();
                 working_changes = reloader.latest();
+                // 不論成功失敗都要記錄冷卻——失敗沒記的話，`mv .git` 之後
+                // watcher 會一直回報錯誤，變成 Full → 失敗 → Full 的緊密迴圈。
+                reloader.full_finished(full_started);
 
                 continue;
             }
