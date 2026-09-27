@@ -97,7 +97,10 @@ pub struct CommitListState<'a> {
     pub(super) filter_input: Input,
     /// 目前生效的 filter 設定，理由同 `search_options`。
     pub(super) filter_options: MatchOptions,
-    pub(super) filtered_indices: Vec<RawCommitIdx>,
+    /// `None` = 沒有 filter 生效；`Some(v)` = filter 生效（`v` 可以是空的，
+    /// 代表零命中）。兩者不能都用空 `Vec` 表示，否則零命中會被誤判成沒有
+    /// filter（`current_selected_raw` 曾經踩過這個地雷，見該處註解）。
+    pub(super) filtered_indices: Option<Vec<RawCommitIdx>>,
     pub(super) text_filtered_indices: Vec<RawCommitIdx>,
 
     pub(super) selected: usize,
@@ -179,7 +182,7 @@ impl<'a> CommitListState<'a> {
             filter_state: FilterState::Inactive,
             filter_input: Input::default(),
             filter_options: MatchOptions::FILTER_DEFAULT,
-            filtered_indices: Vec::new(),
+            filtered_indices: None,
             text_filtered_indices: Vec::new(),
             selected: 0,
             offset: 0,
@@ -360,12 +363,10 @@ impl<'a> CommitListState<'a> {
     }
 
     pub(super) fn first_visible_raw(&self) -> Option<RawCommitIdx> {
-        let idx: RawCommitIdx = if self.filtered_indices.is_empty() {
-            RawCommitIdx(0)
-        } else {
-            *self.filtered_indices.first()?
-        };
-        (idx.0 < self.commits.len()).then_some(idx)
+        match &self.filtered_indices {
+            None => (!self.commits.is_empty()).then_some(RawCommitIdx(0)),
+            Some(v) => v.first().copied(),
+        }
     }
 
     // --- 座標系 accessor / 轉換 ---------------------------------------------
@@ -388,13 +389,13 @@ impl<'a> CommitListState<'a> {
     }
 
     pub(super) fn raw_to_filtered(&self, raw: RawCommitIdx) -> Option<FilteredIdx> {
-        resolve_raw_to_filtered(&self.filtered_indices, self.commits.len(), raw)
+        resolve_raw_to_filtered(self.filtered_indices.as_deref(), self.commits.len(), raw)
     }
 
     /// `None` 代表輸入的 `FilteredIdx` 越界。caller 不得 fallback 成 `RawCommitIdx(0)`：
     /// 合法對應只有「早退 / 游標不動」或 `debug_assert!`（render path invariant）。
     pub(super) fn filtered_to_raw(&self, f: FilteredIdx) -> Option<RawCommitIdx> {
-        resolve_filtered_to_raw(&self.filtered_indices, self.commits.len(), f)
+        resolve_filtered_to_raw(self.filtered_indices.as_deref(), self.commits.len(), f)
     }
 
     fn visible_to_filtered(&self, v: VisibleIdx) -> FilteredIdx {
@@ -505,9 +506,8 @@ impl<'a> CommitListState<'a> {
         let vr = self.virtual_row_offset();
         let prev_visible = self.current_visible();
 
-        if !has_text_filter && !has_remote_filter {
-            self.filtered_indices.clear();
-            self.total = self.commits.len() + vr;
+        self.filtered_indices = if !has_text_filter && !has_remote_filter {
+            None
         } else {
             let base: Box<dyn Iterator<Item = RawCommitIdx>> = if has_text_filter {
                 Box::new(self.text_filtered_indices.iter().copied())
@@ -515,16 +515,18 @@ impl<'a> CommitListState<'a> {
                 Box::new((0..self.commits.len()).map(RawCommitIdx))
             };
 
-            if has_remote_filter {
-                self.filtered_indices = base
-                    .filter(|raw| !self.remote_only_commits.contains(raw.0))
-                    .collect();
+            Some(if has_remote_filter {
+                base.filter(|raw| !self.remote_only_commits.contains(raw.0))
+                    .collect()
             } else {
-                self.filtered_indices = base.collect();
-            }
-
-            self.total = self.filtered_indices.len() + vr;
-        }
+                base.collect()
+            })
+        };
+        self.total = self
+            .filtered_indices
+            .as_ref()
+            .map_or(self.commits.len(), Vec::len)
+            + vr;
 
         let clamped = prev_visible.0.min(self.total.saturating_sub(1));
         self.offset = 0;
@@ -684,9 +686,15 @@ impl<'a> CommitListState<'a> {
         self.commit(self.current_selected_raw()).refs()
     }
 
-    /// 當前選中的 raw commit index。虛擬行選中時退而求其次回 `RawCommitIdx(0)`。
+    /// 當前選中的 raw commit index。虛擬行選中、或 filter 零命中（`total == 0`）
+    /// 時退而求其次回 `RawCommitIdx(0)`——後者不是合法的選取，只是讓呼叫端不必
+    /// 為「沒有東西可選」另外分岔；呼叫端已各自用 `total == 0` 或
+    /// `is_virtual_row_selected()` 判斷是否要理會這個 fallback。
     /// Invariant：`total > 0` 時必回合法 raw；render path 依此不處理 `None`。
     pub fn current_selected_raw(&self) -> RawCommitIdx {
+        if self.total == 0 {
+            return RawCommitIdx(0);
+        }
         let filtered = self.visible_to_filtered(self.current_visible());
         match self.filtered_to_raw(filtered) {
             Some(raw) => raw,
@@ -813,32 +821,28 @@ impl<'a> CommitListState<'a> {
     }
 }
 
-/// Pure：把 raw commit index 轉成 filtered view 的位置。filter 空時 alias 到 raw。
+/// Pure：把 raw commit index 轉成 filtered view 的位置。`None`（沒有 filter）
+/// 時 alias 到 raw。`filtered_indices` 恆為遞增序列，用 `binary_search`。
 fn resolve_raw_to_filtered(
-    filtered_indices: &[RawCommitIdx],
+    filtered_indices: Option<&[RawCommitIdx]>,
     commits_len: usize,
     raw: RawCommitIdx,
 ) -> Option<FilteredIdx> {
-    if filtered_indices.is_empty() {
-        (raw.0 < commits_len).then_some(FilteredIdx(raw.0))
-    } else {
-        filtered_indices
-            .iter()
-            .position(|r| *r == raw)
-            .map(FilteredIdx)
+    match filtered_indices {
+        None => (raw.0 < commits_len).then_some(FilteredIdx(raw.0)),
+        Some(v) => v.binary_search(&raw).ok().map(FilteredIdx),
     }
 }
 
 /// Pure：把 filtered view 的位置轉回 raw commit index。越界回 None。
 fn resolve_filtered_to_raw(
-    filtered_indices: &[RawCommitIdx],
+    filtered_indices: Option<&[RawCommitIdx]>,
     commits_len: usize,
     f: FilteredIdx,
 ) -> Option<RawCommitIdx> {
-    if filtered_indices.is_empty() {
-        (f.0 < commits_len).then_some(RawCommitIdx(f.0))
-    } else {
-        filtered_indices.get(f.0).copied()
+    match filtered_indices {
+        None => (f.0 < commits_len).then_some(RawCommitIdx(f.0)),
+        Some(v) => v.get(f.0).copied(),
     }
 }
 
@@ -873,16 +877,22 @@ mod tests {
     // 避開 CommitListState fixture 的建構成本；涵蓋原始 panic 路徑。
 
     #[test]
-    fn filtered_to_raw_empty_filter_passes_through_when_in_range() {
+    fn filtered_to_raw_no_filter_passes_through_when_in_range() {
         assert_eq!(
-            resolve_filtered_to_raw(&[], 10, FilteredIdx(5)),
+            resolve_filtered_to_raw(None, 10, FilteredIdx(5)),
             Some(RawCommitIdx(5))
         );
     }
 
     #[test]
-    fn filtered_to_raw_empty_filter_out_of_range_returns_none() {
-        assert_eq!(resolve_filtered_to_raw(&[], 10, FilteredIdx(10)), None);
+    fn filtered_to_raw_no_filter_out_of_range_returns_none() {
+        assert_eq!(resolve_filtered_to_raw(None, 10, FilteredIdx(10)), None);
+    }
+
+    #[test]
+    fn filtered_to_raw_empty_filter_is_zero_hits_not_no_filter() {
+        // Some(空) 是「filter 生效但零命中」，不是「沒有 filter」——不能 alias 到 raw。
+        assert_eq!(resolve_filtered_to_raw(Some(&[]), 10, FilteredIdx(0)), None);
     }
 
     #[test]
@@ -890,7 +900,7 @@ mod tests {
         // 原始 panic 場景：filtered_indices.len() = 234，index 309 越界。
         let filtered: Vec<RawCommitIdx> = (0..234).map(RawCommitIdx).collect();
         assert_eq!(
-            resolve_filtered_to_raw(&filtered, 500, FilteredIdx(309)),
+            resolve_filtered_to_raw(Some(&filtered), 500, FilteredIdx(309)),
             None,
             "越界 FilteredIdx 應返回 None 而非 panic"
         );
@@ -900,7 +910,7 @@ mod tests {
     fn filtered_to_raw_active_filter_returns_mapped_raw() {
         let filtered = vec![RawCommitIdx(3), RawCommitIdx(7), RawCommitIdx(12)];
         assert_eq!(
-            resolve_filtered_to_raw(&filtered, 20, FilteredIdx(2)),
+            resolve_filtered_to_raw(Some(&filtered), 20, FilteredIdx(2)),
             Some(RawCommitIdx(12))
         );
     }
@@ -909,7 +919,7 @@ mod tests {
     fn raw_to_filtered_finds_position() {
         let filtered = vec![RawCommitIdx(3), RawCommitIdx(7), RawCommitIdx(12)];
         assert_eq!(
-            resolve_raw_to_filtered(&filtered, 20, RawCommitIdx(7)),
+            resolve_raw_to_filtered(Some(&filtered), 20, RawCommitIdx(7)),
             Some(FilteredIdx(1))
         );
     }
@@ -919,15 +929,15 @@ mod tests {
         let filtered = vec![RawCommitIdx(3), RawCommitIdx(7), RawCommitIdx(12)];
         // raw=5 不在 filter 內 → None（caller 應「游標不動」而非 fallback 到 0）
         assert_eq!(
-            resolve_raw_to_filtered(&filtered, 20, RawCommitIdx(5)),
+            resolve_raw_to_filtered(Some(&filtered), 20, RawCommitIdx(5)),
             None
         );
     }
 
     #[test]
-    fn raw_to_filtered_empty_filter_alias_to_raw() {
+    fn raw_to_filtered_no_filter_alias_to_raw() {
         assert_eq!(
-            resolve_raw_to_filtered(&[], 10, RawCommitIdx(5)),
+            resolve_raw_to_filtered(None, 10, RawCommitIdx(5)),
             Some(FilteredIdx(5))
         );
     }
@@ -1004,12 +1014,12 @@ mod tests {
         // caller 不動游標，整體不 panic。
         let filtered: Vec<RawCommitIdx> = (0..234).map(RawCommitIdx).collect();
         let target_raw = RawCommitIdx(309);
-        let visible = resolve_raw_to_filtered(&filtered, 500, target_raw);
+        let visible = resolve_raw_to_filtered(Some(&filtered), 500, target_raw);
         assert_eq!(visible, None, "raw=309 不在 filtered_indices 內 → None");
 
         // 若 target_raw 恰好在 filter 內（例如 raw=100 → filtered=100），
         // 再走 compute_selection 必得合法 (offset, selected)。
-        let in_filter = resolve_raw_to_filtered(&filtered, 500, RawCommitIdx(100)).unwrap();
+        let in_filter = resolve_raw_to_filtered(Some(&filtered), 500, RawCommitIdx(100)).unwrap();
         // filtered total = 234 + vr(0); height=50；target=100
         let (offset, selected) = compute_selection(VisibleIdx(in_filter.0), 234, 50, 0).unwrap();
         assert!(offset + selected < 234);
@@ -1404,8 +1414,9 @@ mod tests {
             None,
             0,
         );
-        state.filtered_indices = visible_raw.iter().copied().map(RawCommitIdx).collect();
-        state.total = state.filtered_indices.len();
+        let filtered: Vec<RawCommitIdx> = visible_raw.iter().copied().map(RawCommitIdx).collect();
+        state.total = filtered.len();
+        state.filtered_indices = Some(filtered);
         state.reset_height(10);
         state.select_first();
         state

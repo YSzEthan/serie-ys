@@ -598,7 +598,7 @@ impl<'a> CommitListState<'a> {
                 transient_message: TransientMessage::None,
             };
             self.filter_input.reset();
-            self.filtered_indices.clear();
+            self.filtered_indices = None;
             self.update_filter_matches();
         }
     }
@@ -1055,6 +1055,28 @@ mod tests {
                 match_index, 0,
                 "total == 0 時 current_match_index 的守衛要擋住"
             );
+        });
+    }
+
+    /// `filtered_indices` 改成 `Option` 後，零命中是 `Some(空)`，不是「沒有
+    /// filter」——`current_selected_raw` 得在 `Some(空)` 時明確 fallback 到 0，
+    /// 不能真的去解一個不存在的 filtered idx。這裡直接走互動路徑（`/` 開搜尋、
+    /// n／N 導航），不是只測 pure function。
+    #[test]
+    fn zero_hit_filter_then_start_search_and_navigate_does_not_panic() {
+        with_state(&["alpha", "beta"], |state| {
+            state.restore_filter(&exact("no-such-term"));
+            assert_eq!(state.total, 0);
+
+            state.start_search();
+            let SearchState::Searching { start_index, .. } = state.search_state() else {
+                panic!("expected Searching after start_search");
+            };
+            assert_eq!(start_index, RawCommitIdx(0));
+
+            state.select_next_match();
+            state.select_prev_match();
+            assert_eq!(state.total, 0, "游標不動，filter 仍是零命中");
         });
     }
 
