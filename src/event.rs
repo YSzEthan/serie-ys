@@ -167,9 +167,11 @@ pub enum AppEvent {
         target: String,
     },
     /// watcher 偵測到變化，或背景 git 操作（`spawn_git_task`）成功後自己
-    /// 觸發的重新整理。`Scope` 見該型別文件；這個 Phase 尚未依 `scope`
-    /// 分流（`WorkingTree` 暫時當 `Full` 處理），實際分流留給後續步驟。
+    /// 觸發的重新整理。`Scope` 見該型別文件。
     AutoRefresh(Scope),
+    /// `reload::Reloader` 背景跑完一次 `git status`。結果本身不隨事件走，
+    /// 收到後向 `Reloader::latest()` 拿——事件只是「該去看一眼」的信號。
+    WorkingChangesReady,
     OpenRefPicker {
         options: Vec<String>,
         kind: RefCopyKind,

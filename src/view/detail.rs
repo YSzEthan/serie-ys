@@ -485,6 +485,12 @@ impl<'a> DetailView<'a> {
         self.commit_list_state.as_ref().unwrap()
     }
 
+    pub(super) fn as_mut_list_state(&mut self) -> &mut CommitListState<'a> {
+        self.commit_list_state
+            .as_mut()
+            .expect("commit_list_state already taken")
+    }
+
     pub fn marquee_id(&self) -> Option<std::sync::Arc<str>> {
         match &self.content {
             DetailContent::Commit { commit, .. } => Some(commit.commit_hash.as_arc()),
@@ -678,6 +684,34 @@ impl<'a> DetailView<'a> {
         let list_context = ListRefreshViewContext::from(self.as_list_state());
         let context = RefreshViewContext::new(list_context, ViewContext::Detail);
         self.tx.send(AppEvent::Refresh(context));
+    }
+
+    /// `reload::Reloader` 背景重新整理送達時呼叫（`View::apply_working_changes`），
+    /// 這時 `commit_list_state` 裡的 working changes 已經換成新的了。目前
+    /// 顯示的不是 working changes 就什麼都不做——正在看某個 commit 的
+    /// detail，跟背景重新整理無關。
+    ///
+    /// 游標儘量留在原本選的檔案（`reselect`），且強制清掉 `diff_target`
+    /// 再呼叫 `sync_diff`：即使游標留在同一個檔案，那個檔案的實際 diff
+    /// 內容可能已經變了（這正是背景重新整理的目的），`sync_diff` 原本
+    /// 「target 沒變就不重新載入」的去重邏輯在這裡不適用。
+    pub(super) fn refresh_working_changes(&mut self) {
+        if !matches!(self.content, DetailContent::WorkingChanges { .. }) {
+            return;
+        }
+        let Some(wc) = self
+            .commit_list_state
+            .as_ref()
+            .and_then(|s| s.working_changes().cloned())
+        else {
+            return;
+        };
+        self.content = DetailContent::from_working_changes(&wc, &self.ctx.color_theme);
+        let previous_target = self.diff_target.clone();
+        self.commit_detail_state
+            .reselect(self.content.rows(), previous_target.as_ref());
+        self.diff_target = None;
+        self.sync_diff();
     }
 }
 

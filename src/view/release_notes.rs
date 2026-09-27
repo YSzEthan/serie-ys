@@ -62,6 +62,10 @@ impl<'a> ReleaseNotesView<'a> {
         std::mem::take(&mut self.before)
     }
 
+    pub(super) fn before_view_mut(&mut self) -> &mut View<'a> {
+        &mut self.before
+    }
+
     pub fn handle_event(&mut self, event_with_count: UserEventWithCount, _: KeyEvent) {
         let event = event_with_count.event;
         let count = event_with_count.count;

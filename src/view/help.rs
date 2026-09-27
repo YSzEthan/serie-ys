@@ -210,6 +210,10 @@ impl<'a> HelpView<'a> {
         std::mem::take(&mut self.before)
     }
 
+    pub(super) fn before_view_mut(&mut self) -> &mut View<'a> {
+        &mut self.before
+    }
+
     fn scroll_down(&mut self) {
         let max_offset = self.rows.len().saturating_sub(self.height);
         self.offset = self.offset.saturating_add(1).min(max_offset);
