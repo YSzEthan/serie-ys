@@ -21,8 +21,8 @@ use crate::{
         ExternalCommandParameters,
     },
     git::{
-        background_command, fill_working_changes_stats, Commit, CommitHash, FetchPrune, FileChange,
-        Head, Ref, RefType, Repository, WorkingChanges,
+        background_command, fill_working_changes_stats, Commit, CommitHash, FetchPrune, Head, Ref,
+        RefType, Repository, WorkingChanges,
     },
     github::{
         delete_remote_branch as gh_delete_remote_branch, is_merge_conflict_error, merge_pr,
@@ -1076,7 +1076,10 @@ impl<'a> App<'a> {
         if cls.is_virtual_row_selected() {
             unreachable!("virtual row must be handled before reaching Detail");
         }
-        let (commit, changes, refs) = selected_commit_details(self.repository, &cls);
+        let selected = cls.selected_commit_hash().clone();
+        let (commit, changes) = self.repository.commit_detail(&selected);
+        let refs: Vec<Ref> = self.repository.refs(&selected).into_iter().cloned().collect();
+        let commit = commit.clone();
         self.view = View::of_detail(
             cls,
             commit,
@@ -1202,9 +1205,9 @@ impl App<'_> {
             View::UserCommand(ref mut view) => view.as_list_state(),
             _ => return,
         };
-        let (commit, _, refs) = selected_commit_details(self.repository, commit_list_state);
+        let (commit, refs) = self.repository.commit_refs(commit_list_state.selected_commit_hash());
         let result = build_external_command_parameters_and_exec_command(
-            &commit,
+            commit,
             &refs,
             user_command_number,
             self.view_area,
@@ -1246,9 +1249,9 @@ impl App<'_> {
         if commit_list_state.is_virtual_row_selected() {
             return;
         }
-        let (commit, _, refs) = selected_commit_details(self.repository, commit_list_state);
+        let (commit, refs) = self.repository.commit_refs(commit_list_state.selected_commit_hash());
         let result = build_external_command_parameters_and_exec_command(
-            &commit,
+            commit,
             &refs,
             user_command_number,
             self.view_area,
@@ -1276,9 +1279,9 @@ impl App<'_> {
         if commit_list_state.is_virtual_row_selected() {
             return;
         }
-        let (commit, _, refs) = selected_commit_details(self.repository, commit_list_state);
+        let (commit, refs) = self.repository.commit_refs(commit_list_state.selected_commit_hash());
         match build_external_command_parameters(
-            &commit,
+            commit,
             &refs,
             user_command_number,
             self.view_area,
@@ -1499,8 +1502,8 @@ impl App<'_> {
         let (commit, refs) = if commit_list_state.is_virtual_row_selected() {
             (None, Vec::new())
         } else {
-            let (commit, _, refs) = selected_commit_details(self.repository, commit_list_state);
-            (Some(commit), refs)
+            let (commit, refs) = self.repository.commit_refs(commit_list_state.selected_commit_hash());
+            (Some(commit.clone()), refs)
         };
         let repo_path = self.repository.path().to_path_buf();
         // 在 `mem::take` 之前對還沒被包住的 List/Detail 設旗標——list/detail
@@ -2399,16 +2402,6 @@ fn spawn_git_task(ec: &EventController, task: GitTask) {
             }
         }
     });
-}
-
-fn selected_commit_details(
-    repository: &Repository,
-    commit_list_state: &CommitListState,
-) -> (Commit, Vec<FileChange>, Vec<Ref>) {
-    let selected = commit_list_state.selected_commit_hash().clone();
-    let (commit, changes) = repository.commit_detail(&selected);
-    let refs: Vec<Ref> = repository.refs(&selected).into_iter().cloned().collect();
-    (commit.clone(), changes, refs)
 }
 
 /// 這個事件該不該在 app 層攔成全域事件，而不是往下交給 view 處理。
