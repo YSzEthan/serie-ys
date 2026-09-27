@@ -6,7 +6,7 @@ use crate::{
     config::UserListColumnType,
     diff::{self, DiffNotes, ModeNote, RenderedDiff},
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
-    git::{Commit, CommitHash, DiffTarget, FileChange, Ref, Repository, WorkingChanges},
+    git::{Commit, CommitExtra, CommitHash, DiffTarget, FileChange, Ref, Repository, WorkingChanges},
     view::{
         dispatch_branch_copy, dispatch_tag_copy, partition_branches, partition_tags,
         ListRefreshViewContext, RefreshViewContext, ViewContext,
@@ -84,6 +84,7 @@ pub fn status_hints_for(pane: DetailPane) -> Vec<HintSpec> {
 enum DetailContent {
     Commit {
         commit: Box<Commit>,
+        extra: CommitExtra,
         refs: Vec<Ref>,
         rows: Vec<TreeRow>,
     },
@@ -97,6 +98,7 @@ enum DetailContent {
 impl DetailContent {
     fn from_commit(
         commit: Commit,
+        extra: CommitExtra,
         changes: Vec<FileChange>,
         refs: Vec<Ref>,
         theme: &ColorTheme,
@@ -104,6 +106,7 @@ impl DetailContent {
         let rows = build_commit_tree_rows(&changes, &commit.commit_hash, theme);
         DetailContent::Commit {
             commit: Box::new(commit),
+            extra,
             refs,
             rows,
         }
@@ -167,13 +170,14 @@ impl<'a> DetailView<'a> {
     pub fn new(
         commit_list_state: CommitListState<'a>,
         commit: Commit,
+        extra: CommitExtra,
         changes: Vec<FileChange>,
         refs: Vec<Ref>,
         repository: &'a Repository,
         ctx: Rc<AppContext>,
         tx: Sender,
     ) -> DetailView<'a> {
-        let content = DetailContent::from_commit(commit, changes, refs, &ctx.color_theme);
+        let content = DetailContent::from_commit(commit, extra, changes, refs, &ctx.color_theme);
         let mut commit_detail_state = CommitDetailState::default();
         commit_detail_state.reset(content.rows());
 
@@ -352,10 +356,13 @@ impl<'a> DetailView<'a> {
             self.content
                 .max_height(area_cap, self.ctx.ui_config.pane_height.detail, show_diff);
         let content_height = match &self.content {
-            DetailContent::Commit { commit, refs, rows } => {
-                CommitDetail::new(commit, rows, refs, self.ctx.clone(), marquee_frame)
-                    .content_height()
-            }
+            DetailContent::Commit {
+                commit,
+                extra,
+                refs,
+                rows,
+            } => CommitDetail::new(commit, extra, rows, refs, self.ctx.clone(), marquee_frame)
+                .content_height(),
             DetailContent::WorkingChanges {
                 staged_count,
                 unstaged_count,
@@ -395,9 +402,20 @@ impl<'a> DetailView<'a> {
             f.render_widget(Clear, detail_rect);
 
             match &self.content {
-                DetailContent::Commit { commit, refs, rows } => {
-                    let commit_detail =
-                        CommitDetail::new(commit, rows, refs, self.ctx.clone(), marquee_frame);
+                DetailContent::Commit {
+                    commit,
+                    extra,
+                    refs,
+                    rows,
+                } => {
+                    let commit_detail = CommitDetail::new(
+                        commit,
+                        extra,
+                        rows,
+                        refs,
+                        self.ctx.clone(),
+                        marquee_frame,
+                    );
                     f.render_stateful_widget(
                         commit_detail,
                         detail_rect,
@@ -556,10 +574,15 @@ impl<'a> DetailView<'a> {
             }
         } else {
             let selected = commit_list_state.selected_commit_hash().clone();
-            let (commit, changes) = repository.commit_detail(&selected);
+            let (commit, extra, changes) = repository.commit_detail(&selected);
             let (_, refs) = repository.commit_refs(&selected);
-            self.content =
-                DetailContent::from_commit(commit.clone(), changes, refs, &self.ctx.color_theme);
+            self.content = DetailContent::from_commit(
+                commit.clone(),
+                extra,
+                changes,
+                refs,
+                &self.ctx.color_theme,
+            );
         }
 
         self.commit_detail_state.reset(self.content.rows());

@@ -62,13 +62,34 @@ pub struct Commit {
     pub author_name: String,
     pub author_email: String,
     pub author_date: DateTime<FixedOffset>,
+    pub subject: String,
+    pub parent_commit_hashes: Vec<CommitHash>,
+    pub commit_type: CommitType,
+}
+
+/// `committer_*` 與 `body`：只有 detail view 用得到，常駐在每筆 `Commit`
+/// 上在大 repo（linux 148 萬筆）會白吃數百 MB，故延遲到 `commit_detail`
+/// 才另外跑一次 `git show` 取得。
+#[derive(Debug, Clone, Default)]
+pub struct CommitExtra {
     pub committer_name: String,
     pub committer_email: String,
     pub committer_date: DateTime<FixedOffset>,
-    pub subject: String,
     pub body: String,
-    pub parent_commit_hashes: Vec<CommitHash>,
-    pub commit_type: CommitType,
+}
+
+impl CommitExtra {
+    /// `git show` 失敗時的退路：借用 author 的身分與日期，`body` 留空。
+    /// `is_author_committer_different` 因此自然判定「相同」，畫面上就是
+    /// 不顯示 Committer 那一行，跟真的拿不到資料時該有的行為一致。
+    fn fallback(commit: &Commit) -> Self {
+        Self {
+            committer_name: commit.author_name.clone(),
+            committer_email: commit.author_email.clone(),
+            committer_date: commit.author_date,
+            body: String::new(),
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -260,14 +281,16 @@ impl Repository {
         &self.path
     }
 
-    pub fn commit_detail(&self, commit_hash: &CommitHash) -> (&Commit, Vec<FileChange>) {
+    pub fn commit_detail(&self, commit_hash: &CommitHash) -> (&Commit, CommitExtra, Vec<FileChange>) {
         let commit = self.commit(commit_hash).unwrap();
+        let extra =
+            load_commit_extra(&self.path, commit_hash).unwrap_or_else(|| CommitExtra::fallback(commit));
         let changes = if commit.parent_commit_hashes.is_empty() {
             get_initial_commit_additions(&self.path, commit_hash)
         } else {
             get_diff_summary(&self.path, commit_hash)
         };
-        (commit, changes)
+        (commit, extra, changes)
     }
 
     /// 回傳 commit 與其 refs，不會為了檔案變更而另外啟動 git 子行程。
@@ -531,29 +554,54 @@ fn load_all_commits(
 }
 
 fn parse_commit_line(s: &str, commit_type: CommitType) -> Option<Commit> {
-    let mut parts = s.splitn(10, '\x1f');
+    let mut parts = s.splitn(6, '\x1f');
     let commit_hash = parts.next()?;
     let author_name = parts.next()?;
     let author_email = parts.next()?;
     let author_date = parts.next()?;
-    let committer_name = parts.next()?;
-    let committer_email = parts.next()?;
-    let committer_date = parts.next()?;
     let subject = parts.next()?;
-    let body = parts.next()?;
     let parents = parts.next()?;
     Some(Commit {
         commit_hash: commit_hash.into(),
         author_name: author_name.into(),
         author_email: author_email.into(),
         author_date: parse_iso_date(author_date),
+        subject: crate::emoji::expand(subject).into_owned(),
+        parent_commit_hashes: parse_parent_commit_hashes(parents),
+        commit_type,
+    })
+}
+
+/// `commit_detail` 專用：`Commit` 列表格式拿掉的 `committer_*` 與 `body`，
+/// 只在使用者真的打開一個 commit 的 detail view 時才跑。跟 `%aN/%aE` 同理，
+/// 大寫的 `%cN/%cE` 會經 `.mailmap` 解析身分。
+fn load_commit_extra(path: &Path, commit_hash: &CommitHash) -> Option<CommitExtra> {
+    let format = ["%cN", "%cE", "%cd", "%b"].join("%x1f");
+    let output = git_read(path)
+        .arg("show")
+        .arg("-s")
+        .arg("--no-show-signature")
+        .arg(format!("--format={format}"))
+        .arg("--date=iso-strict")
+        .arg(commit_hash.as_str())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    let text = text.strip_suffix('\n').unwrap_or(&text);
+    let mut parts = text.splitn(4, '\x1f');
+    let committer_name = parts.next()?;
+    let committer_email = parts.next()?;
+    let committer_date = parts.next()?;
+    let body = parts.next()?;
+    Some(CommitExtra {
         committer_name: committer_name.into(),
         committer_email: committer_email.into(),
         committer_date: parse_iso_date(committer_date),
-        subject: crate::emoji::expand(subject).into_owned(),
         body: crate::emoji::expand(body).into_owned(),
-        parent_commit_hashes: parse_parent_commit_hashes(parents),
-        commit_type,
     })
 }
 
@@ -590,12 +638,10 @@ fn load_all_stashes(path: &Path) -> Vec<Commit> {
 }
 
 fn load_commits_format() -> String {
-    // 大寫的 %aN/%aE/%cN/%cE 會經 .mailmap 解析身分；沒有 .mailmap 時輸出
-    // 跟小寫版完全相同，故不需要另外開 config 開關。
-    [
-        "%H", "%aN", "%aE", "%ad", "%cN", "%cE", "%cd", "%s", "%b", "%P",
-    ]
-    .join("%x1f") // 用 Unit Separator 作為分隔符
+    // 大寫的 %aN/%aE 會經 .mailmap 解析身分；沒有 .mailmap 時輸出跟小寫版
+    // 完全相同，故不需要另外開 config 開關。committer 身分與 %b 拿掉了——
+    // 見 `load_commit_extra`。
+    ["%H", "%aN", "%aE", "%ad", "%s", "%P"].join("%x1f") // 用 Unit Separator 作為分隔符
 }
 
 fn parse_iso_date(s: &str) -> DateTime<FixedOffset> {
@@ -1297,19 +1343,7 @@ mod tests {
 
     fn commit_with_parents(hash: &str, parents: &str) -> Commit {
         let date = "2026-07-31T10:00:00+08:00";
-        let line = [
-            hash,
-            "A",
-            "a@example.com",
-            date,
-            "A",
-            "a@example.com",
-            date,
-            "s",
-            "",
-            parents,
-        ]
-        .join("\x1f");
+        let line = [hash, "A", "a@example.com", date, "s", parents].join("\x1f");
         parse_commit_line(&line, CommitType::Commit).unwrap()
     }
 
@@ -1346,11 +1380,7 @@ mod tests {
             "Alice",
             "alice@example.com",
             date,
-            "Alice",
-            "alice@example.com",
-            date,
             ":tada: 上線",
-            "細節 :+1:",
             "",
         ]
         .join("\x1f");
@@ -1358,6 +1388,5 @@ mod tests {
         let commit = parse_commit_line(&line, CommitType::Commit).unwrap();
 
         assert_eq!(commit.subject, "🎉 上線");
-        assert_eq!(commit.body, "細節 👍");
     }
 }
