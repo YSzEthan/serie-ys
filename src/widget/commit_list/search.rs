@@ -879,16 +879,20 @@ mod tests {
 
         use rustc_hash::FxHashMap;
 
-        use crate::git::Head;
+        use crate::git::{Head, Repository};
         use crate::graph::Graph;
 
-        let infos = commits
+        let repository = Repository::from_commits(commits);
+        let infos = repository
+            .all_commits()
             .iter()
             .map(|c| CommitInfo::new(c, Vec::new()))
             .collect();
-        let graph = Graph::from_materialized(commits.len(), Vec::new(), Vec::new());
+        let graph =
+            Graph::from_materialized(repository.all_commits().len(), Vec::new(), Vec::new());
         let mut state = CommitListState::new(
             infos,
+            &repository,
             Rc::new(graph),
             Vec::new(),
             None,
@@ -1525,6 +1529,7 @@ mod tests {
         let graph = Graph::from_materialized(commit_count, Vec::new(), Vec::new());
         let mut state = CommitListState::new(
             commits,
+            &repository,
             Rc::new(graph),
             Vec::new(),
             None,

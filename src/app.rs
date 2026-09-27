@@ -308,6 +308,7 @@ impl<'a> App<'a> {
         let working_changes_opt = working_changes.filter(|wc| !wc.is_empty());
         let mut commit_list_state = CommitListState::new(
             commits,
+            repository,
             Rc::clone(graph),
             graph_colors,
             head_raw,
