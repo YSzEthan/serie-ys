@@ -161,13 +161,6 @@ pub struct GitHubView<'a> {
     /// （關掉 GitHub 模式再開仍維持），重啟 serie 回預設。
     label_mode: LabelMode,
 
-    /// merge PR 流程刪本地分支成功後送出的 `AppEvent::AutoRefresh` 會設這個
-    /// 旗標（`View::refresh()` 呼叫 `mark_refresh_pending`）。直接送
-    /// `AppEvent::Refresh` 會把使用者踢回底下的 `before_view`（`ViewContext`
-    /// 沒有 GitHub 的重建目標），所以刷新延後到 `close_github` 還原 `before`
-    /// 之後才補做——比照 `ShellView::refresh_pending` 同一套機制。
-    refresh_pending: bool,
-
     tx: Sender,
 }
 
@@ -208,7 +201,6 @@ impl<'a> GitHubView<'a> {
             preview_height: 0,
             expand_commits: true,
             label_mode: LabelMode::default(),
-            refresh_pending: false,
             tx,
         }
     }
@@ -232,18 +224,6 @@ impl<'a> GitHubView<'a> {
 
     pub fn take_before_view(&mut self) -> View<'a> {
         std::mem::take(&mut self.before)
-    }
-
-    /// 見欄位 `refresh_pending` 的文件註解。`ShellView` 同名方法故意不叫
-    /// `refresh`——其他 view 的 `refresh()` 是「立刻送出 `AppEvent::Refresh`」，
-    /// 同名但語意不同容易混淆。
-    pub fn mark_refresh_pending(&mut self) {
-        self.refresh_pending = true;
-    }
-
-    /// `close_github` 還原 `before` 之後呼叫，決定要不要補一次 `self.view.refresh()`。
-    pub fn take_refresh_pending(&mut self) -> bool {
-        std::mem::take(&mut self.refresh_pending)
     }
 
     pub(super) fn before_view_mut(&mut self) -> &mut View<'a> {

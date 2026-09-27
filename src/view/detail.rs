@@ -9,10 +9,7 @@ use crate::{
     git::{
         Commit, CommitExtra, CommitHash, DiffTarget, FileChange, Ref, Repository, WorkingChanges,
     },
-    view::{
-        dispatch_branch_copy, dispatch_tag_copy, partition_branches, partition_tags,
-        ListRefreshViewContext, RefreshViewContext, ViewContext,
-    },
+    view::{dispatch_branch_copy, dispatch_tag_copy, partition_branches, partition_tags},
     widget::{
         commit_detail::{
             build_commit_tree_rows, build_working_changes_tree_rows, CommitDetail,
@@ -326,7 +323,7 @@ impl<'a> DetailView<'a> {
                 self.tx.send(AppEvent::OpenShell);
             }
             UserEvent::Refresh => {
-                self.refresh();
+                self.tx.send(AppEvent::Refresh);
             }
             _ => {}
         }
@@ -703,12 +700,6 @@ impl<'a> DetailView<'a> {
 
     fn copy_to_clipboard(&self, name: String, value: String) {
         self.tx.send(AppEvent::CopyToClipboard { name, value });
-    }
-
-    pub fn refresh(&self) {
-        let list_context = ListRefreshViewContext::from(self.as_list_state());
-        let context = RefreshViewContext::new(list_context, ViewContext::Detail);
-        self.tx.send(AppEvent::Refresh(context));
     }
 
     /// `reload::Reloader` 背景重新整理送達時呼叫（`View::apply_working_changes`），

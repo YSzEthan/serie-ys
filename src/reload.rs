@@ -1,19 +1,18 @@
-//! 背景重新整理 working changes（`git status`）。跟 `auto_fetch` 那種
-//! 「事件觸發、跑完用 `send_after` 自我重新武裝」不同，這裡是常駐 worker
-//! thread + request channel——debounce 視窗要「上一次跑完後至少等 N」而
-//! 不是「上一次排程後等 N」，用事件鏈重新武裝表達不出這個語意，見
-//! `worker_loop` 內的等待計算。
+//! 背景重新整理：working changes（只跑 `git status`）跟 Full（`git log` +
+//! 重算 graph）各自一條常駐 worker thread + request channel——debounce
+//! 視窗要「上一次跑完後至少等 N」而不是「上一次排程後等 N」，用事件鏈重新
+//! 武裝表達不出這個語意，見兩個 `*_worker_loop` 內的等待計算。
 //!
 //! 由 `lib.rs` 的主迴圈持有、跟 `Repository`／`graph` 活得一樣久；`App`
-//! 只借用 `&Reloader`，不擁有它——`Ret::Refresh` 重建 `App` 不該連背景
-//! worker 也重開一次。
+//! 只借用 `&Reloader`，不擁有它——換資料重建 `App` 不該連背景 worker 也
+//! 重開一次。
 
 use std::{
-    cell::Cell,
+    panic::{self, AssertUnwindSafe},
     path::PathBuf,
     sync::{
-        atomic::{AtomicBool, Ordering},
-        mpsc, Arc, Mutex,
+        atomic::{AtomicBool, AtomicU64, Ordering},
+        mpsc, Arc, Mutex, PoisonError,
     },
     thread,
     time::{Duration, Instant},
@@ -21,7 +20,9 @@ use std::{
 
 use crate::{
     event::{AppEvent, Sender},
-    git::{self, WorkingChanges},
+    git::{self, Repository, SortCommit, WorkingChanges},
+    graph::{self, Graph},
+    RemoteOnly,
 };
 
 /// worker 兩次 `git status` 之間至少間隔多久——避免存檔工具連續觸發多次
@@ -32,33 +33,78 @@ const MIN_INTERVAL: Duration = Duration::from_millis(200);
 
 /// Full 重載兩次之間至少間隔多久——rebase 每一步都動 HEAD，沒有這條會
 /// 一路凍結到 rebase 結束。跟 `MIN_INTERVAL` 是同一種節流手法，但套用在
-/// `lib.rs` 的完整重載上，數字也大得多（Full 本身就貴很多）。
+/// Full 重載上，數字也大得多（Full 本身就貴很多）。
 const FULL_COOLDOWN: Duration = Duration::from_secs(1);
 
-/// 背景重載 working changes 的把手，**也**是 `lib.rs` 的 Full 重載冷卻狀態
-/// 的唯一擁有者（`App`／`lib.rs` 都要讀寫，放這裡比另開一個結構、多傳一個
-/// 參數簡單——兩者本來就是「背景重新整理」同一個主題的兩個層級）。
+/// Full 重載一次的完整結果，全部是 `Send` 的裸資料（沒有 `Rc`）——worker
+/// thread 建好之後跨執行緒交給主執行緒，主執行緒才把 `graph`／`filtered`
+/// 包成 `Rc`（`CommitListState` 要的型別）。
+#[derive(Debug)]
+pub struct Loaded {
+    pub repository: Repository,
+    pub graph: Graph,
+    pub filtered: Option<Graph>,
+    pub remote_only: RemoteOnly,
+    /// 這次載入結果的內容指紋，`take_full()` 取走時寫回 `Reloader::applied`。
+    fingerprint: u64,
+}
+
+/// Full 重載的狀態機。`Loading` 與 `Ready` 不可能同時成立——用 enum 讓這個
+/// 不變式在型別層面直接不存在第二種可能，不用另外拿兩個欄位（`bool` +
+/// `Option`）維持同步。
+#[derive(Debug)]
+enum FullState {
+    Idle,
+    Loading,
+    Ready(Box<Loaded>),
+}
+
+/// `App::run()` 迴圈頂端讀的摘要——只關心 discriminant，不需要（也不該）
+/// 把 `Loaded` 借出來看一眼就還回去，`take_full()` 才是唯一的消費入口。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FullStatus {
+    Idle,
+    Loading,
+    Ready,
+}
+
+/// `Reloader::spawn` 啟動 Full worker要用的載入設定，收成一包跟
+/// `app.rs::GitTask` 同一個理由：好幾個同型別的參數相鄰，位置參數容易
+/// 傳反。
+pub struct FullLoadConfig {
+    /// Full 重載呼叫 `Repository::load` 用的路徑——刻意跟啟動時
+    /// `lib.rs::run()` 呼叫初始 `Repository::load` 的那個字串一致（CLI
+    /// 傳入的 `args.path`，例如 `.`），不要傳 canonicalize 過的版本：
+    /// `Repository::path()` 因此在每次重載後都維持同一個值，不會因為
+    /// 換成絕對路徑而跟啟動時不一致。
+    pub path: PathBuf,
+    pub order: SortCommit,
+    pub max_count: Option<usize>,
+    pub trunc: graph::Truncation,
+}
+
+/// 背景重載的把手，working changes 與 Full 共用同一個結構——兩者本來就是
+/// 「背景重新整理」同一個主題的兩個層級，各自的 worker thread、channel、
+/// 節流常數分開放在下面兩個區塊裡。
 #[derive(Debug)]
 pub struct Reloader {
+    // ---- working changes（只跑 `git status`）----
     request_tx: mpsc::Sender<()>,
     latest: Arc<Mutex<Option<WorkingChanges>>>,
     want_stats: Arc<AtomicBool>,
-    /// 下一次 Full 重載最早能開始的時間，`full_finished` 唯一寫入點。
-    full_not_before: Cell<Instant>,
-    /// 冷卻中收到的 Full 請求是否已經排過一個延遲的 `AutoRefresh(Full)`
-    /// ——一次性旗標，`arm_owed_full` 設它、`full_finished` 清它，見兩者
-    /// 文件。
-    full_owed: Cell<bool>,
-    /// 上一次（或這一次正在跑的）Full 重載的開始時間，`full_started` 唯一
-    /// 寫入點。`App` 拿它跟 `AutoRefresh::at` 比對，濾掉「已經被這次 Full
-    /// 涵蓋」的 watcher 事件——見 `last_full_start` 文件。
-    last_full_start: Cell<Instant>,
+
+    // ---- Full（`git log` + 重算 graph）----
+    full_tx: mpsc::Sender<Instant>,
+    full_state: Arc<Mutex<FullState>>,
+    /// App 手上那份資料的指紋——`take_full()` 唯一寫入點。Full worker 拿它
+    /// 跟剛載入的新資料比對：相同就代表沒變，不用觸發換資料。
+    applied: Arc<AtomicU64>,
 }
 
 impl Reloader {
-    /// 啟動 worker thread。`repo_path` 全程不變——`Reloader` 活得跟主迴圈
-    /// 一樣久，repo 路徑（CLI 傳入的 `args.path`）啟動後不會變。
-    pub fn spawn(repo_path: PathBuf, tx: Sender) -> Self {
+    /// 啟動兩條 worker thread。`repo_path`（working changes 用）與
+    /// `full.path`（Full 用）全程不變——`Reloader` 活得跟主迴圈一樣久。
+    pub fn spawn(repo_path: PathBuf, full: FullLoadConfig, tx: Sender) -> Self {
         let (request_tx, request_rx) = mpsc::channel::<()>();
         let latest = Arc::new(Mutex::new(None));
         let want_stats = Arc::new(AtomicBool::new(false));
@@ -66,34 +112,55 @@ impl Reloader {
         {
             let latest = Arc::clone(&latest);
             let want_stats = Arc::clone(&want_stats);
-            thread::spawn(move || worker_loop(repo_path, request_rx, latest, want_stats, tx));
+            let tx = tx.clone();
+            thread::spawn(move || {
+                working_tree_worker_loop(repo_path, request_rx, latest, want_stats, tx)
+            });
+        }
+
+        let (full_tx, full_rx) = mpsc::channel::<Instant>();
+        let full_state = Arc::new(Mutex::new(FullState::Idle));
+        // 先用哨兵值起步——這裡（啟動時）不知道初始 `Repository` 的指紋，
+        // 算出來要等它那筆昂貴的 `git log` 跑完。安全：這個階段不可能有
+        // 任何 `request_full()` 呼叫搶在 `set_initial_fingerprint` 之前
+        // 執行——`App` 都還沒建出來，見該方法文件。
+        let applied = Arc::new(AtomicU64::new(0));
+
+        {
+            let full_state = Arc::clone(&full_state);
+            let applied = Arc::clone(&applied);
+            // 具名 thread：跟它可能 spawn 出的 segment thread（`git.rs` 的
+            // `load_commits_parallel_with_segments`）共用同一個名稱前綴，
+            // `lib.rs` 裝的過濾 panic hook 靠它判斷要不要靜音——這條 thread
+            // 本身也可能直接 panic（`Repository::load` 內部的 `unwrap`），
+            // 不是只有它 spawn 出的子 thread 需要被涵蓋。
+            thread::Builder::new()
+                .name(crate::QUIET_PANIC_THREAD_PREFIX.to_string())
+                .spawn(move || full_worker_loop(full, full_rx, full_state, applied, tx))
+                .expect("spawn full reload worker thread");
         }
 
         Self {
             request_tx,
             latest,
             want_stats,
-            // `full_ready()` 比較的是 `now >= full_not_before`，設成
-            // `now` 本身就已經是「現在可以」，不必再往前推、也不用像下面
-            // 那樣擔心減出負的 `Instant`。
-            full_not_before: Cell::new(Instant::now()),
-            full_owed: Cell::new(false),
-            // 啟動時「上一次 Full」等於從來沒發生過，設成很久以前——
-            // 這樣啟動瞬間收到的任何 watcher 事件都不會被誤判成「已經被
-            // 涵蓋」而濾掉。`checked_sub`：系統剛開機、單調時鐘起點還不到
-            // `FULL_COOLDOWN` 前時，直接減會 panic，跟 `event.rs` 的
-            // debounce 起點算法同一個理由。
-            last_full_start: Cell::new(
-                Instant::now()
-                    .checked_sub(FULL_COOLDOWN)
-                    .unwrap_or_else(Instant::now),
-            ),
+            full_tx,
+            full_state,
+            applied,
         }
+    }
+
+    /// 啟動時，初始 `Repository::load` 完成之後呼叫一次，把它的指紋設成
+    /// Full worker 比對的起點。呼叫時機必須在任何 `request_full` 可能被
+    /// 觸發之前——`lib.rs::run()` 這個呼叫緊接在初始載入之後、`App` 建立
+    /// 之前，這時不可能有 watcher 事件或使用者操作搶先呼叫 `request_full`。
+    pub fn set_initial_fingerprint(&self, fingerprint: u64) {
+        self.applied.store(fingerprint, Ordering::Release);
     }
 
     /// 請求重新跑一次 `git status`。多次呼叫會被 worker 合併成一次——
     /// `mpsc::Sender` 本身就是佇列，worker 醒來後一次排空，見
-    /// `worker_loop`。
+    /// `working_tree_worker_loop`。
     pub fn request(&self) {
         let _ = self.request_tx.send(());
     }
@@ -101,7 +168,10 @@ impl Reloader {
     /// 目前最新一次背景 `git status` 的結果；worker 還沒跑完第一輪時是
     /// `None`。
     pub fn latest(&self) -> Option<WorkingChanges> {
-        self.latest.lock().unwrap().clone()
+        self.latest
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+            .clone()
     }
 
     /// 開啟 working changes detail 時呼叫，讓背景重載順便算檔案行數增減
@@ -130,64 +200,54 @@ impl Reloader {
         }
     }
 
-    /// Full 重載現在能不能立刻觸發——不在冷卻視窗內。
-    pub fn full_ready(&self) -> bool {
-        Instant::now() >= self.full_not_before.get()
+    /// 請求一次 Full 重載。`at` 是這次變化實際發生的時間（watcher 用
+    /// debounce 視窗起點，其餘呼叫端用送出當下），worker 拿它濾掉已經被
+    /// 上一次成功載入涵蓋的請求，取代舊版 `App` 裡 `at >=
+    /// last_full_start()` 的過濾。
+    pub fn request_full(&self, at: Instant) {
+        let _ = self.full_tx.send(at);
     }
 
-    /// Full 重載即將開始時呼叫：記下起點供 `full_finished` 算耗時，也寫入
-    /// `last_full_start`（`App` 拿它濾掉已經被這次重載涵蓋的 watcher
-    /// 事件）。冷卻狀態（`full_not_before`）本身不在這裡改，要等重載真的
-    /// 結束才推進。
-    pub fn full_started(&self) {
-        self.last_full_start.set(Instant::now());
+    /// 這一輪迴圈要不要去看一眼 Full 結果——便宜，`App::run()` 每輪都問得起。
+    pub fn full_status(&self) -> FullStatus {
+        match *self
+            .full_state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner)
+        {
+            FullState::Idle => FullStatus::Idle,
+            FullState::Loading => FullStatus::Loading,
+            FullState::Ready(_) => FullStatus::Ready,
+        }
     }
 
-    /// 上一次（或這一次正在跑的）Full 重載的開始時間，見該欄位文件。
-    pub fn last_full_start(&self) -> Instant {
-        self.last_full_start.get()
-    }
-
-    /// Full 重載結束時呼叫，不論成功或失敗——失敗沒呼叫的話，`mv .git`
-    /// 之類的錯誤會讓 watcher 一直回報，變成 Full → 失敗 → Full 的緊密
-    /// 迴圈。耗時直接從 `last_full_start` 算（`full_started` 剛設過），不用
-    /// 讓呼叫端自己帶著起點跑一圈再交回來。下一次至少要等
-    /// `max(FULL_COOLDOWN, 這次耗時)`；`full_owed` 一併清掉——這次真的跑完
-    /// 了，不欠了。
-    pub fn full_finished(&self) {
-        let cost = self.last_full_start.get().elapsed();
-        self.full_not_before
-            .set(Instant::now() + FULL_COOLDOWN.max(cost));
-        self.full_owed.set(false);
-    }
-
-    /// 冷卻中收到一次 Full 請求時呼叫。`full_owed` 是一次性旗標：第一次
-    /// 呼叫回 `true`（呼叫端該排一個 `send_after(AutoRefresh(Full), ..)`），
-    /// 之後在同一個冷卻視窗內再呼叫都回 `false`（已經排過，不必排第二個）
-    /// ——`full_finished` 才會把它清掉，不是誰讀了就清。
-    pub fn arm_owed_full(&self) -> bool {
-        !self.full_owed.replace(true)
-    }
-
-    /// 純讀取、不清除，給 `App::close_help` 等三個 overlay 關閉時檢查用：
-    /// 冷卻期間吞掉過一次 Full 請求、冷卻計時器到期時 overlay 還開著
-    /// （它們的 `refresh()` 是 no-op）就會卡在這裡，直到清掉這個旗標的
-    /// `full_finished` 真的跑完一次 Full 重載——關閉時用同一個
-    /// `request_full` 補一次，見 `App::retry_owed_full`。
-    pub fn full_owed(&self) -> bool {
-        self.full_owed.get()
-    }
-
-    /// 冷卻視窗還剩多久，`arm_owed_full` 回 `true` 之後呼叫端拿去
-    /// `send_after`。
-    pub fn full_remaining(&self) -> Duration {
-        self.full_not_before
-            .get()
-            .saturating_duration_since(Instant::now())
+    /// 取走目前的 Full 結果並把狀態收回 `Idle`；沒有 `Ready` 就回 `None`,
+    /// 不動狀態——`full_status()` 之後緊接著呼叫這個才有意義，兩者之間
+    /// worker 可能已經把 `Ready` 換掉，這裡永遠以當下鎖到的狀態為準。
+    ///
+    /// **有副作用**：取走的同時把 `applied` 設成這份結果的指紋，讓 Full
+    /// worker 下一輪能跟「App 現在手上這份」比對。呼叫端必須先做完所有
+    /// 不帶副作用的檢查（`pending_message`、狀態列、view 能不能換）再呼叫
+    /// 這個，拿到 `None` 就整輪放棄，不能事後回頭。
+    pub fn take_full(&self) -> Option<Box<Loaded>> {
+        let mut guard = self
+            .full_state
+            .lock()
+            .unwrap_or_else(PoisonError::into_inner);
+        let loaded = match std::mem::replace(&mut *guard, FullState::Idle) {
+            FullState::Ready(loaded) => loaded,
+            other => {
+                *guard = other;
+                return None;
+            }
+        };
+        drop(guard);
+        self.applied.store(loaded.fingerprint, Ordering::Release);
+        Some(loaded)
     }
 }
 
-fn worker_loop(
+fn working_tree_worker_loop(
     repo_path: PathBuf,
     request_rx: mpsc::Receiver<()>,
     latest: Arc<Mutex<Option<WorkingChanges>>>,
@@ -226,7 +286,7 @@ fn worker_loop(
                 if want_stats.load(Ordering::Acquire) {
                     git::fill_working_changes_stats(&repo_path, &mut wc);
                 }
-                *latest.lock().unwrap() = Some(wc);
+                *latest.lock().unwrap_or_else(PoisonError::into_inner) = Some(wc);
                 tx.send(AppEvent::WorkingChangesReady);
             }
             Err(_) => {
@@ -239,67 +299,186 @@ fn worker_loop(
     }
 }
 
+/// 一次 Full 載入的結果：`Unchanged` 代表指紋跟 App 手上那份相同——連
+/// `calc_graph` 都不用跑，比舊版 fast path 更早止血（舊版是 `git log` 跑完
+/// 才比對，這裡指紋在 `Repository::load` 一結束就能算）。
+enum Outcome {
+    Unchanged,
+    Changed(Box<Loaded>),
+}
+
+fn load_full(config: &FullLoadConfig, applied: &AtomicU64) -> crate::Result<Outcome> {
+    let repository = Repository::load(&config.path, config.order, config.max_count)?;
+    let fingerprint = repository.fingerprint();
+    if fingerprint == applied.load(Ordering::Acquire) {
+        return Ok(Outcome::Unchanged);
+    }
+
+    let head = crate::resolve_head_commit_hash(&repository);
+    let graph = graph::calc_graph(
+        &repository,
+        head.as_ref(),
+        crate::head_has_named_ref(&repository),
+        config.trunc,
+    );
+    let remote_only = crate::find_remote_only_commits(&repository);
+    let filtered = crate::compute_filtered_graph_from(&repository, &remote_only, config.trunc);
+
+    Ok(Outcome::Changed(Box::new(Loaded {
+        repository,
+        graph,
+        filtered,
+        remote_only,
+        fingerprint,
+    })))
+}
+
+/// panic payload 轉成訊息——`catch_unwind` 接住的 panic 幾乎都是
+/// `&'static str`（`panic!("literal")`）或 `String`（`panic!("{e}")`），
+/// 其餘型別（極罕見的 `panic_any`）退回固定文案。
+fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
+    if let Some(s) = payload.downcast_ref::<&str>() {
+        s.to_string()
+    } else if let Some(s) = payload.downcast_ref::<String>() {
+        s.clone()
+    } else {
+        "unknown panic".to_string()
+    }
+}
+
+fn full_worker_loop(
+    config: FullLoadConfig,
+    request_rx: mpsc::Receiver<Instant>,
+    state: Arc<Mutex<FullState>>,
+    applied: Arc<AtomicU64>,
+    tx: Sender,
+) {
+    // 「上一次成功載入的開始時間」，`request_full` 帶的 `at` 早於這個時間
+    // 就代表那批變化已經被那次載入涵蓋，不需要再跑一次。一開始當作很久
+    // 以前，第一個請求不用等；`checked_sub` 理由同 working changes worker。
+    let mut covered = Instant::now()
+        .checked_sub(FULL_COOLDOWN)
+        .unwrap_or_else(Instant::now);
+    let mut last_end = covered;
+    let mut last_cost = Duration::ZERO;
+
+    loop {
+        let Ok(first_at) = request_rx.recv() else {
+            return;
+        };
+        let mut max_at = first_at;
+        while let Ok(at) = request_rx.try_recv() {
+            max_at = max_at.max(at);
+        }
+        if max_at < covered {
+            continue;
+        }
+
+        // 立刻把狀態換成 Loading，丟掉舊的 Ready（若有）——冷卻期間 slot
+        // 不會留著已知過期的結果，主執行緒只換一次、拿到的一定是最新的。
+        // 舊值在放掉鎖之後才 drop，不在持鎖期間釋放（上 GB 的 `Repository`
+        // 釋放很貴，鎖著它會讓每 100ms 讀一次 `full_status()` 的主執行緒
+        // 卡在鎖上）。
+        {
+            let old = std::mem::replace(
+                &mut *state.lock().unwrap_or_else(PoisonError::into_inner),
+                FullState::Loading,
+            );
+            drop(old);
+        }
+        tx.send(AppEvent::FullReloadStatus);
+
+        // 睡到「上次跑完後至少 max(FULL_COOLDOWN, 上次耗時)」，理由同
+        // working changes worker；rebase 這類每一步都動 HEAD 的操作，
+        // 沒有這條會一路凍結到結束。睡覺期間累積的請求併進這一輪。
+        let wait = FULL_COOLDOWN
+            .max(last_cost)
+            .saturating_sub(last_end.elapsed());
+        if !wait.is_zero() {
+            thread::sleep(wait);
+            while let Ok(at) = request_rx.try_recv() {
+                max_at = max_at.max(at);
+            }
+        }
+
+        let start = Instant::now();
+        let result = panic::catch_unwind(AssertUnwindSafe(|| load_full(&config, &applied)));
+
+        let mut next_state = FullState::Idle;
+        match result {
+            Ok(Ok(Outcome::Unchanged)) => {
+                covered = start;
+            }
+            Ok(Ok(Outcome::Changed(loaded))) => {
+                covered = start;
+                next_state = FullState::Ready(loaded);
+            }
+            Ok(Err(e)) => {
+                tx.send(AppEvent::NotifyError(e.to_string()));
+            }
+            Err(payload) => {
+                tx.send(AppEvent::NotifyError(format!(
+                    "reload panicked: {}",
+                    panic_message(payload)
+                )));
+            }
+        }
+        *state.lock().unwrap_or_else(PoisonError::into_inner) = next_state;
+        tx.send(AppEvent::FullReloadStatus);
+
+        last_cost = start.elapsed();
+        last_end = Instant::now();
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::event::Sender;
 
-    /// worker thread 不影響這裡測的邏輯（不呼叫 `request()` 就不會跑
-    /// `git status`），路徑不必是真的 repo。
+    fn full_config() -> FullLoadConfig {
+        FullLoadConfig {
+            path: PathBuf::from("/nonexistent"),
+            order: SortCommit::Chronological,
+            max_count: None,
+            trunc: graph::Truncation::new(0),
+        }
+    }
+
     fn spawn_for_test() -> Reloader {
         let (tx, _rx) = Sender::channel_for_test();
-        Reloader::spawn(PathBuf::from("/nonexistent"), tx)
+        Reloader::spawn(PathBuf::from("/nonexistent"), full_config(), tx)
     }
 
     #[test]
-    fn full_ready_right_after_spawn() {
-        // `full_not_before` 初始化成很久以前，第一次 Full 不用等。
-        assert!(spawn_for_test().full_ready());
+    fn full_status_starts_idle() {
+        assert_eq!(spawn_for_test().full_status(), FullStatus::Idle);
     }
 
     #[test]
-    fn full_started_advances_last_full_start() {
-        let reloader = spawn_for_test();
-        let before = reloader.last_full_start();
-        reloader.full_started();
-        assert!(reloader.last_full_start() >= before);
+    fn take_full_on_idle_returns_none() {
+        assert!(spawn_for_test().take_full().is_none());
     }
 
+    /// 路徑不是 repo：`Repository::load` 失敗，狀態回 `Idle`，收到
+    /// `NotifyError`——不會一直卡在 `Loading`。
     #[test]
-    fn full_finished_starts_cooldown_and_clears_owed() {
-        let reloader = spawn_for_test();
-        reloader.arm_owed_full();
-        assert!(reloader.full_owed());
+    fn request_on_nonexistent_repo_settles_to_idle_and_notifies() {
+        let (tx, rx) = Sender::channel_for_test();
+        let reloader = Reloader::spawn(PathBuf::from("/nonexistent"), full_config(), tx);
 
-        reloader.full_started();
-        reloader.full_finished();
+        reloader.request_full(Instant::now());
 
-        assert!(
-            !reloader.full_ready(),
-            "剛結束一次 Full，下一次至少要等 FULL_COOLDOWN"
-        );
-        assert!(!reloader.full_owed(), "跑完一次 Full 就不欠了");
-    }
-
-    /// 一次性旗標：第一次呼叫回 true（該排一個 `send_after`），冷卻視窗內
-    /// 再呼叫都回 false（已經排過，不必排第二個）。
-    #[test]
-    fn arm_owed_full_is_one_shot_within_cooldown() {
-        let reloader = spawn_for_test();
-
-        assert!(reloader.arm_owed_full());
-        assert!(!reloader.arm_owed_full());
-        assert!(!reloader.arm_owed_full());
-    }
-
-    #[test]
-    fn full_remaining_is_positive_right_after_full_finished() {
-        let reloader = spawn_for_test();
-        reloader.full_started();
-        reloader.full_finished();
-
-        let remaining = reloader.full_remaining();
-        assert!(remaining > Duration::ZERO);
-        assert!(remaining <= FULL_COOLDOWN);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            if reloader.full_status() == FullStatus::Idle
+                && matches!(rx.try_recv(), Ok(AppEvent::NotifyError(_)))
+            {
+                break;
+            }
+            assert!(Instant::now() < deadline, "逾時：worker 沒有回到 Idle");
+            thread::sleep(Duration::from_millis(5));
+        }
+        assert!(reloader.take_full().is_none());
     }
 }
