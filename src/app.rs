@@ -15,7 +15,7 @@ use crate::{
     auto_fetch,
     color::{ColorTheme, GraphColorSet},
     config::{CoreConfig, CoreShellConfig, UiConfig, UserCommand, UserCommandType},
-    event::{AppEvent, EventController, UserEvent, UserEventWithCount},
+    event::{AppEvent, EventController, Scope, UserEvent, UserEventWithCount},
     external::{
         copy_to_clipboard, exec_user_command, exec_user_command_suspend, is_posix_shell,
         ExternalCommandParameters,
@@ -626,7 +626,10 @@ impl App<'_> {
                 AppEvent::CheckoutCommit { target } => {
                     self.checkout_commit(target);
                 }
-                AppEvent::AutoRefresh => {
+                // 這個 Phase 尚未依 `scope` 分流——`WorkingTree`（存檔）
+                // 暫時當 `Full` 處理，跟改動前行為相同；分流留給後續步驟
+                // （背景重載 working changes、Full 合併與冷卻）。
+                AppEvent::AutoRefresh(_scope) => {
                     if let Some(request) = self.shell_refresh_request() {
                         return Ok(Ret::Refresh(request));
                     }
@@ -2108,7 +2111,7 @@ fn spawn_merge_pr(
                             // GitHub view（`close_github`）才真正刷新底下的
                             // commit list——沿用 `spawn_git_task` 對背景 git
                             // 操作成功的既有慣例，不必為此另開一個事件。
-                            tx.send(AppEvent::AutoRefresh);
+                            tx.send(AppEvent::AutoRefresh(Scope::Full));
                         }
                         Err(e) => {
                             has_failure = true;
@@ -2356,7 +2359,9 @@ fn spawn_git_task(ec: &EventController, task: GitTask) {
                     detail
                 };
                 tx.send(AppEvent::NotifySuccess(msg));
-                tx.send(AppEvent::AutoRefresh);
+                // checkout／建立或刪除 tag／ref 一定動到 HEAD 或 refs，
+                // 一律當 Full，不是 WorkingTree。
+                tx.send(AppEvent::AutoRefresh(Scope::Full));
                 if let Some(event) = on_success {
                     tx.send(event);
                 }
