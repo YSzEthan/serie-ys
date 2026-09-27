@@ -286,12 +286,12 @@ impl CommitDetail<'_> {
                 ),
                 self.commit
                     .author_name
-                    .as_str()
+                    .as_ref()
                     .fg(self.ctx.color_theme.detail_name_fg),
                 " <".into(),
                 self.commit
                     .author_email
-                    .as_str()
+                    .as_ref()
                     .fg(self.ctx.color_theme.detail_email_fg),
                 ">".into(),
             ]),
@@ -554,8 +554,8 @@ fn detail_block(divider_fg: Color, glyphs: GlyphSet) -> Block<'static> {
 }
 
 fn is_author_committer_different(commit: &Commit, extra: &CommitExtra) -> bool {
-    commit.author_name != extra.committer_name
-        || commit.author_email != extra.committer_email
+    commit.author_name.as_ref() != extra.committer_name
+        || commit.author_email.as_ref() != extra.committer_email
         || commit.author_date != extra.committer_date
 }
 
