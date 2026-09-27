@@ -21,8 +21,8 @@ use crate::{
         ExternalCommandParameters,
     },
     git::{
-        background_command, Commit, CommitHash, FetchPrune, FileChange, Head, Ref, RefType,
-        Repository,
+        background_command, fill_working_changes_stats, Commit, CommitHash, FetchPrune, FileChange,
+        Head, Ref, RefType, Repository, WorkingChanges,
     },
     github::{
         delete_remote_branch as gh_delete_remote_branch, is_merge_conflict_error, merge_pr,
@@ -32,6 +32,7 @@ use crate::{
     graph::{Graph, GraphStyle},
     keybind::KeyBind,
     process::run_with_timeout,
+    reload::Reloader,
     update::UpdateSettings,
     view::{dispatch_delete_branch, LabelMode, RefreshViewContext, RefsOrigin, View, ViewContext},
     widget::{
@@ -209,6 +210,10 @@ pub struct App<'a> {
     github_label_mode: LabelMode,
     ctx: Rc<AppContext>,
     ec: &'a EventController,
+    /// 背景重新整理 working changes 的把手，由 `lib.rs` 主迴圈持有，跟
+    /// `repository`／`ec` 一樣是借用——`Ret::Refresh` 重建 `App` 不該連
+    /// worker thread 也重開一次。
+    reloader: &'a Reloader,
     marquee_frame: u64,
     marquee_needed: bool,
     last_marquee_id: Option<std::sync::Arc<str>>,
@@ -272,6 +277,8 @@ impl<'a> App<'a> {
         initial_selection: InitialSelection,
         ctx: Rc<AppContext>,
         ec: &'a EventController,
+        reloader: &'a Reloader,
+        working_changes: Option<WorkingChanges>,
         refresh_view_context: Option<RefreshViewContext>,
     ) -> Self {
         let graph_colors: Vec<Color> = graph_color_set
@@ -298,12 +305,7 @@ impl<'a> App<'a> {
             .collect();
 
         let head = repository.head().clone();
-        let working_changes = repository.working_changes().clone();
-        let working_changes_opt = if working_changes.is_empty() {
-            None
-        } else {
-            Some(working_changes)
-        };
+        let working_changes_opt = working_changes.filter(|wc| !wc.is_empty());
         let mut commit_list_state = CommitListState::new(
             commits,
             Rc::clone(graph),
@@ -345,6 +347,7 @@ impl<'a> App<'a> {
             github_label_mode: LabelMode::default(),
             ctx,
             ec,
+            reloader,
             marquee_frame: 0,
             marquee_needed: false,
             last_marquee_id: None,
@@ -629,11 +632,22 @@ impl App<'_> {
                 // 這個 Phase 尚未依 `scope` 分流——`WorkingTree`（存檔）
                 // 暫時當 `Full` 處理，跟改動前行為相同；分流留給後續步驟
                 // （背景重載 working changes、Full 合併與冷卻）。
-                AppEvent::AutoRefresh(_scope) => {
+                // `WorkingTree`（存檔）只需要背景跑一次 `git status`，不必
+                // 驚動 `Ret::Refresh`／完整重載那一整套；`Full` 維持原本
+                // 走法。兩者的合併與冷卻是下一步的事，這裡只是分流。
+                AppEvent::AutoRefresh(Scope::WorkingTree) => {
+                    self.reloader.request();
+                }
+                AppEvent::AutoRefresh(Scope::Full) => {
                     if let Some(request) = self.shell_refresh_request() {
                         return Ok(Ret::Refresh(request));
                     }
                     self.view.refresh();
+                }
+                AppEvent::WorkingChangesReady => {
+                    let working_changes = self.reloader.latest();
+                    self.view
+                        .apply_working_changes(working_changes, &self.ctx, self.ec);
                 }
                 AppEvent::AutoFetchPoll => {
                     // `remaining()` 只有從未 arm 過才是 `None`（等同已到期）；
@@ -1083,7 +1097,12 @@ impl App<'_> {
         };
 
         if commit_list_state.is_virtual_row_selected() {
-            if let Some(wc) = commit_list_state.working_changes().cloned() {
+            if let Some(mut wc) = commit_list_state.working_changes().cloned() {
+                // 背景重載預設不算檔案行數增減——只有真的看得到（開著這個
+                // detail）才值得多跑兩個 `diff --numstat` 子行程，開啟當下
+                // 先同步補一次，往後交給 `reloader` 背景跟著補。
+                fill_working_changes_stats(self.repository.path(), &mut wc);
+                self.reloader.set_want_stats(true);
                 self.view = View::of_working_changes_detail(
                     commit_list_state,
                     wc,
@@ -1102,6 +1121,7 @@ impl App<'_> {
 
     fn close_detail(&mut self) {
         if let View::Detail(ref mut view) = self.view {
+            self.reloader.set_want_stats(false);
             let Some(commit_list_state) = view.take_list_state() else {
                 return;
             };

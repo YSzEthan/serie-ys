@@ -101,6 +101,18 @@ impl CommitDetailState {
         self.file_cursor = rows.iter().position(|r| r.file.is_some());
     }
 
+    /// working changes 背景重新整理時呼叫：儘量保留使用者正在看的檔案，
+    /// 不像 `reset` 那樣無條件跳回第一列——不然存檔工具每次 autosave 都會
+    /// 把游標拉回檔案樹頂端。`target` 是重新整理前選到的檔案；新的 rows
+    /// 裡找不到同一個檔案（已經沒有變更了）才退化成 `reset` 的行為。
+    /// `right_offset` 不必在這裡重新收斂，下一次 render 的
+    /// `resync_files_window` 會自己用新游標算。
+    pub fn reselect(&mut self, rows: &[TreeRow], target: Option<&DiffTarget>) {
+        self.file_cursor = target
+            .and_then(|t| rows.iter().position(|r| r.file.as_ref() == Some(t)))
+            .or_else(|| rows.iter().position(|r| r.file.is_some()));
+    }
+
     /// 游標移到下一個檔案列（跳過目錄／標題／空行）。回傳 true 代表游標真的
     /// 移動了，呼叫端據此決定要不要重新載入 diff。
     pub fn move_file_cursor_down(&mut self, rows: &[TreeRow]) -> bool {

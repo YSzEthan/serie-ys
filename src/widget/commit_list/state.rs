@@ -453,6 +453,52 @@ impl<'a> CommitListState<'a> {
         self.working_changes.as_ref()
     }
 
+    /// 背景重新整理（`reload::Reloader`）送達新的 working changes 時呼叫，
+    /// 就地更新，不重建整個 `CommitListState`。
+    ///
+    /// 虛擬列的有無（`has_virtual_row()`，`Some` 且非空才算有）沒有變的話
+    /// 只換內容，游標／捲動完全不動。有變的話換算 `delta`（`+1` 出現、
+    /// `-1` 消失），永遠透過 `place()` 寫入新的 `offset`／`selected`——不
+    /// 直接改這兩個欄位：filter 篩到 0 筆時 `total` 可能是 0，`place` 在
+    /// `target >= total` 時是 no-op，直接改的話不變式會破，這裡改成先算
+    /// 目標再交給 `place` 夾回，`target`／`prev_offset` 兩處 `.max(0)`
+    /// 就是為了在那類情況下夾出合法值，不需要再另外特判。
+    ///
+    /// - `target = 目前 visible index + delta`，夾到 `[0, total-1]`——虛擬列
+    ///   消失、原本選在虛擬列上（`cur == 0`）時，`target` 正好落在 0，也
+    ///   就是新的第一列。
+    /// - `prev_offset`：`offset == 0` 時傳 `0`（跳轉語意不變，被選的
+    ///   commit 隨虛擬列出現/消失上下移一列）；否則傳 `offset + delta`
+    ///   （捲動語意，被選的 commit 留在同一個螢幕列）。
+    pub fn set_working_changes(&mut self, working_changes: Option<WorkingChanges>) {
+        let old_vr = self.virtual_row_offset();
+        self.working_changes = working_changes;
+        let new_vr = self.virtual_row_offset();
+
+        if old_vr == new_vr {
+            return;
+        }
+
+        let delta = new_vr as isize - old_vr as isize;
+        let cur = self.current_visible().0;
+        let target = (cur as isize + delta).max(0) as usize;
+        let prev_offset = if self.offset == 0 {
+            0
+        } else {
+            (self.offset as isize + delta).max(0) as usize
+        };
+
+        self.total = self.total.saturating_sub(old_vr) + new_vr;
+        if self.total == 0 || self.height == 0 {
+            // `place` 在這兩種情況下是 no-op，不能指望它幫忙夾回——對齊
+            // `rebuild_filtered_indices` 開頭那個既有例外的作法，直接歸零。
+            self.offset = 0;
+            self.selected = 0;
+            return;
+        }
+        self.place(VisibleIdx(target.min(self.total - 1)), prev_offset);
+    }
+
     pub(super) fn rebuild_filtered_indices(&mut self) {
         let has_text_filter = !self.filter_input.value().is_empty();
         let has_remote_filter = !self.show_remote_refs;
@@ -1184,6 +1230,144 @@ mod tests {
         state.set_visible_selection(VisibleIdx(1));
         assert!(!state.is_virtual_row_selected());
         assert_eq!(state.current_list_status().1, 0);
+    }
+
+    // --- set_working_changes() 回歸測試 ----------------------------------------
+    // `current_list_status()` 回傳 `(selected, offset, height)`。
+
+    fn some_working_changes() -> WorkingChanges {
+        WorkingChanges {
+            unstaged: vec![FileChange::Untracked {
+                path: "new.txt".into(),
+                stats: None,
+            }],
+            staged: Vec::new(),
+        }
+    }
+
+    /// 出現、`offset == 0`：被選的 commit 下移一列，`offset` 不動。
+    #[test]
+    fn set_working_changes_appears_at_offset_zero_shifts_selected_down() {
+        let commits = commits_fixture(20);
+        let mut state = scrolloff_fixture(&commits, 10, 0);
+        state.selected = 3; // offset=0, cur=3
+
+        state.set_working_changes(Some(some_working_changes()));
+
+        assert!(state.has_virtual_row());
+        assert_eq!(state.current_list_status(), (4, 0, 10));
+    }
+
+    /// 出現、`offset != 0`：捲動量 +1，被選的 commit 留在同一個螢幕列。
+    #[test]
+    fn set_working_changes_appears_while_scrolled_keeps_screen_row() {
+        let commits = commits_fixture(20);
+        let mut state = scrolloff_fixture(&commits, 10, 0);
+        state.offset = 5;
+        state.selected = 3; // cur=8
+
+        state.set_working_changes(Some(some_working_changes()));
+
+        assert!(state.has_virtual_row());
+        assert_eq!(state.current_list_status(), (3, 6, 10));
+    }
+
+    /// 消失、選在虛擬列上（`cur == 0`）：游標落在新的第一列。
+    #[test]
+    fn set_working_changes_disappears_while_selected_lands_on_first_row() {
+        let commits = commits_fixture(20);
+        let mut state = scrolloff_fixture(&commits, 10, 0);
+        state.working_changes = Some(some_working_changes());
+        state.total = commits.len() + 1;
+        state.offset = 0;
+        state.selected = 0; // 選在虛擬列上
+
+        state.set_working_changes(None);
+
+        assert!(!state.has_virtual_row());
+        assert_eq!(state.current_list_status(), (0, 0, 10));
+    }
+
+    /// 消失、沒選在虛擬列上：反向處理，同一個 commit 留在同一個螢幕列。
+    #[test]
+    fn set_working_changes_disappears_while_scrolled_keeps_screen_row() {
+        let commits = commits_fixture(20);
+        let mut state = scrolloff_fixture(&commits, 10, 0);
+        state.working_changes = Some(some_working_changes());
+        state.total = commits.len() + 1;
+        state.offset = 5;
+        state.selected = 3; // cur=8
+
+        state.set_working_changes(None);
+
+        assert!(!state.has_virtual_row());
+        assert_eq!(state.current_list_status(), (3, 4, 10));
+    }
+
+    /// filter 篩到 0 筆時 `total == 0`——`place()` 在這種情況下是 no-op，
+    /// 舊寫法（先直接改欄位、指望 `place` 夾回）在這裡會讓不變式破裂。
+    #[test]
+    fn set_working_changes_appears_when_total_was_zero() {
+        let commits = commits_fixture(20);
+        let mut state = scrolloff_fixture(&commits, 10, 0);
+        state.total = 0;
+        state.offset = 0;
+        state.selected = 0;
+
+        state.set_working_changes(Some(some_working_changes()));
+
+        assert!(state.has_virtual_row());
+        assert_eq!(state.current_list_status(), (0, 0, 10));
+    }
+
+    /// `height == 0`（第一幀畫出來之前）：`place()` 同樣是 no-op，這裡直接
+    /// 把游標歸零，對齊 `rebuild_filtered_indices` 開頭的既有例外。
+    #[test]
+    fn set_working_changes_is_safe_when_height_is_zero() {
+        let commits = commits_fixture(20);
+        let mut state = scrolloff_fixture(&commits, 10, 0);
+        state.reset_height(0);
+
+        state.set_working_changes(Some(some_working_changes()));
+
+        assert!(state.has_virtual_row());
+        assert_eq!(state.current_list_status(), (0, 0, 0));
+    }
+
+    /// `Some(empty)` 跟 `None` 同樣是「沒有虛擬列」——判斷依據必須是
+    /// `has_virtual_row()`，不能只看 `Option` 本身，否則 `Some(empty)` 換成
+    /// `Some(non-empty)` 會被誤判成「有無不變」而漏掉游標調整。
+    #[test]
+    fn set_working_changes_empty_option_is_same_as_none() {
+        let commits = commits_fixture(20);
+        let mut state = scrolloff_fixture(&commits, 10, 0);
+        state.selected = 3;
+
+        state.set_working_changes(Some(WorkingChanges::default()));
+
+        assert!(!state.has_virtual_row());
+        assert_eq!(
+            state.current_list_status(),
+            (3, 0, 10),
+            "Some(empty) 不是虛擬列，游標不該被調整"
+        );
+    }
+
+    /// 上一個測試的反面：`Some(non-empty)` → `Some(empty)` 要被當成「虛擬列
+    /// 消失」，不能因為兩邊都是 `Some` 就誤判成沒變化。
+    #[test]
+    fn set_working_changes_non_empty_to_empty_option_counts_as_disappearing() {
+        let commits = commits_fixture(20);
+        let mut state = scrolloff_fixture(&commits, 10, 0);
+        state.working_changes = Some(some_working_changes());
+        state.total = commits.len() + 1;
+        state.offset = 0;
+        state.selected = 0; // 選在虛擬列上
+
+        state.set_working_changes(Some(WorkingChanges::default()));
+
+        assert!(!state.has_virtual_row());
+        assert_eq!(state.current_list_status(), (0, 0, 10));
     }
 
     // --- select_parent() / select_child() 回歸測試 ----------------------------

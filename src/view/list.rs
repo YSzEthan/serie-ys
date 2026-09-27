@@ -294,7 +294,7 @@ impl<'a> ListView<'a> {
         self.as_mut_list_state().step_to_commit_hash(hash);
     }
 
-    fn as_mut_list_state(&mut self) -> &mut CommitListState<'a> {
+    pub(super) fn as_mut_list_state(&mut self) -> &mut CommitListState<'a> {
         self.commit_list_state
             .as_mut()
             .expect("commit_list_state already taken")

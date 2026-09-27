@@ -150,10 +150,12 @@ pub struct Repository {
 
     ref_map: RefMap,
     head: Head,
-    working_changes: WorkingChanges,
 }
 
 impl Repository {
+    /// 不再載入 working changes——那是 `reload::Reloader` 背景執行緒的責任
+    /// （只跑 `git status`，不必等一次完整的 `git log`）。`lib.rs` 啟動時
+    /// 兩者平行跑，見 `reload::Reloader::spawn`。
     pub fn load(path: &Path, sort: SortCommit, max_count: Option<usize>) -> Result<Self> {
         check_git_repository(path)?;
 
@@ -170,24 +172,10 @@ impl Repository {
         let stash_ref_map = load_stashes_as_refs(path);
         merge_ref_maps(&mut ref_map, stash_ref_map);
 
-        let working_changes = load_working_changes(path)?;
-
-        Ok(Self::new(
-            path.to_path_buf(),
-            commits,
-            ref_map,
-            head,
-            working_changes,
-        ))
+        Ok(Self::new(path.to_path_buf(), commits, ref_map, head))
     }
 
-    fn new(
-        path: PathBuf,
-        commits: Vec<Commit>,
-        ref_map: RefMap,
-        head: Head,
-        working_changes: WorkingChanges,
-    ) -> Self {
+    fn new(path: PathBuf, commits: Vec<Commit>, ref_map: RefMap, head: Head) -> Self {
         let commit_index = build_commit_index(&commits);
         let (parent_start, parent_idx) = build_parent_csr(&commits, &commit_index);
         Self {
@@ -198,7 +186,6 @@ impl Repository {
             parent_idx,
             ref_map,
             head,
-            working_changes,
         }
     }
 
@@ -242,12 +229,12 @@ impl Repository {
             .eq(other.commits.iter().map(|c| &c.commit_hash))
     }
 
-    /// 從另一個 repository 更新 refs、head 與 working changes，
-    /// commits 與衍生資料（index、parent CSR）維持不變。
+    /// 從另一個 repository 更新 refs 與 head，commits 與衍生資料
+    /// （index、parent CSR）維持不變。working changes 不在這裡——那是
+    /// `Reloader` 背景更新的，跟 Full 重載是兩條獨立的資料流。
     pub fn update_metadata_from(&mut self, other: Self) {
         self.ref_map = other.ref_map;
         self.head = other.head;
-        self.working_changes = other.working_changes;
     }
 
     pub fn refs(&self, commit_hash: &CommitHash) -> Vec<&Ref> {
@@ -271,10 +258,6 @@ impl Repository {
 
     pub fn path(&self) -> &Path {
         &self.path
-    }
-
-    pub fn working_changes(&self) -> &WorkingChanges {
-        &self.working_changes
     }
 
     pub fn commit_detail(&self, commit_hash: &CommitHash) -> (&Commit, Vec<FileChange>) {
@@ -888,6 +871,10 @@ impl WorkingChanges {
     }
 }
 
+/// 只跑 `git status`，不含檔案行數增減——`reload::Reloader` 的背景 worker
+/// 每次存檔都要跑這個，多兩個 `diff --numstat` 子行程不划算。行數只有真的
+/// 開著 working changes detail 才看得到，需要時呼叫 `fill_working_changes_stats`
+/// 另外補。
 pub fn load_working_changes(path: &Path) -> Result<WorkingChanges> {
     let mut cmd = git_read(path)
         .arg("-c")
@@ -935,17 +922,25 @@ pub fn load_working_changes(path: &Path) -> Result<WorkingChanges> {
         unstaged.extend(parse_status_char(y, file_path));
     }
 
-    let _ = cmd.wait();
-
-    // 取得 unstaged 變更的 numstat
-    let unstaged_stats = get_diff_numstat(path, &[]);
-    apply_numstat(&mut unstaged, &unstaged_stats);
-
-    // 取得 staged 變更的 numstat
-    let staged_stats = get_diff_numstat(path, &["--cached"]);
-    apply_numstat(&mut staged, &staged_stats);
+    let status = cmd
+        .wait()
+        .map_err(|e| format!("failed to wait for git status: {e}"))?;
+    if !status.success() {
+        return Err("git status exited with a non-zero status".into());
+    }
 
     Ok(WorkingChanges { staged, unstaged })
+}
+
+/// 把檔案行數增減（`diff --numstat`）補進已經跑完 `git status` 的
+/// `WorkingChanges`。只有使用者真的開著 working changes detail、看得到
+/// 行數時才值得呼叫——見 `App::open_detail`／`reload::Reloader::set_want_stats`。
+pub fn fill_working_changes_stats(path: &Path, working_changes: &mut WorkingChanges) {
+    let unstaged_stats = get_diff_numstat(path, &[]);
+    apply_numstat(&mut working_changes.unstaged, &unstaged_stats);
+
+    let staged_stats = get_diff_numstat(path, &["--cached"]);
+    apply_numstat(&mut working_changes.staged, &staged_stats);
 }
 
 fn rename_to_changes(old_path: &str, new_path: &str) -> Vec<FileChange> {

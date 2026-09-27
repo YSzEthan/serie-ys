@@ -396,6 +396,12 @@ impl<'a> CreateTagView<'a> {
         self.commit_list_state.take()
     }
 
+    pub(super) fn as_mut_list_state(&mut self) -> &mut CommitListState<'a> {
+        self.commit_list_state
+            .as_mut()
+            .expect("commit_list_state already taken")
+    }
+
     pub fn refresh(&self) {
         super::views::send_refresh(self.commit_list_state.as_ref(), &self.tx);
     }

@@ -183,7 +183,7 @@ impl<'a> RefsView<'a> {
             .expect("commit_list_state already taken")
     }
 
-    fn as_mut_list_state(&mut self) -> &mut CommitListState<'a> {
+    pub(super) fn as_mut_list_state(&mut self) -> &mut CommitListState<'a> {
         self.commit_list_state
             .as_mut()
             .expect("commit_list_state already taken")
