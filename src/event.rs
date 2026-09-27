@@ -1,4 +1,6 @@
 use std::{
+    cell::RefCell,
+    collections::VecDeque,
     ffi::OsStr,
     fmt::{self, Debug, Formatter},
     path::{Component, Path, PathBuf},
@@ -167,8 +169,15 @@ pub enum AppEvent {
         target: String,
     },
     /// watcher 偵測到變化，或背景 git 操作（`spawn_git_task`）成功後自己
-    /// 觸發的重新整理。`Scope` 見該型別文件。
-    AutoRefresh(Scope),
+    /// 觸發的重新整理。`Scope` 見該型別文件；`at` 是這次變化實際發生的時間
+    /// （watcher 用 debounce 視窗的起點，`spawn_git_task` 用送出當下），
+    /// `Scope::Full` 靠它跟 `Reloader::last_full_start()` 比對，把「已經被
+    /// 上一次 Full 涵蓋」的事件（checkout／commit 之後隔一段 debounce 才到
+    /// 的 watcher 事件）濾掉，不必再觸發第二次。
+    AutoRefresh {
+        scope: Scope,
+        at: Instant,
+    },
     /// `reload::Reloader` 背景跑完一次 `git status`。結果本身不隨事件走，
     /// 收到後向 `Reloader::latest()` 拿——事件只是「該去看一眼」的信號。
     WorkingChangesReady,
@@ -528,6 +537,10 @@ impl Receiver {
     fn recv(&self) -> AppEvent {
         self.rx.recv().unwrap_or(AppEvent::Quit)
     }
+
+    fn try_recv(&self) -> Option<AppEvent> {
+        self.rx.try_recv().ok()
+    }
 }
 
 impl Debug for Receiver {
@@ -542,13 +555,12 @@ pub struct EventController {
     rx: Receiver,
     stop: Arc<AtomicBool>,
     handle: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
-    /// 「已有 refresh 在路上」的一次性 token——`mark_pending_refresh` 設它、
-    /// `start_git_watcher` 的背景 thread 用 `swap(false, ...)` 消費，見該處
-    /// 註解。無條件建好（不是 `Option`）：沒有 watcher 時這個 flag 只是沒人
-    /// 讀，不是需要特判的錯誤狀態。唯一的寫入端都握有 `&EventController`
-    /// 本身（`app.rs` 的 `spawn_git_task`／`auto_fetch::spawn_due_fetch`），
-    /// 不需要另外包一層可攜把手給背景 thread 用。
-    pending_refresh: Arc<AtomicBool>,
+    /// `App::request_full` 排空事件佇列時，暫存「不能被這次 Full 重載悄悄
+    /// 吃掉」的事件（`Refresh`／`AutoRefresh(Full)`／`Tick` 以外的所有事件），
+    /// 讓它們照原本順序繼續處理。`recv()` 每次都先吐這裡，吐完才問底層
+    /// channel——`try_recv()` 只問底層 channel，不吐這裡，否則排空迴圈會
+    /// 把自己剛推進去的事件又拿出來，變成無窮迴圈。
+    deferred: RefCell<VecDeque<AppEvent>>,
     /// 下一輪 auto-fetch 的預定時間與比對基準，狀態列倒數、`auto_fetch`
     /// 模組共用。無條件建好：沒開 auto-fetch 時只是沒人 `arm`，
     /// `remaining()`／`baseline()` 恆為 `None`，不是需要特判的狀態。見
@@ -601,7 +613,7 @@ impl EventController {
             rx,
             stop: Arc::new(AtomicBool::new(false)),
             handle: Arc::new(Mutex::new(None)),
-            pending_refresh: Arc::new(AtomicBool::new(false)),
+            deferred: RefCell::new(VecDeque::new()),
             auto_fetch_clock: AutoFetchClock::default(),
             term_signal,
             heartbeat: Arc::new(AtomicU64::new(0)),
@@ -768,8 +780,26 @@ impl EventController {
         self.tx.send(event);
     }
 
+    /// `deferred` 有東西就先吐它——`App::request_full` 排空佇列時推回來的
+    /// 事件，要照原本的順序繼續處理，不能被晚到的新事件插隊。
     pub fn recv(&self) -> AppEvent {
+        if let Some(event) = self.deferred.borrow_mut().pop_front() {
+            return event;
+        }
         self.rx.recv()
+    }
+
+    /// 非阻塞版本，只問底層 channel——`App::request_full` 排空佇列用。
+    /// 不吐 `deferred`：排空迴圈本身就是唯一會寫 `deferred` 的地方，吐了
+    /// 會把自己剛推進去的事件又拿出來，變成無窮迴圈。
+    pub fn try_recv(&self) -> Option<AppEvent> {
+        self.rx.try_recv()
+    }
+
+    /// `App::request_full` 排空佇列時，把不能被這次 Full 重載悄悄吃掉的
+    /// 事件推回來；`recv()` 下一次會先吐 `deferred`，維持原本的處理順序。
+    pub fn defer(&self, event: AppEvent) {
+        self.deferred.borrow_mut().push_back(event);
     }
 
     /// `repo_root` 解不出 `GitDirs`（極舊版 git，或根本不在 work tree
@@ -777,19 +807,8 @@ impl EventController {
     /// 不會自動反映，比裝一個永遠比不中路徑的 watcher 誠實。
     pub fn start_git_watcher(&self, repo_root: &Path) {
         if let Some(dirs) = GitDirs::resolve(repo_root) {
-            start_git_watcher(self.tx.clone(), self.pending_refresh.clone(), dirs);
+            start_git_watcher(self.tx.clone(), dirs);
         }
-    }
-
-    /// 標記「已有 refresh 在路上」，讓 watcher 短期內偵測到的後續 fs 事件
-    /// 被 debounce 吃掉，避免主動 refresh 後 watcher 重複觸發 slow-path。
-    ///
-    /// 一次性 token：watcher 端消費掉就清掉（見 `claim_send_slot`），不需要任何
-    /// 呼叫端負責清除。就算標記後的操作本身失敗（只送 `NotifyError`、不送
-    /// `AutoRefresh`），watcher 也不會因此永久卡住——最壞情況是多吞一次
-    /// 無關的 fs 事件。
-    pub fn mark_pending_refresh(&self) {
-        self.pending_refresh.store(true, Ordering::Release);
     }
 
     /// 狀態列倒數與 auto-fetch worker 共用的 deadline／基準把手，見
@@ -799,33 +818,14 @@ impl EventController {
     }
 }
 
-/// 節流視窗內、或 `pending` token 被設過，都不送 `AutoRefresh`——後者是
-/// 背景 git 操作（`spawn_git_task`）主動觸發的 refresh 順便產生的 fs 事件，
-/// 不必疊加一次。抽出來獨立測：watcher thread 本身只做管線接線，這個判斷
-/// 才是真正需要單元測試覆蓋的邏輯。
-///
-/// 注意這不是 predicate——呼叫一次就會消費 `pending` token、推進
-/// `last_sent`，語意跟著改變，不能被安全地重複呼叫來「先問再做」。
-///
-/// `pending` 用 `swap(false, ...)` 消費，讀了就清掉——不像單向閂鎖那樣需要
-/// 第三方負責清除，沒有人清得掉的話，一次背景操作失敗就會把 watcher 永久
-/// 卡住。
-fn claim_send_slot(
-    pending: &AtomicBool,
-    now: Instant,
-    last_sent: &mut Instant,
-    throttle: Duration,
-) -> bool {
-    if now.duration_since(*last_sent) < throttle {
-        return false;
-    }
-    // 過了節流視窗就重設時鐘；吞掉的這批也算「已送」，讓視窗蓋住背景操作
-    // 觸發的 fs 事件尾巴，不會緊接著又被下一批事件重新判定成「該送」。
-    *last_sent = now;
-    !pending.swap(false, Ordering::AcqRel)
-}
+/// `notify_debouncer_mini` 的 debounce 視窗：一批 fs 事件最多在這段時間內
+/// 被合併成一次。`AutoRefresh::at` 用 `Instant::now() - DEBOUNCE_WINDOW`
+/// 估這批事件底層變化實際發生的時間（視窗起點，不是視窗關閉、事件真正
+/// 送出的這一刻）——`App::request_full` 拿它跟上一次 Full 重載的開始時間
+/// 比對，才濾得掉「已經被那次重載涵蓋」的事件。
+const DEBOUNCE_WINDOW: Duration = Duration::from_millis(500);
 
-fn start_git_watcher(tx: Sender, pending: Arc<AtomicBool>, dirs: GitDirs) {
+fn start_git_watcher(tx: Sender, dirs: GitDirs) {
     use notify_debouncer_mini::new_debouncer;
 
     let mut ignored = read_gitignore_name_hints(&dirs.toplevel.join(".gitignore"));
@@ -837,7 +837,7 @@ fn start_git_watcher(tx: Sender, pending: Arc<AtomicBool>, dirs: GitDirs) {
     thread::spawn(move || {
         let (debounce_tx, debounce_rx) = std::sync::mpsc::channel();
 
-        let mut debouncer = match new_debouncer(Duration::from_millis(500), debounce_tx) {
+        let mut debouncer = match new_debouncer(DEBOUNCE_WINDOW, debounce_tx) {
             Ok(d) => d,
             Err(_) => return,
         };
@@ -865,11 +865,10 @@ fn start_git_watcher(tx: Sender, pending: Arc<AtomicBool>, dirs: GitDirs) {
             }
         }
 
-        // 節流間隔：避免大量 fs 事件觸發 Repository::load 重跑（本身可能 200-500ms）。
-        let throttle = Duration::from_secs(1);
-        let mut last_sent = Instant::now()
-            .checked_sub(throttle)
-            .unwrap_or_else(Instant::now);
+        // 不再自己節流——`WorkingTree` 交給 `reload::Reloader` 的
+        // `MIN_INTERVAL`，`Full` 交給同一個 `Reloader` 的 `FULL_COOLDOWN`
+        // （`App::request_full`），兩者各自決定跑多快，watcher 只管分類
+        // 跟轉送，不重複做一層前緣節流把視窗內最後一次變更吃掉。
         loop {
             match debounce_rx.recv() {
                 Ok(Ok(events)) => {
@@ -881,18 +880,19 @@ fn start_git_watcher(tx: Sender, pending: Arc<AtomicBool>, dirs: GitDirs) {
                     else {
                         continue;
                     };
-                    let now = Instant::now();
-                    if claim_send_slot(&pending, now, &mut last_sent, throttle) {
-                        tx.send(AppEvent::AutoRefresh(scope));
-                    }
+                    let at = Instant::now()
+                        .checked_sub(DEBOUNCE_WINDOW)
+                        .unwrap_or_else(Instant::now);
+                    tx.send(AppEvent::AutoRefresh { scope, at });
                 }
                 Ok(Err(_)) => {
                     // watcher 自己出錯（例如 inode 被回收），沒辦法再信任
-                    // 增量事件，保守當 Full 處理，一樣走節流。
-                    let now = Instant::now();
-                    if claim_send_slot(&pending, now, &mut last_sent, throttle) {
-                        tx.send(AppEvent::AutoRefresh(Scope::Full));
-                    }
+                    // 增量事件，保守當 Full 處理；`at = now()`——這種情況
+                    // 不該被任何「已經涵蓋」的判斷濾掉。
+                    tx.send(AppEvent::AutoRefresh {
+                        scope: Scope::Full,
+                        at: Instant::now(),
+                    });
                 }
                 Err(_) => break,
             }
@@ -1464,56 +1464,6 @@ mod tests {
         // deadline 全程不受 set_baseline 影響。
         let remaining = clock.remaining().unwrap();
         assert!(remaining > Duration::from_secs(90));
-    }
-
-    // ── claim_send_slot() ──
-
-    const THROTTLE: Duration = Duration::from_secs(1);
-
-    /// 節流視窗過了、沒有 pending token：正常送出，且更新 `last_sent`。
-    #[test]
-    fn claim_send_slot_sends_when_not_throttled_and_no_pending_token() {
-        let pending = AtomicBool::new(false);
-        let mut last_sent = Instant::now() - THROTTLE * 2;
-        let now = Instant::now();
-
-        assert!(claim_send_slot(&pending, now, &mut last_sent, THROTTLE));
-        assert_eq!(last_sent, now);
-    }
-
-    /// 節流視窗內：不送，且不觸碰 `pending`（沒有消費掉任何人設的 token）。
-    #[test]
-    fn claim_send_slot_swallows_within_throttle_window_without_consuming_token() {
-        let pending = AtomicBool::new(true);
-        let mut last_sent = Instant::now();
-        let now = last_sent + THROTTLE / 2;
-
-        assert!(!claim_send_slot(&pending, now, &mut last_sent, THROTTLE));
-        assert!(
-            pending.load(Ordering::Acquire),
-            "節流視窗內不該消費 token，留給視窗外的下一次判斷"
-        );
-    }
-
-    /// `pending` 是一次性 token：第一次呼叫吞掉（不送）並清成 `false`，且更新
-    /// `last_sent`；緊接著第二次呼叫（視窗外）沒有 token 可吞，正常送出。
-    /// 這是把單向閂鎖換成消費式 token 的核心不變式：token 讀了就清，不需要
-    /// 任何第三方負責清除。
-    #[test]
-    fn claim_send_slot_consumes_pending_token_exactly_once() {
-        let pending = AtomicBool::new(true);
-        let mut last_sent = Instant::now() - THROTTLE * 2;
-        let first = Instant::now();
-
-        assert!(!claim_send_slot(&pending, first, &mut last_sent, THROTTLE));
-        assert!(!pending.load(Ordering::Acquire), "token 應該被消費掉");
-        assert_eq!(last_sent, first, "吞掉的這批也算已送，更新 last_sent");
-
-        let second = first + THROTTLE * 2;
-        assert!(
-            claim_send_slot(&pending, second, &mut last_sent, THROTTLE),
-            "token 已經被上一次呼叫消費掉，這次沒有東西可吞，該正常送出"
-        );
     }
 
     // ── classify_git_dir_relative() ──

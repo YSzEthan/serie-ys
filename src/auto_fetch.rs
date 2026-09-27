@@ -135,10 +135,6 @@ pub fn rearm(tx: Sender, clock: AutoFetchClock, interval: Duration) {
 /// 跟手動 fetch 共用同一個開關，見 `git::FetchPrune`）；成功才把
 /// `candidate` 寫回基準，失敗保留原基準讓下一輪重新判定同一批差異。
 ///
-/// `mark_pending_refresh()` 在這裡呼叫（不是像舊版那樣在背景 thread 裡）
-/// ——這是新架構下第一次真正確定「這輪要跑 `git fetch`」的時間點，且已
-/// 經在主執行緒，直接用 `&EventController` 即可，不需要可攜把手。
-///
 /// 已知角落案例：使用者可以在這個 overlay 顯示時按 Cancel 把它藏起來
 /// （背景操作繼續跑，見 `app.rs::handle_key`），這期間若又手動按 `f`，
 /// 會有兩個 `git fetch --all` 同時打同一個 repo。這不是這次改動引入的
@@ -156,7 +152,6 @@ pub fn spawn_due_fetch(
     let clock = ec.auto_fetch_clock();
     let repo = repo.to_path_buf();
 
-    ec.mark_pending_refresh();
     tx.send(AppEvent::ShowPendingOverlay {
         message: "Auto-fetching...".into(),
     });
