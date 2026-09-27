@@ -8,7 +8,7 @@ use std::{
 
 use chrono::{DateTime, FixedOffset};
 use clap::ValueEnum;
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Deserialize;
 
 use crate::Result;
@@ -59,8 +59,11 @@ pub enum CommitType {
 #[derive(Debug, Default, Clone)]
 pub struct Commit {
     pub commit_hash: CommitHash,
-    pub author_name: String,
-    pub author_email: String,
+    /// `Arc<str>` 而非 `String`：linux 148 萬筆 commit 只有約 4 萬個不同作者，
+    /// 載入時經 `intern_author_strings` 去重後，同一個作者的每一筆都共用
+    /// 同一份配置。
+    pub author_name: Arc<str>,
+    pub author_email: Arc<str>,
     pub author_date: DateTime<FixedOffset>,
     pub subject: String,
     pub parent_commit_hashes: Vec<CommitHash>,
@@ -84,8 +87,8 @@ impl CommitExtra {
     /// 不顯示 Committer 那一行，跟真的拿不到資料時該有的行為一致。
     fn fallback(commit: &Commit) -> Self {
         Self {
-            committer_name: commit.author_name.clone(),
-            committer_email: commit.author_email.clone(),
+            committer_name: commit.author_name.to_string(),
+            committer_email: commit.author_email.to_string(),
             committer_date: commit.author_date,
             body: String::new(),
         }
@@ -196,9 +199,9 @@ impl Repository {
         Ok(Self::new(path.to_path_buf(), commits, ref_map, head))
     }
 
-    fn new(path: PathBuf, commits: Vec<Commit>, ref_map: RefMap, head: Head) -> Self {
+    fn new(path: PathBuf, mut commits: Vec<Commit>, ref_map: RefMap, head: Head) -> Self {
         let commit_index = build_commit_index(&commits);
-        let (parent_start, parent_idx) = build_parent_csr(&commits, &commit_index);
+        let (parent_start, parent_idx) = build_parent_csr(&mut commits, &commit_index);
         Self {
             path,
             commits,
@@ -550,7 +553,29 @@ fn load_all_commits(
 
     process.wait().unwrap();
 
+    intern_author_strings(&mut commits);
+
     commits
+}
+
+/// 同一批載入呼叫內，把 `author_name`／`author_email` 相同內容的 `Arc<str>`
+/// 收斂成同一份配置。跨呼叫（例如平行載入的每個分段、`load_all_stashes`）各自
+/// 一個 interner，不共用——換來的是最多幾份重複，換不用在 thread 之間同步。
+fn intern_author_strings(commits: &mut [Commit]) {
+    fn intern(pool: &mut FxHashSet<Arc<str>>, s: &Arc<str>) -> Arc<str> {
+        if let Some(existing) = pool.get(s.as_ref()) {
+            return existing.clone();
+        }
+        pool.insert(s.clone());
+        s.clone()
+    }
+
+    let mut names: FxHashSet<Arc<str>> = FxHashSet::default();
+    let mut emails: FxHashSet<Arc<str>> = FxHashSet::default();
+    for commit in commits {
+        commit.author_name = intern(&mut names, &commit.author_name);
+        commit.author_email = intern(&mut emails, &commit.author_email);
+    }
 }
 
 fn parse_commit_line(s: &str, commit_type: CommitType) -> Option<Commit> {
@@ -634,6 +659,8 @@ fn load_all_stashes(path: &Path) -> Vec<Commit> {
 
     cmd.wait().unwrap();
 
+    intern_author_strings(&mut commits);
+
     commits
 }
 
@@ -665,17 +692,28 @@ fn build_commit_index(commits: &[Commit]) -> CommitIndex {
 
 const PARENT_NOT_LOADED: u32 = u32::MAX;
 
-fn build_parent_csr(commits: &[Commit], commit_index: &CommitIndex) -> (Vec<u32>, Vec<u32>) {
+/// 一併把每個已載入的 parent hash 換成該 parent commit 自己的 `CommitHash`
+/// clone（同一份 `Arc` 配置），不用另外多掃一遍 parent 清單。
+fn build_parent_csr(commits: &mut [Commit], commit_index: &CommitIndex) -> (Vec<u32>, Vec<u32>) {
     let mut parent_start = Vec::with_capacity(commits.len() + 1);
     let mut parent_idx = Vec::with_capacity(commits.len());
     parent_start.push(0);
-    for commit in commits {
-        parent_idx.extend(
-            commit
-                .parent_commit_hashes
-                .iter()
-                .map(|h| commit_index.get(h).map_or(PARENT_NOT_LOADED, |&i| i as u32)),
-        );
+    for i in 0..commits.len() {
+        let hashes = std::mem::take(&mut commits[i].parent_commit_hashes);
+        let mut resolved = Vec::with_capacity(hashes.len());
+        for hash in hashes {
+            match commit_index.get(&hash) {
+                Some(&p) => {
+                    parent_idx.push(p as u32);
+                    resolved.push(commits[p].commit_hash.clone());
+                }
+                None => {
+                    parent_idx.push(PARENT_NOT_LOADED);
+                    resolved.push(hash);
+                }
+            }
+        }
+        commits[i].parent_commit_hashes = resolved;
         parent_start.push(parent_idx.len() as u32);
     }
     (parent_start, parent_idx)
@@ -1351,13 +1389,13 @@ mod tests {
     /// 在 CSR 裡是 `PARENT_NOT_LOADED`，位置跟 `parent_commit_hashes` 對齊。
     #[test]
     fn parent_csr_marks_unloaded_parents() {
-        let commits = vec![
+        let mut commits = vec![
             commit_with_parents("s", "b idx untracked"),
             commit_with_parents("b", "a"),
             commit_with_parents("a", "cut"),
         ];
         let index = build_commit_index(&commits);
-        let (start, idx) = build_parent_csr(&commits, &index);
+        let (start, idx) = build_parent_csr(&mut commits, &index);
 
         assert_eq!(start, [0, 3, 4, 5]);
         assert_eq!(
@@ -1370,6 +1408,34 @@ mod tests {
                 PARENT_NOT_LOADED
             ]
         );
+
+        // 有載入的 parent（"s" 的 parent "b"、"b" 的 parent "a"）改成跟該
+        // parent commit 自己的 `commit_hash` 共用同一份 `Arc` 配置。
+        assert!(Arc::ptr_eq(
+            &commits[0].parent_commit_hashes[0].as_arc(),
+            &commits[1].commit_hash.as_arc()
+        ));
+        assert!(Arc::ptr_eq(
+            &commits[1].parent_commit_hashes[0].as_arc(),
+            &commits[2].commit_hash.as_arc()
+        ));
+    }
+
+    /// 同一次載入呼叫內，相同作者的 `author_name`／`author_email` 收斂成
+    /// 同一份 `Arc` 配置——linux 148 萬筆 commit 只有約 4 萬個不同作者。
+    #[test]
+    fn intern_author_strings_shares_arc_for_same_author() {
+        let mut commits = vec![
+            commit_with_parents("a", ""),
+            commit_with_parents("b", ""),
+        ];
+        intern_author_strings(&mut commits);
+
+        assert!(Arc::ptr_eq(&commits[0].author_name, &commits[1].author_name));
+        assert!(Arc::ptr_eq(
+            &commits[0].author_email,
+            &commits[1].author_email
+        ));
     }
 
     #[test]
