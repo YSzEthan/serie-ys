@@ -6,7 +6,9 @@ use crate::{
     config::UserListColumnType,
     diff::{self, DiffNotes, ModeNote, RenderedDiff},
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
-    git::{Commit, CommitExtra, CommitHash, DiffTarget, FileChange, Ref, Repository, WorkingChanges},
+    git::{
+        Commit, CommitExtra, CommitHash, DiffTarget, FileChange, Ref, Repository, WorkingChanges,
+    },
     view::{
         dispatch_branch_copy, dispatch_tag_copy, partition_branches, partition_tags,
         ListRefreshViewContext, RefreshViewContext, ViewContext,
