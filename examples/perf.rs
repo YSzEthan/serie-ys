@@ -207,7 +207,6 @@ struct RepoStats {
     merges: usize,
     refs: usize,
     subject_bytes: usize,
-    body_bytes: usize,
     head: String,
 }
 
@@ -229,7 +228,6 @@ fn repo_stats(repo: &Repository) -> RepoStats {
             .count(),
         refs: repo.all_refs().len(),
         subject_bytes: commits.iter().map(|c| c.subject.len()).sum(),
-        body_bytes: commits.iter().map(|c| c.body.len()).sum(),
         head,
     }
 }
@@ -499,8 +497,7 @@ fn main() {
     println!("commits  {commits}  merges {merges}  refs {refs}  remote-only {remote_only_count}");
     println!("head     {}", repo_summary.head);
     let subject_bytes = thousands(repo_summary.subject_bytes);
-    let body_bytes = thousands(repo_summary.body_bytes);
-    println!("text     subject {subject_bytes} bytes  body {body_bytes} bytes");
+    println!("text     subject {subject_bytes} bytes");
     print_graph_line("full", &full_stats);
     let fmt = |c: Option<usize>| c.map_or("-".to_string(), |c| c.to_string());
     match main_changes_untruncated {
