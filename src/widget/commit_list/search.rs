@@ -1333,4 +1333,65 @@ mod tests {
             );
         });
     }
+
+    /// #122 手動量測：讀真實 repo，逐字打 "fix bug"，印出每一鍵耗時。
+    /// 不在一般 `cargo test` 跑，用法：
+    /// `SERIE_PERF_REPO=<repo path> cargo test --release perf_search -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn perf_search_keystrokes() {
+        use std::path::Path;
+        use std::rc::Rc;
+        use std::time::Instant;
+
+        use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+
+        use crate::git::{Repository, SortCommit};
+        use crate::graph::Graph;
+
+        let Ok(path) = std::env::var("SERIE_PERF_REPO") else {
+            eprintln!("skip: 設定 SERIE_PERF_REPO=<repo path> 才會跑這個測試");
+            return;
+        };
+
+        let load_start = Instant::now();
+        let repository = Repository::load(Path::new(&path), SortCommit::Topological, None)
+            .expect("load perf repo");
+        eprintln!(
+            "Repository::load: {:?} ({} commits)",
+            load_start.elapsed(),
+            repository.all_commits().len()
+        );
+
+        let build_start = Instant::now();
+        let commits: Vec<CommitInfo> = repository
+            .all_commits()
+            .iter()
+            .map(|c| CommitInfo::new(c, repository.refs(&c.commit_hash)))
+            .collect();
+        let commit_count = commits.len();
+        let graph = Graph::from_materialized(commit_count, Vec::new(), Vec::new());
+        let mut state = CommitListState::new(
+            commits,
+            Rc::new(graph),
+            Vec::new(),
+            None,
+            crate::git::Head::None,
+            FxHashMap::default(),
+            MatchOptions::default(),
+            None,
+            crate::RemoteOnly::default(),
+            None,
+            0,
+        );
+        state.reset_height(50);
+        eprintln!("CommitListState::new: {:?}", build_start.elapsed());
+
+        state.start_search();
+        for c in "fix bug".chars() {
+            let key_start = Instant::now();
+            state.handle_search_input(KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty()));
+            eprintln!("key {c:?}: {:?}", key_start.elapsed());
+        }
+    }
 }
