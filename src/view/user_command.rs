@@ -261,8 +261,7 @@ impl<'a> UserCommandView<'a> {
         update_commit_list_state(commit_list_state);
 
         let selected = commit_list_state.selected_commit_hash().clone();
-        let (commit, _) = repository.commit_detail(&selected);
-        let refs: Vec<Ref> = repository.refs(&selected).into_iter().cloned().collect();
+        let (commit, refs) = repository.commit_refs(&selected);
         self.user_command_output_lines = exec_command(
             commit,
             &refs,
