@@ -156,6 +156,17 @@ pub enum SortCommit {
     Topological,
 }
 
+impl SortCommit {
+    /// `load_commits_single` 與 `rev_list_hashes` 都要決定 commit 順序，
+    /// 共用同一個對應，不要各寫一份 `match`。
+    fn git_flag(self) -> &'static str {
+        match self {
+            SortCommit::Chronological => "--date-order",
+            SortCommit::Topological => "--topo-order",
+        }
+    }
+}
+
 type CommitIndex = FxHashMap<CommitHash, usize>;
 
 type RefMap = FxHashMap<CommitHash, Vec<Ref>>;
@@ -531,8 +542,10 @@ fn load_all_commits(
     stashes: &[Commit],
     max_count: Option<usize>,
 ) -> Vec<Commit> {
-    load_commits_parallel(path, sort, head, stashes, max_count)
-        .unwrap_or_else(|| load_commits_single(path, sort, head, stashes, max_count))
+    let mut commits = load_commits_parallel(path, sort, head, stashes, max_count)
+        .unwrap_or_else(|| load_commits_single(path, sort, head, stashes, max_count));
+    intern_author_strings(&mut commits);
+    commits
 }
 
 /// 排除 stash 及其他 refs 之後，跟 `--branches --remotes --tags` 一起決定
@@ -566,13 +579,10 @@ fn load_commits_single(
     let mut cmd = git_read(path);
     cmd.arg("log");
 
-    cmd.arg(match sort {
-        SortCommit::Chronological => "--date-order",
-        SortCommit::Topological => "--topo-order",
-    })
-    .arg(format!("--pretty={}", load_commits_format()))
-    .arg("--date=iso-strict")
-    .arg("-z"); // 用 NUL 作為分隔符
+    cmd.arg(sort.git_flag())
+        .arg(format!("--pretty={}", load_commits_format()))
+        .arg("--date=iso-strict")
+        .arg("-z"); // 用 NUL 作為分隔符
 
     add_commit_revs(&mut cmd, head, stashes, max_count);
 
@@ -584,22 +594,9 @@ fn load_commits_single(
 
     let stdout = process.stdout.take().expect("failed to open stdout");
 
-    let reader = BufReader::new(stdout);
-
-    let mut commits = Vec::new();
-
-    for bytes in reader.split(b'\0') {
-        let bytes = bytes.unwrap();
-        let s = String::from_utf8_lossy(&bytes);
-
-        if let Some(commit) = parse_commit_line(&s, CommitType::Commit) {
-            commits.push(commit);
-        }
-    }
+    let commits = parse_commit_stream(BufReader::new(stdout), CommitType::Commit).unwrap();
 
     process.wait().unwrap();
-
-    intern_author_strings(&mut commits);
 
     commits
 }
@@ -674,9 +671,7 @@ fn load_commits_parallel_with_segments(
 
     let mut commits = Vec::with_capacity(line_ends.len());
     for result in results {
-        let mut segment_commits = result?;
-        intern_author_strings(&mut segment_commits);
-        commits.extend(segment_commits);
+        commits.extend(result?);
     }
     Some(commits)
 }
@@ -692,10 +687,7 @@ fn rev_list_hashes(
     max_count: Option<usize>,
 ) -> Option<Vec<u8>> {
     let mut cmd = git_read(path);
-    cmd.arg("rev-list").arg(match sort {
-        SortCommit::Chronological => "--date-order",
-        SortCommit::Topological => "--topo-order",
-    });
+    cmd.arg("rev-list").arg(sort.git_flag());
     add_commit_revs(&mut cmd, head, stashes, max_count);
     cmd.stdout(Stdio::piped()).stderr(Stdio::null());
 
@@ -744,15 +736,7 @@ fn load_commits_segment(path: &Path, format: &str, revs_chunk: &[u8]) -> Option<
     drop(stdin); // 送 EOF，git 才會開始輸出
 
     let stdout = process.stdout.take()?;
-    let reader = BufReader::new(stdout);
-    let mut commits = Vec::new();
-    for bytes in reader.split(b'\0') {
-        let bytes = bytes.ok()?;
-        let s = String::from_utf8_lossy(&bytes);
-        if let Some(commit) = parse_commit_line(&s, CommitType::Commit) {
-            commits.push(commit);
-        }
-    }
+    let commits = parse_commit_stream(BufReader::new(stdout), CommitType::Commit).ok()?;
 
     let status = process.wait().ok()?;
     if !status.success() {
@@ -769,8 +753,11 @@ fn load_commits_segment(path: &Path, format: &str, revs_chunk: &[u8]) -> Option<
 }
 
 /// 同一批載入呼叫內，把 `author_name`／`author_email` 相同內容的 `Arc<str>`
-/// 收斂成同一份配置。跨呼叫（例如平行載入的每個分段、`load_all_stashes`）各自
-/// 一個 interner，不共用——換來的是最多幾份重複，換不用在 thread 之間同步。
+/// 收斂成同一份配置。`load_all_commits` 在合併完平行段落之後才呼叫一次
+/// （不是每段各自呼叫）：這樣才能跨段落去重，而且這個函式本來就要單執行緒
+/// 走完全部 commit，跟平行段落各自呼叫的成本一樣，沒有理由犧牲去重效果。
+/// `load_all_stashes` 另外自己呼叫一次，不跟主要 commits 共用——stash 通常
+/// 只有幾筆，共用與否差異可忽略。
 fn intern_author_strings(commits: &mut [Commit]) {
     fn intern(pool: &mut FxHashSet<Arc<str>>, s: &Arc<str>) -> Arc<str> {
         if let Some(existing) = pool.get(s.as_ref()) {
@@ -805,6 +792,24 @@ fn parse_commit_line(s: &str, commit_type: CommitType) -> Option<Commit> {
         parent_commit_hashes: parse_parent_commit_hashes(parents),
         commit_type,
     })
+}
+
+/// `load_commits_single`／`load_all_stashes`／`load_commits_segment` 共用：
+/// 從 `-z` 輸出的 stdout 依 NUL 切開再逐行 `parse_commit_line`。呼叫端各自
+/// 決定怎麼處理讀取錯誤（`unwrap` 或 `?`），這裡只回傳 `io::Result`。
+fn parse_commit_stream(
+    reader: impl BufRead,
+    commit_type: CommitType,
+) -> std::io::Result<Vec<Commit>> {
+    let mut commits = Vec::new();
+    for bytes in reader.split(b'\0') {
+        let bytes = bytes?;
+        let s = String::from_utf8_lossy(&bytes);
+        if let Some(commit) = parse_commit_line(&s, commit_type.clone()) {
+            commits.push(commit);
+        }
+    }
+    Ok(commits)
 }
 
 /// `commit_detail` 專用：`Commit` 列表格式拿掉的 `committer_*` 與 `body`，
@@ -854,18 +859,7 @@ fn load_all_stashes(path: &Path) -> Vec<Commit> {
 
     let stdout = cmd.stdout.take().expect("failed to open stdout");
 
-    let reader = BufReader::new(stdout);
-
-    let mut commits = Vec::new();
-
-    for bytes in reader.split(b'\0') {
-        let bytes = bytes.unwrap();
-        let s = String::from_utf8_lossy(&bytes);
-
-        if let Some(commit) = parse_commit_line(&s, CommitType::Stash) {
-            commits.push(commit);
-        }
-    }
+    let mut commits = parse_commit_stream(BufReader::new(stdout), CommitType::Stash).unwrap();
 
     cmd.wait().unwrap();
 
@@ -909,21 +903,15 @@ fn build_parent_csr(commits: &mut [Commit], commit_index: &CommitIndex) -> (Vec<
     let mut parent_idx = Vec::with_capacity(commits.len());
     parent_start.push(0);
     for i in 0..commits.len() {
-        let hashes = std::mem::take(&mut commits[i].parent_commit_hashes);
-        let mut resolved = Vec::with_capacity(hashes.len());
-        for hash in hashes {
-            match commit_index.get(&hash) {
+        for j in 0..commits[i].parent_commit_hashes.len() {
+            match commit_index.get(&commits[i].parent_commit_hashes[j]) {
                 Some(&p) => {
                     parent_idx.push(p as u32);
-                    resolved.push(commits[p].commit_hash.clone());
+                    commits[i].parent_commit_hashes[j] = commits[p].commit_hash.clone();
                 }
-                None => {
-                    parent_idx.push(PARENT_NOT_LOADED);
-                    resolved.push(hash);
-                }
+                None => parent_idx.push(PARENT_NOT_LOADED),
             }
         }
-        commits[i].parent_commit_hashes = resolved;
         parent_start.push(parent_idx.len() as u32);
     }
     (parent_start, parent_idx)
