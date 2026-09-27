@@ -461,7 +461,7 @@ fn main() {
 
     let stage = Stage::begin("stats");
     let full_stats = graph_stats(&graph);
-    let filtered_stats = filtered.as_ref().map(|g| graph_stats(g));
+    let filtered_stats = filtered.as_ref().map(graph_stats);
     stage.end();
 
     // 主線換欄次數，截斷前後各量一次：沒有 reserve 時，分支點規則本來就

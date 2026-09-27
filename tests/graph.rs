@@ -1837,18 +1837,20 @@ fn build_graph_snapshot_source(
         None
     };
 
-    let full = Rc::new(graph::calc_graph(
+    let full = graph::calc_graph(
         &repository,
         head_hint.as_ref(),
         option.reserve_head_col,
         option.trunc,
-    ));
+    );
     let graph = if option.filtered {
         let remote_only = ysgit::find_remote_only_commits(&repository);
-        ysgit::compute_filtered_graph_from(&repository, &remote_only, option.trunc)
-            .expect("filtered case must have remote-only commits")
+        Rc::new(
+            ysgit::compute_filtered_graph_from(&repository, &remote_only, option.trunc)
+                .expect("filtered case must have remote-only commits"),
+        )
     } else {
-        full
+        Rc::new(full)
     };
     // 工作區有變更時 virtual row 會顯示，HEAD 欄要補線接上去（跟 app 走同一條路）。
     let virtual_head_row = if git::load_working_changes(repo_path).unwrap().is_empty() {

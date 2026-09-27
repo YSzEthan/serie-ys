@@ -6,7 +6,7 @@ use tui_input::Input;
 
 use crate::{
     app::AppContext,
-    event::{AppEvent, EventController, Sender, UserEventWithCount},
+    event::{EventController, Sender, UserEventWithCount},
     git::{Commit, CommitExtra, CommitHash, FileChange, Ref, RefType, Repository, WorkingChanges},
     view::{
         create_tag::CreateTagView, delete_ref::DeleteRefView, delete_tag::DeleteTagView,
@@ -323,26 +323,6 @@ impl<'a> View<'a> {
         )))
     }
 
-    pub fn refresh(&mut self) {
-        match self {
-            View::Default => {}
-            View::List(view) => view.refresh(),
-            View::Detail(view) => view.refresh(),
-            View::UserCommand(view) => view.refresh(),
-            View::Refs(view) => view.refresh(),
-            View::CreateTag(view) => view.refresh(),
-            View::DeleteTag(view) => view.refresh(),
-            View::DeleteRef(view) => view.refresh(),
-            View::Help(_) => {}
-            View::GitHub(_) => {}
-            View::ReleaseNotes(_) => {}
-            // 直接送 `AppEvent::Refresh` 會讓 `lib.rs` 整個重建 `App`，把還在
-            // 打字／看輸出的 `ShellView` 一併炸掉——Shell 的 refresh 政策是
-            // 「記個旗標，關閉時才補送」，不是「立刻做」或「什麼都不做」。
-            View::Shell(view) => view.mark_refresh_pending(),
-        }
-    }
-
     /// `AppEvent::ShellOutputReady` 抵達時呼叫——見
     /// `ShellView::poll_output` 的文件註解。非 Shell view 什麼都不做，
     /// 這是正確行為（過期喚醒打到已經換掉的 view）。
@@ -352,19 +332,56 @@ impl<'a> View<'a> {
         }
     }
 
-    /// `ShellView::take_refresh_context` 用這個問「我底下包的 `before` 是
-    /// 誰、它的 list 狀態長怎樣」——`open_shell` 只接受 List/Detail
-    /// （`app::open_shell`），這裡的定義域就只需要涵蓋這兩種。
-    pub fn refresh_context(&self) -> Option<RefreshViewContext> {
-        let (list_state, view) = match self {
-            View::List(view) => (view.as_list_state(), ViewContext::List),
-            View::Detail(view) => (view.as_list_state(), ViewContext::Detail),
-            _ => return None,
-        };
-        Some(RefreshViewContext::new(
-            ListRefreshViewContext::from(list_state),
-            view,
-        ))
+    /// 現在能不能換資料——`take_refresh_context()` 的 `&self` 版本，兩者
+    /// 涵蓋的 view 必須同步（規則只有一份，改一邊就要回來改另一邊）：
+    ///
+    /// - List／Detail／UserCommand／Refs：能換
+    /// - Shell：指令沒在跑才能換，見 `ShellView::can_swap`
+    /// - CreateTag／DeleteTag／DeleteRef／Help／GitHub／ReleaseNotes：
+    ///   不能換，等使用者關掉——這些 dialog／overlay 自己的狀態沒有對應的
+    ///   `RefreshViewContext` 欄位可以裝，換資料只能等它們關閉之後才做。
+    pub fn can_swap(&self) -> bool {
+        match self {
+            View::List(_) | View::Detail(_) | View::UserCommand(_) | View::Refs(_) => true,
+            View::Shell(view) => view.can_swap(),
+            View::Default
+            | View::CreateTag(_)
+            | View::DeleteTag(_)
+            | View::DeleteRef(_)
+            | View::Help(_)
+            | View::GitHub(_)
+            | View::ReleaseNotes(_) => false,
+        }
+    }
+
+    /// 換資料時，把目前 view 的狀態轉成 `RefreshViewContext`，供
+    /// `App::apply_carry` 重建後還原。取代舊版只涵蓋 List/Detail 的
+    /// `refresh_context()`——舊機制下其餘 view 各自呼叫 `refresh()` 立刻
+    /// 送出自己組好的 `AppEvent::Refresh(ctx)`；現在整個規則收斂到這一個
+    /// 函式，涵蓋範圍與 `can_swap()` 同步，見該處文件。
+    pub fn take_refresh_context(&mut self) -> Option<RefreshViewContext> {
+        match self {
+            View::List(view) => Some(RefreshViewContext::new(
+                ListRefreshViewContext::from(view.as_list_state()),
+                ViewContext::List,
+            )),
+            View::Detail(view) => Some(RefreshViewContext::new(
+                ListRefreshViewContext::from(view.as_list_state()),
+                ViewContext::Detail,
+            )),
+            View::UserCommand(view) => Some(view.refresh_context()),
+            View::Refs(view) => Some(view.refresh_context()),
+            // `open_shell` 只接受 List/Detail 當 `before`，`take_refresh_context`
+            // 內部再委派一次同一個函式，定義域因此涵蓋得到。
+            View::Shell(view) => view.take_refresh_context(),
+            View::Default
+            | View::CreateTag(_)
+            | View::DeleteTag(_)
+            | View::DeleteRef(_)
+            | View::Help(_)
+            | View::GitHub(_)
+            | View::ReleaseNotes(_) => None,
+        }
     }
 
     pub fn into_commit_list_state(self) -> CommitListState<'a> {
@@ -493,12 +510,6 @@ impl RefreshViewContext {
             shell: None,
         }
     }
-
-    /// 純粹的 List 刷新——沒有底層 view 要切換、也沒有命令列要還原。
-    /// 大多數呼叫端（建立/刪除 tag、刪除 ref 之後刷新清單）都是這個形狀。
-    pub fn list(list: ListRefreshViewContext) -> Self {
-        RefreshViewContext::new(list, ViewContext::List)
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -545,13 +556,6 @@ impl From<&CommitListState<'_>> for ListRefreshViewContext {
             search: list_state.search_refresh_context(),
             filter: list_state.filter_refresh_context(),
         }
-    }
-}
-
-pub fn send_refresh(list_state: Option<&CommitListState<'_>>, tx: &Sender) {
-    if let Some(list_state) = list_state {
-        let list_context = ListRefreshViewContext::from(list_state);
-        tx.send(AppEvent::Refresh(RefreshViewContext::list(list_context)));
     }
 }
 

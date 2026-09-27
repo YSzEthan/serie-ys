@@ -1,6 +1,4 @@
 use std::{
-    cell::RefCell,
-    collections::VecDeque,
     ffi::OsStr,
     fmt::{self, Debug, Formatter},
     path::{Component, Path, PathBuf},
@@ -20,7 +18,6 @@ use serde::{
 };
 
 use crate::git::{CommitHash, GitDirs};
-use crate::view::RefreshViewContext;
 use crate::widget::commit_list::ChildPickOption;
 
 /// 驅動 UI 動畫（跑馬燈等）的 tick 事件間隔。
@@ -153,7 +150,11 @@ pub enum AppEvent {
         value: String,
     },
     OpenUrl(String),
-    Refresh(RefreshViewContext),
+    /// 手動觸發一次 Full 重載（`r` 鍵、對話框操作完成……）；不帶 payload
+    /// ——換資料時要帶的 view context 改在真的要換的那一刻，從當下的
+    /// `App::view` 現拿（`View::take_refresh_context`），不再靠事件 payload
+    /// 一路往前傳，見 `reload::Reloader::request_full`。
+    Refresh,
     ClearStatusLine,
     UpdateStatusInput(String, Option<u16>, Option<String>),
     NotifyInfo(String),
@@ -170,10 +171,9 @@ pub enum AppEvent {
     },
     /// watcher 偵測到變化，或背景 git 操作（`spawn_git_task`）成功後自己
     /// 觸發的重新整理。`Scope` 見該型別文件；`at` 是這次變化實際發生的時間
-    /// （watcher 用 debounce 視窗的起點，`spawn_git_task` 用送出當下），
-    /// `Scope::Full` 靠它跟 `Reloader::last_full_start()` 比對，把「已經被
-    /// 上一次 Full 涵蓋」的事件（checkout／commit 之後隔一段 debounce 才到
-    /// 的 watcher 事件）濾掉，不必再觸發第二次。
+    /// （watcher 用 debounce 視窗的起點，`spawn_git_task` 用送出當下）。
+    /// `Scope::Full` 原樣轉給 `reload::Reloader::request_full`，「已經被
+    /// 上一次成功載入涵蓋」的過濾在那個 worker 內部做，不在這裡。
     AutoRefresh {
         scope: Scope,
         at: Instant,
@@ -181,6 +181,11 @@ pub enum AppEvent {
     /// `reload::Reloader` 背景跑完一次 `git status`。結果本身不隨事件走，
     /// 收到後向 `Reloader::latest()` 拿——事件只是「該去看一眼」的信號。
     WorkingChangesReady,
+    /// Full 重載 worker（`reload::Reloader`）狀態改變——開始跑、跑完、
+    /// 或失敗——都送一次。不帶 payload，收到後向 `Reloader::full_status()`
+    /// 拿；純粹是「該重畫一次狀態列」的信號（`App::run()` 的事件迴圈非
+    /// `Tick` 事件本來就會重畫），處理端不必特別做什麼。
+    FullReloadStatus,
     OpenRefPicker {
         options: Vec<String>,
         kind: RefCopyKind,
@@ -537,10 +542,6 @@ impl Receiver {
     fn recv(&self) -> AppEvent {
         self.rx.recv().unwrap_or(AppEvent::Quit)
     }
-
-    fn try_recv(&self) -> Option<AppEvent> {
-        self.rx.try_recv().ok()
-    }
 }
 
 impl Debug for Receiver {
@@ -555,12 +556,6 @@ pub struct EventController {
     rx: Receiver,
     stop: Arc<AtomicBool>,
     handle: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
-    /// `App::request_full` 排空事件佇列時，暫存「不能被這次 Full 重載悄悄
-    /// 吃掉」的事件（`Refresh`／`AutoRefresh(Full)`／`Tick` 以外的所有事件），
-    /// 讓它們照原本順序繼續處理。`recv()` 每次都先吐這裡，吐完才問底層
-    /// channel——`try_recv()` 只問底層 channel，不吐這裡，否則排空迴圈會
-    /// 把自己剛推進去的事件又拿出來，變成無窮迴圈。
-    deferred: RefCell<VecDeque<AppEvent>>,
     /// 下一輪 auto-fetch 的預定時間與比對基準，狀態列倒數、`auto_fetch`
     /// 模組共用。無條件建好：沒開 auto-fetch 時只是沒人 `arm`，
     /// `remaining()`／`baseline()` 恆為 `None`，不是需要特判的狀態。見
@@ -613,7 +608,6 @@ impl EventController {
             rx,
             stop: Arc::new(AtomicBool::new(false)),
             handle: Arc::new(Mutex::new(None)),
-            deferred: RefCell::new(VecDeque::new()),
             auto_fetch_clock: AutoFetchClock::default(),
             term_signal,
             heartbeat: Arc::new(AtomicU64::new(0)),
@@ -780,26 +774,8 @@ impl EventController {
         self.tx.send(event);
     }
 
-    /// `deferred` 有東西就先吐它——`App::request_full` 排空佇列時推回來的
-    /// 事件，要照原本的順序繼續處理，不能被晚到的新事件插隊。
     pub fn recv(&self) -> AppEvent {
-        if let Some(event) = self.deferred.borrow_mut().pop_front() {
-            return event;
-        }
         self.rx.recv()
-    }
-
-    /// 非阻塞版本，只問底層 channel——`App::request_full` 排空佇列用。
-    /// 不吐 `deferred`：排空迴圈本身就是唯一會寫 `deferred` 的地方，吐了
-    /// 會把自己剛推進去的事件又拿出來，變成無窮迴圈。
-    pub fn try_recv(&self) -> Option<AppEvent> {
-        self.rx.try_recv()
-    }
-
-    /// `App::request_full` 排空佇列時，把不能被這次 Full 重載悄悄吃掉的
-    /// 事件推回來；`recv()` 下一次會先吐 `deferred`，維持原本的處理順序。
-    pub fn defer(&self, event: AppEvent) {
-        self.deferred.borrow_mut().push_back(event);
     }
 
     /// `repo_root` 解不出 `GitDirs`（極舊版 git，或根本不在 work tree
