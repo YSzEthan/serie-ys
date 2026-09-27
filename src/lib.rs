@@ -450,6 +450,10 @@ pub fn resolve_head_commit_hash(repository: &git::Repository) -> Option<git::Com
 /// `exec` 天然會繼承的通道，用完即丟，不影響後續任何行為。
 const EXE_REPLACED_NOTICE_ENV: &str = "YSGIT_EXE_REPLACED_NOTICE";
 
+/// 沒有 commit-graph 時，光是排序就要走完整段歷史——commit 數在這個門檻
+/// 以下差異量不到需要提示使用者的程度。
+const COMMIT_GRAPH_HINT_THRESHOLD: usize = 100_000;
+
 pub fn run() -> Result<()> {
     // ratatui::init() 裝的 panic hook 只還原 alt screen + raw mode，
     // 不會清 mouse capture — 先補一層 DisableMouseCapture。
@@ -677,6 +681,16 @@ pub fn run() -> Result<()> {
     reloader.request();
 
     let mut repository = git::Repository::load(Path::new(&args.path), order, max_count)?;
+    // 只在第一次載入提示，`Ret::Refresh` 重載不重複提示：commit 數在
+    // refresh 之間不會突然變化，沒有必要每次都跑一次 `--git-path` 檢查。
+    if repository.all_commits().len() >= COMMIT_GRAPH_HINT_THRESHOLD
+        && !git::has_commit_graph(Path::new(&args.path))
+    {
+        ec.sender().send(event::AppEvent::NotifyInfo(
+            "No commit-graph found. Run `git commit-graph write --reachable` to speed up loading"
+                .to_string(),
+        ));
+    }
     // 排第一次 auto-fetch 輪詢。`mode = Off` 就不排；放在 `Repository::load`
     // 之後才排：那一行內部已經跑過 `check_git_repository`（含 bare repo），
     // 「是不是 git repo」在這裡已經被證明，不需要像 `start_git_watcher`
