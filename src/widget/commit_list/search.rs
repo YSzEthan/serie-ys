@@ -264,10 +264,6 @@ impl MatchSet {
         self.hits.binary_search(&raw).ok().map(|pos| pos + 1)
     }
 
-    pub(super) fn contains(&self, raw: RawCommitIdx) -> bool {
-        self.hits.binary_search(&raw).is_ok()
-    }
-
     /// 沿 `step` 方向、`is_visible` 為 true 的下一個命中；從緊接在 `current`
     /// 之後（或之前）的位置開始找，不會選回 `current` 本身——即使它自己也是
     /// 命中，跟舊版逐列掃描（`while i != current.0`）同一個規則。全部命中都
@@ -281,39 +277,30 @@ impl MatchSet {
         step: MatchStep,
         is_visible: impl Fn(RawCommitIdx) -> bool,
     ) -> Option<RawCommitIdx> {
-        let len = self.hits.len();
-        if len == 0 {
-            return None;
-        }
-        // `current` 本身若也是命中，會佔掉 sorted `hits` 裡的一個位置——完整繞一圈
-        // 一定會走回那個位置。步數上限扣掉它，才不會在「只剩 current 自己可見」時
-        // 把它當成「下一個」選回去。
-        let current_is_hit = self.hits.binary_search(&current).is_ok();
-        let max_steps = if current_is_hit { len - 1 } else { len };
-        if max_steps == 0 {
-            return None;
-        }
-        let advance = |p: usize| match step {
-            MatchStep::Next => (p + 1) % len,
-            MatchStep::Prev => (p + len - 1) % len,
-        };
-        // 起點：sorted `hits` 裡緊接在 current 之後／之前的位置；`current`
-        // 本身是不是命中不影響起點的選法（`partition_point` 用嚴格不等式）。
-        let mut pos = match step {
-            MatchStep::Next => self.hits.partition_point(|&r| r <= current) % len,
+        // `hits` 排序好，`partition_point` 切出來的兩段接起來就是繞 current 一圈
+        // 的走訪順序；`current` 本身若也是命中，切法保證它排在這一圈的最後一個，
+        // 交給後面的 `filter` 濾掉即可，不必另外算步數上限。
+        match step {
+            MatchStep::Next => {
+                let p = self.hits.partition_point(|&r| r <= current);
+                self.hits[p..]
+                    .iter()
+                    .chain(&self.hits[..p])
+                    .copied()
+                    .filter(|&r| r != current)
+                    .find(|&r| is_visible(r))
+            }
             MatchStep::Prev => {
                 let p = self.hits.partition_point(|&r| r < current);
-                (p + len - 1) % len
+                self.hits[..p]
+                    .iter()
+                    .rev()
+                    .chain(self.hits[p..].iter().rev())
+                    .copied()
+                    .filter(|&r| r != current)
+                    .find(|&r| is_visible(r))
             }
-        };
-        for _ in 0..max_steps {
-            let raw = self.hits[pos];
-            if is_visible(raw) {
-                return Some(raw);
-            }
-            pos = advance(pos);
         }
-        None
     }
 
     /// 重算命中清單。`new_key.query` 是 `self.key.query` 的延伸、且設定沒變時，
@@ -609,12 +596,12 @@ impl<'a> CommitListState<'a> {
     }
 
     fn select_current_or_next_match_index(&mut self, current: RawCommitIdx) {
-        if self.search.contains(current) && self.is_raw_visible(current) {
-            self.select_raw(current);
-            let mi = self.search.rank_of(current).unwrap_or(0);
-            self.search_state.update_match_index(mi);
-        } else {
-            self.select_next_match_index(current)
+        match self.search.rank_of(current) {
+            Some(mi) if self.is_raw_visible(current) => {
+                self.select_raw(current);
+                self.search_state.update_match_index(mi);
+            }
+            _ => self.select_next_match_index(current),
         }
     }
 
