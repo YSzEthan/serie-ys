@@ -225,6 +225,10 @@ struct ResolvedDefaults {
     /// 沒有對應的 CLI 旗標，`current()` 直接讀這裡＋`draft.edits`，不經
     /// `draft.args`。
     list_scrolloff: u16,
+    /// `ui.list.graph_edge_max_rows`／`ui.list.graph_max_width_percent`
+    /// 目前有效值，同 `list_scrolloff` 沒有 CLI 旗標。
+    list_graph_edge_max_rows: usize,
+    list_graph_max_width_percent: u16,
     /// `true` = 設定檔載入失敗（讀不到／解析失敗／garde 驗證不過），
     /// `theme`／`keybind_patch` 都是內建硬預設，不是使用者的真實設定——
     /// 顏色編輯器與 keybind 編輯器都要據此在畫面上講清楚，不能默默顯示
@@ -281,6 +285,8 @@ impl ResolvedDefaults {
             keybind_patch: keybind_patch.unwrap_or_default(),
             user_commands,
             list_scrolloff: ui.list.scrolloff,
+            list_graph_edge_max_rows: ui.list.graph_edge_max_rows,
+            list_graph_max_width_percent: ui.list.graph_max_width_percent,
             config_is_fallback: false,
         }
     }
@@ -518,9 +524,13 @@ enum NumberField {
     MaxCount,
     UpdateInterval,
     AutoFetchInterval,
-    /// `ui.list.scrolloff`——跟其餘三個不同，沒有對應的 CLI 旗標，
-    /// `commit()` 不寫 `draft.args`，只寫 `draft.edits`。
+    /// `ui.list.scrolloff`——跟前三個不同，沒有對應的 CLI 旗標，
+    /// `commit()` 不寫 `draft.args`，只寫 `draft.edits`。以下兩個同。
     ListScrolloff,
+    /// `ui.list.graph_edge_max_rows`（長線截斷的 K）。
+    ListGraphEdgeMaxRows,
+    /// `ui.list.graph_max_width_percent`（截斷時的欄寬上限）。
+    ListGraphMaxWidthPercent,
 }
 
 impl NumberField {
@@ -542,6 +552,14 @@ impl NumberField {
                 table: UI_LIST,
                 key: "scrolloff".into(),
             },
+            NumberField::ListGraphEdgeMaxRows => ConfigKey {
+                table: UI_LIST,
+                key: "graph_edge_max_rows".into(),
+            },
+            NumberField::ListGraphMaxWidthPercent => ConfigKey {
+                table: UI_LIST,
+                key: "graph_max_width_percent".into(),
+            },
         }
     }
 
@@ -551,6 +569,8 @@ impl NumberField {
             NumberField::UpdateInterval => "--update-interval <HOURS>",
             NumberField::AutoFetchInterval => "--auto-fetch-interval <SECONDS>",
             NumberField::ListScrolloff => "[SCROLLOFF]",
+            NumberField::ListGraphEdgeMaxRows => "[GRAPH_EDGE_MAX_ROWS]",
+            NumberField::ListGraphMaxWidthPercent => "[GRAPH_MAX_WIDTH_PERCENT]",
         }
     }
 
@@ -560,6 +580,8 @@ impl NumberField {
             NumberField::UpdateInterval => "自動更新的檢查間隔",
             NumberField::AutoFetchInterval => "自動 fetch 的輪詢間隔",
             NumberField::ListScrolloff => "commit 清單游標上下保留的列數",
+            NumberField::ListGraphEdgeMaxRows => "超寬 graph 的長線截斷列數",
+            NumberField::ListGraphMaxWidthPercent => "超寬 graph 最多佔清單寬度的百分比",
         }
     }
 
@@ -585,6 +607,16 @@ impl NumberField {
                 min: 0,
                 max: u16::MAX as usize,
             },
+            NumberField::ListGraphEdgeMaxRows => NumberSpec {
+                title: "線長超過幾列就截斷成 ↓／↑（最小 3，只在圖寬超過 64 時啟用）",
+                min: 3,
+                max: u32::MAX as usize,
+            },
+            NumberField::ListGraphMaxWidthPercent => NumberSpec {
+                title: "超寬 graph 最多佔清單寬度的百分比（10–100）",
+                min: 10,
+                max: 100,
+            },
         }
     }
 
@@ -598,6 +630,12 @@ impl NumberField {
             NumberField::UpdateInterval => Some(update::DEFAULT_INTERVAL_HOURS as usize),
             NumberField::AutoFetchInterval => Some(auto_fetch::DEFAULT_INTERVAL_SECS as usize),
             NumberField::ListScrolloff => Some(config::UiListConfig::default().scrolloff as usize),
+            NumberField::ListGraphEdgeMaxRows => {
+                Some(config::UiListConfig::default().graph_edge_max_rows)
+            }
+            NumberField::ListGraphMaxWidthPercent => {
+                Some(config::UiListConfig::default().graph_max_width_percent as usize)
+            }
         }
     }
 
@@ -608,6 +646,10 @@ impl NumberField {
             NumberField::UpdateInterval => Some(defaults.update_interval as usize),
             NumberField::AutoFetchInterval => Some(defaults.auto_fetch_interval as usize),
             NumberField::ListScrolloff => Some(defaults.list_scrolloff as usize),
+            NumberField::ListGraphEdgeMaxRows => Some(defaults.list_graph_edge_max_rows),
+            NumberField::ListGraphMaxWidthPercent => {
+                Some(defaults.list_graph_max_width_percent as usize)
+            }
         }
     }
 
@@ -632,7 +674,8 @@ impl NumberField {
             NumberField::MaxCount => n.to_string(),
             NumberField::UpdateInterval => format!("{n} 小時"),
             NumberField::AutoFetchInterval => format!("{n} 秒"),
-            NumberField::ListScrolloff => format!("{n} 列"),
+            NumberField::ListScrolloff | NumberField::ListGraphEdgeMaxRows => format!("{n} 列"),
+            NumberField::ListGraphMaxWidthPercent => format!("{n}%"),
         }
     }
 
@@ -646,7 +689,9 @@ impl NumberField {
             NumberField::AutoFetchInterval => {
                 draft.args.auto_fetch_interval = value.map(|n| n as u64)
             }
-            NumberField::ListScrolloff => {}
+            NumberField::ListScrolloff
+            | NumberField::ListGraphEdgeMaxRows
+            | NumberField::ListGraphMaxWidthPercent => {}
         }
         draft
             .edits
@@ -763,6 +808,12 @@ const ROWS: &[RowAction] = &[
         NumberField::AutoFetchInterval,
     ))),
     RowAction::Edit(Editor::Dialog(Dialog::Number(NumberField::ListScrolloff))),
+    RowAction::Edit(Editor::Dialog(Dialog::Number(
+        NumberField::ListGraphEdgeMaxRows,
+    ))),
+    RowAction::Edit(Editor::Dialog(Dialog::Number(
+        NumberField::ListGraphMaxWidthPercent,
+    ))),
     RowAction::Edit(Editor::Dialog(Dialog::ColorMenu)),
     RowAction::Edit(Editor::Dialog(Dialog::KeyBindMenu)),
     RowAction::Launch,
@@ -1891,6 +1942,30 @@ mod tests {
             "清空要移除這個鍵，不是寫回預設值：{updated2}"
         );
         assert!(updated2.contains("name_width = 20"), "{updated2}");
+    }
+
+    #[test]
+    fn apply_touched_settings_writes_graph_truncation_settings() {
+        let mut s = test_state();
+        NumberField::ListGraphEdgeMaxRows.commit(&mut s.draft, Some(200));
+        NumberField::ListGraphMaxWidthPercent.commit(&mut s.draft, Some(70));
+        let updated = apply_touched_settings(&s.draft, "").unwrap();
+        assert!(updated.contains("graph_edge_max_rows = 200"), "{updated}");
+        assert!(
+            updated.contains("graph_max_width_percent = 70"),
+            "{updated}"
+        );
+        assert_eq!(
+            NumberField::ListGraphMaxWidthPercent.current_label(&s.draft, &s.defaults),
+            "70%"
+        );
+
+        NumberField::ListGraphEdgeMaxRows.commit(&mut s.draft, None);
+        assert_eq!(
+            NumberField::ListGraphEdgeMaxRows.current_label(&s.draft, &s.defaults),
+            "100 列",
+            "清空後顯示內建預設"
+        );
     }
 
     // ── 新架構釘住的不變式：ConfigKey 對應表、空 edits、PATH 的隔離 ──

@@ -1,7 +1,7 @@
 //! 效能量測工具，見 #116 與 `CONTRIBUTING.md`「效能量測」一節。
 //!
 //! ```sh
-//! cargo run --release --example perf -- <repo> [-o topo] [-n N]
+//! cargo run --release --example perf -- <repo> [-o topo] [-n N] [--dump N]
 //! ```
 //!
 //! 照 `ysgit::run()` 啟動時的順序量各階段：`load` → `calc_graph` →
@@ -111,6 +111,19 @@ struct Args {
     /// 對應 app 的 --max-count
     #[arg(short = 'n', long = "max-count", value_name = "NUMBER")]
     max_count: Option<usize>,
+
+    /// 長線截斷的 K，對應設定 `ui.list.graph_edge_max_rows`
+    #[arg(long, value_name = "ROWS", default_value_t = 100)]
+    max_edge_rows: usize,
+
+    /// 量完之後，把前 N 列的 Single 文字圖印出來（看實際畫面用）
+    #[arg(long, value_name = "N")]
+    dump: Option<usize>,
+
+    /// `--dump` 的欄寬上限（graph 欄數，含溢位欄）。預設 100，約等於
+    /// 200 欄寬的終端機套用 `graph_max_width_percent = 50`
+    #[arg(long, value_name = "COLS", default_value_t = 100)]
+    dump_cols: usize,
 }
 
 // ---------------------------------------------------------------------
@@ -228,6 +241,14 @@ struct GraphStats {
     width_p50: usize,
     width_p99: usize,
     width_max: usize,
+    /// 每列實際有東西（edge 或 dot）的欄數，也就是「每列線數」。
+    lanes_p50: usize,
+    lanes_p99: usize,
+    truncated: bool,
+    down_arrows: usize,
+    up_arrows: usize,
+    /// `↑` 開回 `↓` 原本那一欄（`pos_x == associated_line_pos_x`）的數量。
+    up_arrows_home: usize,
 }
 
 /// 每一列的寬度是「該列 edge 最大的 pos_x」與「該列 commit 的欄位」取
@@ -238,14 +259,36 @@ fn graph_stats(graph: &Graph) -> GraphStats {
     // 一次走完整張圖：`for_each_row_edges` 只從 checkpoint 重播一次，逐列
     // 呼叫 `row_edges` 會讓每一列都各自重播一次，範圍越大越浪費。
     let mut widths: Vec<usize> = Vec::with_capacity(graph.row_count());
+    let mut lanes: Vec<usize> = Vec::with_capacity(graph.row_count());
     let mut edges = 0usize;
+    let (mut down_arrows, mut up_arrows, mut up_arrows_home) = (0, 0, 0);
+    let mut used: Vec<usize> = Vec::new();
     graph.for_each_row_edges(0..graph.row_count(), |y, es| {
         let commit_col = graph.col(y);
         let edge_col = es.iter().map(|e| e.pos_x).max().unwrap_or(0);
         widths.push(commit_col.max(edge_col) + 1);
         edges += es.len();
+
+        used.clear();
+        used.push(commit_col);
+        used.extend(es.iter().map(|e| e.pos_x));
+        used.sort_unstable();
+        used.dedup();
+        lanes.push(used.len());
+
+        for e in es {
+            match e.edge_type {
+                graph::EdgeType::TruncDown => down_arrows += 1,
+                graph::EdgeType::TruncUp => {
+                    up_arrows += 1;
+                    up_arrows_home += usize::from(e.pos_x == e.associated_line_pos_x);
+                }
+                _ => {}
+            }
+        }
     });
     let (width_p50, width_p99, width_max) = percentiles(&mut widths);
+    let (lanes_p50, lanes_p99, _) = percentiles(&mut lanes);
     GraphStats {
         rows: graph.row_count(),
         cells: graph.cell_count(),
@@ -253,6 +296,44 @@ fn graph_stats(graph: &Graph) -> GraphStats {
         width_p50,
         width_p99,
         width_max,
+        lanes_p50,
+        lanes_p99,
+        truncated: graph.truncated(),
+        down_arrows,
+        up_arrows,
+        up_arrows_home,
+    }
+}
+
+/// HEAD 的 first-parent 鏈上，相鄰兩個 commit 的 col 不同的次數（主線
+/// 換欄次數）。沒有 HEAD 時回 `None`。只看主 graph（raw == row）。
+fn main_line_col_changes(repo: &Repository, graph: &Graph) -> Option<usize> {
+    let head = resolve_head_commit_hash(repo)?;
+    let (parent_start, parent_idx) = repo.parent_csr();
+    let mut cur = repo.index_of(&head)?;
+    let mut changes = 0;
+    // 走到 root 或沒載入的 parent 為止（`u32::MAX` 是 CSR 的「沒載入」）。
+    while let Some(&fp) = parent_idx[parent_start[cur] as usize..parent_start[cur + 1] as usize]
+        .first()
+        .filter(|&&p| p != u32::MAX)
+    {
+        let next = fp as usize;
+        changes += usize::from(graph.col(cur) != graph.col(next));
+        cur = next;
+    }
+    Some(changes)
+}
+
+/// 前 `rows` 列的 Single 文字圖，graph 最多 `max_cols` 欄（超過時最後一欄
+/// 是溢位欄），跟 app 走同一條 `text_cells`。
+fn dump_rows(repo: &Repository, graph: &Graph, rows: usize, max_cols: usize) {
+    let cols = graph.cell_count().min(max_cols.max(2));
+    let glyphs = graph::GlyphSet::ROUNDED;
+    for row in 0..rows.min(graph.row_count()) {
+        let cells = graph::text_cells(graph, row, None, &[], graph::CellWidthType::Single, cols);
+        let line: String = cells.iter().map(|c| glyphs.resolve(c.glyph)).collect();
+        let subject = &repo.all_commits()[graph.raw_of(row)].subject;
+        println!("{}  {subject}", line.trim_end());
     }
 }
 
@@ -277,6 +358,22 @@ fn print_graph_line(label: &str, stats: &GraphStats) {
     println!(
         "{label:<8} rows {rows}  cells {cells}  edges {edges}  width p50/p99/max {p50}/{p99}/{max}"
     );
+    let lanes_p50 = stats.lanes_p50;
+    let lanes_p99 = stats.lanes_p99;
+    if stats.truncated {
+        let down = thousands(stats.down_arrows);
+        let up = thousands(stats.up_arrows);
+        let home = stats.up_arrows_home as f64 * 100.0 / stats.up_arrows.max(1) as f64;
+        println!(
+            "{:<8} lanes p50/p99 {lanes_p50}/{lanes_p99}  truncated ↓ {down}  ↑ {up}（回原欄 {home:.2}%）",
+            ""
+        );
+    } else {
+        println!(
+            "{:<8} lanes p50/p99 {lanes_p50}/{lanes_p99}  truncated no",
+            ""
+        );
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -317,7 +414,8 @@ fn print_header(args: &Args) {
         .max_count
         .map(|n| n.to_string())
         .unwrap_or_else(|| "none".to_string());
-    println!("options  order={order}  max-count={max_count}");
+    let k = args.max_edge_rows;
+    println!("options  order={order}  max-count={max_count}  max-edge-rows={k}");
     println!();
     println!(
         "{:<12} {:>9} {:>9} {:>9} {:>9}  (MiB)",
@@ -344,7 +442,8 @@ fn main() {
     let stage = Stage::begin("calc_graph");
     let head = resolve_head_commit_hash(&repo);
     let reserve_head_col = head_has_named_ref(&repo);
-    let graph = graph::calc_graph(&repo, head.as_ref(), reserve_head_col);
+    let trunc = graph::Truncation::new(args.max_edge_rows);
+    let graph = graph::calc_graph(&repo, head.as_ref(), reserve_head_col, trunc);
     stage.end();
 
     let stage = Stage::begin("remote_only");
@@ -357,7 +456,7 @@ fn main() {
         None
     } else {
         let stage = Stage::begin("filtered");
-        let filtered = compute_filtered_graph_from(&repo, &remote_only);
+        let filtered = compute_filtered_graph_from(&repo, &remote_only, trunc);
         stage.end();
         filtered
     };
@@ -366,6 +465,25 @@ fn main() {
     let full_stats = graph_stats(&graph);
     let filtered_stats = filtered.as_ref().map(|g| graph_stats(g));
     stage.end();
+
+    // 主線換欄次數，截斷前後各量一次：沒有 reserve 時，分支點規則本來就
+    // 可能讓主線換欄，驗收看的是「截斷後不比截斷前多」。不截斷的那張圖
+    // 另外建（門檻設成不可能達到），不算進上面任何階段。
+    let main_changes = main_line_col_changes(&repo, &graph);
+    let main_changes_untruncated = graph.truncated().then(|| {
+        let off = graph::Truncation {
+            max_edge_rows: args.max_edge_rows,
+            min_graph_width: usize::MAX,
+        };
+        let untruncated = graph::calc_graph(&repo, head.as_ref(), reserve_head_col, off);
+        main_line_col_changes(&repo, &untruncated)
+    });
+
+    if let Some(rows) = args.dump {
+        println!();
+        dump_rows(&repo, &graph, rows, args.dump_cols);
+        println!();
+    }
 
     let stage = Stage::begin("drop");
     drop(filtered);
@@ -384,6 +502,15 @@ fn main() {
     let body_bytes = thousands(repo_summary.body_bytes);
     println!("text     subject {subject_bytes} bytes  body {body_bytes} bytes");
     print_graph_line("full", &full_stats);
+    let fmt = |c: Option<usize>| c.map_or("-".to_string(), |c| c.to_string());
+    match main_changes_untruncated {
+        Some(before) => println!(
+            "main     col changes {}（截斷前 {}）",
+            fmt(main_changes),
+            fmt(before)
+        ),
+        None => println!("main     col changes {}", fmt(main_changes)),
+    }
     match &filtered_stats {
         Some(stats) => print_graph_line("filtered", stats),
         None => println!("filtered skipped（沒有 remote-only commit）"),

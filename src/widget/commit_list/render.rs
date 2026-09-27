@@ -68,17 +68,20 @@ impl<'a> StatefulWidget for CommitList<'a> {
         // `terminal::size()` 的 I/O 成本。決定完先寫回 state，
         // `build_visible_rows` 內部的 `text_cells_for_raw` 才會用到
         // 正確的寬度。
-        let (cell_width_type, compact) = layout::decide(
+        let (cell_width_type, compact, cols) = layout::decide(
             columns,
             state.current_cell_count(),
             content_area.width,
             self.ctx.graph_width,
             self.ctx.compact,
+            state
+                .current_graph_truncated()
+                .then_some(self.ctx.ui_config.list.graph_max_width_percent),
             self.ctx.ui_config.list.subject_min_width,
             name_width,
             self.ctx.ui_config.list.date_width,
         );
-        state.set_layout(cell_width_type, compact);
+        state.set_layout(cell_width_type, compact, cols);
 
         // 六個欄位共用同一份列表 —— `text_cells_for_raw` 不會被重複呼叫，
         // 緊湊模式的 `text_x` 也只有一份算法，不會有 graph 跟 subject
@@ -1664,6 +1667,32 @@ mod tests {
             cells.iter().find(|c| c.glyph.is_dot()).unwrap().color
         }
 
+        /// #21 的欄寬上限版本：`graph_cell_width` 與 `text_cells_for_raw`
+        /// 都讀同一個 `graph_cols()`，套上限後兩邊仍然一致；落在溢位範圍
+        /// 的 commit，dot 跟 `dot_cell`（HEAD highlight 用）都在溢位欄。
+        #[test]
+        fn capped_columns_keep_width_cells_and_dot_cell_in_sync() {
+            let commits = text_graph_commits();
+            let mut state = build_state(&commits, text_graph(&commits), Opts::default());
+            for width in [CellWidthType::Single, CellWidthType::Double] {
+                state.set_layout(width, false, 2);
+                let per_col = width.cells_per_column();
+                assert_eq!(state.graph_cols(), 2);
+                assert_eq!(state.graph_cell_width() as usize, 2 * per_col);
+                for raw in [0, 1, 2].map(RawCommitIdx) {
+                    let cells = state.text_cells_for_raw(raw).unwrap();
+                    assert_eq!(cells.len(), 2 * per_col, "{width:?} {raw:?}");
+                }
+                let c2 = RawCommitIdx(2);
+                assert_eq!(state.dot_cell(c2), Some(per_col), "c2 在 col 2，夾到溢位欄");
+                let cells = state.text_cells_for_raw(c2).unwrap();
+                assert_eq!(cells[per_col].glyph, Glyph::CommitDot);
+            }
+
+            state.set_layout(CellWidthType::Single, false, 3);
+            assert_eq!(state.graph_cols(), 3, "上限不小於圖寬時等於沒有上限");
+        }
+
         #[test]
         fn marker_color_matches_the_dot_of_the_current_graph() {
             let commits = text_graph_commits();
@@ -1676,7 +1705,7 @@ mod tests {
                     ..Default::default()
                 },
             );
-            state.set_layout(CellWidthType::Double, false);
+            state.set_layout(CellWidthType::Double, false, usize::MAX);
             let c2 = RawCommitIdx(2);
 
             let filtered_color = state.marker_color(c2);
@@ -1713,7 +1742,7 @@ mod tests {
                     ..Default::default()
                 },
             );
-            state.set_layout(CellWidthType::Single, false);
+            state.set_layout(CellWidthType::Single, false, usize::MAX);
 
             let head_cells = state.text_cells_for_raw(RawCommitIdx(2)).unwrap();
             let c0_cells = state.text_cells_for_raw(RawCommitIdx(0)).unwrap();
@@ -1744,7 +1773,7 @@ mod tests {
                 None,
                 0,
             );
-            state.set_layout(CellWidthType::Double, false);
+            state.set_layout(CellWidthType::Double, false, usize::MAX);
             state.set_show_remote_refs(false);
             assert_eq!(
                 state.graph_area_cell_width(),

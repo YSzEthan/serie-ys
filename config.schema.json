@@ -416,6 +416,19 @@
               "minimum": 0,
               "maximum": 65535,
               "default": 15
+            },
+            "graph_edge_max_rows": {
+              "type": "integer",
+              "description": "Long-edge truncation for very wide graphs: an edge spanning more rows than this is drawn as ↓ below the child and ↑ above the parent, with nothing in between. Only enabled when the untruncated graph is wider than 64 lanes.",
+              "minimum": 3,
+              "default": 100
+            },
+            "graph_max_width_percent": {
+              "type": "integer",
+              "description": "For graphs with long-edge truncation enabled: the maximum share of the list width the graph may take, in percent. Lanes beyond it collapse into an overflow column.",
+              "minimum": 10,
+              "maximum": 100,
+              "default": 50
             }
           },
           "additionalProperties": false
