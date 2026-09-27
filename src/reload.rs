@@ -9,6 +9,7 @@
 //! worker 也重開一次。
 
 use std::{
+    cell::Cell,
     path::PathBuf,
     sync::{
         atomic::{AtomicBool, Ordering},
@@ -29,12 +30,29 @@ use crate::{
 /// 來，這裡決定 worker 自己跑多快。
 const MIN_INTERVAL: Duration = Duration::from_millis(200);
 
-/// 背景重載 working changes 的把手。
+/// Full 重載兩次之間至少間隔多久——rebase 每一步都動 HEAD，沒有這條會
+/// 一路凍結到 rebase 結束。跟 `MIN_INTERVAL` 是同一種節流手法，但套用在
+/// `lib.rs` 的完整重載上，數字也大得多（Full 本身就貴很多）。
+const FULL_COOLDOWN: Duration = Duration::from_secs(1);
+
+/// 背景重載 working changes 的把手，**也**是 `lib.rs` 的 Full 重載冷卻狀態
+/// 的唯一擁有者（`App`／`lib.rs` 都要讀寫，放這裡比另開一個結構、多傳一個
+/// 參數簡單——兩者本來就是「背景重新整理」同一個主題的兩個層級）。
 #[derive(Debug)]
 pub struct Reloader {
     request_tx: mpsc::Sender<()>,
     latest: Arc<Mutex<Option<WorkingChanges>>>,
     want_stats: Arc<AtomicBool>,
+    /// 下一次 Full 重載最早能開始的時間，`full_finished` 唯一寫入點。
+    full_not_before: Cell<Instant>,
+    /// 冷卻中收到的 Full 請求是否已經排過一個延遲的 `AutoRefresh(Full)`
+    /// ——一次性旗標，`arm_owed_full` 設它、`full_finished` 清它，見兩者
+    /// 文件。
+    full_owed: Cell<bool>,
+    /// 上一次（或這一次正在跑的）Full 重載的開始時間，`full_started` 唯一
+    /// 寫入點。`App` 拿它跟 `AutoRefresh::at` 比對，濾掉「已經被這次 Full
+    /// 涵蓋」的 watcher 事件——見 `last_full_start` 文件。
+    last_full_start: Cell<Instant>,
 }
 
 impl Reloader {
@@ -55,6 +73,13 @@ impl Reloader {
             request_tx,
             latest,
             want_stats,
+            // 一開始就當作「上次跑完」是很久以前，第一次 Full 不用等。
+            full_not_before: Cell::new(Instant::now() - FULL_COOLDOWN),
+            full_owed: Cell::new(false),
+            // 啟動時「上一次 Full」等於從來沒發生過，設成很久以前——
+            // 這樣啟動瞬間收到的任何 watcher 事件都不會被誤判成「已經被
+            // 涵蓋」而濾掉。
+            last_full_start: Cell::new(Instant::now() - FULL_COOLDOWN),
         }
     }
 
@@ -95,6 +120,62 @@ impl Reloader {
             }
             thread::sleep(Duration::from_millis(5));
         }
+    }
+
+    /// Full 重載現在能不能立刻觸發——不在冷卻視窗內。
+    pub fn full_ready(&self) -> bool {
+        Instant::now() >= self.full_not_before.get()
+    }
+
+    /// Full 重載即將開始時呼叫：記下起點供 `full_finished` 算耗時，也寫入
+    /// `last_full_start`（`App` 拿它濾掉已經被這次重載涵蓋的 watcher
+    /// 事件）。冷卻狀態（`full_not_before`）本身不在這裡改，要等重載真的
+    /// 結束才推進。
+    pub fn full_started(&self) -> Instant {
+        let now = Instant::now();
+        self.last_full_start.set(now);
+        now
+    }
+
+    /// 上一次（或這一次正在跑的）Full 重載的開始時間，見該欄位文件。
+    pub fn last_full_start(&self) -> Instant {
+        self.last_full_start.get()
+    }
+
+    /// Full 重載結束時呼叫，不論成功或失敗——失敗沒呼叫的話，`mv .git`
+    /// 之類的錯誤會讓 watcher 一直回報，變成 Full → 失敗 → Full 的緊密
+    /// 迴圈。下一次至少要等 `max(FULL_COOLDOWN, 這次耗時)`；`full_owed`
+    /// 一併清掉——這次真的跑完了，不欠了。
+    pub fn full_finished(&self, started_at: Instant) {
+        let cost = started_at.elapsed();
+        self.full_not_before
+            .set(Instant::now() + FULL_COOLDOWN.max(cost));
+        self.full_owed.set(false);
+    }
+
+    /// 冷卻中收到一次 Full 請求時呼叫。`full_owed` 是一次性旗標：第一次
+    /// 呼叫回 `true`（呼叫端該排一個 `send_after(AutoRefresh(Full), ..)`），
+    /// 之後在同一個冷卻視窗內再呼叫都回 `false`（已經排過，不必排第二個）
+    /// ——`full_finished` 才會把它清掉，不是誰讀了就清。
+    pub fn arm_owed_full(&self) -> bool {
+        !self.full_owed.replace(true)
+    }
+
+    /// 純讀取、不清除，給 `App::close_help` 等三個 overlay 關閉時檢查用：
+    /// 冷卻期間吞掉過一次 Full 請求、冷卻計時器到期時 overlay 還開著
+    /// （它們的 `refresh()` 是 no-op）就會卡在這裡，直到清掉這個旗標的
+    /// `full_finished` 真的跑完一次 Full 重載——關閉時用同一個
+    /// `request_full` 補一次，見 `App::retry_owed_full`。
+    pub fn full_owed(&self) -> bool {
+        self.full_owed.get()
+    }
+
+    /// 冷卻視窗還剩多久，`arm_owed_full` 回 `true` 之後呼叫端拿去
+    /// `send_after`。
+    pub fn full_remaining(&self) -> Duration {
+        self.full_not_before
+            .get()
+            .saturating_duration_since(Instant::now())
     }
 }
 
@@ -144,5 +225,71 @@ fn worker_loop(
         }
         last_cost = start.elapsed();
         last_end = Instant::now();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::event::Sender;
+
+    /// worker thread 不影響這裡測的邏輯（不呼叫 `request()` 就不會跑
+    /// `git status`），路徑不必是真的 repo。
+    fn spawn_for_test() -> Reloader {
+        let (tx, _rx) = Sender::channel_for_test();
+        Reloader::spawn(PathBuf::from("/nonexistent"), tx)
+    }
+
+    #[test]
+    fn full_ready_right_after_spawn() {
+        // `full_not_before` 初始化成很久以前，第一次 Full 不用等。
+        assert!(spawn_for_test().full_ready());
+    }
+
+    #[test]
+    fn full_started_advances_last_full_start() {
+        let reloader = spawn_for_test();
+        let before = reloader.last_full_start();
+        let started = reloader.full_started();
+        assert!(started >= before);
+        assert_eq!(reloader.last_full_start(), started);
+    }
+
+    #[test]
+    fn full_finished_starts_cooldown_and_clears_owed() {
+        let reloader = spawn_for_test();
+        reloader.arm_owed_full();
+        assert!(reloader.full_owed());
+
+        let started = reloader.full_started();
+        reloader.full_finished(started);
+
+        assert!(
+            !reloader.full_ready(),
+            "剛結束一次 Full，下一次至少要等 FULL_COOLDOWN"
+        );
+        assert!(!reloader.full_owed(), "跑完一次 Full 就不欠了");
+    }
+
+    /// 一次性旗標：第一次呼叫回 true（該排一個 `send_after`），冷卻視窗內
+    /// 再呼叫都回 false（已經排過，不必排第二個）。
+    #[test]
+    fn arm_owed_full_is_one_shot_within_cooldown() {
+        let reloader = spawn_for_test();
+
+        assert!(reloader.arm_owed_full());
+        assert!(!reloader.arm_owed_full());
+        assert!(!reloader.arm_owed_full());
+    }
+
+    #[test]
+    fn full_remaining_is_positive_right_after_full_finished() {
+        let reloader = spawn_for_test();
+        let started = reloader.full_started();
+        reloader.full_finished(started);
+
+        let remaining = reloader.full_remaining();
+        assert!(remaining > Duration::ZERO);
+        assert!(remaining <= FULL_COOLDOWN);
     }
 }

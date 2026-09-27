@@ -463,13 +463,17 @@ impl App<'_> {
                 }
                 AppEvent::CloseHelp => {
                     terminal.clear()?;
-                    self.close_help();
+                    if let Some(ret) = self.close_help() {
+                        return Ok(ret);
+                    }
                 }
                 AppEvent::OpenGitHub => {
                     self.open_github();
                 }
                 AppEvent::CloseGitHub => {
-                    self.close_github();
+                    if let Some(ret) = self.close_github() {
+                        return Ok(ret);
+                    }
                 }
                 AppEvent::OpenShell => {
                     self.open_shell();
@@ -479,12 +483,18 @@ impl App<'_> {
                 }
                 AppEvent::ShellOutputReady => {
                     self.view.poll_shell_output();
-                    // 指令跑完那一刻——watcher 在指令執行期間設過旗標的話
+                    // 指令跑完那一刻——指令執行期間設過旗標的話
                     // （`mark_refresh_pending`），現在才是安全的重建時機。
-                    if let View::Shell(ref mut view) = self.view {
-                        if let Some(context) = view.take_pending_refresh_context() {
-                            return Ok(Ret::Refresh(RefreshRequest { context }));
-                        }
+                    // 先結束對 `self.view` 的借用，`request_full` 才能借
+                    // `&mut self`。
+                    let pending_context = match self.view {
+                        View::Shell(ref mut view) => view.take_pending_refresh_context(),
+                        _ => None,
+                    };
+                    if let Some(ret) =
+                        pending_context.and_then(|context| self.request_full(Some(context)))
+                    {
+                        return Ok(ret);
                     }
                 }
                 AppEvent::OpenReleaseNotes { body } => {
@@ -492,7 +502,9 @@ impl App<'_> {
                 }
                 AppEvent::CloseReleaseNotes => {
                     terminal.clear()?;
-                    self.close_release_notes();
+                    if let Some(ret) = self.close_release_notes() {
+                        return Ok(ret);
+                    }
                 }
                 AppEvent::RefreshGitHub { state } => {
                     self.refresh_github(state);
@@ -596,8 +608,9 @@ impl App<'_> {
                     self.open_url(url);
                 }
                 AppEvent::Refresh(context) => {
-                    let request = RefreshRequest { context };
-                    return Ok(Ret::Refresh(request));
+                    if let Some(ret) = self.request_full(Some(context)) {
+                        return Ok(ret);
+                    }
                 }
                 AppEvent::ClearStatusLine => {
                     self.status_line_state.clear();
@@ -629,20 +642,28 @@ impl App<'_> {
                 AppEvent::CheckoutCommit { target } => {
                     self.checkout_commit(target);
                 }
-                // 這個 Phase 尚未依 `scope` 分流——`WorkingTree`（存檔）
-                // 暫時當 `Full` 處理，跟改動前行為相同；分流留給後續步驟
-                // （背景重載 working changes、Full 合併與冷卻）。
                 // `WorkingTree`（存檔）只需要背景跑一次 `git status`，不必
-                // 驚動 `Ret::Refresh`／完整重載那一整套；`Full` 維持原本
-                // 走法。兩者的合併與冷卻是下一步的事，這裡只是分流。
-                AppEvent::AutoRefresh(Scope::WorkingTree) => {
+                // 驚動 `request_full`／完整重載那一整套。
+                AppEvent::AutoRefresh {
+                    scope: Scope::WorkingTree,
+                    ..
+                } => {
                     self.reloader.request();
                 }
-                AppEvent::AutoRefresh(Scope::Full) => {
-                    if let Some(request) = self.shell_refresh_request() {
-                        return Ok(Ret::Refresh(request));
+                // `at` 早於上一次 Full 重載開始的時間，代表這批 fs 事件的
+                // 底層變化已經被那次重載涵蓋——checkout／commit 之後隔一段
+                // debounce 才到的 watcher 事件正是這個情況，不需要再觸發
+                // 第二次；`at >= last_full_start` 才走 `request_full`。
+                AppEvent::AutoRefresh {
+                    scope: Scope::Full,
+                    at,
+                } => {
+                    if at >= self.reloader.last_full_start() {
+                        let ctx = self.shell_refresh_request().map(|r| r.context);
+                        if let Some(ret) = self.request_full(ctx) {
+                            return Ok(ret);
+                        }
                     }
-                    self.view.refresh();
                 }
                 AppEvent::WorkingChangesReady => {
                     let working_changes = self.reloader.latest();
@@ -719,10 +740,10 @@ impl App<'_> {
                             status_line::AUTO_FETCH_SUCCESS_MSG.to_string(),
                         );
                     }
-                    if let Some(request) = self.shell_refresh_request() {
-                        return Ok(Ret::Refresh(request));
+                    let ctx = self.shell_refresh_request().map(|r| r.context);
+                    if let Some(ret) = self.request_full(ctx) {
+                        return Ok(ret);
                     }
-                    self.view.refresh();
                 }
                 AppEvent::OpenRefPicker { options, kind } => {
                     self.status_line_state.open_ref_picker(options, kind);
@@ -1472,11 +1493,15 @@ impl App<'_> {
         self.view = View::of_help(before_view, self.ctx.clone(), self.ec.sender());
     }
 
-    fn close_help(&mut self) {
+    /// 回傳值只在冷卻期間吞掉過一次 Full 請求時才可能是 `Some`，見
+    /// `retry_owed_full`；一般情況下是 `None`，呼叫端照常繼續事件迴圈。
+    fn close_help(&mut self) -> Option<Ret> {
         if let View::Help(ref mut view) = self.view {
             self.view = view.take_before_view();
             self.view.request_graph_clear();
+            return self.retry_owed_full();
         }
+        None
     }
 
     fn open_shell(&mut self) {
@@ -1539,6 +1564,85 @@ impl App<'_> {
         Some(RefreshRequest { context })
     }
 
+    /// 唯一決定「這次要不要真的觸發一次 Full 重載」的入口——四個
+    /// `Ret::Refresh` 回傳點（`AppEvent::Refresh`、`AutoRefresh(Full)`、
+    /// `AutoFetchCompleted`、`ShellOutputReady` 的 pending refresh）都經過
+    /// 這裡，不能有人繞過去直接 `return Ok(Ret::Refresh(..))`，否則冷卻
+    /// 形同虛設。
+    ///
+    /// `ctx` 是呼叫端手上現成的 context（`AppEvent::Refresh` 本身帶的、或
+    /// `shell_refresh_request()` 給的）；沒有的話（`AutoRefresh(Full)`／
+    /// `AutoFetchCompleted` 不在 Shell 時）交給 `self.view.refresh()`——它
+    /// 會 `send(AppEvent::Refresh(ctx))`，下一輪事件迴圈會再次呼叫這裡，
+    /// 那時就有 ctx 了（`views.rs:324` 既有的 refresh 處理不動）。
+    ///
+    /// 回傳 `Some(ret)` 呼叫端才 `return Ok(ret)`；`None` 代表這一輪不會
+    /// 觸發（冷卻中，或改走 `view.refresh()` 的間接路徑），呼叫端的
+    /// `match` 正常往下走，等下一個事件。
+    fn request_full(&mut self, ctx: Option<RefreshViewContext>) -> Option<Ret> {
+        let mut ctx = ctx;
+
+        // 排空佇列：`Refresh` 取最後一個 ctx；`AutoRefresh(Full)` 直接
+        // 吸收（沒有自帶 ctx，等同「有一次 Full 在排隊」，不用為它另外
+        // 重跑一次這個函式）；`AutoRefresh(WorkingTree)` 順手處理掉；
+        // `Tick` 丟掉；其餘事件推回 `deferred`，維持原本的處理順序——
+        // 它們不能被這次 Full 重載悄悄吃掉。
+        while let Some(event) = self.ec.try_recv() {
+            match event {
+                AppEvent::Refresh(c) => ctx = Some(c),
+                AppEvent::AutoRefresh {
+                    scope: Scope::Full, ..
+                } => {}
+                AppEvent::AutoRefresh {
+                    scope: Scope::WorkingTree,
+                    ..
+                } => self.reloader.request(),
+                AppEvent::Tick => {}
+                other => self.ec.defer(other),
+            }
+        }
+
+        if self.reloader.full_ready() {
+            return match ctx {
+                Some(ctx) => Some(Ret::Refresh(RefreshRequest { context: ctx })),
+                None => {
+                    self.view.refresh();
+                    None
+                }
+            };
+        }
+
+        // 冷卻中：`full_owed` 是一次性旗標，還沒排過（`arm_owed_full` 回
+        // true）才排一次延遲的 `AutoRefresh(Full)`；已經排過的話這批事件
+        // （連同手上的 ctx）直接丟掉，等那個延遲事件觸發時，
+        // `AppEvent::AutoRefresh` 的 arm 會重新呼叫這裡，那時再由當下的
+        // view 決定 ctx。
+        if self.reloader.arm_owed_full() {
+            self.ec.sender().send_after(
+                AppEvent::AutoRefresh {
+                    scope: Scope::Full,
+                    at: Instant::now(),
+                },
+                self.reloader.full_remaining(),
+            );
+        }
+        None
+    }
+
+    /// `close_help`／`close_github`／`close_release_notes` 共用：這三個
+    /// overlay 的 `refresh()` 是 no-op（`views.rs:324`，Phase 6 之前不動），
+    /// 冷卻計時器到期時如果 overlay 還開著，那次重試就白做了——
+    /// `full_owed` 卡在 `true`，也沒有新的 `send_after` 補上，剛建的 tag
+    /// 之類的變更會一直不出現，直到某個不相干的事件湊巧觸發下一次
+    /// refresh。關閉時用同一個 `request_full` 補一次，這次 `self.view`
+    /// 已經是還原後的真正 view，`refresh()` 才會生效。
+    fn retry_owed_full(&mut self) -> Option<Ret> {
+        if !self.reloader.full_owed() {
+            return None;
+        }
+        self.request_full(None)
+    }
+
     /// 這裡才是「看過」這一版 release notes 的認定時機——不是
     /// `update::pending_release_notes()` 決定要跳的那一刻。view 真的建出
     /// 來、下一幀就會畫出來，才算數；`lib.rs::run()` 決定完之後還有
@@ -1550,11 +1654,14 @@ impl App<'_> {
         self.view = View::of_release_notes(before_view, body, self.ctx.clone(), self.ec.sender());
     }
 
-    fn close_release_notes(&mut self) {
+    /// 回傳值意義同 `close_help`。
+    fn close_release_notes(&mut self) -> Option<Ret> {
         if let View::ReleaseNotes(ref mut view) = self.view {
             self.view = view.take_before_view();
             self.view.request_graph_clear();
+            return self.retry_owed_full();
         }
+        None
     }
 
     fn open_github(&mut self) {
@@ -1748,7 +1855,8 @@ impl App<'_> {
         });
     }
 
-    fn close_github(&mut self) {
+    /// 回傳值意義同 `close_help`。
+    fn close_github(&mut self) -> Option<Ret> {
         if let View::GitHub(ref mut view) = self.view {
             self.github_label_mode = view.label_mode();
             self.github_data = Some(view.take_data());
@@ -1758,7 +1866,9 @@ impl App<'_> {
                 self.view.refresh();
             }
             self.view.request_graph_clear();
+            return self.retry_owed_full();
         }
+        None
     }
 
     fn batch_toggle_checkboxes(
@@ -2131,7 +2241,10 @@ fn spawn_merge_pr(
                             // GitHub view（`close_github`）才真正刷新底下的
                             // commit list——沿用 `spawn_git_task` 對背景 git
                             // 操作成功的既有慣例，不必為此另開一個事件。
-                            tx.send(AppEvent::AutoRefresh(Scope::Full));
+                            tx.send(AppEvent::AutoRefresh {
+                                scope: Scope::Full,
+                                at: Instant::now(),
+                            });
                         }
                         Err(e) => {
                             has_failure = true;
@@ -2357,9 +2470,6 @@ fn spawn_git_task(ec: &EventController, task: GitTask) {
     let tx = ec.sender();
     let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
     let error_prefix = error_prefix.to_string();
-    // 預先 set pending flag，讓 git watcher 在 debounce 視窗內偵測到的 fs 事件
-    // 被吞掉；主動 refresh 走完後，watcher 不會重複觸發 slow-path。
-    ec.mark_pending_refresh();
 
     tx.send(AppEvent::ShowPendingOverlay {
         message: pending_msg,
@@ -2380,8 +2490,12 @@ fn spawn_git_task(ec: &EventController, task: GitTask) {
                 };
                 tx.send(AppEvent::NotifySuccess(msg));
                 // checkout／建立或刪除 tag／ref 一定動到 HEAD 或 refs，
-                // 一律當 Full，不是 WorkingTree。
-                tx.send(AppEvent::AutoRefresh(Scope::Full));
+                // 一律當 Full，不是 WorkingTree；`at = now()`——這是
+                // serie 自己觸發的變更，不需要跟任何「上一次 Full」比對。
+                tx.send(AppEvent::AutoRefresh {
+                    scope: Scope::Full,
+                    at: Instant::now(),
+                });
                 if let Some(event) = on_success {
                     tx.send(event);
                 }
