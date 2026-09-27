@@ -1,6 +1,6 @@
 use std::{
     hash::Hash,
-    io::{BufRead, BufReader},
+    io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
     sync::Arc,
@@ -49,14 +49,14 @@ impl From<&str> for CommitHash {
     }
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub enum CommitType {
     #[default]
     Commit,
     Stash,
 }
 
-#[derive(Debug, Default, Clone)]
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct Commit {
     pub commit_hash: CommitHash,
     /// `Arc<str>` 而非 `String`：linux 148 萬筆 commit 只有約 4 萬個不同作者，
@@ -284,10 +284,13 @@ impl Repository {
         &self.path
     }
 
-    pub fn commit_detail(&self, commit_hash: &CommitHash) -> (&Commit, CommitExtra, Vec<FileChange>) {
+    pub fn commit_detail(
+        &self,
+        commit_hash: &CommitHash,
+    ) -> (&Commit, CommitExtra, Vec<FileChange>) {
         let commit = self.commit(commit_hash).unwrap();
-        let extra =
-            load_commit_extra(&self.path, commit_hash).unwrap_or_else(|| CommitExtra::fallback(commit));
+        let extra = load_commit_extra(&self.path, commit_hash)
+            .unwrap_or_else(|| CommitExtra::fallback(commit));
         let changes = if commit.parent_commit_hashes.is_empty() {
             get_initial_commit_additions(&self.path, commit_hash)
         } else {
@@ -496,7 +499,41 @@ impl GitDirs {
     }
 }
 
+/// 平行載入失敗（rev-list 失敗、任一段 git 呼叫失敗）才退回這條單一
+/// process 的路徑。
 fn load_all_commits(
+    path: &Path,
+    sort: SortCommit,
+    head: &Head,
+    stashes: &[Commit],
+    max_count: Option<usize>,
+) -> Vec<Commit> {
+    load_commits_parallel(path, sort, head, stashes, max_count)
+        .unwrap_or_else(|| load_commits_single(path, sort, head, stashes, max_count))
+}
+
+/// 排除 stash 及其他 refs 之後，跟 `--branches --remotes --tags` 一起決定
+/// 「要載入哪些 commit」的共用引數：`load_commits_single`（單一 `git log`）
+/// 與 `rev_list_hashes`（平行路徑的第一步）都是同一組 commit，只是後面
+/// 取得逐欄位內容的方式不同。
+fn add_commit_revs(cmd: &mut Command, head: &Head, stashes: &[Commit], max_count: Option<usize>) {
+    cmd.arg("--branches").arg("--remotes").arg("--tags");
+
+    // 加入 stash 可以走到的 commits
+    stashes.iter().for_each(|stash| {
+        cmd.arg(stash.parent_commit_hashes[0].as_str());
+    });
+
+    if !matches!(head, Head::None) {
+        cmd.arg("HEAD");
+    }
+
+    if let Some(n) = max_count {
+        cmd.arg("--max-count").arg(n.to_string());
+    }
+}
+
+fn load_commits_single(
     path: &Path,
     sort: SortCommit,
     head: &Head,
@@ -514,21 +551,7 @@ fn load_all_commits(
     .arg("--date=iso-strict")
     .arg("-z"); // 用 NUL 作為分隔符
 
-    // 排除 stash 及其他 refs
-    cmd.arg("--branches").arg("--remotes").arg("--tags");
-
-    // 加入 stash 可以走到的 commits
-    stashes.iter().for_each(|stash| {
-        cmd.arg(stash.parent_commit_hashes[0].as_str());
-    });
-
-    if !matches!(head, Head::None) {
-        cmd.arg("HEAD");
-    }
-
-    if let Some(n) = max_count {
-        cmd.arg("--max-count").arg(n.to_string());
-    }
+    add_commit_revs(&mut cmd, head, stashes, max_count);
 
     // stderr 設成 null：載入路徑上 git 的 warning（例如 dangling ref）
     // 不能直接印到 TUI 的 alternate screen 上把畫面弄花。
@@ -556,6 +579,170 @@ fn load_all_commits(
     intern_author_strings(&mut commits);
 
     commits
+}
+
+/// 平行讀取的最小 commit 數：小 repo 多開幾個 process 划不來，但仍然走
+/// rev-list + stdin 這條路徑（只是段數壓成 1），不建另一條「小 repo 專用」
+/// 分支。
+const PARALLEL_LOAD_MIN_COMMITS: usize = 20_000;
+/// 平行段數上限：issue #121 實測 8 段就已經吃滿收益，再多只是多開 process。
+const PARALLEL_LOAD_MAX_SEGMENTS: usize = 8;
+
+fn load_commits_parallel(
+    path: &Path,
+    sort: SortCommit,
+    head: &Head,
+    stashes: &[Commit],
+    max_count: Option<usize>,
+) -> Option<Vec<Commit>> {
+    let available = std::thread::available_parallelism()
+        .map(|n| n.get())
+        .unwrap_or(1)
+        .min(PARALLEL_LOAD_MAX_SEGMENTS);
+    load_commits_parallel_with_segments(path, sort, head, stashes, max_count, available)
+}
+
+/// `segments` 是「想要的」段數上限，實際段數會再壓到 `[1, 行數]`。獨立出
+/// 這個參數是為了讓測試能對小 repo 強制切成多段，驗證平行路徑跟
+/// `load_commits_single` 逐欄位相同。
+fn load_commits_parallel_with_segments(
+    path: &Path,
+    sort: SortCommit,
+    head: &Head,
+    stashes: &[Commit],
+    max_count: Option<usize>,
+    segments: usize,
+) -> Option<Vec<Commit>> {
+    let revs = rev_list_hashes(path, sort, head, stashes, max_count)?;
+    let line_ends = line_end_offsets(&revs);
+    if line_ends.is_empty() {
+        return Some(Vec::new());
+    }
+
+    let segments = if line_ends.len() < PARALLEL_LOAD_MIN_COMMITS {
+        1
+    } else {
+        segments
+    }
+    .clamp(1, line_ends.len());
+    let chunk_lines = line_ends.len().div_ceil(segments);
+    let format = load_commits_format();
+
+    let mut byte_start = 0;
+    let chunks: Vec<&[u8]> = line_ends
+        .chunks(chunk_lines)
+        .map(|ends| {
+            let byte_end = *ends.last().expect("chunks() 不會產生空的分組");
+            let chunk = &revs[byte_start..byte_end];
+            byte_start = byte_end;
+            chunk
+        })
+        .collect();
+
+    let results = std::thread::scope(|scope| {
+        chunks
+            .into_iter()
+            .map(|chunk| scope.spawn(|| load_commits_segment(path, &format, chunk)))
+            .collect::<Vec<_>>()
+            .into_iter()
+            .map(|handle| handle.join().unwrap_or(None))
+            .collect::<Vec<_>>()
+    });
+
+    let mut commits = Vec::with_capacity(line_ends.len());
+    for result in results {
+        let mut segment_commits = result?;
+        intern_author_strings(&mut segment_commits);
+        commits.extend(segment_commits);
+    }
+    Some(commits)
+}
+
+/// 只決定「有哪些 commit、什麼排序」，逐欄位內容留給 `load_commits_segment`
+/// 平行跑 `git log --stdin` 取得。`None` 代表 rev-list 本身失敗，呼叫端
+/// 退回 `load_commits_single`。
+fn rev_list_hashes(
+    path: &Path,
+    sort: SortCommit,
+    head: &Head,
+    stashes: &[Commit],
+    max_count: Option<usize>,
+) -> Option<Vec<u8>> {
+    let mut cmd = git_read(path);
+    cmd.arg("rev-list").arg(match sort {
+        SortCommit::Chronological => "--date-order",
+        SortCommit::Topological => "--topo-order",
+    });
+    add_commit_revs(&mut cmd, head, stashes, max_count);
+    cmd.stdout(Stdio::piped()).stderr(Stdio::null());
+
+    let output = cmd.output().ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    Some(output.stdout)
+}
+
+/// 每個換行符號後一個 byte 的位置，用來把 `rev_list_hashes` 的輸出切成
+/// 「一行一個 commit hash」的連續區段，不需要另外配置字串陣列。
+fn line_end_offsets(bytes: &[u8]) -> Vec<usize> {
+    bytes
+        .iter()
+        .enumerate()
+        .filter_map(|(i, &b)| (b == b'\n').then_some(i + 1))
+        .collect()
+}
+
+/// 平行載入的一段：把這段的 rev 清單透過 stdin 交給 `git log --stdin`，讀
+/// 它的 stdout 就地 parse。thread 裡的 spawn／write／read／wait 全部回
+/// `Result`，不 `unwrap`——git 遇到壞物件會先 fatal 退出，這時寫 stdin
+/// 會拿到 `BrokenPipe`，`unwrap` 會讓 panic 被 `thread::scope` 往上傳，
+/// fallback 就形同虛設（外層的 `handle.join()` 另外接住萬一仍然發生的
+/// panic，當作這段失敗）。
+///
+/// 先把整段 revs 寫完再讀 stdout 不會死鎖：git 的 `--stdin` 在
+/// `setup_revisions` 就會把 stdin 讀到 EOF 才開始輸出。
+fn load_commits_segment(path: &Path, format: &str, revs_chunk: &[u8]) -> Option<Vec<Commit>> {
+    let mut cmd = git_read(path);
+    cmd.arg("log")
+        .arg("--no-walk=unsorted")
+        .arg("--stdin")
+        .arg("--no-show-signature")
+        .arg(format!("--pretty={format}"))
+        .arg("--date=iso-strict")
+        .arg("-z")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null());
+
+    let mut process = cmd.spawn().ok()?;
+    let mut stdin = process.stdin.take()?;
+    stdin.write_all(revs_chunk).ok()?;
+    drop(stdin); // 送 EOF，git 才會開始輸出
+
+    let stdout = process.stdout.take()?;
+    let reader = BufReader::new(stdout);
+    let mut commits = Vec::new();
+    for bytes in reader.split(b'\0') {
+        let bytes = bytes.ok()?;
+        let s = String::from_utf8_lossy(&bytes);
+        if let Some(commit) = parse_commit_line(&s, CommitType::Commit) {
+            commits.push(commit);
+        }
+    }
+
+    let status = process.wait().ok()?;
+    if !status.success() {
+        return None;
+    }
+
+    debug_assert_eq!(
+        commits.len(),
+        revs_chunk.iter().filter(|&&b| b == b'\n').count(),
+        "平行載入某段 parse 出來的筆數跟送進去的行數不同"
+    );
+
+    Some(commits)
 }
 
 /// 同一批載入呼叫內，把 `author_name`／`author_email` 相同內容的 `Arc<str>`
@@ -1425,13 +1612,13 @@ mod tests {
     /// 同一份 `Arc` 配置——linux 148 萬筆 commit 只有約 4 萬個不同作者。
     #[test]
     fn intern_author_strings_shares_arc_for_same_author() {
-        let mut commits = vec![
-            commit_with_parents("a", ""),
-            commit_with_parents("b", ""),
-        ];
+        let mut commits = vec![commit_with_parents("a", ""), commit_with_parents("b", "")];
         intern_author_strings(&mut commits);
 
-        assert!(Arc::ptr_eq(&commits[0].author_name, &commits[1].author_name));
+        assert!(Arc::ptr_eq(
+            &commits[0].author_name,
+            &commits[1].author_name
+        ));
         assert!(Arc::ptr_eq(
             &commits[0].author_email,
             &commits[1].author_email
@@ -1454,5 +1641,161 @@ mod tests {
         let commit = parse_commit_line(&line, CommitType::Commit).unwrap();
 
         assert_eq!(commit.subject, "🎉 上線");
+    }
+
+    // ── 平行載入：跟單一 process 逐欄位相同 ──
+
+    fn git_env(path: &Path, args: &[&str], extra_env: &[(&str, &str)]) -> std::process::Output {
+        let mut cmd = std::process::Command::new("git");
+        cmd.args(args)
+            .current_dir(path)
+            .env("GIT_CONFIG_NOSYSTEM", "true")
+            // 比照 tests/mailmap.rs：擋掉開發者 global config 的 commit.gpgsign
+            // 之類的設定，不然這個測試在他機器上會紅、在 CI 上才綠。
+            .env("HOME", "/dev/null")
+            .env("GIT_AUTHOR_NAME", "A")
+            .env("GIT_AUTHOR_EMAIL", "a@example.com")
+            .env("GIT_COMMITTER_NAME", "A")
+            .env("GIT_COMMITTER_EMAIL", "a@example.com");
+        for (k, v) in extra_env {
+            cmd.env(k, v);
+        }
+        let out = cmd
+            .output()
+            .unwrap_or_else(|e| panic!("failed to run git {}: {e}", args.join(" ")));
+        assert!(
+            out.status.success(),
+            "git {} 失敗: {}",
+            args.join(" "),
+            String::from_utf8_lossy(&out.stderr)
+        );
+        out
+    }
+
+    fn commit_at(path: &Path, msg: &str, date: &str) {
+        git_env(
+            path,
+            &["commit", "--allow-empty", "-m", msg],
+            &[("GIT_AUTHOR_DATE", date), ("GIT_COMMITTER_DATE", date)],
+        );
+    }
+
+    /// 寫進 `-F` 檔案再 commit：`std::fs::write` 可以塞任意 bytes，不像
+    /// command-line 引數在非 Unix 平台上受 `OsStr` 編碼限制。
+    fn commit_with_raw_message(path: &Path, date: &str, message: &[u8]) {
+        let msg_file = path.join(".msg");
+        std::fs::write(&msg_file, message).unwrap();
+        git_env(
+            path,
+            &["commit", "--allow-empty", "-F", ".msg"],
+            &[("GIT_AUTHOR_DATE", date), ("GIT_COMMITTER_DATE", date)],
+        );
+        std::fs::remove_file(&msg_file).unwrap();
+    }
+
+    /// main: A(t1) 分出 b1: B(t2) C(t4) 與 b2: D(t3)，b1／b2 互不是彼此
+    /// 祖先。實測過這個結構會讓 `--date-order`（C D B A）跟 `--topo-order`
+    /// （C B D A）排出不同順序，兩種排序都能真的被測到。結束時停在 main。
+    fn build_branching_repo() -> tempfile::TempDir {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        git_env(path, &["init", "-q", "-b", "main"], &[]);
+        commit_at(path, "A", "2026-01-01T00:00:01+00:00");
+        git_env(path, &["branch", "b1"], &[]);
+        git_env(path, &["branch", "b2"], &[]);
+        git_env(path, &["checkout", "-q", "b1"], &[]);
+        commit_at(path, "B", "2026-01-01T00:00:02+00:00");
+        commit_at(path, "C", "2026-01-01T00:00:04+00:00");
+        git_env(path, &["checkout", "-q", "b2"], &[]);
+        commit_at(path, "D", "2026-01-01T00:00:03+00:00");
+        git_env(path, &["checkout", "-q", "main"], &[]);
+        dir
+    }
+
+    /// `segments = 1` 與 `segments = 3` 都跟 `load_commits_single` 逐欄位
+    /// 相同（`Commit`／`CommitType` 的 `PartialEq` 是為了這個比較加的）。
+    fn assert_parallel_matches_single(
+        path: &Path,
+        sort: SortCommit,
+        head: &Head,
+        max_count: Option<usize>,
+    ) {
+        let baseline = load_commits_single(path, sort, head, &[], max_count);
+        for segments in [1, 3] {
+            let parallel =
+                load_commits_parallel_with_segments(path, sort, head, &[], max_count, segments)
+                    .expect("平行路徑不應該失敗");
+            assert_eq!(
+                parallel, baseline,
+                "segments = {segments} 的結果跟單一 process 不同"
+            );
+        }
+    }
+
+    #[test]
+    fn parallel_load_matches_single_process_across_sort_orders() {
+        let dir = build_branching_repo();
+        let path = dir.path();
+        let (_, head) = load_refs(path);
+
+        for sort in [SortCommit::Chronological, SortCommit::Topological] {
+            assert_parallel_matches_single(path, sort, &head, None);
+        }
+    }
+
+    /// `max_count` 小於段數：`segments = 3` 但只有 2 筆，效果上會被壓成
+    /// `segments = 2`——守住「空段一律不 spawn」，不然空的 stdin 會讓
+    /// `git log --stdin` 自己補上一筆 HEAD。
+    #[test]
+    fn parallel_load_with_max_count_smaller_than_segments() {
+        let dir = build_branching_repo();
+        let path = dir.path();
+        let (_, head) = load_refs(path);
+
+        assert_parallel_matches_single(path, SortCommit::Chronological, &head, Some(2));
+    }
+
+    #[test]
+    fn parallel_load_matches_single_process_with_detached_head() {
+        let dir = build_branching_repo();
+        let path = dir.path();
+        let rev = git_env(path, &["rev-parse", "b1"], &[]);
+        let target = String::from_utf8_lossy(&rev.stdout).trim().to_string();
+        git_env(path, &["checkout", "-q", &target], &[]);
+
+        let (_, head) = load_refs(path);
+        assert!(matches!(head, Head::Detached { .. }), "head = {head:?}");
+        assert_parallel_matches_single(path, SortCommit::Chronological, &head, None);
+    }
+
+    /// unborn 分支（`--orphan`，還沒有任何 commit）加上其他有 commit 的
+    /// 分支：`show-ref --head` 印不出 HEAD 那一行，`load_refs` 因此判定
+    /// `Head::None`，但 `--branches` 仍然吃得到 main／b1／b2。
+    #[test]
+    fn parallel_load_matches_single_process_with_unborn_head() {
+        let dir = build_branching_repo();
+        let path = dir.path();
+        git_env(path, &["checkout", "-q", "--orphan", "unborn"], &[]);
+
+        let (_, head) = load_refs(path);
+        assert!(matches!(head, Head::None), "head = {head:?}");
+        assert_parallel_matches_single(path, SortCommit::Chronological, &head, None);
+    }
+
+    /// commit subject 帶一個單獨的 latin1 byte（0xE9），不是合法 UTF-8。
+    /// `parse_commit_line` 用 `String::from_utf8_lossy`，平行段落跟單一
+    /// process 呼叫的是同一個函式，這裡釘住兩條路徑對非法 byte 的處理
+    /// 逐欄位相同。
+    #[test]
+    fn parallel_load_matches_single_process_with_non_utf8_subject() {
+        let dir = build_branching_repo();
+        let path = dir.path();
+        let mut message = b"latin1-".to_vec();
+        message.push(0xE9);
+        message.extend_from_slice(b"-subject");
+        commit_with_raw_message(path, "2026-01-01T00:00:05+00:00", &message);
+
+        let (_, head) = load_refs(path);
+        assert_parallel_matches_single(path, SortCommit::Chronological, &head, None);
     }
 }

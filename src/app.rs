@@ -1096,7 +1096,12 @@ impl<'a> App<'a> {
         }
         let selected = cls.selected_commit_hash().clone();
         let (commit, extra, changes) = self.repository.commit_detail(&selected);
-        let refs: Vec<Ref> = self.repository.refs(&selected).into_iter().cloned().collect();
+        let refs: Vec<Ref> = self
+            .repository
+            .refs(&selected)
+            .into_iter()
+            .cloned()
+            .collect();
         let commit = commit.clone();
         self.view = View::of_detail(
             cls,
@@ -1224,7 +1229,9 @@ impl App<'_> {
             View::UserCommand(ref mut view) => view.as_list_state(),
             _ => return,
         };
-        let (commit, refs) = self.repository.commit_refs(commit_list_state.selected_commit_hash());
+        let (commit, refs) = self
+            .repository
+            .commit_refs(commit_list_state.selected_commit_hash());
         let result = build_external_command_parameters_and_exec_command(
             commit,
             &refs,
@@ -1268,7 +1275,9 @@ impl App<'_> {
         if commit_list_state.is_virtual_row_selected() {
             return;
         }
-        let (commit, refs) = self.repository.commit_refs(commit_list_state.selected_commit_hash());
+        let (commit, refs) = self
+            .repository
+            .commit_refs(commit_list_state.selected_commit_hash());
         let result = build_external_command_parameters_and_exec_command(
             commit,
             &refs,
@@ -1298,7 +1307,9 @@ impl App<'_> {
         if commit_list_state.is_virtual_row_selected() {
             return;
         }
-        let (commit, refs) = self.repository.commit_refs(commit_list_state.selected_commit_hash());
+        let (commit, refs) = self
+            .repository
+            .commit_refs(commit_list_state.selected_commit_hash());
         match build_external_command_parameters(
             commit,
             &refs,
@@ -1521,7 +1532,9 @@ impl App<'_> {
         let (commit, refs) = if commit_list_state.is_virtual_row_selected() {
             (None, Vec::new())
         } else {
-            let (commit, refs) = self.repository.commit_refs(commit_list_state.selected_commit_hash());
+            let (commit, refs) = self
+                .repository
+                .commit_refs(commit_list_state.selected_commit_hash());
             (Some(commit.clone()), refs)
         };
         let repo_path = self.repository.path().to_path_buf();
