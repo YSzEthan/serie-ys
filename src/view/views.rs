@@ -396,6 +396,24 @@ impl<'a> View<'a> {
     /// 目前使用中的 `CommitListState`，不管有沒有被 Help／GitHub／
     /// ReleaseNotes／Shell 蓋住——跟 `into_commit_list_state` 一樣往
     /// overlay 的 `before` 走下去，但這裡是借用，不消費 `self`。
+    /// Help／GitHub／ReleaseNotes／Shell 四種 overlay 共用的「往內層 view
+    /// 走下去」——`list_state_mut`／`apply_working_changes` 都要穿過 overlay
+    /// 才碰得到真正的 `CommitListState`，抽出來避免兩處各寫一份。
+    fn overlay_before_mut(&mut self) -> Option<&mut View<'a>> {
+        match self {
+            View::Help(v) => Some(v.before_view_mut()),
+            View::GitHub(v) => Some(v.before_view_mut()),
+            View::ReleaseNotes(v) => Some(v.before_view_mut()),
+            View::Shell(v) => Some(v.before_view_mut()),
+            _ => None,
+        }
+    }
+
+    /// 不能像 `apply_working_changes` 那樣先 `overlay_before_mut()` 早退再
+    /// `match self`——這裡的回傳型別借用 `self`，borrow checker 會把
+    /// `overlay_before_mut()` 那次借用的存續期直接綁到整個函式的
+    /// `&mut self`，擋掉後面 `match self` 對 `self` 的使用。`()` 沒有這個
+    /// 問題，`apply_working_changes` 才用得了那個寫法。
     pub fn list_state_mut(&mut self) -> Option<&mut CommitListState<'a>> {
         match self {
             View::List(v) => Some(v.as_mut_list_state()),
@@ -430,39 +448,25 @@ impl<'a> View<'a> {
         ctx: &Rc<AppContext>,
         ec: &EventController,
     ) {
-        match self {
-            View::Help(v) => v
-                .before_view_mut()
-                .apply_working_changes(working_changes, ctx, ec),
-            View::GitHub(v) => v
-                .before_view_mut()
-                .apply_working_changes(working_changes, ctx, ec),
-            View::ReleaseNotes(v) => {
-                v.before_view_mut()
-                    .apply_working_changes(working_changes, ctx, ec)
-            }
-            View::Shell(v) => v
-                .before_view_mut()
-                .apply_working_changes(working_changes, ctx, ec),
-            View::Detail(view) => {
-                let state = view.as_mut_list_state();
-                let was_virtual_selected = state.is_virtual_row_selected();
-                state.set_working_changes(working_changes);
-                let has_virtual_row = state.has_virtual_row();
+        if let Some(before) = self.overlay_before_mut() {
+            return before.apply_working_changes(working_changes, ctx, ec);
+        }
+        if let View::Detail(view) = self {
+            let state = view.as_mut_list_state();
+            let was_virtual_selected = state.is_virtual_row_selected();
+            state.set_working_changes(working_changes);
+            let has_virtual_row = state.has_virtual_row();
 
-                if was_virtual_selected && !has_virtual_row {
-                    let commit_list_state = view.take_list_state().expect("list state present");
-                    *self = View::of_list(commit_list_state, ctx.clone(), ec.sender());
-                } else {
-                    view.refresh_working_changes();
-                }
+            if was_virtual_selected && !has_virtual_row {
+                let commit_list_state = view.take_list_state().expect("list state present");
+                *self = View::of_list(commit_list_state, ctx.clone(), ec.sender());
+            } else {
+                view.refresh_working_changes();
             }
-            View::Default => {}
-            _ => {
-                if let Some(state) = self.list_state_mut() {
-                    state.set_working_changes(working_changes);
-                }
-            }
+            return;
+        }
+        if let Some(state) = self.list_state_mut() {
+            state.set_working_changes(working_changes);
         }
     }
 }
