@@ -246,6 +246,10 @@ impl<'a> GitHubView<'a> {
         std::mem::take(&mut self.refresh_pending)
     }
 
+    pub(super) fn before_view_mut(&mut self) -> &mut View<'a> {
+        &mut self.before
+    }
+
     /// 交出目前持有的資料快照，供 `App` 在關閉 view 時暫存。比照
     /// [`Self::take_before_view`]：view 即將被丟棄，直接 take 沒有殘留成本。
     pub fn take_data(&mut self) -> GitHubData {

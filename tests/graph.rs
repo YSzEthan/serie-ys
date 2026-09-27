@@ -1541,8 +1541,7 @@ fn graph_ignores_working_changes() -> TestResult {
 
     let clean = row_edges()?;
     git.dirty();
-    let dirty_repo = git::Repository::load(repo_path, git::SortCommit::Chronological, None)?;
-    assert!(!dirty_repo.working_changes().is_empty());
+    assert!(!git::load_working_changes(repo_path)?.is_empty());
     assert_eq!(row_edges()?, clean);
 
     Ok(())
@@ -1852,7 +1851,7 @@ fn build_graph_snapshot_source(
         full
     };
     // 工作區有變更時 virtual row 會顯示，HEAD 欄要補線接上去（跟 app 走同一條路）。
-    let virtual_head_row = if repository.working_changes().is_empty() {
+    let virtual_head_row = if git::load_working_changes(repo_path).unwrap().is_empty() {
         None
     } else {
         ysgit::resolve_head_commit_hash(&repository)

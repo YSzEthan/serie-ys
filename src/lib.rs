@@ -13,6 +13,7 @@ mod external;
 mod fuzzy;
 mod keybind;
 mod process;
+mod reload;
 mod update;
 mod view;
 mod widget;
@@ -23,6 +24,7 @@ use std::{
     io::{IsTerminal, Write},
     path::Path,
     rc::Rc,
+    time::Duration,
 };
 
 use app::{App, Ret};
@@ -30,6 +32,7 @@ use auto_fetch::AutoFetch;
 use clap::{CommandFactory, Parser, ValueEnum};
 use git::FetchPrune;
 use graph::Graph;
+use reload::Reloader;
 use serde::Deserialize;
 use update::{AutoRestart, ReleaseNotes, UpdateMode};
 
@@ -665,6 +668,14 @@ pub fn run() -> Result<()> {
         ec.start_git_watcher(&repo_root);
     }
 
+    // 背景重載 working changes（只跑 `git status`）的 worker，跟下面的
+    // `Repository::load`（可能要跑好幾秒的 `git log`）平行——存檔只需要
+    // 前者，不必等後者。由這個函式的 `loop` 持有，跟 `repository`／`graph`
+    // 活得一樣久；每個 `App` 只借用 `&reloader`，`Ret::Refresh` 重建 `App`
+    // 不會連 worker thread 也重開一次。
+    let reloader = Reloader::spawn(repo_root, ec.sender());
+    reloader.request();
+
     let mut repository = git::Repository::load(Path::new(&args.path), order, max_count)?;
     // 排第一次 auto-fetch 輪詢。`mode = Off` 就不排；放在 `Repository::load`
     // 之後才排：那一行內部已經跑過 `check_git_repository`（含 bare repo），
@@ -693,6 +704,13 @@ pub fn run() -> Result<()> {
     ));
     let (mut filtered_graph, mut remote_only_commits) = build_graph_artifacts(&repository, trunc);
 
+    // 同步等第一個背景 `git status` 結果——`status` 幾乎一定比上面的
+    // `git log` 快，這個等待接近免費，換來的是「開起來就選在虛擬列」這個
+    // 既有行為不必碰運氣。等不到（極端情況：巨量 untracked 檔案）就當
+    // 「暫時沒有 working changes」，稍後 `AppEvent::WorkingChangesReady`
+    // 會自動補上，不阻塞啟動。
+    let mut working_changes = reloader.wait_first(Duration::from_secs(2));
+
     let ret = loop {
         if terminal.is_none() {
             terminal = Some(ratatui::init());
@@ -712,6 +730,8 @@ pub fn run() -> Result<()> {
             initial_selection,
             ctx.clone(),
             &ec,
+            &reloader,
+            working_changes.take(),
             refresh_view_context.take(),
         );
 
@@ -735,7 +755,7 @@ pub fn run() -> Result<()> {
                     repository.update_metadata_from(new_repo);
                     // 這裡不需要更新 head_raw：App::new 會重新
                     // 從 `repository` 計算，而 update_metadata_from
-                    // 剛把它更新到最新狀態（複製了 ref_map/head/working_changes）。
+                    // 剛把它更新到最新狀態（複製了 ref_map/head）。
 
                     let filtered_changed = try_refresh_filtered_for_ref_change(
                         &repository,
@@ -766,6 +786,14 @@ pub fn run() -> Result<()> {
                         t.clear()?;
                     }
                 }
+
+                // Full 重載後 working changes 的基準可能已經變了（checkout／
+                // commit 都會動到）：排一次背景 status，不等它跑完——
+                // `latest()` 給的是重載前的舊值，馬上建出來的 App 會在下一輪
+                // 事件迴圈收到 `AppEvent::WorkingChangesReady` 自我修正，比
+                // 為了這個同步等一次 `git status` 划算。
+                reloader.request();
+                working_changes = reloader.latest();
 
                 continue;
             }

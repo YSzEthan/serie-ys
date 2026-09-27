@@ -159,6 +159,10 @@ impl<'a> ShellView<'a> {
         std::mem::take(&mut self.before)
     }
 
+    pub(super) fn before_view_mut(&mut self) -> &mut View<'a> {
+        &mut self.before
+    }
+
     /// 下面四個方法單純委派給 `before`——`ShellView::render` 畫的就是
     /// `before`，跑馬燈與 graph clear 的旗標／狀態也活在它身上，見
     /// `View::marquee_id` 等呼叫端的文件註解。

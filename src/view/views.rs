@@ -6,7 +6,7 @@ use tui_input::Input;
 
 use crate::{
     app::AppContext,
-    event::{AppEvent, Sender, UserEventWithCount},
+    event::{AppEvent, EventController, Sender, UserEventWithCount},
     git::{Commit, CommitHash, FileChange, Ref, RefType, Repository, WorkingChanges},
     view::{
         create_tag::CreateTagView, delete_ref::DeleteRefView, delete_tag::DeleteTagView,
@@ -390,6 +390,79 @@ impl<'a> View<'a> {
                 View::Shell(mut v) => v.take_before_view(),
                 View::Default => unreachable!("no View::Default at runtime"),
             };
+        }
+    }
+
+    /// 目前使用中的 `CommitListState`，不管有沒有被 Help／GitHub／
+    /// ReleaseNotes／Shell 蓋住——跟 `into_commit_list_state` 一樣往
+    /// overlay 的 `before` 走下去，但這裡是借用，不消費 `self`。
+    pub fn list_state_mut(&mut self) -> Option<&mut CommitListState<'a>> {
+        match self {
+            View::List(v) => Some(v.as_mut_list_state()),
+            View::Detail(v) => Some(v.as_mut_list_state()),
+            View::UserCommand(v) => Some(v.as_mut_list_state()),
+            View::Refs(v) => Some(v.as_mut_list_state()),
+            View::CreateTag(v) => Some(v.as_mut_list_state()),
+            View::DeleteTag(v) => Some(v.as_mut_list_state()),
+            View::DeleteRef(v) => Some(v.as_mut_list_state()),
+            View::Help(v) => v.before_view_mut().list_state_mut(),
+            View::GitHub(v) => v.before_view_mut().list_state_mut(),
+            View::ReleaseNotes(v) => v.before_view_mut().list_state_mut(),
+            View::Shell(v) => v.before_view_mut().list_state_mut(),
+            View::Default => None,
+        }
+    }
+
+    /// `reload::Reloader` 背景重新整理送達時呼叫（`AppEvent::WorkingChangesReady`）。
+    /// 更新目前使用中的 `CommitListState`（穿過 overlay，理由同
+    /// `list_state_mut`）；`View::Detail` 額外處理兩種情況：
+    ///
+    /// - 正顯示 working changes、虛擬列卻消失了（例如這批變更被 commit
+    ///   掉）——`CommitListState::set_working_changes` 已經把游標挪到第一個
+    ///   真正的 commit，這裡換回 List，跟 `App::close_detail` 同一套動作；
+    ///   即使這個 Detail 被 overlay 蓋住，換掉的也是 overlay 的
+    ///   `before`，不是外層，overlay 關掉之後看到的就是新的 List。
+    /// - 其餘情況交給 `DetailView::refresh_working_changes`——它自己判斷
+    ///   目前顯示的是不是 working changes，是的話才重建內容，否則 no-op。
+    pub fn apply_working_changes(
+        &mut self,
+        working_changes: Option<WorkingChanges>,
+        ctx: &Rc<AppContext>,
+        ec: &EventController,
+    ) {
+        match self {
+            View::Help(v) => v
+                .before_view_mut()
+                .apply_working_changes(working_changes, ctx, ec),
+            View::GitHub(v) => v
+                .before_view_mut()
+                .apply_working_changes(working_changes, ctx, ec),
+            View::ReleaseNotes(v) => {
+                v.before_view_mut()
+                    .apply_working_changes(working_changes, ctx, ec)
+            }
+            View::Shell(v) => v
+                .before_view_mut()
+                .apply_working_changes(working_changes, ctx, ec),
+            View::Detail(view) => {
+                let state = view.as_mut_list_state();
+                let was_virtual_selected = state.is_virtual_row_selected();
+                state.set_working_changes(working_changes);
+                let has_virtual_row = state.has_virtual_row();
+
+                if was_virtual_selected && !has_virtual_row {
+                    let commit_list_state = view.take_list_state().expect("list state present");
+                    *self = View::of_list(commit_list_state, ctx.clone(), ec.sender());
+                } else {
+                    view.refresh_working_changes();
+                }
+            }
+            View::Default => {}
+            _ => {
+                if let Some(state) = self.list_state_mut() {
+                    state.set_working_changes(working_changes);
+                }
+            }
         }
     }
 }
