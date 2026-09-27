@@ -345,7 +345,7 @@ impl DiffTarget {
 /// 時只會回 0，只有 `--no-index` 會用 1 代表「有差異」（這裡的正常情況），
 /// 對所有呼叫方統一接受 `0|1` 是安全的，其餘才是真的錯誤。
 fn run_diff(path: &Path, args: &[&str]) -> std::result::Result<(String, bool), String> {
-    let output = Command::new("git")
+    let output = git_read(path)
         .args([
             "-c",
             "core.quotePath=false",
@@ -367,7 +367,6 @@ fn run_diff(path: &Path, args: &[&str]) -> std::result::Result<(String, bool), S
             "--color=never",
         ])
         .args(args)
-        .current_dir(path)
         .output()
         .map_err(|e| format!("Failed to execute git diff: {e}"))?;
 
@@ -405,21 +404,35 @@ fn check_git_repository(path: &Path) -> Result<()> {
     Ok(())
 }
 
+/// 唯讀 git 呼叫共用的設定：`current_dir` + `GIT_OPTIONAL_LOCKS=0`。
+///
+/// `status`／`log`／`diff` 這些唯讀呼叫預設仍會嘗試更新 `index`（stat
+/// cache），而寫 `index` 會觸發 watcher 自己（`event.rs::classify_event`
+/// 把 `index` 歸類成 WorkingTree）——不關掉的話，主動 `git status` 會
+/// 引發一次多餘的背景 reload。代價是 stat 過期的 repo 跑 `status` 會慢
+/// 一點（VS Code 也做同樣的取捨），仍然比觸發背景 reload 划算。
+///
+/// 只給讀取路徑用：`create_tag`／`push_tag`／`background_command`（fetch／
+/// checkout）等寫入類呼叫不經過這裡，它們本來就該正常拿鎖。
+fn git_read(path: &Path) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.current_dir(path).env("GIT_OPTIONAL_LOCKS", "0");
+    cmd
+}
+
 pub fn is_inside_work_tree(path: &Path) -> bool {
-    Command::new("git")
+    git_read(path)
         .arg("rev-parse")
         .arg("--is-inside-work-tree")
-        .current_dir(path)
         .output()
         .map(|o| o.status.success() && o.stdout == b"true\n")
         .unwrap_or(false)
 }
 
 fn is_bare_repository(path: &Path) -> bool {
-    Command::new("git")
+    git_read(path)
         .arg("rev-parse")
         .arg("--is-bare-repository")
-        .current_dir(path)
         .output()
         .map(|o| o.status.success() && o.stdout == b"true\n")
         .unwrap_or(false)
@@ -432,7 +445,7 @@ fn load_all_commits(
     stashes: &[Commit],
     max_count: Option<usize>,
 ) -> Vec<Commit> {
-    let mut cmd = Command::new("git");
+    let mut cmd = git_read(path);
     cmd.arg("log");
 
     cmd.arg(match sort {
@@ -459,7 +472,9 @@ fn load_all_commits(
         cmd.arg("--max-count").arg(n.to_string());
     }
 
-    cmd.current_dir(path).stdout(Stdio::piped());
+    // stderr 設成 null：載入路徑上 git 的 warning（例如 dangling ref）
+    // 不能直接印到 TUI 的 alternate screen 上把畫面弄花。
+    cmd.stdout(Stdio::piped()).stderr(Stdio::null());
 
     let mut process = cmd.spawn().unwrap();
 
@@ -511,13 +526,12 @@ fn parse_commit_line(s: &str, commit_type: CommitType) -> Option<Commit> {
 }
 
 fn load_all_stashes(path: &Path) -> Vec<Commit> {
-    let mut cmd = Command::new("git")
+    let mut cmd = git_read(path)
         .arg("stash")
         .arg("list")
         .arg(format!("--pretty={}", load_commits_format()))
         .arg("--date=iso-strict")
         .arg("-z") // 用 NUL 作為分隔符
-        .current_dir(path)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
@@ -613,11 +627,10 @@ fn merge_stashes_to_commits(commits: Vec<Commit>, stashes: Vec<Commit>) -> Vec<C
 }
 
 fn load_refs(path: &Path) -> (RefMap, Head) {
-    let mut cmd = Command::new("git")
+    let mut cmd = git_read(path)
         .arg("show-ref")
         .arg("--head")
         .arg("--dereference")
-        .current_dir(path)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
@@ -668,11 +681,10 @@ fn load_refs(path: &Path) -> (RefMap, Head) {
 
 fn load_stashes_as_refs(path: &Path) -> RefMap {
     let format = ["%gd", "%H", "%s"].join("%x1f"); // 用 Unit Separator 作為分隔符
-    let mut cmd = Command::new("git")
+    let mut cmd = git_read(path)
         .arg("stash")
         .arg("list")
         .arg(format!("--format={format}"))
-        .current_dir(path)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
@@ -746,10 +758,9 @@ fn parse_tag_refs(hash: &str, refs: &str) -> Option<Ref> {
 }
 
 fn get_current_branch(path: &Path) -> Option<String> {
-    let mut cmd = Command::new("git")
+    let mut cmd = git_read(path)
         .arg("branch")
         .arg("--show-current")
-        .current_dir(path)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
@@ -829,13 +840,12 @@ impl WorkingChanges {
 }
 
 pub fn load_working_changes(path: &Path) -> Result<WorkingChanges> {
-    let mut cmd = Command::new("git")
+    let mut cmd = git_read(path)
         .arg("-c")
         .arg("core.quotePath=false")
         .arg("status")
         .arg("--porcelain=v1")
         .arg("--untracked-files=all")
-        .current_dir(path)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
@@ -935,9 +945,8 @@ fn get_diff_numstat(path: &Path, args: &[&str]) -> FxHashMap<String, (usize, usi
     let mut cmd_args = vec!["-c", "core.quotePath=false", "diff", "--numstat"];
     cmd_args.extend_from_slice(args);
 
-    let mut cmd = Command::new("git")
+    let mut cmd = git_read(path)
         .args(&cmd_args)
-        .current_dir(path)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
@@ -984,14 +993,13 @@ fn apply_numstat(changes: &mut [FileChange], stats: &FxHashMap<String, (usize, u
 
 pub fn get_diff_summary(path: &Path, commit_hash: &CommitHash) -> Vec<FileChange> {
     let parent_arg = format!("{}^", commit_hash.as_str());
-    let mut cmd = Command::new("git")
+    let mut cmd = git_read(path)
         .arg("-c")
         .arg("core.quotePath=false")
         .arg("diff")
         .arg("--name-status")
         .arg(&parent_arg)
         .arg(commit_hash.as_str())
-        .current_dir(path)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
@@ -1036,14 +1044,13 @@ pub fn get_diff_summary(path: &Path, commit_hash: &CommitHash) -> Vec<FileChange
 }
 
 pub fn get_initial_commit_additions(path: &Path, commit_hash: &CommitHash) -> Vec<FileChange> {
-    let mut cmd = Command::new("git")
+    let mut cmd = git_read(path)
         .arg("-c")
         .arg("core.quotePath=false")
         .arg("ls-tree")
         .arg("--name-status")
         .arg("-r")
         .arg(commit_hash.as_str())
-        .current_dir(path)
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
