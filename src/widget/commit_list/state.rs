@@ -9,7 +9,7 @@ use crate::graph::{CellWidthType, Graph, TextCell};
 use crate::widget::scroll;
 use crate::RemoteOnly;
 
-use super::search::{FilterState, MatchOptions, SearchMatch, SearchState};
+use super::search::{FilterState, MatchOptions, MatchSet, SearchState};
 use super::{ChildPickOption, CommitInfo, FilteredIdx, RawCommitIdx, VisibleIdx};
 
 /// `CommitListState::select_child` 的結果。標 `#[must_use]`：忽略回傳值等於
@@ -79,18 +79,12 @@ pub struct CommitListState<'a> {
 
     pub(super) search_state: SearchState,
     pub(super) search_input: Input,
-    pub(super) search_matches: Vec<SearchMatch>,
     /// 目前生效的搜尋設定。刻意不放進 `SearchState::Searching`：套用之後
     /// （`Applied`）這組設定還要繼續驅動 refresh 還原，跟輸入模式無關。
     pub(super) search_options: MatchOptions,
-
-    // 最佳化：記住前一次搜尋，供增量搜尋使用。整包存 `MatchOptions`（而非拆成
-    // 散裝欄位）：`update_search_matches` 的 `settings_unchanged` 判斷式靠這個
-    // 型別的 `PartialEq` 一次比較 ignore_case/fuzzy/target 三個維度，往後這個
-    // struct 再加欄位，這裡結構上不可能漏比對。
-    pub(super) last_search_query: String,
-    pub(super) last_matched_indices: Vec<RawCommitIdx>,
-    pub(super) last_search_options: MatchOptions,
+    /// 上次算出的 query／設定／命中清單，供增量搜尋與 render highlight 用，
+    /// 見 `MatchSet` 文件。
+    pub(super) search: MatchSet,
 
     // Filter 模式
     pub(super) filter_state: FilterState,
@@ -101,7 +95,9 @@ pub struct CommitListState<'a> {
     /// 代表零命中）。兩者不能都用空 `Vec` 表示，否則零命中會被誤判成沒有
     /// filter（`current_selected_raw` 曾經踩過這個地雷，見該處註解）。
     pub(super) filtered_indices: Option<Vec<RawCommitIdx>>,
-    pub(super) text_filtered_indices: Vec<RawCommitIdx>,
+    /// 只跑過文字 filter 的命中清單，`rebuild_filtered_indices` 再跟
+    /// remote-only 過濾交集成 `filtered_indices`。
+    pub(super) filter: MatchSet,
 
     pub(super) selected: usize,
     pub(super) offset: usize,
@@ -171,19 +167,13 @@ impl<'a> CommitListState<'a> {
             ref_name_to_commit_index_map,
             search_state: SearchState::Inactive,
             search_input: Input::default(),
-            search_matches: vec![SearchMatch::default(); commit_count],
             search_options: search_defaults,
-            last_search_query: String::new(),
-            last_matched_indices: Vec::new(),
-            // 初始值不影響正確性：`can_use_incremental` 有
-            // `!last_search_query.is_empty()` 守衛，首次呼叫 `update_search_matches`
-            // 時 `last_search_query` 必為空字串，一定會走全量掃描並覆寫這個值。
-            last_search_options: search_defaults,
+            search: MatchSet::default(),
             filter_state: FilterState::Inactive,
             filter_input: Input::default(),
             filter_options: MatchOptions::FILTER_DEFAULT,
             filtered_indices: None,
-            text_filtered_indices: Vec::new(),
+            filter: MatchSet::default(),
             selected: 0,
             offset: 0,
             total,
@@ -380,14 +370,6 @@ impl<'a> CommitListState<'a> {
         &self.commits[idx.0]
     }
 
-    pub(super) fn search_match(&self, idx: RawCommitIdx) -> &SearchMatch {
-        &self.search_matches[idx.0]
-    }
-
-    pub(super) fn search_match_mut(&mut self, idx: RawCommitIdx) -> &mut SearchMatch {
-        &mut self.search_matches[idx.0]
-    }
-
     pub(super) fn raw_to_filtered(&self, raw: RawCommitIdx) -> Option<FilteredIdx> {
         resolve_raw_to_filtered(self.filtered_indices.as_deref(), self.commits.len(), raw)
     }
@@ -510,7 +492,7 @@ impl<'a> CommitListState<'a> {
             None
         } else {
             let base: Box<dyn Iterator<Item = RawCommitIdx>> = if has_text_filter {
-                Box::new(self.text_filtered_indices.iter().copied())
+                Box::new(self.filter.hits.iter().copied())
             } else {
                 Box::new((0..self.commits.len()).map(RawCommitIdx))
             };

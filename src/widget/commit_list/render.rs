@@ -20,7 +20,7 @@ use crate::{
 };
 
 use super::layout;
-use super::search::SearchMatchPosition;
+use super::search::{SearchMatch, SearchMatchPosition};
 use super::state::CommitListState;
 use super::{CommitInfo, FilteredIdx, RawCommitIdx};
 
@@ -188,8 +188,11 @@ struct VisibleRow<'b> {
 enum RowContent<'b> {
     Virtual,
     Commit {
-        raw: RawCommitIdx,
         info: &'b CommitInfo<'b>,
+        /// 這一列的 search highlight，`build_visible_rows` 對畫面上的每一列各
+        /// 建一次（見 `CommitListState::search_matcher`）——不再是每個 commit
+        /// 都存一份，1M commit 時 App 重建也就不必配置那份 N 大小的 Vec。
+        highlight: Option<SearchMatch>,
     },
 }
 
@@ -232,6 +235,9 @@ impl CommitList<'_> {
         let head_raw = state.head_raw;
         let head_col = head_raw.and_then(|raw| state.dot_cell(raw));
         let virtual_row_visible = state.has_virtual_row() && state.offset == 0;
+        // 一幀只建一次 matcher；只用來替畫面上這些列算 highlight，不碰其餘
+        // commit——1M commit 時這裡最多也就幾十列。
+        let search_matcher = state.search_matcher();
 
         let mut rows = Vec::new();
 
@@ -279,11 +285,15 @@ impl CommitList<'_> {
             } else {
                 0
             };
+            let highlight = search_matcher.as_ref().and_then(|(matcher, target)| {
+                let m = SearchMatch::new(info, matcher, *target);
+                m.matched().then_some(m)
+            });
             rows.push(VisibleRow {
                 y: display_i as u16 + y_offset,
                 is_selected: display_i == state.selected,
                 text_x,
-                content: RowContent::Commit { raw, info },
+                content: RowContent::Commit { info, highlight },
                 cells,
                 is_head,
                 marker_color: state.marker_color(raw),
@@ -456,11 +466,11 @@ impl CommitList<'_> {
                     )];
                     self.draw_row_line(buf, area, row, row.text_x, spans);
                 }
-                RowContent::Commit { raw, info } => {
+                RowContent::Commit { info, highlight } => {
                     let mut spans = refs_spans(
                         info,
                         &state.head,
-                        &state.search_match(*raw).refs,
+                        highlight.as_ref().map(|h| &h.refs),
                         &self.ctx.color_theme,
                         state.show_remote_refs,
                     );
@@ -473,7 +483,7 @@ impl CommitList<'_> {
                         // 寬度基準必須跟 `scroll_window` 一致，理由見 `marquee::display_width`。
                         let overflow = commit.subject.len() > avail
                             && crate::widget::marquee::display_width(&commit.subject) > avail;
-                        let search_pos = state.search_match(*raw).subject.as_ref();
+                        let search_pos = highlight.as_ref().and_then(|h| h.subject.as_ref());
                         let sub_spans = if row.is_selected && overflow {
                             any_selected_overflow = true;
                             marquee_subject_spans(
@@ -515,7 +525,7 @@ impl CommitList<'_> {
         &self,
         buf: &mut Buffer,
         area: Rect,
-        state: &CommitListState<'_>,
+        _state: &CommitListState<'_>,
         rows: &[VisibleRow<'_>],
     ) {
         if area.is_empty() {
@@ -527,7 +537,7 @@ impl CommitList<'_> {
         for row in rows {
             let spans = match &row.content {
                 RowContent::Virtual => vec!["-".fg(VIRTUAL_ROW_COLOR)],
-                RowContent::Commit { raw, info } => {
+                RowContent::Commit { info, highlight } => {
                     let commit = info.commit;
                     let truncate = console::measure_text_width(&commit.author_name) > max_width;
                     let name = if truncate {
@@ -535,7 +545,8 @@ impl CommitList<'_> {
                     } else {
                         commit.author_name.to_string()
                     };
-                    if let Some(pos) = state.search_match(*raw).author_name.clone() {
+                    let pos = highlight.as_ref().and_then(|h| h.author_name.clone());
+                    if let Some(pos) = pos {
                         highlighted_spans(
                             name.into(),
                             pos,
@@ -557,7 +568,7 @@ impl CommitList<'_> {
         &self,
         buf: &mut Buffer,
         area: Rect,
-        state: &CommitListState<'_>,
+        _state: &CommitListState<'_>,
         rows: &[VisibleRow<'_>],
     ) {
         if area.is_empty() {
@@ -566,9 +577,10 @@ impl CommitList<'_> {
         for row in rows {
             let spans = match &row.content {
                 RowContent::Virtual => vec!["-".fg(VIRTUAL_ROW_COLOR)],
-                RowContent::Commit { raw, info } => {
+                RowContent::Commit { info, highlight } => {
                     let hash = info.commit.commit_hash.as_short_hash();
-                    if let Some(pos) = state.search_match(*raw).commit_hash.clone() {
+                    let pos = highlight.as_ref().and_then(|h| h.commit_hash.clone());
+                    if let Some(pos) = pos {
                         highlighted_spans(
                             hash.into(),
                             pos,
@@ -688,7 +700,7 @@ fn apply_row_bg(buf: &mut Buffer, area: Rect, y: u16, bg: Color) {
 fn refs_spans<'a>(
     commit_info: &'a CommitInfo<'_>,
     head: &'a Head,
-    refs_matches: &'a FxHashMap<String, SearchMatchPosition>,
+    refs_matches: Option<&'a FxHashMap<String, SearchMatchPosition>>,
     color_theme: &'a ColorTheme,
     show_remote_refs: bool,
 ) -> Vec<Span<'a>> {
@@ -727,7 +739,7 @@ fn refs_spans<'a>(
                 let is_head = is_head_branch(name);
                 let fg = color_theme.list_ref_branch_fg;
                 let mut spans = refs_matches
-                    .get(name)
+                    .and_then(|m| m.get(name))
                     .map(|pos| {
                         highlighted_spans(
                             name.into(),
@@ -790,7 +802,7 @@ fn refs_spans<'a>(
             Ref::Tag { name, .. } => {
                 let fg = color_theme.list_ref_tag_fg;
                 let mut spans = refs_matches
-                    .get(name)
+                    .and_then(|m| m.get(name))
                     .map(|pos| {
                         highlighted_spans(
                             name.into(),
