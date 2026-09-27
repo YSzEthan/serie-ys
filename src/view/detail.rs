@@ -702,15 +702,14 @@ impl<'a> DetailView<'a> {
         let Some(wc) = self
             .commit_list_state
             .as_ref()
-            .and_then(|s| s.working_changes().cloned())
+            .and_then(|s| s.working_changes())
         else {
             return;
         };
-        self.content = DetailContent::from_working_changes(&wc, &self.ctx.color_theme);
-        let previous_target = self.diff_target.clone();
+        self.content = DetailContent::from_working_changes(wc, &self.ctx.color_theme);
+        let previous_target = self.diff_target.take();
         self.commit_detail_state
             .reselect(self.content.rows(), previous_target.as_ref());
-        self.diff_target = None;
         self.sync_diff();
     }
 }

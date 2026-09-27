@@ -73,13 +73,21 @@ impl Reloader {
             request_tx,
             latest,
             want_stats,
-            // 一開始就當作「上次跑完」是很久以前，第一次 Full 不用等。
-            full_not_before: Cell::new(Instant::now() - FULL_COOLDOWN),
+            // `full_ready()` 比較的是 `now >= full_not_before`，設成
+            // `now` 本身就已經是「現在可以」，不必再往前推、也不用像下面
+            // 那樣擔心減出負的 `Instant`。
+            full_not_before: Cell::new(Instant::now()),
             full_owed: Cell::new(false),
             // 啟動時「上一次 Full」等於從來沒發生過，設成很久以前——
             // 這樣啟動瞬間收到的任何 watcher 事件都不會被誤判成「已經被
-            // 涵蓋」而濾掉。
-            last_full_start: Cell::new(Instant::now() - FULL_COOLDOWN),
+            // 涵蓋」而濾掉。`checked_sub`：系統剛開機、單調時鐘起點還不到
+            // `FULL_COOLDOWN` 前時，直接減會 panic，跟 `event.rs` 的
+            // debounce 起點算法同一個理由。
+            last_full_start: Cell::new(
+                Instant::now()
+                    .checked_sub(FULL_COOLDOWN)
+                    .unwrap_or_else(Instant::now),
+            ),
         }
     }
 
@@ -131,10 +139,8 @@ impl Reloader {
     /// `last_full_start`（`App` 拿它濾掉已經被這次重載涵蓋的 watcher
     /// 事件）。冷卻狀態（`full_not_before`）本身不在這裡改，要等重載真的
     /// 結束才推進。
-    pub fn full_started(&self) -> Instant {
-        let now = Instant::now();
-        self.last_full_start.set(now);
-        now
+    pub fn full_started(&self) {
+        self.last_full_start.set(Instant::now());
     }
 
     /// 上一次（或這一次正在跑的）Full 重載的開始時間，見該欄位文件。
@@ -144,10 +150,12 @@ impl Reloader {
 
     /// Full 重載結束時呼叫，不論成功或失敗——失敗沒呼叫的話，`mv .git`
     /// 之類的錯誤會讓 watcher 一直回報，變成 Full → 失敗 → Full 的緊密
-    /// 迴圈。下一次至少要等 `max(FULL_COOLDOWN, 這次耗時)`；`full_owed`
-    /// 一併清掉——這次真的跑完了，不欠了。
-    pub fn full_finished(&self, started_at: Instant) {
-        let cost = started_at.elapsed();
+    /// 迴圈。耗時直接從 `last_full_start` 算（`full_started` 剛設過），不用
+    /// 讓呼叫端自己帶著起點跑一圈再交回來。下一次至少要等
+    /// `max(FULL_COOLDOWN, 這次耗時)`；`full_owed` 一併清掉——這次真的跑完
+    /// 了，不欠了。
+    pub fn full_finished(&self) {
+        let cost = self.last_full_start.get().elapsed();
         self.full_not_before
             .set(Instant::now() + FULL_COOLDOWN.max(cost));
         self.full_owed.set(false);
@@ -186,8 +194,11 @@ fn worker_loop(
     want_stats: Arc<AtomicBool>,
     tx: Sender,
 ) {
-    // 一開始就當作「上次跑完」是很久以前，第一個請求不用等。
-    let mut last_end = Instant::now() - MIN_INTERVAL;
+    // 一開始就當作「上次跑完」是很久以前，第一個請求不用等。`checked_sub`：
+    // 系統剛開機、單調時鐘起點還不到 `MIN_INTERVAL` 前時，直接減會 panic。
+    let mut last_end = Instant::now()
+        .checked_sub(MIN_INTERVAL)
+        .unwrap_or_else(Instant::now);
     let mut last_cost = Duration::ZERO;
 
     loop {
@@ -250,9 +261,8 @@ mod tests {
     fn full_started_advances_last_full_start() {
         let reloader = spawn_for_test();
         let before = reloader.last_full_start();
-        let started = reloader.full_started();
-        assert!(started >= before);
-        assert_eq!(reloader.last_full_start(), started);
+        reloader.full_started();
+        assert!(reloader.last_full_start() >= before);
     }
 
     #[test]
@@ -261,8 +271,8 @@ mod tests {
         reloader.arm_owed_full();
         assert!(reloader.full_owed());
 
-        let started = reloader.full_started();
-        reloader.full_finished(started);
+        reloader.full_started();
+        reloader.full_finished();
 
         assert!(
             !reloader.full_ready(),
@@ -285,8 +295,8 @@ mod tests {
     #[test]
     fn full_remaining_is_positive_right_after_full_finished() {
         let reloader = spawn_for_test();
-        let started = reloader.full_started();
-        reloader.full_finished(started);
+        reloader.full_started();
+        reloader.full_finished();
 
         let remaining = reloader.full_remaining();
         assert!(remaining > Duration::ZERO);

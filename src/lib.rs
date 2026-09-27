@@ -742,7 +742,7 @@ pub fn run() -> Result<()> {
             Ok(Ret::Refresh(request)) => {
                 refresh_view_context = Some(request.context);
 
-                let full_started = reloader.full_started();
+                reloader.full_started();
                 match git::Repository::load(Path::new(&args.path), order, max_count) {
                     Ok(new_repo) => {
                         let old_head = resolve_head_commit_hash(&repository);
@@ -811,7 +811,7 @@ pub fn run() -> Result<()> {
                 working_changes = reloader.latest();
                 // 不論成功失敗都要記錄冷卻——失敗沒記的話，`mv .git` 之後
                 // watcher 會一直回報錯誤，變成 Full → 失敗 → Full 的緊密迴圈。
-                reloader.full_finished(full_started);
+                reloader.full_finished();
 
                 continue;
             }

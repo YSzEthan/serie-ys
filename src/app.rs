@@ -659,7 +659,7 @@ impl App<'_> {
                     at,
                 } => {
                     if at >= self.reloader.last_full_start() {
-                        let ctx = self.shell_refresh_request().map(|r| r.context);
+                        let ctx = self.shell_refresh_context();
                         if let Some(ret) = self.request_full(ctx) {
                             return Ok(ret);
                         }
@@ -740,7 +740,7 @@ impl App<'_> {
                             status_line::AUTO_FETCH_SUCCESS_MSG.to_string(),
                         );
                     }
-                    let ctx = self.shell_refresh_request().map(|r| r.context);
+                    let ctx = self.shell_refresh_context();
                     if let Some(ret) = self.request_full(ctx) {
                         return Ok(ret);
                     }
@@ -1534,16 +1534,15 @@ impl App<'_> {
     /// watcher 觸發時（`AutoRefresh` / `AutoFetchCompleted`）呼叫，讓命令列
     /// 開著時背景 graph 也能立刻連動更新，不必等關掉命令列
     /// （`close_shell` 的 `refresh_pending` 路徑）。只有「目前是 Shell view
-    /// 且指令沒在跑」才會回 `Some`；其他情況一律回 `None`，呼叫端照舊改呼叫
-    /// `self.view.refresh()`——非 Shell view 走原本的 `AppEvent::Refresh`
-    /// event queue，Shell 執行中則設 `refresh_pending`，等
-    /// `AppEvent::ShellOutputReady` 才補送。
-    fn shell_refresh_request(&mut self) -> Option<RefreshRequest> {
+    /// 且指令沒在跑」才會回 `Some`；其他情況一律回 `None`，交給
+    /// `request_full` 改走 `self.view.refresh()` 的路徑——非 Shell view
+    /// 走原本的 `AppEvent::Refresh` event queue，Shell 執行中則設
+    /// `refresh_pending`，等 `AppEvent::ShellOutputReady` 才補送。
+    fn shell_refresh_context(&mut self) -> Option<RefreshViewContext> {
         let View::Shell(ref mut view) = self.view else {
             return None;
         };
-        let context = view.take_refresh_context()?;
-        Some(RefreshRequest { context })
+        view.take_refresh_context()
     }
 
     /// 唯一決定「這次要不要真的觸發一次 Full 重載」的入口——四個
@@ -1553,7 +1552,7 @@ impl App<'_> {
     /// 形同虛設。
     ///
     /// `ctx` 是呼叫端手上現成的 context（`AppEvent::Refresh` 本身帶的、或
-    /// `shell_refresh_request()` 給的）；沒有的話（`AutoRefresh(Full)`／
+    /// `shell_refresh_context()` 給的）；沒有的話（`AutoRefresh(Full)`／
     /// `AutoFetchCompleted` 不在 Shell 時）交給 `self.view.refresh()`——它
     /// 會 `send(AppEvent::Refresh(ctx))`，下一輪事件迴圈會再次呼叫這裡，
     /// 那時就有 ctx 了（`views.rs:324` 既有的 refresh 處理不動）。
