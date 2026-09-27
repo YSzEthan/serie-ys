@@ -40,8 +40,9 @@ fn assert_identity(path: &Path, subject: &str, name: &str, email: &str) {
         .find(|c| c.subject == subject)
         .expect("找不到目標 commit");
     assert_eq!((&*commit.author_name, &*commit.author_email), (name, email));
+    let (_, extra, _) = repo.commit_detail(&commit.commit_hash);
     assert_eq!(
-        (&*commit.committer_name, &*commit.committer_email),
+        (&*extra.committer_name, &*extra.committer_email),
         (name, email)
     );
 }

@@ -7,7 +7,7 @@ use tui_input::Input;
 use crate::{
     app::AppContext,
     event::{AppEvent, EventController, Sender, UserEventWithCount},
-    git::{Commit, CommitHash, FileChange, Ref, RefType, Repository, WorkingChanges},
+    git::{Commit, CommitExtra, CommitHash, FileChange, Ref, RefType, Repository, WorkingChanges},
     view::{
         create_tag::CreateTagView, delete_ref::DeleteRefView, delete_tag::DeleteTagView,
         detail::DetailView, github::GitHubView, help::HelpView, list::ListView, refs::RefsView,
@@ -147,6 +147,7 @@ impl<'a> View<'a> {
     pub fn of_detail(
         commit_list_state: CommitListState<'a>,
         commit: Commit,
+        extra: CommitExtra,
         changes: Vec<FileChange>,
         refs: Vec<Ref>,
         repository: &'a Repository,
@@ -156,6 +157,7 @@ impl<'a> View<'a> {
         View::Detail(Box::new(DetailView::new(
             commit_list_state,
             commit,
+            extra,
             changes,
             refs,
             repository,

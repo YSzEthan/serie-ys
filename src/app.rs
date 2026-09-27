@@ -1077,12 +1077,13 @@ impl<'a> App<'a> {
             unreachable!("virtual row must be handled before reaching Detail");
         }
         let selected = cls.selected_commit_hash().clone();
-        let (commit, changes) = self.repository.commit_detail(&selected);
+        let (commit, extra, changes) = self.repository.commit_detail(&selected);
         let refs: Vec<Ref> = self.repository.refs(&selected).into_iter().cloned().collect();
         let commit = commit.clone();
         self.view = View::of_detail(
             cls,
             commit,
+            extra,
             changes,
             refs,
             self.repository,

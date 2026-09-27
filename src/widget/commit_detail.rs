@@ -14,7 +14,7 @@ use unicode_width::UnicodeWidthChar;
 use crate::{
     app::AppContext,
     color::ColorTheme,
-    git::{Commit, CommitHash, DiffTarget, FileChange, Ref, WorkingChanges},
+    git::{Commit, CommitExtra, CommitHash, DiffTarget, FileChange, Ref, WorkingChanges},
     graph::GlyphSet,
     widget::scroll::scrolled_offset,
 };
@@ -181,6 +181,7 @@ impl CommitDetailState {
 
 pub struct CommitDetail<'a> {
     commit: &'a Commit,
+    extra: &'a CommitExtra,
     rows: &'a [TreeRow],
     refs: &'a Vec<Ref>,
     ctx: Rc<AppContext>,
@@ -190,6 +191,7 @@ pub struct CommitDetail<'a> {
 impl<'a> CommitDetail<'a> {
     pub fn new(
         commit: &'a Commit,
+        extra: &'a CommitExtra,
         rows: &'a [TreeRow],
         refs: &'a Vec<Ref>,
         ctx: Rc<AppContext>,
@@ -197,6 +199,7 @@ impl<'a> CommitDetail<'a> {
     ) -> Self {
         Self {
             commit,
+            extra,
             rows,
             refs,
             ctx,
@@ -306,7 +309,7 @@ impl CommitDetail<'_> {
             wrap_at,
         );
 
-        if is_author_committer_different(self.commit) {
+        if is_author_committer_different(self.commit, self.extra) {
             push_wrapped(
                 &mut lines,
                 Line::from(vec![
@@ -314,12 +317,12 @@ impl CommitDetail<'_> {
                         "Committer: ",
                         Style::default().fg(self.ctx.color_theme.detail_label_fg),
                     ),
-                    self.commit
+                    self.extra
                         .committer_name
                         .as_str()
                         .fg(self.ctx.color_theme.detail_name_fg),
                     " <".into(),
-                    self.commit
+                    self.extra
                         .committer_email
                         .as_str()
                         .fg(self.ctx.color_theme.detail_email_fg),
@@ -332,7 +335,7 @@ impl CommitDetail<'_> {
                 Line::from(vec![
                     Span::raw("           "),
                     Span::styled(
-                        self.format_date(&self.commit.committer_date),
+                        self.format_date(&self.extra.committer_date),
                         Style::default().fg(self.ctx.color_theme.detail_date_fg),
                     ),
                 ]),
@@ -397,9 +400,9 @@ impl CommitDetail<'_> {
         );
         lines.push(Line::from(Span::raw(subject_slice.text).bold()));
 
-        if !self.commit.body.is_empty() {
+        if !self.extra.body.is_empty() {
             lines.push(Line::raw(""));
-            for body_line in self.commit.body.lines() {
+            for body_line in self.extra.body.lines() {
                 match wrap_at {
                     Some(w) => lines.extend(wrap_to_width(body_line, w).into_iter().map(Line::raw)),
                     None => lines.push(Line::raw(body_line)),
@@ -550,10 +553,10 @@ fn detail_block(divider_fg: Color, glyphs: GlyphSet) -> Block<'static> {
         .padding(Padding::new(1, 1, 0, 0))
 }
 
-fn is_author_committer_different(commit: &Commit) -> bool {
-    commit.author_name != commit.committer_name
-        || commit.author_email != commit.committer_email
-        || commit.author_date != commit.committer_date
+fn is_author_committer_different(commit: &Commit, extra: &CommitExtra) -> bool {
+    commit.author_name != extra.committer_name
+        || commit.author_email != extra.committer_email
+        || commit.author_date != extra.committer_date
 }
 
 fn has_parent(commit: &Commit) -> bool {
