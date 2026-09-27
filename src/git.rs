@@ -438,6 +438,55 @@ fn is_bare_repository(path: &Path) -> bool {
         .unwrap_or(false)
 }
 
+/// watcher 需要監看、也需要拿來分類事件路徑的三個目錄。`git_dir` 是「自己
+/// 這個 worktree」的 git dir——linked worktree 底下是
+/// `common_dir/worktrees/<name>`；`common_dir` 才是所有 worktree 共用、
+/// 實際存放 `refs`／`objects` 的那個。bare repo 沒有 `toplevel`，這裡回傳
+/// `None`（`lib.rs` 只在 `is_inside_work_tree` 成立時才啟動 watcher）。
+#[derive(Debug, Clone)]
+pub struct GitDirs {
+    pub toplevel: PathBuf,
+    pub git_dir: PathBuf,
+    pub common_dir: PathBuf,
+}
+
+impl GitDirs {
+    /// 故意不加 `--path-format=absolute`：這個選項要 git 2.31 以上才有，
+    /// 舊版 git 遇到不認得的 `--xxx` 選項不會報錯，而是把它原樣印成一行
+    /// 輸出，讓後面每一行的對應整個錯位——「失敗就退回舊寫法」這種分支
+    /// 永遠不會被觸發，等於沒修。
+    ///
+    /// 改成兩個版本都走同一條路：`--absolute-git-dir` 保證輸出絕對路徑，
+    /// 但 `--git-common-dir`（沒有 `--path-format` 時）在舊版 git 可能印
+    /// 相對路徑（例如子目錄裡的 `../../.git`）。這裡一律用 `path.join`
+    /// 轉成絕對路徑——`Path::join` 遇到絕對路徑會直接取代，所以已經是
+    /// 絕對路徑的輸出經過這個函式一樣不動，不需要另外判斷版本。
+    pub fn resolve(path: &Path) -> Option<Self> {
+        let output = git_read(path)
+            .arg("rev-parse")
+            .arg("--show-toplevel")
+            .arg("--absolute-git-dir")
+            .arg("--git-common-dir")
+            .output()
+            .ok()?;
+        if !output.status.success() {
+            return None;
+        }
+        let text = String::from_utf8_lossy(&output.stdout);
+        let mut lines = text.lines();
+        let to_abs = |line: &str| {
+            path.join(line)
+                .canonicalize()
+                .unwrap_or_else(|_| path.join(line))
+        };
+        Some(Self {
+            toplevel: to_abs(lines.next()?),
+            git_dir: to_abs(lines.next()?),
+            common_dir: to_abs(lines.next()?),
+        })
+    }
+}
+
 fn load_all_commits(
     path: &Path,
     sort: SortCommit,
