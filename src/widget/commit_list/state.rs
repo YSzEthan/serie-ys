@@ -56,6 +56,11 @@ pub struct CommitListState<'a> {
     graph_colors: Vec<Color>,
     pub(super) head_raw: Option<RawCommitIdx>,
     cell_width_type: CellWidthType,
+    /// 欄寬上限生效時畫得下的欄數（含最後的溢位欄），沒有上限時是
+    /// `usize::MAX`。跟 `cell_width_type` 一樣每幀由 `set_layout` 寫入；
+    /// 存成「上限」而不是「欄數」，兩幀之間切換 filtered graph 時
+    /// `graph_cols()` 也不會超過當下那張圖的寬度。
+    col_limit: usize,
     /// 緊湊模式：commit 文字貼齊該列 graph 實際畫到的最右邊，marker 欄與
     /// graph 右側留白都拿掉。跟 `cell_width_type` 一樣，每幀由
     /// `CommitList::render` 依 `area.width` 重新決定（見
@@ -155,6 +160,7 @@ impl<'a> CommitListState<'a> {
             // `set_layout` 依實際 `area.width` 覆寫，這裡的值只是讓 struct
             // 在那之前保持合法狀態。
             cell_width_type: CellWidthType::Double,
+            col_limit: usize::MAX,
             compact: false,
             selected_text_x: 0,
             head,
@@ -198,7 +204,18 @@ impl<'a> CommitListState<'a> {
     /// -- 走的是跟 `current_graph()` 本身一樣的 filtered/`show_remote_refs`
     /// fallback，所以永遠對得上實際被渲染的那個 graph。
     pub(super) fn graph_cell_width(&self) -> u16 {
-        crate::graph::graph_cell_width(self.current_graph(), self.cell_width_type)
+        crate::graph::graph_cell_width(self.graph_cols(), self.cell_width_type)
+    }
+
+    /// 這一幀實際畫的 graph 欄數：`build_text_cells` 與 `graph_cell_width`
+    /// 共用這一個值（#21）。
+    pub(super) fn graph_cols(&self) -> usize {
+        self.current_cell_count().min(self.col_limit)
+    }
+
+    /// 目前的 graph 啟用了長線截斷；欄寬上限只在這時候套用。
+    pub(super) fn current_graph_truncated(&self) -> bool {
+        self.current_graph().truncated()
     }
 
     /// `graph_cell_width()` 加上右側留白（非緊湊模式下的版面才有這一格）。
@@ -213,9 +230,19 @@ impl<'a> CommitListState<'a> {
     /// 每幀由 `CommitList::render` 呼叫，寫入依 `area.width` 重新決定的
     /// 寬度／緊湊設定。要在 `build_visible_rows`（它內部呼叫的
     /// `text_cells_for_raw`／`is_compact` 都讀這兩個欄位）之前呼叫。
-    pub(super) fn set_layout(&mut self, cell_width_type: CellWidthType, compact: bool) {
+    pub(super) fn set_layout(
+        &mut self,
+        cell_width_type: CellWidthType,
+        compact: bool,
+        cols: usize,
+    ) {
         self.cell_width_type = cell_width_type;
         self.compact = compact;
+        self.col_limit = if cols < self.current_cell_count() {
+            cols
+        } else {
+            usize::MAX
+        };
     }
 
     /// 每幀由 `CommitList::render` 在 `build_visible_rows` 算出選取列的
@@ -707,6 +734,7 @@ impl<'a> CommitListState<'a> {
             self.virtual_head_row(),
             &self.graph_colors,
             self.cell_width_type,
+            self.graph_cols(),
         ))
     }
 
@@ -722,7 +750,9 @@ impl<'a> CommitListState<'a> {
     pub(super) fn dot_cell(&self, raw: RawCommitIdx) -> Option<usize> {
         let graph = self.current_graph();
         let row = graph.row_of(raw.0)?;
-        Some(graph.col(row) * self.cell_width_type.cells_per_column())
+        // 落在溢位範圍的 commit，dot 畫在溢位欄（見 `build_text_cells`）。
+        let col = graph.col(row).min(self.graph_cols().saturating_sub(1));
+        Some(col * self.cell_width_type.cells_per_column())
     }
 
     /// marker 跟 dot 同色：取 commit 所在欄的調色盤顏色。filtered graph 裡沒有

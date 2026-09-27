@@ -362,6 +362,7 @@ pub fn find_remote_only_commits(repository: &git::Repository) -> RemoteOnly {
 pub fn compute_filtered_graph_from(
     repository: &git::Repository,
     remote_only: &RemoteOnly,
+    trunc: graph::Truncation,
 ) -> Option<Rc<Graph>> {
     if remote_only.is_empty() {
         return None;
@@ -373,12 +374,16 @@ pub fn compute_filtered_graph_from(
         remote_only,
         head.as_ref(),
         head_has_named_ref(repository),
+        trunc,
     )))
 }
 
-fn build_graph_artifacts(repository: &git::Repository) -> (Option<Rc<Graph>>, RemoteOnly) {
+fn build_graph_artifacts(
+    repository: &git::Repository,
+    trunc: graph::Truncation,
+) -> (Option<Rc<Graph>>, RemoteOnly) {
     let remote_only = find_remote_only_commits(repository);
-    let filtered = compute_filtered_graph_from(repository, &remote_only);
+    let filtered = compute_filtered_graph_from(repository, &remote_only, trunc);
     (filtered, remote_only)
 }
 
@@ -389,12 +394,13 @@ fn try_refresh_filtered_for_ref_change(
     repository: &git::Repository,
     remote_only_commits: &mut RemoteOnly,
     filtered_graph: &mut Option<Rc<Graph>>,
+    trunc: graph::Truncation,
 ) -> bool {
     let new_remote_only = find_remote_only_commits(repository);
     if &new_remote_only == remote_only_commits {
         return false;
     }
-    *filtered_graph = compute_filtered_graph_from(repository, &new_remote_only);
+    *filtered_graph = compute_filtered_graph_from(repository, &new_remote_only, trunc);
     *remote_only_commits = new_remote_only;
     true
 }
@@ -520,6 +526,7 @@ pub fn run() -> Result<()> {
     }
 
     let (core_config, ui_config, color_theme, keybind_patch) = config::load()?;
+    let trunc = graph::Truncation::new(ui_config.list.graph_edge_max_rows);
     let keybind = keybind::KeyBind::new(keybind_patch);
 
     let max_count = args.max_count.or(core_config.option.max_count);
@@ -682,8 +689,9 @@ pub fn run() -> Result<()> {
         &repository,
         resolve_head_commit_hash(&repository).as_ref(),
         head_has_named_ref(&repository),
+        trunc,
     ));
-    let (mut filtered_graph, mut remote_only_commits) = build_graph_artifacts(&repository);
+    let (mut filtered_graph, mut remote_only_commits) = build_graph_artifacts(&repository, trunc);
 
     let ret = loop {
         if terminal.is_none() {
@@ -733,6 +741,7 @@ pub fn run() -> Result<()> {
                         &repository,
                         &mut remote_only_commits,
                         &mut filtered_graph,
+                        trunc,
                     );
                     if filtered_changed {
                         if let Some(t) = terminal.as_mut() {
@@ -748,8 +757,10 @@ pub fn run() -> Result<()> {
                         &repository,
                         resolve_head_commit_hash(&repository).as_ref(),
                         head_has_named_ref(&repository),
+                        trunc,
                     ));
-                    (filtered_graph, remote_only_commits) = build_graph_artifacts(&repository);
+                    (filtered_graph, remote_only_commits) =
+                        build_graph_artifacts(&repository, trunc);
 
                     if let Some(t) = terminal.as_mut() {
                         t.clear()?;

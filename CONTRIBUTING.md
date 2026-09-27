@@ -187,6 +187,13 @@ target/release/examples/perf ~/perf-repos/linux.git
   ±1% 內，遠低於原本設的 3% 門檻，所以一律計數，沒有另外做開關
 - `stats` 這個階段是統計兩張 graph（edge 總數、每列寬），不算進前面任何
   一個階段的時間
+- `lanes p50/p99`：每列實際有東西（edge 或 dot）的欄數。圖寬超過 64 時
+  啟用長線截斷（#119），另外印出 `↓`／`↑` 的數量，以及 `↑` 開回原本那
+  一欄的比例；`--max-edge-rows` 可以改 K（預設 100）
+- `main col changes`：HEAD first-parent 鏈上相鄰兩個 commit 換欄的次數。
+  有截斷時會另外印出不截斷的基準，截斷後不能比截斷前多
+- `--dump N`：量完之後印出前 N 列的 Single 文字圖（`--dump-cols` 是欄寬
+  上限，預設 100），用來直接看 linux 這類 repo 的實際畫面
 
 **怎麼對照**：
 

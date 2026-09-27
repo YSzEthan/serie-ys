@@ -5,7 +5,30 @@ use crate::{
     RemoteOnly,
 };
 
-use super::lanes::{self, Lanes, NOT_LOADED};
+use super::lanes::{self, BuildOpts, Lanes, NOT_LOADED};
+
+/// 長線截斷的門檻：還沒截斷的圖寬超過這麼多欄才啟用。長線在一般 repo 也
+/// 存在，但它們的圖寬本來就放得下，截斷只會把好好的線切碎。
+pub const TRUNCATE_MIN_GRAPH_WIDTH: usize = 64;
+
+/// 長線截斷的設定（issue #119）。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct Truncation {
+    /// K：線長超過 K 列就截斷，最小 3。
+    pub max_edge_rows: usize,
+    /// 還沒截斷的圖寬超過這個值才啟用。正式使用一律
+    /// [`TRUNCATE_MIN_GRAPH_WIDTH`]；測試傳 0 強制啟用。
+    pub min_graph_width: usize,
+}
+
+impl Truncation {
+    pub fn new(max_edge_rows: usize) -> Truncation {
+        Truncation {
+            max_edge_rows,
+            min_graph_width: TRUNCATE_MIN_GRAPH_WIDTH,
+        }
+    }
+}
 
 /// 產生 edge 的來源。正式 build 只有 `Lanes`；`Fixed` 只給測試手寫 edge
 /// 用——很多 fixture（例如只測寬度、不含任何 edge 的 graph）沒有對應的
@@ -35,6 +58,14 @@ impl RowEdges {
             RowEdges::Lanes(l) => l.cell_count(),
             #[cfg(test)]
             RowEdges::Fixed { cell_count, .. } => *cell_count,
+        }
+    }
+
+    fn truncated(&self) -> bool {
+        match self {
+            RowEdges::Lanes(l) => l.truncated(),
+            #[cfg(test)]
+            RowEdges::Fixed { .. } => false,
         }
     }
 
@@ -140,6 +171,11 @@ impl Graph {
         self.rows.cell_count()
     }
 
+    /// 這張圖啟用了長線截斷（圖寬超過門檻）。欄寬上限只在這時候才套用。
+    pub fn truncated(&self) -> bool {
+        self.rows.truncated()
+    }
+
     /// raw 不在這張 graph 裡（被 filter 掉，或 fixture 的 graph 比 commit 少）時回 `None`。
     pub fn row_of(&self, raw: usize) -> Option<usize> {
         match &self.raw_of {
@@ -197,20 +233,48 @@ pub enum EdgeType {
     RightBottom, // ╯
     LeftTop,     // ╭
     LeftBottom,  // ╰
+    // 長線截斷（issue #119）的兩端。刻意排在最後：`row_edges_in` 的排序鍵含
+    // `edge_type`，加在中間會讓既有 golden 的 edge 順序跟著變。
+    TruncDown, // ↓：child 下方一列，線在這裡斷開
+    TruncUp,   // ↑：parent 上方一列，線從這裡接回
+}
+
+/// 先不截斷建一次；圖寬超過 `trunc.min_graph_width` 才丟掉重建一次截斷版。
+/// linux 規模單次建圖約 0.06 s，建兩次換來「門檻跟終端機寬度無關、每次建
+/// 圖只判斷一次」的簡單規則。
+fn build_lanes(
+    parent_start: &[u32],
+    parent_idx: &[u32],
+    head: Option<u32>,
+    reserve_head: bool,
+    trunc: Truncation,
+) -> Lanes {
+    let mut opts = BuildOpts {
+        head,
+        reserve_head,
+        max_edge_rows: None,
+    };
+    let lanes = lanes::build(parent_start, parent_idx, &opts);
+    if lanes.cell_count() <= trunc.min_graph_width {
+        return lanes;
+    }
+    drop(lanes);
+    opts.max_edge_rows = Some(u32::try_from(trunc.max_edge_rows).unwrap_or(u32::MAX));
+    lanes::build(parent_start, parent_idx, &opts)
 }
 
 pub fn calc_graph(
     repository: &Repository,
     head_hint: Option<&CommitHash>,
     reserve_head_col: bool,
+    trunc: Truncation,
 ) -> Graph {
     let (parent_start, parent_idx) = repository.parent_csr();
-    let reserved_head = head_hint
-        .filter(|_| reserve_head_col)
+    let head = head_hint
         .and_then(|h| repository.index_of(h))
         .map(|raw| raw as u32);
 
-    let lanes = lanes::build(parent_start, parent_idx, reserved_head);
+    let lanes = build_lanes(parent_start, parent_idx, head, reserve_head_col, trunc);
     Graph::from_lanes(None, lanes)
 }
 
@@ -219,6 +283,7 @@ pub fn calc_graph_filtered(
     remote_only: &RemoteOnly,
     head_hint: Option<&CommitHash>,
     reserve_head_col: bool,
+    trunc: Truncation,
 ) -> Graph {
     let total = repository.all_commits().len();
     let (parent_start_raw, parent_idx_raw) = repository.parent_csr();
@@ -254,12 +319,11 @@ pub fn calc_graph_filtered(
         parent_start.push(parent_idx.len() as u32);
     }
 
-    let reserved_head = head_hint
-        .filter(|_| reserve_head_col)
+    let head = head_hint
         .and_then(|h| repository.index_of(h))
         .filter(|&raw| !remote_only.contains(raw))
         .map(|raw| raw_to_row[raw]);
 
-    let lanes = lanes::build(&parent_start, &parent_idx, reserved_head);
+    let lanes = build_lanes(&parent_start, &parent_idx, head, reserve_head_col, trunc);
     Graph::from_lanes(Some(raws), lanes)
 }

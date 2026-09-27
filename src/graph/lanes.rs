@@ -47,13 +47,32 @@ const NONE: u32 = u32::MAX;
 
 const CHECKPOINT_INTERVAL: usize = 128;
 
-/// 一列裡「收斂」或「開新／接手」的一個欄位變化。
+/// 一列裡某一欄的變化。
 #[derive(Debug, Clone, Copy)]
 struct RowEvent {
     col: u32,
-    /// `true`：這條 lane 在這一列之後繼續開著（Open／Join，畫 `╮`／`╭`）。
-    /// `false`：這條 lane 在這一列收斂、關閉（Converge，畫 `╯`／`╰`）。
-    continues: bool,
+    kind: EventKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum EventKind {
+    /// 這條 lane 在這一列收斂、關閉（畫 `╯`／`╰`）。
+    Converge,
+    /// 這條 lane 在這一列之後繼續開著（Open／Join，畫 `╮`／`╭`）。
+    Continue,
+    /// 長線截斷：從上一列延伸下來的 lane 在這一列畫 `↓` 後關閉。
+    ArrowDown,
+    /// 長線截斷：這一列開一條短 lane 畫 `↑`，下一列接到 parent。`color`
+    /// 是被截斷那條線原本的欄，`↑` 與下一列那一段都用它的顏色，上下兩段
+    /// 才對得起來（`↑` 不一定開得回原本那一欄）。
+    ArrowUp { color: u32 },
+}
+
+impl EventKind {
+    /// 這一列之後 lane 是否開著。
+    fn opens(self) -> bool {
+        matches!(self, EventKind::Continue | EventKind::ArrowUp { .. })
+    }
 }
 
 #[derive(Debug)]
@@ -71,6 +90,8 @@ pub(super) struct Lanes {
     checkpoints: Vec<u64>,
     words: usize,
     cell_count: usize,
+    /// 建圖時啟用了長線截斷（不代表真的有線被截）。
+    truncated: bool,
 }
 
 impl Lanes {
@@ -84,6 +105,14 @@ impl Lanes {
 
     pub(super) fn col(&self, row: usize) -> usize {
         self.cols[row] as usize
+    }
+
+    pub(super) fn truncated(&self) -> bool {
+        self.truncated
+    }
+
+    fn events_of(&self, y: usize) -> &[RowEvent] {
+        &self.events[self.ev_start[y] as usize..self.ev_start[y + 1] as usize]
     }
 
     /// `row_edges_in(row..row + 1, ..)` 的單列封裝，給只要一列的呼叫端用。
@@ -108,36 +137,67 @@ impl Lanes {
 
         for y in ck_row..rows.end {
             let c = self.cols[y] as usize;
-            let ev = &self.events[self.ev_start[y] as usize..self.ev_start[y + 1] as usize];
+            let ev = self.events_of(y);
+            // 上一列開的 `↑` 在這一列接到 parent（commit 自己的 Up 或收斂
+            // 轉角），顏色沿用 `↑` 的。直接查上一列的事件（CSR 可隨機存取），
+            // 不必把這個狀態塞進 checkpoint。
+            let prev = if y > 0 { self.events_of(y - 1) } else { &[] };
+            let line_of = |col: usize| {
+                prev.iter()
+                    .find_map(|e| match e.kind {
+                        EventKind::ArrowUp { color } if e.col as usize == col => {
+                            Some(color as usize)
+                        }
+                        _ => None,
+                    })
+                    .unwrap_or(col)
+            };
 
             buf.clear();
             if is_open(&open, c) {
-                buf.push(Edge::new(EdgeType::Up, c, c));
+                buf.push(Edge::new(EdgeType::Up, c, line_of(c)));
             }
-            // Vertical：(A ∩ B) \ {c}。A 是目前開著的集合，收斂欄（continues
-            // == false）會在下面離開 B，其餘留在 B 裡的就是這裡要畫的。
+            // Vertical：(A ∩ B) \ {c}。A 是目前開著的集合，收斂欄會在下面
+            // 離開 B，其餘留在 B 裡的就是這裡要畫的；在這一列畫 `↓` 的欄
+            // 也開著，只是換成箭頭。
             for_each_set_bit(&open, |i| {
                 debug_assert!(i < self.cell_count, "padding bit 不該被設起來");
                 if i == c {
                     return;
                 }
-                if ev.iter().any(|e| !e.continues && e.col as usize == i) {
-                    return;
+                match ev.iter().find(|e| e.col as usize == i).map(|e| e.kind) {
+                    Some(EventKind::Converge) => {}
+                    Some(EventKind::ArrowDown) => buf.push(Edge::new(EdgeType::TruncDown, i, i)),
+                    _ => buf.push(Edge::new(EdgeType::Vertical, i, i)),
                 }
-                buf.push(Edge::new(EdgeType::Vertical, i, i));
             });
             for e in ev {
-                push_corner(&mut buf, c, e.col as usize, e.continues);
+                let l = e.col as usize;
+                match e.kind {
+                    EventKind::Converge => push_corner(&mut buf, c, l, false, line_of(l)),
+                    EventKind::Continue => push_corner(&mut buf, c, l, true, l),
+                    EventKind::ArrowDown => {}
+                    EventKind::ArrowUp { color } => {
+                        buf.push(Edge::new(EdgeType::TruncUp, l, color as usize));
+                    }
+                }
             }
             if self.down[y] {
                 buf.push(Edge::new(EdgeType::Down, c, c));
             }
 
             buf.sort_by_key(|e| (e.associated_line_pos_x, e.pos_x, e.edge_type));
+            // 唯一會重複的情況：`↑` 借用了別欄的顏色，而那一欄的 lane 也在
+            // 這一列收斂，兩個轉角在共用的那一段產生完全相同的 edge（畫出來
+            // 也一樣）。其他重複都是引擎的 bug。
             debug_assert!(
-                buf.windows(2).all(|w| w[0] != w[1]),
+                buf.windows(2).all(|w| w[0] != w[1])
+                    || prev
+                        .iter()
+                        .any(|e| matches!(e.kind, EventKind::ArrowUp { .. })),
                 "lane 引擎不該對同一列產生重複 edge"
             );
+            buf.dedup();
 
             if y >= rows.start {
                 f(y, &buf);
@@ -147,7 +207,7 @@ impl Lanes {
             // 最後開新／接手（open 的欄本來就不在 A 裡；join 的欄本來就在，
             // 重複 set 沒有影響）。
             for e in ev {
-                if !e.continues {
+                if !e.kind.opens() {
                     clear_bit(&mut open, e.col as usize);
                 }
             }
@@ -157,7 +217,7 @@ impl Lanes {
                 clear_bit(&mut open, c);
             }
             for e in ev {
-                if e.continues {
+                if e.kind.opens() {
                     set_bit(&mut open, e.col as usize);
                 }
             }
@@ -191,14 +251,15 @@ fn for_each_set_bit(bits: &[u64], mut f: impl FnMut(usize)) {
 }
 
 /// 從 `c` 到 `l` 的轉角：`continues` 決定終點是 Converge（`Bottom`）還是
-/// Open／Join（`Top`）。assoc 永遠是 `l`——這條線屬於 lane `l`，不是 commit
-/// 自己那欄。`c == l` 不該發生：`l` 一定是「別的」lane，不會恰好是 commit
-/// 自己正在坐的那欄。
-fn push_corner(buf: &mut Vec<Edge>, c: usize, l: usize, continues: bool) {
+/// Open／Join（`Top`）。assoc 是 `line`——這條線屬於 lane `l`，不是 commit
+/// 自己那欄；只有剛從 `↑` 接回來的 lane 會沿用 `↑` 的顏色，此外 `line == l`。
+/// `c == l` 不該發生：`l` 一定是「別的」lane，不會恰好是 commit 自己正在坐
+/// 的那欄。
+fn push_corner(buf: &mut Vec<Edge>, c: usize, l: usize, continues: bool, line: usize) {
     debug_assert_ne!(c, l, "commit 自己的欄不會同時是收斂或開新的目標");
     let (lo, hi) = if c < l { (c, l) } else { (l, c) };
     for x in (lo + 1)..hi {
-        buf.push(Edge::new(EdgeType::Horizontal, x, l));
+        buf.push(Edge::new(EdgeType::Horizontal, x, line));
     }
     let (near, far) = match (c < l, continues) {
         (true, true) => (EdgeType::Right, EdgeType::RightTop),
@@ -206,16 +267,31 @@ fn push_corner(buf: &mut Vec<Edge>, c: usize, l: usize, continues: bool) {
         (false, true) => (EdgeType::Left, EdgeType::LeftTop),
         (false, false) => (EdgeType::Left, EdgeType::LeftBottom),
     };
-    buf.push(Edge::new(near, c, l));
-    buf.push(Edge::new(far, l, l));
+    buf.push(Edge::new(near, c, line));
+    buf.push(Edge::new(far, l, line));
 }
 
-/// 從 `start` 開始找第一個沒開著、也不在 `ban` 裡的欄；找不到就開在最後面。
-/// `(start..)` 一定會在 `i == lane_open.len()` 時滿足條件，`find` 保證會停。
-fn find_vacant(lane_open: &[bool], start: usize, ban: &[u32]) -> u32 {
-    (start..)
-        .find(|&i| i >= lane_open.len() || (!lane_open[i] && !ban.contains(&(i as u32))))
-        .expect("i == lane_open.len() 時條件恆成立") as u32
+/// 墓碑：`col` 這一欄在 `until` 列之前不能開新 lane（rule 5）。跟
+/// `lane_open` 分開存：墓碑期間這一欄已經沒有線，checkpoint 快照若把它
+/// 當成開著，從快照重播的查詢會在墓碑那一列多畫一條 `Vertical`。
+#[derive(Debug, Clone, Copy)]
+struct Tomb {
+    col: u32,
+    until: u32,
+}
+
+/// `col` 現在能不能開新 lane：沒開著、不在墓碑期、也沒被 `ban` 擋掉。
+fn vacant(lane_open: &[bool], tombs: &[Tomb], col: u32, ban: impl Fn(u32) -> bool) -> bool {
+    let i = col as usize;
+    (i >= lane_open.len() || !lane_open[i]) && !tombs.iter().any(|t| t.col == col) && !ban(col)
+}
+
+/// 從 `start` 開始找第一個 [`vacant`] 的欄；找不到就開在最後面。`ban` 只擋
+/// 有限個欄，墓碑數也有限，所以 `find` 保證會停。
+fn find_vacant(lane_open: &[bool], tombs: &[Tomb], start: usize, ban: impl Fn(u32) -> bool) -> u32 {
+    (start as u32..)
+        .find(|&col| vacant(lane_open, tombs, col, &ban))
+        .expect("ban 與墓碑都只擋有限個欄，總有一欄滿足條件")
 }
 
 /// `lane_open`／`is_fp`／`wait_next` 一定一起變長，兩個呼叫點都用這個，
@@ -233,13 +309,83 @@ fn grow_lanes(
     }
 }
 
+/// [`build`] 的選項。
+#[derive(Debug, Clone, Copy, Default)]
+pub(super) struct BuildOpts {
+    /// HEAD 所在的列。長線截斷用它保護 HEAD 的 first-parent 鏈，跟
+    /// `reserve_head` 無關。
+    pub head: Option<u32>,
+    /// 為 HEAD 保留 col 0：HEAD 落地之前 col 0 對任何 lane 都是禁區。
+    pub reserve_head: bool,
+    /// 長線截斷的 K：線長超過 K 列就截斷。`None` 不截斷。
+    pub max_edge_rows: Option<u32>,
+}
+
+/// K 的下限。K=1 時 `↓` 跟 `↑` 會落在同一列；K=2 時長度 3 的線，`↑` 剛好
+/// 落在 `↓` 留下的墓碑那一列，永遠開不回原本那一欄。
+pub(super) const MIN_EDGE_ROWS: u32 = 3;
+
+/// 等著在 parent 上方一列開 `↑` 的截斷線（同一個 parent 共用一筆）。
+#[derive(Debug, Clone, Copy)]
+struct Stub {
+    /// `↓` 那一欄：`↑` 優先開回這裡，顏色也跟著它。有 first-parent 線就用
+    /// 它的欄，否則用最左邊那條。
+    col: u32,
+    /// 其中有沒有 first-parent 線（rule 1 的優先權照樣適用）。
+    fp: bool,
+}
+
+impl Stub {
+    fn absorb(&mut self, col: u32, fp: bool) {
+        if (!fp, col) < (!self.fp, self.col) {
+            self.col = col;
+        }
+        self.fp |= fp;
+    }
+}
+
+/// 登記一條要截斷、往 `parent` 的線（`↓` 在 `col`）；同一個 parent 的線
+/// 合併成一筆。
+fn add_stub(stubs: &mut rustc_hash::FxHashMap<u32, Stub>, parent: u32, col: u32, fp: bool) {
+    stubs
+        .entry(parent)
+        .and_modify(|s| s.absorb(col, fp))
+        .or_insert(Stub { col, fp });
+}
+
+/// HEAD 的 first-parent 鏈（bitset，每列一個 bit）。鏈上 commit 往 first
+/// parent 的線永遠不截斷，主線不會換欄。
+fn main_line(parent_start: &[u32], parent_idx: &[u32], head: u32) -> Vec<u64> {
+    let n = parent_start.len() - 1;
+    let mut bits = vec![0u64; n.div_ceil(64)];
+    let mut cur = head;
+    loop {
+        set_bit(&mut bits, cur as usize);
+        let range = parent_start[cur as usize] as usize..parent_start[cur as usize + 1] as usize;
+        match parent_idx[range].first() {
+            Some(&fp) if fp != NOT_LOADED => cur = fp,
+            _ => break,
+        }
+    }
+    bits
+}
+
 /// 建構 lane 引擎的結果。`parent_start`/`parent_idx` 是 row 空間的 parent
 /// CSR（跟 `Repository` 的 parent CSR 同格式：`parent_idx[parent_start[y]
 /// ..parent_start[y + 1]]` 是第 y 列 commit 的 parent row，順序同
 /// `parent_commit_hashes`；沒載入或不可見一律填 [`NOT_LOADED`]）。
-/// `reserved_head`：`Some(row)` 時 col 0 在該列落地之前對任何 lane 都是
-/// 禁區，`None` 時完全不影響欄位分配。
-pub(super) fn build(parent_start: &[u32], parent_idx: &[u32], reserved_head: Option<u32>) -> Lanes {
+///
+/// ## 長線截斷（`opts.max_edge_rows`，issue #119）
+///
+/// 線長（child 到 parent 相隔的列數；parent 沒載入時算到最後一列之後）
+/// 超過 K 的線，在開線那一刻就決定截斷：
+///
+/// - child 下方一列畫 `↓`，lane 結束，再下一列留墓碑（同 rule 5）
+/// - parent 上方一列開一條短 lane 畫 `↑`，在 parent 那一列接手或收斂；
+///   parent 沒載入就只有 `↓`
+/// - HEAD first-parent 鏈上的 first-parent 線、merge join 既有的 lane
+///   都不截斷（後者在 lane 開的時候已經判過）
+pub(super) fn build(parent_start: &[u32], parent_idx: &[u32], opts: &BuildOpts) -> Lanes {
     let n = parent_start.len().saturating_sub(1);
     if n == 0 {
         return Lanes {
@@ -250,8 +396,24 @@ pub(super) fn build(parent_start: &[u32], parent_idx: &[u32], reserved_head: Opt
             checkpoints: Vec::new(),
             words: 0,
             cell_count: 0,
+            truncated: opts.max_edge_rows.is_some(),
         };
     }
+
+    let reserved_head = opts.head.filter(|_| opts.reserve_head);
+    let k = opts.max_edge_rows.map(|k| k.max(MIN_EDGE_ROWS));
+    let main = match (k, opts.head) {
+        (Some(_), Some(head)) => main_line(parent_start, parent_idx, head),
+        _ => Vec::new(),
+    };
+    let nu = n as u32;
+    // 從第 `c` 列往 `p` 的線要不要截斷。
+    let cut = |c: u32, p: u32| {
+        k.is_some_and(|k| {
+            let len = if p == NOT_LOADED { nu - c } else { p - c };
+            len > k
+        })
+    };
 
     // lane 狀態：`lane_open[col]` 開著時，`is_fp[col]` 分辨它是不是 commit
     // 自己 first-parent 的延伸（rule 1 的優先權），`wait_next[col]` 是它
@@ -260,8 +422,13 @@ pub(super) fn build(parent_start: &[u32], parent_idx: &[u32], reserved_head: Opt
     let mut is_fp: Vec<bool> = Vec::new();
     let mut wait_next: Vec<u32> = Vec::new();
     let mut wait_head: Vec<u32> = vec![NONE; n];
-    // root 的墓碑：(欄, 設下的那一列)，滿一列後釋放（rule 5）。
-    let mut pending_tombs: Vec<(u32, u32)> = Vec::new();
+    // root 與 `↓` 的墓碑，滿一列後釋放（rule 5）。
+    let mut tombs: Vec<Tomb> = Vec::new();
+    // 這一列開的線裡被截斷的欄，下一列畫 `↓`。
+    let mut cut_cols: Vec<u32> = Vec::new();
+    let mut arrow_down: Vec<u32> = Vec::new();
+    // parent 的列 → 等著在它上方一列開 `↑` 的 stub。
+    let mut stubs: rustc_hash::FxHashMap<u32, Stub> = Default::default();
 
     let mut cols: Vec<u32> = Vec::with_capacity(n);
     let mut down: Vec<bool> = Vec::with_capacity(n);
@@ -278,14 +445,24 @@ pub(super) fn build(parent_start: &[u32], parent_idx: &[u32], reserved_head: Opt
     for y in 0..n {
         let yu = y as u32;
 
-        pending_tombs.retain(|&(col, set_at)| {
-            if yu >= set_at + 2 {
-                lane_open[col as usize] = false;
-                false
-            } else {
-                true
-            }
-        });
+        tombs.retain(|t| yu < t.until);
+
+        let ev_from = events.len();
+        // 上一列截斷的線在這一列畫 `↓` 後關閉，再下一列留墓碑。先處理，
+        // 這一列之後的選欄就不會碰到它。
+        std::mem::swap(&mut arrow_down, &mut cut_cols);
+        cut_cols.clear();
+        for &l in &arrow_down {
+            lane_open[l as usize] = false;
+            tombs.push(Tomb {
+                col: l,
+                until: yu + 2,
+            });
+            events.push(RowEvent {
+                col: l,
+                kind: EventKind::ArrowDown,
+            });
+        }
 
         // 走訪鏈結串列，收集在等我的 lane；排序 key 讓 fp 的整組排最前面
         // （rule 1），組內再照欄位由左到右——跟原本「fp_cols ++ other_cols」
@@ -303,20 +480,23 @@ pub(super) fn build(parent_start: &[u32], parent_idx: &[u32], reserved_head: Opt
 
         let ish = reserved_head == Some(yu);
         let start_col = usize::from(pend);
-        let (x, conv): (u32, Vec<u32>) = if ish {
-            (0, waiters)
-        } else if let Some((&first, rest)) = waiters.split_first() {
-            (first, rest.to_vec())
+        let x = if ish {
+            0
+        } else if let Some(&first) = waiters.first() {
+            first
         } else {
-            (find_vacant(&lane_open, start_col, &[]), Vec::new())
+            find_vacant(&lane_open, &tombs, start_col, |_| false)
         };
+        // 在等我、卻沒被接手的 lane 收斂。HEAD 那一列 col 0 上可能有在等它
+        // 的 `↑`，那條就是 HEAD 接手的 lane，所以用「扣掉 x」而不是「扣掉
+        // 第一個」。
+        let conv: Vec<u32> = waiters.iter().copied().filter(|&l| l != x).collect();
 
-        let ev_from = events.len();
         for &l in &conv {
             lane_open[l as usize] = false;
             events.push(RowEvent {
                 col: l,
-                continues: false,
+                kind: EventKind::Converge,
             });
         }
 
@@ -328,17 +508,29 @@ pub(super) fn build(parent_start: &[u32], parent_idx: &[u32], reserved_head: Opt
         let mut seen: Vec<u32> = Vec::new();
         let rest = match parents.split_first() {
             None => {
-                pending_tombs.push((x, yu)); // rule 5：root 留墓碑。
+                // rule 5：root 的線在這一列結束，下一列留墓碑。
+                lane_open[xu] = false;
+                tombs.push(Tomb {
+                    col: x,
+                    until: yu + 2,
+                });
                 &[][..]
             }
             Some((&fp_target, rest)) => {
                 is_fp[xu] = true;
-                if fp_target == NOT_LOADED {
-                    wait_next[xu] = NONE; // 沒載入：lane 一路開到底（rule 3）。
-                } else {
+                wait_next[xu] = NONE;
+                let on_main = !main.is_empty() && is_open(&main, y);
+                if !on_main && cut(yu, fp_target) {
+                    cut_cols.push(x);
+                    if fp_target != NOT_LOADED {
+                        add_stub(&mut stubs, fp_target, x, true);
+                    }
+                } else if fp_target != NOT_LOADED {
                     wait_next[xu] = wait_head[fp_target as usize];
                     wait_head[fp_target as usize] = x;
                 }
+                // 沒截斷、parent 又沒載入：不掛進任何串列，lane 一路開到底
+                // （rule 3）。
                 seen.push(fp_target);
                 rest
             }
@@ -353,20 +545,60 @@ pub(super) fn build(parent_start: &[u32], parent_idx: &[u32], reserved_head: Opt
             let l = if wait_head[p as usize] != NONE {
                 wait_head[p as usize]
             } else {
-                let new_l = find_vacant(&lane_open, start_col, &conv);
+                let new_l = find_vacant(&lane_open, &tombs, start_col, |c| conv.contains(&c));
                 let nl = new_l as usize;
                 grow_lanes(&mut lane_open, &mut is_fp, &mut wait_next, nl + 1);
                 lane_open[nl] = true;
                 is_fp[nl] = false;
-                wait_next[nl] = wait_head[p as usize];
-                wait_head[p as usize] = new_l;
+                if cut(yu, p) {
+                    wait_next[nl] = NONE;
+                    cut_cols.push(new_l);
+                    add_stub(&mut stubs, p, new_l, false);
+                } else {
+                    wait_next[nl] = wait_head[p as usize];
+                    wait_head[p as usize] = new_l;
+                }
                 new_l
             };
             events.push(RowEvent {
                 col: l,
-                continues: true,
+                kind: EventKind::Continue,
             });
         }
+
+        // 下一列的 parent 有截斷線在等：這一列開 `↑`。放在 merge 之後，
+        // merge 就不會 join 到 stub（`↑` 跟 `╮` 疊在同一格）。
+        if let Some(stub) = stubs.remove(&(yu + 1)) {
+            let s = if reserved_head == Some(yu + 1) {
+                // pend 期間 col 0 只有 HEAD 的線能用，一定空著。
+                debug_assert!(pend && vacant(&lane_open, &tombs, 0, |_| false));
+                0
+            } else {
+                // 避開本列轉角橫跨的範圍：`↑` 壓在 `─` 上會把橫線截斷。
+                let (lo, hi) = events[ev_from..]
+                    .iter()
+                    .filter(|e| matches!(e.kind, EventKind::Converge | EventKind::Continue))
+                    .fold((x, x), |(lo, hi), e| (lo.min(e.col), hi.max(e.col)));
+                let spans = lo != hi;
+                let ban = |c: u32| conv.contains(&c) || (spans && (lo..=hi).contains(&c));
+                if stub.col as usize >= start_col && vacant(&lane_open, &tombs, stub.col, ban) {
+                    stub.col
+                } else {
+                    find_vacant(&lane_open, &tombs, start_col, ban)
+                }
+            };
+            let su = s as usize;
+            grow_lanes(&mut lane_open, &mut is_fp, &mut wait_next, su + 1);
+            lane_open[su] = true;
+            is_fp[su] = stub.fp;
+            wait_next[su] = wait_head[y + 1];
+            wait_head[y + 1] = s;
+            events.push(RowEvent {
+                col: s,
+                kind: EventKind::ArrowUp { color: stub.col },
+            });
+        }
+
         let ev = &events[ev_from..];
         debug_assert!(
             ev.iter()
@@ -405,6 +637,7 @@ pub(super) fn build(parent_start: &[u32], parent_idx: &[u32], reserved_head: Opt
         checkpoints,
         words,
         cell_count,
+        truncated: k.is_some(),
     }
 }
 
@@ -424,6 +657,17 @@ mod tests {
         (start, idx)
     }
 
+    impl BuildOpts {
+        /// 舊的 `reserved_head: Some(row)`：HEAD 在 `row` 且保留 col 0。
+        fn reserved(row: u32) -> BuildOpts {
+            BuildOpts {
+                head: Some(row),
+                reserve_head: true,
+                max_edge_rows: None,
+            }
+        }
+    }
+
     fn edges_for(lanes: &Lanes, row: usize) -> Vec<Edge> {
         lanes.row_edges(row)
     }
@@ -438,7 +682,7 @@ mod tests {
     fn straight_chain_draws_vertical() {
         // 0 -> 1 -> 2（0 最新）。
         let (start, idx) = csr(&[&[1], &[2], &[]]);
-        let lanes = build(&start, &idx, None);
+        let lanes = build(&start, &idx, &BuildOpts::default());
         assert_eq!(lanes.col(0), 0);
         assert_eq!(lanes.col(1), 0);
         assert_eq!(lanes.col(2), 0);
@@ -455,7 +699,7 @@ mod tests {
         // 0(parent=2), 1(parent=2), 2(root)。0 先處理開 lane 0，
         // 1 開 lane 1，2 兩條都在等 -> 接 lane 0，lane 1 收斂。
         let (start, idx) = csr(&[&[2], &[2], &[]]);
-        let lanes = build(&start, &idx, None);
+        let lanes = build(&start, &idx, &BuildOpts::default());
         assert_eq!(lanes.col(0), 0);
         assert_eq!(lanes.col(1), 1);
         assert_eq!(lanes.col(2), 0, "leftmost fp lane 勝出");
@@ -477,7 +721,7 @@ mod tests {
         // 4: root，兩條路線最終在這裡匯合：fp 鏈（col 0）留下，
         //    lane 1（一路沒被觸碰）在這裡收斂
         let (start, idx) = csr(&[&[1, 4], &[2], &[3, 4], &[4], &[]]);
-        let lanes = build(&start, &idx, None);
+        let lanes = build(&start, &idx, &BuildOpts::default());
 
         assert_eq!(lanes.col(0), 0);
         assert_eq!(lanes.col(1), 0);
@@ -514,7 +758,7 @@ mod tests {
         // A 那條 lane（col 1）這一列收斂；H 同一列的 merge（second parent
         // 3）不能重新用剛收斂的 col 1 開新 lane。
         let (start, idx) = csr(&[&[1], &[2, 3], &[], &[]]);
-        let lanes = build(&start, &idx, Some(1));
+        let lanes = build(&start, &idx, &BuildOpts::reserved(1));
 
         assert_eq!(lanes.col(0), 1, "pend 時 col 0 禁區，A 落在 col 1");
         assert_eq!(lanes.col(1), 0, "HEAD 固定 col 0");
@@ -539,7 +783,7 @@ mod tests {
         // 1: parent=[2]，HEAD = row 2
         // 2: root
         let (start, idx) = csr(&[&[1], &[2], &[]]);
-        let lanes = build(&start, &idx, Some(2));
+        let lanes = build(&start, &idx, &BuildOpts::reserved(2));
         assert_eq!(lanes.col(0), 1, "pend 時 col 0 禁區，leaf 落在 col 1");
         assert_eq!(lanes.col(1), 1);
         assert_eq!(lanes.col(2), 0, "HEAD 固定 col 0");
@@ -559,7 +803,7 @@ mod tests {
     fn reserved_head_with_no_waiters_is_trivial() {
         // HEAD 是最新的 commit（row 0），沒有人在等它。
         let (start, idx) = csr(&[&[1], &[]]);
-        let lanes = build(&start, &idx, Some(0));
+        let lanes = build(&start, &idx, &BuildOpts::reserved(0));
         assert_eq!(lanes.col(0), 0);
         assert_eq!(lanes.col(1), 0);
     }
@@ -569,7 +813,7 @@ mod tests {
     #[test]
     fn unloaded_first_parent_keeps_lane_open_forever() {
         let (start, idx) = csr(&[&[NOT_LOADED]]);
-        let lanes = build(&start, &idx, None);
+        let lanes = build(&start, &idx, &BuildOpts::default());
         assert_eq!(lanes.col(0), 0);
         assert!(has(&edges_for(&lanes, 0), EdgeType::Down, 0));
     }
@@ -578,7 +822,7 @@ mod tests {
     fn unloaded_non_first_parent_is_skipped() {
         // stash：parents=[base(=1), index(未載入), untracked(未載入)]
         let (start, idx) = csr(&[&[1, NOT_LOADED, NOT_LOADED], &[]]);
-        let lanes = build(&start, &idx, None);
+        let lanes = build(&start, &idx, &BuildOpts::default());
         let e0 = edges_for(&lanes, 0);
         assert_eq!(e0.len(), 1, "沒載入的非 first parent 不產生任何 edge");
         assert!(has(&e0, EdgeType::Down, 0));
@@ -590,7 +834,7 @@ mod tests {
     fn root_blocks_next_row_then_releases() {
         // 0: root。1、2 都沒有 parent，若 0 的欄立刻釋放，1 會誤用它。
         let (start, idx) = csr(&[&[], &[], &[]]);
-        let lanes = build(&start, &idx, None);
+        let lanes = build(&start, &idx, &BuildOpts::default());
         assert_eq!(lanes.col(0), 0);
         assert_eq!(lanes.col(1), 1, "row1 還在 0 的墓碑期，不能用 col 0");
         assert_eq!(lanes.col(2), 0, "row2 起 col 0 釋放");
@@ -613,7 +857,7 @@ mod tests {
             .collect();
         let refs: Vec<&[u32]> = parents.iter().map(|v| v.as_slice()).collect();
         let (start, idx) = csr(&refs);
-        let lanes = build(&start, &idx, None);
+        let lanes = build(&start, &idx, &BuildOpts::default());
 
         // 一次批次重播整段，跨過兩個 checkpoint 邊界；逐列查詢每次都從
         // 各自最近的 checkpoint 重播，兩條路徑要得到一樣的答案。
@@ -649,6 +893,38 @@ mod tests {
         );
     }
 
+    /// root 的墓碑欄在 build 裡還佔著（不能開新 lane），重播時卻已經沒有
+    /// 線了。checkpoint 若把墓碑也存成「開著」，從它開始重播的查詢會在
+    /// 墓碑那一列多畫一條 Vertical，跟從頭批次重播的結果對不上。
+    #[test]
+    fn tomb_is_not_captured_as_open_in_checkpoint() {
+        // 0..=127 一條直線、127 是 root；128.. 另一條直線。第 1 份
+        // checkpoint 是第 128 列開始前的狀態，正好落在 127 的墓碑期。
+        let n = CHECKPOINT_INTERVAL * 2;
+        let parents: Vec<Vec<u32>> = (0..n)
+            .map(|i| {
+                if i + 1 == CHECKPOINT_INTERVAL || i + 1 == n {
+                    vec![]
+                } else {
+                    vec![(i + 1) as u32]
+                }
+            })
+            .collect();
+        let refs: Vec<&[u32]> = parents.iter().map(|v| v.as_slice()).collect();
+        let (start, idx) = csr(&refs);
+        let lanes = build(&start, &idx, &BuildOpts::default());
+
+        let mut batch = vec![Vec::new(); n];
+        lanes.row_edges_in(0..n, |y, es| batch[y] = es.to_vec());
+        for row in [CHECKPOINT_INTERVAL, CHECKPOINT_INTERVAL + 1] {
+            assert_eq!(
+                edges_for(&lanes, row),
+                batch[row],
+                "row {row}：從 checkpoint 重播要跟從頭重播一致"
+            );
+        }
+    }
+
     /// 釘住：HEAD 被 merge 回去時，col 0 只留給 HEAD 自己，不會被 child
     /// 的欄「補救」。跟舊引擎（col 0 只有 HEAD 是 leaf 時才生效）行為不同，
     /// 是這次 #118 的修正重點——見 `head_behind_00X`／`stash_head_001` 系列
@@ -658,9 +934,168 @@ mod tests {
         // child (row0) parents=[head, other]；head (row1) 是 HEAD，
         // 被 child 的 first parent 指到；other (row2) 是 child 的第二個 parent。
         let (start, idx) = csr(&[&[1, 2], &[], &[]]);
-        let lanes = build(&start, &idx, Some(1));
+        let lanes = build(&start, &idx, &BuildOpts::reserved(1));
         assert_eq!(lanes.col(0), 1, "child 是 leaf，pend 期間落在 col 1");
         assert_eq!(lanes.col(1), 0, "HEAD 固定 col 0，不再跟著 child 的欄");
+    }
+
+    // --- 長線截斷（issue #119） ---
+
+    fn cut_at(k: u32) -> BuildOpts {
+        BuildOpts {
+            max_edge_rows: Some(k),
+            ..BuildOpts::default()
+        }
+    }
+
+    fn find(edges: &[Edge], et: EdgeType) -> Vec<(usize, usize)> {
+        edges
+            .iter()
+            .filter(|e| e.edge_type == et)
+            .map(|e| (e.pos_x, e.associated_line_pos_x))
+            .collect()
+    }
+
+    /// 0 的 first parent 是 5（線長 5），1..=4 是另一條直線接到 5。
+    fn long_fp_line() -> (Vec<u32>, Vec<u32>) {
+        csr(&[&[5], &[2], &[3], &[4], &[5], &[]])
+    }
+
+    #[test]
+    fn long_line_is_cut_into_down_and_up_arrows() {
+        let (start, idx) = long_fp_line();
+        let lanes = build(&start, &idx, &cut_at(3));
+        assert!(lanes.truncated());
+
+        assert_eq!(find(&edges_for(&lanes, 1), EdgeType::TruncDown), [(0, 0)]);
+        assert_eq!(lanes.col(1), 1, "↓ 那一列 col 0 還佔著，不能開新 lane");
+        assert!(
+            edges_for(&lanes, 2).iter().all(|e| e.pos_x != 0),
+            "↓ 下一列是墓碑，col 0 什麼都不畫"
+        );
+        assert_eq!(
+            find(&edges_for(&lanes, 4), EdgeType::TruncUp),
+            [(0, 0)],
+            "↑ 開回原本那一欄"
+        );
+        assert_eq!(lanes.col(5), 0, "↑ 是 first-parent 線，parent 接手它");
+        assert!(has(&edges_for(&lanes, 5), EdgeType::Up, 0));
+        assert!(has(&edges_for(&lanes, 5), EdgeType::RightBottom, 1));
+    }
+
+    #[test]
+    fn line_of_exactly_k_rows_is_not_cut() {
+        let (start, idx) = long_fp_line();
+        let lanes = build(&start, &idx, &cut_at(5));
+        assert!(has(&edges_for(&lanes, 1), EdgeType::Vertical, 0));
+        let arrows = (0..lanes.row_count())
+            .flat_map(|y| edges_for(&lanes, y))
+            .filter(|e| matches!(e.edge_type, EdgeType::TruncDown | EdgeType::TruncUp))
+            .count();
+        assert_eq!(arrows, 0);
+    }
+
+    #[test]
+    fn head_first_parent_chain_is_never_cut() {
+        let (start, idx) = long_fp_line();
+        let opts = BuildOpts {
+            head: Some(0),
+            ..cut_at(3)
+        };
+        let lanes = build(&start, &idx, &opts);
+        assert!(has(&edges_for(&lanes, 1), EdgeType::Vertical, 0));
+        assert!(find(&edges_for(&lanes, 1), EdgeType::TruncDown).is_empty());
+    }
+
+    #[test]
+    fn unloaded_parent_gets_down_arrow_only() {
+        let (start, idx) = csr(&[&[NOT_LOADED], &[2], &[3], &[4], &[5], &[]]);
+        let lanes = build(&start, &idx, &cut_at(3));
+        assert_eq!(find(&edges_for(&lanes, 1), EdgeType::TruncDown), [(0, 0)]);
+        for y in 0..lanes.row_count() {
+            assert!(find(&edges_for(&lanes, y), EdgeType::TruncUp).is_empty());
+        }
+    }
+
+    /// 同一個 parent 的兩條截斷線（fp 在左、merge 在右）共用一個 `↑`：
+    /// 開在 fp 線那一欄、用它的顏色，而且算 first-parent 線。
+    #[test]
+    fn cut_lines_to_the_same_parent_share_one_up_arrow() {
+        let (start, idx) = csr(&[&[6], &[2, 6], &[3], &[4], &[5], &[6], &[]]);
+        let lanes = build(&start, &idx, &cut_at(3));
+        assert_eq!(find(&edges_for(&lanes, 1), EdgeType::TruncDown), [(0, 0)]);
+        assert_eq!(find(&edges_for(&lanes, 2), EdgeType::TruncDown), [(2, 2)]);
+        assert_eq!(find(&edges_for(&lanes, 5), EdgeType::TruncUp), [(0, 0)]);
+        assert_eq!(lanes.col(6), 0, "↑ 帶 fp，parent 接手它而不是 lane 1");
+    }
+
+    /// `↑` 開不回原本那一欄時，換欄但顏色跟著 `↓`，下一列收斂的轉角也是。
+    #[test]
+    fn up_arrow_keeps_the_colour_when_its_column_is_taken() {
+        let (start, idx) = csr(&[&[5], &[2], &[], &[4], &[5], &[]]);
+        let lanes = build(&start, &idx, &cut_at(3));
+        assert_eq!(lanes.col(3), 0, "墓碑釋放後 col 0 被別的 commit 拿走");
+        assert_eq!(find(&edges_for(&lanes, 4), EdgeType::TruncUp), [(1, 0)]);
+        assert_eq!(
+            find(&edges_for(&lanes, 5), EdgeType::RightBottom),
+            [(1, 0)],
+            "接回 parent 的那一段沿用 ↑ 的顏色"
+        );
+    }
+
+    /// `↑` 不開在本列轉角橫跨的範圍裡，否則會把橫線截斷。
+    #[test]
+    fn up_arrow_avoids_the_span_of_corners_in_its_row() {
+        // B（row 1）→ 7 被截斷，↓ 在 col 1。D（row 3）坐 col 2，在 row 6
+        // 收斂進 col 0，轉角橫跨 col 0..=2，col 1 雖然空著也不能用。
+        let (start, idx) = csr(&[&[2], &[7], &[4], &[6], &[5], &[6], &[7], &[]]);
+        let lanes = build(&start, &idx, &cut_at(3));
+        assert_eq!(lanes.col(3), 2);
+        let e6 = edges_for(&lanes, 6);
+        assert!(has(&e6, EdgeType::RightBottom, 2));
+        assert_eq!(find(&e6, EdgeType::TruncUp), [(3, 1)]);
+    }
+
+    /// reserve 時，在等 HEAD 的 `↑` 開在 col 0，HEAD 那一列直接接手，不會
+    /// 把它當成收斂。
+    #[test]
+    fn up_arrow_to_reserved_head_opens_in_col0() {
+        let (start, idx) = long_fp_line();
+        let opts = BuildOpts {
+            head: Some(5),
+            reserve_head: true,
+            max_edge_rows: Some(3),
+        };
+        let lanes = build(&start, &idx, &opts);
+        assert_eq!(lanes.col(0), 1);
+        assert_eq!(find(&edges_for(&lanes, 1), EdgeType::TruncDown), [(1, 1)]);
+        assert_eq!(find(&edges_for(&lanes, 4), EdgeType::TruncUp), [(0, 1)]);
+        let e5 = edges_for(&lanes, 5);
+        assert_eq!(lanes.col(5), 0);
+        assert_eq!(find(&e5, EdgeType::Up), [(0, 1)]);
+        assert!(!has(&e5, EdgeType::LeftBottom, 0) && !has(&e5, EdgeType::RightBottom, 0));
+    }
+
+    /// 截斷後逐列查詢要跟批次重播一致：`↓`、墓碑、`↑` 都可能落在 checkpoint
+    /// 邊界上，merge 密集的合成 DAG 會把各種位置都踩過一遍。
+    #[test]
+    fn truncated_rows_match_between_single_and_batch_replay() {
+        for seed in [7, 8, 9] {
+            let n = CHECKPOINT_INTERVAL * 8;
+            let (parent_start, parent_idx) = gen_merge_dense(n, seed, 35);
+            let lanes = build(&parent_start, &parent_idx, &cut_at(3));
+            let mut batch = vec![Vec::new(); n];
+            lanes.row_edges_in(0..n, |y, es| batch[y] = es.to_vec());
+            for (y, expected) in batch.iter().enumerate() {
+                assert_eq!(&edges_for(&lanes, y), expected, "seed={seed} row={y}");
+            }
+            let ups = batch
+                .iter()
+                .flatten()
+                .filter(|e| e.edge_type == EdgeType::TruncUp)
+                .count();
+            assert!(ups > 0, "seed={seed}：這組參數應該真的有線被截斷");
+        }
     }
 
     // --- 結構性回歸：merge 密集的合成 DAG 不會重蹈舊引擎的覆轍 ---
@@ -748,7 +1183,7 @@ mod tests {
     fn cell_count_stays_within_structural_bound() {
         for (n, seed) in [(2_000, 1), (2_000, 2), (5_000, 3), (5_000, 4), (10_000, 5)] {
             let (parent_start, parent_idx) = gen_merge_dense(n, seed, 35);
-            let lanes = build(&parent_start, &parent_idx, None);
+            let lanes = build(&parent_start, &parent_idx, &BuildOpts::default());
 
             let roots = (0..n)
                 .filter(|&y| parent_start[y] == parent_start[y + 1])
@@ -774,7 +1209,7 @@ mod tests {
     fn cell_count_stays_within_bound_at_1m_scale() {
         let n = 1_000_000;
         let (parent_start, parent_idx) = gen_merge_dense(n, 42, 5);
-        let lanes = build(&parent_start, &parent_idx, None);
+        let lanes = build(&parent_start, &parent_idx, &BuildOpts::default());
 
         let roots = (0..n)
             .filter(|&y| parent_start[y] == parent_start[y + 1])

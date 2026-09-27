@@ -101,6 +101,10 @@ fn branch_001() -> TestResult {
         GenerateGraphOption::new("branch_001_topo", git::SortCommit::Topological),
         GenerateGraphOption::new("branch_001_max_count", git::SortCommit::Chronological)
             .with_max_count(10),
+        // parent 沒載入的長線只畫 `↓`，沒有 `↑`。
+        GenerateGraphOption::new("branch_001_max_count_trunc", git::SortCommit::Chronological)
+            .with_max_count(10)
+            .with_truncate(3),
     ];
 
     copy_git_dir(repo_path, "branch_001");
@@ -298,6 +302,9 @@ fn branch_004() -> TestResult {
     let options = &[
         GenerateGraphOption::new("branch_004_chrono", git::SortCommit::Chronological),
         GenerateGraphOption::new("branch_004_topo", git::SortCommit::Topological),
+        GenerateGraphOption::new("branch_004_trunc", git::SortCommit::Chronological)
+            .with_truncate(3)
+            .with_cells(),
     ];
 
     copy_git_dir(repo_path, "branch_004");
@@ -1016,6 +1023,16 @@ fn complex_001() -> TestResult {
     let options = &[
         GenerateGraphOption::new("complex_001_chrono", git::SortCommit::Chronological),
         GenerateGraphOption::new("complex_001_topo", git::SortCommit::Topological),
+        GenerateGraphOption::new("complex_001_trunc", git::SortCommit::Chronological)
+            .with_truncate(3)
+            .with_cells(),
+        // HEAD（025）的 first-parent 鏈不截斷。
+        GenerateGraphOption::new("complex_001_trunc_head", git::SortCommit::Chronological)
+            .with_head()
+            .with_truncate(3),
+        GenerateGraphOption::new("complex_001_overflow", git::SortCommit::Chronological)
+            .with_max_cols(3)
+            .with_cells(),
     ];
 
     copy_git_dir(repo_path, "complex_001");
@@ -1355,6 +1372,53 @@ fn head_behind_003() -> TestResult {
     Ok(())
 }
 
+/// 長線截斷遇上 HEAD 保留欄與 virtual row：020 → 002（HEAD）的線被截斷，
+/// 在等 HEAD 的 `↑` 開在 col 0；virtual row 從上面補下來的線跟 `↑` 同格
+/// 時畫 `↑`。
+#[test]
+fn truncate_head_001() -> TestResult {
+    let dir = tempfile::tempdir()?;
+    let repo_path = dir.path();
+
+    let git = &GitRepository::new(repo_path);
+
+    git.init();
+
+    git.commit("001", "2024-01-01");
+    git.commit("002", "2024-01-02");
+
+    git.checkout_b("side");
+    git.commit("010", "2024-01-03");
+    git.commit("011", "2024-01-04");
+    git.commit("012", "2024-01-05");
+    git.commit("013", "2024-01-06");
+    git.commit("014", "2024-01-07");
+
+    git.checkout("master");
+    git.checkout_b("ahead");
+    git.commit("020", "2024-01-08");
+
+    git.checkout("master");
+    git.dirty();
+
+    git.log();
+
+    let options =
+        &[
+            GenerateGraphOption::new("truncate_head_001_head_col", git::SortCommit::Chronological)
+                .with_head_col()
+                .with_truncate(3)
+                .with_cells(),
+        ];
+
+    copy_git_dir(repo_path, "truncate_head_001");
+
+    generate_and_output_text_graphs(repo_path, options);
+    assert_text_graphs(options);
+
+    Ok(())
+}
+
 /// stash 疊在 HEAD 上，且工作區另外還有未 commit 的變更：stash 的 first
 /// parent 就是 HEAD，很容易被誤判成「HEAD 的後代」而放行到 col 0。virtual
 /// row 的線要接在 HEAD 欄，不能穿過 stash 的圓圈。
@@ -1464,7 +1528,12 @@ fn graph_ignores_working_changes() -> TestResult {
     let row_edges = || -> Result<Vec<Vec<graph::Edge>>, Box<dyn std::error::Error>> {
         let repository = git::Repository::load(repo_path, git::SortCommit::Chronological, None)?;
         let head = ysgit::resolve_head_commit_hash(&repository);
-        let graph = graph::calc_graph(&repository, head.as_ref(), true);
+        let graph = graph::calc_graph(
+            &repository,
+            head.as_ref(),
+            true,
+            graph::Truncation::new(100),
+        );
         Ok((0..graph.row_count())
             .map(|row| graph.row_edges(row).to_vec())
             .collect())
@@ -1640,6 +1709,11 @@ struct GenerateGraphOption {
     filtered: bool,
     // 另外輸出帶顏色的 `<name>.cells.txt`。glyph golden 不比顏色，這份補上。
     cells: bool,
+    // 長線截斷。預設跟 app 一樣（K=100、門檻 64）；既有 case 都遠低於門檻，
+    // 所以畫面完全不變，這本身就是「一般 repo 不受影響」的驗收。
+    trunc: graph::Truncation,
+    // 欄寬上限：`Some(n)` 時只畫 n 欄（最後一欄是溢位欄）。
+    max_cols: Option<usize>,
 }
 
 impl GenerateGraphOption {
@@ -1652,7 +1726,23 @@ impl GenerateGraphOption {
             reserve_head_col: false,
             filtered: false,
             cells: false,
+            trunc: graph::Truncation::new(100),
+            max_cols: None,
         }
+    }
+
+    /// 用小 K 強制截斷，不管圖寬門檻。
+    fn with_truncate(mut self, max_edge_rows: usize) -> GenerateGraphOption {
+        self.trunc = graph::Truncation {
+            max_edge_rows,
+            min_graph_width: 0,
+        };
+        self
+    }
+
+    fn with_max_cols(mut self, max_cols: usize) -> GenerateGraphOption {
+        self.max_cols = Some(max_cols);
+        self
     }
 
     fn with_max_count(mut self, max_count: usize) -> GenerateGraphOption {
@@ -1752,10 +1842,11 @@ fn build_graph_snapshot_source(
         &repository,
         head_hint.as_ref(),
         option.reserve_head_col,
+        option.trunc,
     ));
     let graph = if option.filtered {
         let remote_only = ysgit::find_remote_only_commits(&repository);
-        ysgit::compute_filtered_graph_from(&repository, &remote_only)
+        ysgit::compute_filtered_graph_from(&repository, &remote_only, option.trunc)
             .expect("filtered case must have remote-only commits")
     } else {
         full
@@ -1777,17 +1868,22 @@ fn build_graph_snapshot_source(
         .map(|c| c.to_ratatui_color())
         .collect::<Vec<_>>();
 
+    let cols = option
+        .max_cols
+        .map_or(graph.cell_count(), |m| m.min(graph.cell_count()));
     let double_rows = graph::build_text_graph(
         &graph,
         virtual_head_row,
         &colors,
         graph::CellWidthType::Double,
+        cols,
     );
     let single_rows = graph::build_text_graph(
         &graph,
         virtual_head_row,
         &colors,
         graph::CellWidthType::Single,
+        cols,
     );
     let subjects = (0..graph.row_count())
         .map(|row| repository.all_commits()[graph.raw_of(row)].subject.clone())
@@ -1887,7 +1983,10 @@ fn leaves_no_trace(edge_type: graph::EdgeType) -> bool {
         | graph::EdgeType::Down
         | graph::EdgeType::Left
         | graph::EdgeType::RightTop
-        | graph::EdgeType::RightBottom => true,
+        | graph::EdgeType::RightBottom
+        // 箭頭只佔 symbol 半格、不往右延伸。
+        | graph::EdgeType::TruncDown
+        | graph::EdgeType::TruncUp => true,
         graph::EdgeType::Horizontal
         | graph::EdgeType::Right
         | graph::EdgeType::LeftTop
@@ -2100,6 +2199,9 @@ const ASCII_SUBST: &[(char, char)] = &[
     ('├', '+'),
     ('┤', '+'),
     ('┼', '+'),
+    ('↓', 'v'),
+    ('↑', '^'),
+    ('…', '~'),
 ];
 
 fn substitute(input: &str, table: &[(char, char)]) -> String {
