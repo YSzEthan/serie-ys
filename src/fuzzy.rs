@@ -20,10 +20,12 @@ static FUZZY_MATCHER: LazyLock<SkimMatcherV2> =
 /// - 希臘文 final sigma：`str::to_lowercase()` 實作了 Final_Sigma context rule，
 ///   `char::to_lowercase()` 沒有，所以 `ΟΔΟΣ` 折出 `οδοσ` 而非 `οδος`。搜尋時
 ///   query 帶 ς 的不再命中、帶 σ 的開始命中，兩個同樣罕見的情況對調。
+fn fold_char(c: char) -> char {
+    c.to_lowercase().next().unwrap_or(c)
+}
+
 fn fold_case(s: &str) -> String {
-    s.chars()
-        .map(|c| c.to_lowercase().next().unwrap_or(c))
-        .collect()
+    s.chars().map(fold_char).collect()
 }
 
 pub(crate) struct SearchMatcher {
@@ -56,17 +58,45 @@ impl SearchMatcher {
         }
     }
 
-    /// 快速檢查字串是否命中，不計算命中位置
+    /// 快速檢查字串是否命中，不計算命中位置。刻意不建立任何新字串（`haystack`
+    /// 那份 `Cow` 只有 `matched_position` 需要位置時才划算）——這條路徑在每次
+    /// 按鍵、每個 commit 上都會跑，見 `commit_list::MatchSet::update`。
     pub fn matches(&self, s: &str) -> bool {
         if self.query.is_empty() {
             return false;
         }
-        let haystack = self.haystack(s);
         if self.fuzzy {
-            FUZZY_MATCHER.fuzzy_match(&haystack, &self.query).is_some()
-        } else {
-            haystack.contains(&self.query)
+            return self.fuzzy_matches(s);
         }
+        if !self.ignore_case {
+            return s.contains(&self.query);
+        }
+        if s.is_ascii() {
+            // query 已在建構時折過；折完還含非 ASCII 字元的話，ASCII haystack
+            // 不可能命中，不必再掃一次。
+            return self.query.is_ascii()
+                && ascii_ignore_case_contains(s.as_bytes(), self.query.as_bytes());
+        }
+        // 非 ASCII haystack 維持原本做法：折疊後 `contains`。
+        fold_case(s).contains(&self.query)
+    }
+
+    /// `SkimMatcherV2::fuzzy_match` 判斷「有沒有命中」本質上就是貪婪子序列測試
+    /// （0.3.7 的 `cheap_matches`），跟算分數／位置需要的資訊無關。這裡手寫同一
+    /// 個測試，逐字元比對、不建立任何新字串——CJK、emoji 這種非 ASCII haystack
+    /// 也一樣不配置，不必像 substring 分支那樣另外挑 ASCII 快速路徑。
+    fn fuzzy_matches(&self, s: &str) -> bool {
+        let mut query_chars = self.query.chars().peekable();
+        for c in s.chars() {
+            let Some(&want) = query_chars.peek() else {
+                break;
+            };
+            let c = if self.ignore_case { fold_char(c) } else { c };
+            if c == want {
+                query_chars.next();
+            }
+        }
+        query_chars.peek().is_none()
     }
 
     pub fn matched_position(&self, s: &str) -> Option<Vec<usize>> {
@@ -98,6 +128,15 @@ impl SearchMatcher {
             Some((start..start + len).collect())
         }
     }
+}
+
+/// `haystack`／`needle` 都是 ASCII 時的大小寫不敏感 substring 測試，不配置。
+/// `windows(needle.len())`：`needle` 非空由呼叫端保證（`matches` 已擋過空
+/// query），`needle.len() > haystack.len()` 時 `windows` 回空迭代器，安全。
+fn ascii_ignore_case_contains(haystack: &[u8], needle: &[u8]) -> bool {
+    haystack
+        .windows(needle.len())
+        .any(|w| w.eq_ignore_ascii_case(needle))
 }
 
 /// `fuzzy_indices` 回傳的是 char 位置（skim 內部走 `chars().enumerate()`），但下游的
@@ -196,6 +235,13 @@ mod tests {
             ("ADD", false, false),
             ("", true, true),
             ("zzz", true, true),
+            // 大小寫混合的純 ASCII query——`matches` 的 ASCII 快速路徑專門為
+            // 這種輸入寫的。
+            ("MiXeD", true, false),
+            // Kelvin 符號 'K'（U+212A）折完是 ASCII 'k'，query 因此變成純
+            // ASCII；用它釘住「query 折完才變 ASCII」這個快速路徑分支。
+            ("\u{212A}elvin", true, false),
+            ("\u{212A}elvin", true, true),
         ];
         for (q, ignore_case, fuzzy) in queries {
             let m = SearchMatcher::new(q, ignore_case, fuzzy);
@@ -206,6 +252,7 @@ mod tests {
                 "ÜBER fix",
                 "🎉 add",
                 "",
+                "plain ascii degrees kelvin text",
             ] {
                 assert_eq!(
                     m.matches(s),
@@ -222,6 +269,28 @@ mod tests {
     fn case_sensitive_search_rejects_other_case() {
         assert!(!SearchMatcher::new("add", false, true).matches("ADD fix"));
         assert!(!SearchMatcher::new("add", false, false).matches("ADD fix"));
+    }
+
+    #[test]
+    fn ascii_ignore_case_substring_matches_mixed_case() {
+        assert!(SearchMatcher::new("MiXeD", true, false).matches("this is a mixed CASE subject"));
+        assert!(!SearchMatcher::new("zzz", true, false).matches("all ascii, no match"));
+    }
+
+    /// query 折完仍含非 ASCII 字元（über）時，純 ASCII haystack 不可能命中——
+    /// 這是 `matches` ASCII 快速路徑的短路條件，不是誤判。
+    #[test]
+    fn ascii_ignore_case_substring_rejects_non_ascii_query_against_ascii_haystack() {
+        assert!(!SearchMatcher::new("über", true, false).matches("all ascii text"));
+    }
+
+    /// Kelvin 符號 'K'（U+212A）小寫化是 ASCII 'k'，query 折完會變成純
+    /// ASCII，必須走得到 ASCII 快速路徑並正確命中純 ASCII haystack。
+    #[test]
+    fn kelvin_sign_query_folds_to_ascii_k_and_matches() {
+        let query = format!("{}elvin", '\u{212A}');
+        assert!(SearchMatcher::new(&query, true, false).matches("degrees kelvin"));
+        assert!(SearchMatcher::new(&query, true, true).matches("degrees kelvin"));
     }
 
     /// 本檔案所有位置換算都靠這條不變式，`is_char_boundary` 那類事後防禦擋不住它被破壞。
