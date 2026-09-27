@@ -362,50 +362,37 @@ pub fn find_remote_only_commits(repository: &git::Repository) -> RemoteOnly {
 }
 
 /// 有 remote-only commit 時，算出隱藏它們之後的 filtered graph；沒有就回 `None`。
+/// 回傳裸的 `Graph`（不包 `Rc`）——這個函式也在 `reload::Reloader` 的背景
+/// worker thread 上呼叫，`Rc` 不是 `Send`；呼叫端（`build_graph_artifacts`
+/// 或 `lib.rs::run()` 換資料那段）才決定要不要包成 `Rc`。
 pub fn compute_filtered_graph_from(
     repository: &git::Repository,
     remote_only: &RemoteOnly,
     trunc: graph::Truncation,
-) -> Option<Rc<Graph>> {
+) -> Option<Graph> {
     if remote_only.is_empty() {
         return None;
     }
 
     let head = resolve_head_commit_hash(repository);
-    Some(Rc::new(graph::calc_graph_filtered(
+    Some(graph::calc_graph_filtered(
         repository,
         remote_only,
         head.as_ref(),
         head_has_named_ref(repository),
         trunc,
-    )))
+    ))
 }
 
+/// 初始載入專用：算完直接包成 `App::new` 要的 `Rc`。背景重載（Phase 6）
+/// 走 `reload::Reloader` 自己的路徑，不經過這個函式。
 fn build_graph_artifacts(
     repository: &git::Repository,
     trunc: graph::Truncation,
 ) -> (Option<Rc<Graph>>, RemoteOnly) {
     let remote_only = find_remote_only_commits(repository);
-    let filtered = compute_filtered_graph_from(repository, &remote_only, trunc);
+    let filtered = compute_filtered_graph_from(repository, &remote_only, trunc).map(Rc::new);
     (filtered, remote_only)
-}
-
-/// 快速路徑輔助函式：若 ref 的變化導致 commit 在 local-reachable 與
-/// remote-only 之間轉移，就重建過濾後的圖形。
-/// 回傳是否真的發生了重建（若有，呼叫端會清空畫面）。
-fn try_refresh_filtered_for_ref_change(
-    repository: &git::Repository,
-    remote_only_commits: &mut RemoteOnly,
-    filtered_graph: &mut Option<Rc<Graph>>,
-    trunc: graph::Truncation,
-) -> bool {
-    let new_remote_only = find_remote_only_commits(repository);
-    if &new_remote_only == remote_only_commits {
-        return false;
-    }
-    *filtered_graph = compute_filtered_graph_from(repository, &new_remote_only, trunc);
-    *remote_only_commits = new_remote_only;
-    true
 }
 
 /// 當 HEAD 指向帶有本地 branch 或 tag ref 的 commit 時回傳 true。
@@ -454,9 +441,20 @@ const EXE_REPLACED_NOTICE_ENV: &str = "YSGIT_EXE_REPLACED_NOTICE";
 /// 以下差異量不到需要提示使用者的程度。
 const COMMIT_GRAPH_HINT_THRESHOLD: usize = 100_000;
 
+/// Full 重載 worker（`reload::Reloader`）與它可能 spawn 出的 segment
+/// thread（`git::load_commits_parallel_with_segments`）共用的 thread 名稱
+/// 前綴。兩者都在 TUI 已經進入 alt screen／raw mode 之後執行、都可能因為
+/// `Repository::load` 內部的 `unwrap` 而 panic；下面裝的過濾 panic hook
+/// 靠這個前綴判斷要不要靜音（讓 `catch_unwind`／`join` 接手轉成
+/// `NotifyError`，不讓預設 hook 去動終端機）——event thread 不在涵蓋範圍
+/// 內，見該處的過濾 hook 註解。
+pub(crate) const QUIET_PANIC_THREAD_PREFIX: &str = "ysgit-quiet-panic";
+
 pub fn run() -> Result<()> {
     // ratatui::init() 裝的 panic hook 只還原 alt screen + raw mode，
-    // 不會清 mouse capture — 先補一層 DisableMouseCapture。
+    // 不會清 mouse capture — 先補一層 DisableMouseCapture。這一層永遠
+    // 生效，不受下面的過濾 hook 影響——它裝在 `ratatui::init()` 之前，
+    // 過濾 hook 裝在其後，兩者疊在一起而非互相取代。
     let prev_hook = std::panic::take_hook();
     std::panic::set_hook(Box::new(move |info| {
         let _ = ratatui::crossterm::execute!(
@@ -661,8 +659,7 @@ pub fn run() -> Result<()> {
     if let Some(body) = update::pending_release_notes(update_settings) {
         ec.sender().send(event::AppEvent::OpenReleaseNotes { body });
     }
-    let mut refresh_view_context = None;
-    let mut terminal = None;
+    let mut refresh_carry = None;
 
     // 在 repo 根目錄啟動檔案監控，以便自動重新整理
     let repo_root = Path::new(&args.path)
@@ -672,17 +669,32 @@ pub fn run() -> Result<()> {
         ec.start_git_watcher(&repo_root);
     }
 
-    // 背景重載 working changes（只跑 `git status`）的 worker，跟下面的
-    // `Repository::load`（可能要跑好幾秒的 `git log`）平行——存檔只需要
-    // 前者，不必等後者。由這個函式的 `loop` 持有，跟 `repository`／`graph`
-    // 活得一樣久；每個 `App` 只借用 `&reloader`，`Ret::Refresh` 重建 `App`
+    // 背景重載 working changes（只跑 `git status`）與 Full（`git log` +
+    // 重算 graph）的兩條 worker，跟下面的初始 `Repository::load`（可能要
+    // 跑好幾秒的 `git log`）平行——存檔只需要前者，不必等後者。Full
+    // worker 這時就一起 spawn：它自己的節流讓沒人呼叫 `request_full()`
+    // 之前完全閒置，指紋先用哨兵值起步，緊接著初始載入完成就補上真正的值
+    // （見 `Reloader::set_initial_fingerprint` 文件）——這樣安排才能保留
+    // 「working changes 跟 git log 平行」這個既有的啟動優化，不必為了拿到
+    // 指紋而延後 spawn。兩者都由這個函式的 `loop` 持有，跟 `repository`／
+    // `graph` 活得一樣久；每個 `App` 只借用 `&reloader`，換資料重建 `App`
     // 不會連 worker thread 也重開一次。
-    let reloader = Reloader::spawn(repo_root, ec.sender());
+    let reloader = Reloader::spawn(
+        repo_root,
+        reload::FullLoadConfig {
+            path: Path::new(&args.path).to_path_buf(),
+            order,
+            max_count,
+            trunc,
+        },
+        ec.sender(),
+    );
     reloader.request();
 
     let mut repository = git::Repository::load(Path::new(&args.path), order, max_count)?;
-    // 只在第一次載入提示，`Ret::Refresh` 重載不重複提示：commit 數在
-    // refresh 之間不會突然變化，沒有必要每次都跑一次 `--git-path` 檢查。
+    reloader.set_initial_fingerprint(repository.fingerprint());
+    // 只在第一次載入提示，換資料不重複提示：commit 數在換資料之間不會
+    // 突然變化，沒有必要每次都跑一次 `--git-path` 檢查。
     if repository.all_commits().len() >= COMMIT_GRAPH_HINT_THRESHOLD
         && !git::has_commit_graph(Path::new(&args.path))
     {
@@ -725,16 +737,32 @@ pub fn run() -> Result<()> {
     // 會自動補上，不阻塞啟動。
     let mut working_changes = reloader.wait_first(Duration::from_secs(2));
 
-    let ret = loop {
-        if terminal.is_none() {
-            terminal = Some(ratatui::init());
-            ratatui::crossterm::execute!(
-                std::io::stdout(),
-                ratatui::crossterm::event::EnableMouseCapture
-            )
-            .ok();
+    // 初始載入到這裡結束，才進入 alt screen／raw mode。`ratatui::init()`
+    // 從舊版迴圈內的 `terminal.is_none()` lazy 初始化攤平到這裡——效果
+    // 相同（只跑一次），但 `terminal` 因此不必是 `Option`。過濾用的
+    // panic hook 也在這裡才裝上：這一行之前（含上面的初始 `Repository::load`
+    // 可能 spawn 出的 segment thread）走的是最外層那個只清 mouse capture
+    // 的 hook，panic 照舊印出來；這一行之後，Full worker（已經 spawn，但
+    // 這時完全閒置）才可能真的去跑 `Repository::load`，那條路徑上的 panic
+    // 才需要被這層過濾接住，見 `QUIET_PANIC_THREAD_PREFIX` 文件。
+    let mut terminal = ratatui::init();
+    ratatui::crossterm::execute!(
+        std::io::stdout(),
+        ratatui::crossterm::event::EnableMouseCapture
+    )
+    .ok();
+    let prev_hook = std::panic::take_hook();
+    std::panic::set_hook(Box::new(move |info| {
+        if std::thread::current()
+            .name()
+            .is_some_and(|n| n.starts_with(QUIET_PANIC_THREAD_PREFIX))
+        {
+            return;
         }
+        prev_hook(info);
+    }));
 
+    let ret = loop {
         let mut app = App::new(
             &repository,
             &graph,
@@ -746,86 +774,49 @@ pub fn run() -> Result<()> {
             &ec,
             &reloader,
             working_changes.take(),
-            refresh_view_context.take(),
+            refresh_carry.take(),
         );
 
-        match app.run(terminal.as_mut().unwrap()) {
+        match app.run(&mut terminal) {
             Ok(Ret::Quit(restart)) => {
                 break Ok(restart);
             }
-            Ok(Ret::Refresh(request)) => {
-                refresh_view_context = Some(request.context);
+            Ok(Ret::Swap(swap)) => {
+                let loaded = swap.loaded;
+                refresh_carry = Some(swap.carry);
 
-                reloader.full_started();
-                match git::Repository::load(Path::new(&args.path), order, max_count) {
-                    Ok(new_repo) => {
-                        let old_head = resolve_head_commit_hash(&repository);
-                        let new_head = resolve_head_commit_hash(&new_repo);
-                        let layout_inputs_same = old_head == new_head
-                            && head_has_named_ref(&repository) == head_has_named_ref(&new_repo);
-                        if repository.same_commits(&new_repo) && layout_inputs_same {
-                            // 快速路徑：commit 沒有變化 — 重用現有圖形，
-                            // 讓畫面在 watcher 觸發的重新整理時不會閃爍。
-                            // App 必須先釋放對 &repository 的借用，才能進行修改。
-                            (filtered_graph, remote_only_commits) = app.into_parts();
-                            repository.update_metadata_from(new_repo);
-                            // 這裡不需要更新 head_raw：App::new 會重新
-                            // 從 `repository` 計算，而 update_metadata_from
-                            // 剛把它更新到最新狀態（複製了 ref_map/head）。
+                // `app` 到這裡整個被消費掉，對 `&repository` 的借用結束，
+                // 才能換 `repository`／`graph`；順便取回舊的 filtered graph
+                // 供下面一起丟背景釋放。
+                let (old_filtered, _) = app.into_parts();
 
-                            let filtered_changed = try_refresh_filtered_for_ref_change(
-                                &repository,
-                                &mut remote_only_commits,
-                                &mut filtered_graph,
-                                trunc,
-                            );
-                            if filtered_changed {
-                                if let Some(t) = terminal.as_mut() {
-                                    t.clear()?;
-                                }
-                            }
-                        } else {
-                            // 慢速路徑：commit 有變化 — 釋放 app、重建圖形，
-                            // 並清空畫面區域以準備繪製新的一幀。
-                            drop(app);
-                            repository = new_repo;
-                            graph = Rc::new(graph::calc_graph(
-                                &repository,
-                                resolve_head_commit_hash(&repository).as_ref(),
-                                head_has_named_ref(&repository),
-                                trunc,
-                            ));
-                            (filtered_graph, remote_only_commits) =
-                                build_graph_artifacts(&repository, trunc);
+                let old_repository = std::mem::replace(&mut repository, loaded.repository);
+                let old_graph = std::mem::replace(&mut graph, Rc::new(loaded.graph));
+                filtered_graph = loaded.filtered.map(Rc::new);
+                remote_only_commits = loaded.remote_only;
 
-                            if let Some(t) = terminal.as_mut() {
-                                t.clear()?;
-                            }
-                        }
-                    }
-                    Err(e) => {
-                        // 重載失敗：保留舊的 repository／graph，只通知、不結束
-                        // 程式——`mv .git`、暫時性的檔案系統錯誤都不該讓整個
-                        // TUI 消失（也跳過了 terminal restore）。`app` 一樣要
-                        // 釋放對 `&repository` 的借用，跟快速路徑同一個理由：
-                        // graph 沒有重建，直接沿用它剛剛可能改過的
-                        // filtered_graph／remote_only_commits。
-                        (filtered_graph, remote_only_commits) = app.into_parts();
-                        ec.sender()
-                            .send(event::AppEvent::NotifyError(e.to_string()));
-                    }
-                }
+                // 舊的 `Repository`／graph 上 GB 的釋放丟到背景 thread，
+                // 不卡主執行緒。`Rc::try_unwrap` 理論上必定成功——`app` 剛
+                // 消費完，`CommitListState` 那份 clone 已經跟著釋放，沒有
+                // 別的 Rc 還活著；失敗（不該發生）就退回主執行緒 drop，
+                // 不 panic。
+                let old_graph = Rc::try_unwrap(old_graph).ok();
+                let old_filtered = old_filtered.and_then(|g| Rc::try_unwrap(g).ok());
+                std::thread::spawn(move || {
+                    drop(old_repository);
+                    drop(old_graph);
+                    drop(old_filtered);
+                });
 
-                // Full 重載後 working changes 的基準可能已經變了（checkout／
+                terminal.clear()?;
+
+                // 換資料後 working changes 的基準可能已經變了（checkout／
                 // commit 都會動到）：排一次背景 status，不等它跑完——
-                // `latest()` 給的是重載前的舊值，馬上建出來的 App 會在下一輪
-                // 事件迴圈收到 `AppEvent::WorkingChangesReady` 自我修正，比
-                // 為了這個同步等一次 `git status` 划算。
+                // `latest()` 給的是換資料前的舊值，馬上建出來的 App 會在
+                // 下一輪事件迴圈收到 `AppEvent::WorkingChangesReady` 自我
+                // 修正，比為了這個同步等一次 `git status` 划算。
                 reloader.request();
                 working_changes = reloader.latest();
-                // 不論成功失敗都要記錄冷卻——失敗沒記的話，`mv .git` 之後
-                // watcher 會一直回報錯誤，變成 Full → 失敗 → Full 的緊密迴圈。
-                reloader.full_finished();
 
                 continue;
             }

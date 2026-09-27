@@ -16,7 +16,7 @@ use crate::{
         delete_branch, delete_branch_force, delete_remote_branch, delete_remote_tag, delete_tag,
         RefType,
     },
-    view::{ListRefreshViewContext, RefreshViewContext, RefsOrigin},
+    view::RefsOrigin,
     widget::{
         commit_list::{CommitList, CommitListState},
         h, keybind_hint_line,
@@ -107,13 +107,6 @@ impl<'a> DeleteRefView<'a> {
         let force_delete = self.force_delete;
         let tx = self.tx.clone();
 
-        // 在關閉前先建好 refresh context
-        let list_context = self
-            .commit_list_state
-            .as_ref()
-            .map(ListRefreshViewContext::from)
-            .unwrap_or_default();
-
         let pending_msg = match ref_type {
             RefType::Tag => {
                 if delete_from_remote {
@@ -191,12 +184,12 @@ impl<'a> DeleteRefView<'a> {
                     };
                     tx.send(AppEvent::NotifySuccess(msg));
                     tx.send(AppEvent::HidePendingOverlay);
-                    tx.send(AppEvent::Refresh(RefreshViewContext::list(list_context)));
+                    tx.send(AppEvent::Refresh);
                 }
                 Err(e) => {
                     // 如果本機刪除成功，仍然要 refresh UI
                     if local_deleted {
-                        tx.send(AppEvent::Refresh(RefreshViewContext::list(list_context)));
+                        tx.send(AppEvent::Refresh);
                     }
                     tx.send(AppEvent::HidePendingOverlay);
                     tx.send(AppEvent::NotifyError(e));
@@ -322,9 +315,5 @@ impl<'a> DeleteRefView<'a> {
 
     pub fn take_ref_list_state(&mut self) -> RefListState {
         std::mem::take(&mut self.ref_list_state)
-    }
-
-    pub fn refresh(&self) {
-        super::views::send_refresh(self.commit_list_state.as_ref(), &self.tx);
     }
 }

@@ -1,5 +1,6 @@
 use std::{
-    hash::Hash,
+    collections::hash_map::DefaultHasher,
+    hash::{Hash, Hasher},
     io::{BufRead, BufReader, Write},
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -102,7 +103,7 @@ pub enum RefType {
     RemoteBranch,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub enum Ref {
     Tag {
         name: String,
@@ -143,7 +144,7 @@ impl Ref {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Head {
     Branch { name: String },
     Detached { target: CommitHash },
@@ -280,20 +281,31 @@ impl Repository {
         (&self.parent_start, &self.parent_idx)
     }
 
-    /// 比較 commit hash 序列，檢查 commit 圖是否有變化。
-    pub fn same_commits(&self, other: &Self) -> bool {
-        self.commits
-            .iter()
-            .map(|c| &c.commit_hash)
-            .eq(other.commits.iter().map(|c| &c.commit_hash))
-    }
+    /// 這份 repository 的內容指紋：commit hash 序列（hash 已涵蓋 parent 與
+    /// 內容）、`head`、每個 ref。Phase 6 背景重載拿它跟 App 手上那份比對——
+    /// 相同就代表資料沒變，worker 直接丟掉這次載入結果、不觸發換資料，
+    /// 取代舊的 `same_commits` fast path（見 `reload::Reloader`）。
+    ///
+    /// `ref_map` 是 `HashMap`，迭代順序不固定：每個 entry 各自算一份 hash，
+    /// 用 `wrapping_add` 合併——加法跟順序無關，兩次迭代順序不同也不會誤判
+    /// 成「變了」。
+    pub fn fingerprint(&self) -> u64 {
+        let mut hasher = DefaultHasher::new();
+        for commit in &self.commits {
+            commit.commit_hash.hash(&mut hasher);
+        }
+        self.head.hash(&mut hasher);
 
-    /// 從另一個 repository 更新 refs 與 head，commits 與衍生資料
-    /// （index、parent CSR）維持不變。working changes 不在這裡——那是
-    /// `Reloader` 背景更新的，跟 Full 重載是兩條獨立的資料流。
-    pub fn update_metadata_from(&mut self, other: Self) {
-        self.ref_map = other.ref_map;
-        self.head = other.head;
+        let mut refs_acc: u64 = 0;
+        for (hash, refs) in &self.ref_map {
+            let mut entry_hasher = DefaultHasher::new();
+            hash.hash(&mut entry_hasher);
+            refs.hash(&mut entry_hasher);
+            refs_acc = refs_acc.wrapping_add(entry_hasher.finish());
+        }
+        hasher.write_u64(refs_acc);
+
+        hasher.finish()
     }
 
     pub fn refs(&self, commit_hash: &CommitHash) -> Vec<&Ref> {
@@ -686,10 +698,20 @@ fn load_commits_parallel_with_segments(
     let results = std::thread::scope(|scope| {
         chunks
             .into_iter()
-            .map(|chunk| scope.spawn(|| load_commits_segment(path, &format, chunk)))
+            .map(|chunk| {
+                // 具名 thread：Phase 6 背景重載時，這段可能在 `lib.rs` 裝好的
+                // 過濾 panic hook 底下跑，hook 靠名稱前綴判斷要不要靜音。
+                // `spawn_scoped` 失敗（極端情況，例如 OS thread 用盡）就當這段
+                // 失敗，跟下面 panic 走同一條 `unwrap_or(None)` 退回整批
+                // `load_commits_single` 的路徑。
+                std::thread::Builder::new()
+                    .name(crate::QUIET_PANIC_THREAD_PREFIX.to_string())
+                    .spawn_scoped(scope, || load_commits_segment(path, &format, chunk))
+                    .ok()
+            })
             .collect::<Vec<_>>()
             .into_iter()
-            .map(|handle| handle.join().unwrap_or(None))
+            .map(|handle| handle.and_then(|h| h.join().unwrap_or(None)))
             .collect::<Vec<_>>()
     });
 
@@ -1846,5 +1868,64 @@ mod tests {
         git_env(path, &["commit-graph", "write", "--reachable"], &[]);
 
         assert!(has_commit_graph(path));
+    }
+
+    // ── fingerprint：Phase 6 背景重載拿它判斷「資料沒變」 ──
+
+    #[test]
+    fn fingerprint_is_stable_across_reloads_of_the_same_state() {
+        let dir = build_branching_repo();
+        let path = dir.path();
+        let repo1 = Repository::load(path, SortCommit::Chronological, None).unwrap();
+        let repo2 = Repository::load(path, SortCommit::Chronological, None).unwrap();
+        assert_eq!(repo1.fingerprint(), repo2.fingerprint());
+    }
+
+    #[test]
+    fn fingerprint_changes_when_a_tag_is_added() {
+        let dir = build_branching_repo();
+        let path = dir.path();
+        let before = Repository::load(path, SortCommit::Chronological, None)
+            .unwrap()
+            .fingerprint();
+
+        git_env(path, &["tag", "v1.0"], &[]);
+
+        let after = Repository::load(path, SortCommit::Chronological, None)
+            .unwrap()
+            .fingerprint();
+        assert_ne!(before, after, "多一個 tag，指紋不該不變");
+    }
+
+    #[test]
+    fn fingerprint_changes_when_head_moves() {
+        let dir = build_branching_repo();
+        let path = dir.path();
+        let before = Repository::load(path, SortCommit::Chronological, None)
+            .unwrap()
+            .fingerprint();
+
+        git_env(path, &["checkout", "-q", "b1"], &[]);
+
+        let after = Repository::load(path, SortCommit::Chronological, None)
+            .unwrap()
+            .fingerprint();
+        assert_ne!(before, after, "HEAD 換了分支，指紋不該不變");
+    }
+
+    #[test]
+    fn fingerprint_changes_when_a_commit_is_added() {
+        let dir = build_branching_repo();
+        let path = dir.path();
+        let before = Repository::load(path, SortCommit::Chronological, None)
+            .unwrap()
+            .fingerprint();
+
+        commit_at(path, "E", "2026-01-01T00:00:05+00:00");
+
+        let after = Repository::load(path, SortCommit::Chronological, None)
+            .unwrap()
+            .fingerprint();
+        assert_ne!(before, after, "多一個 commit，指紋不該不變");
     }
 }

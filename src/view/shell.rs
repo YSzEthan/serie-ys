@@ -114,11 +114,6 @@ pub struct ShellView<'a> {
     /// 重用同一個 `Arc`，不是每次重建——`rx.is_some()` 已經擋掉了重疊執行，
     /// 同一時間至多一個 child。
     child: Arc<Mutex<Option<Child>>>,
-    /// git watcher 觸發的 `AppEvent::Refresh` 若直接重建 `App`，`ShellView`
-    /// 會被整個炸掉（輸入、歷史、輸出全部消失）——這個功能的用途就是跑會
-    /// 改動 repo 的指令，watcher 一秒內就會觸發。所以 `refresh()` 只設這個
-    /// 旗標，實際刷新延後到 `close_shell` 還原 `before` 之後才補送。
-    refresh_pending: bool,
 
     ctx: Rc<AppContext>,
     tx: Sender,
@@ -149,7 +144,6 @@ impl<'a> ShellView<'a> {
             output_pane_state: OutputPaneState::default(),
             rx: None,
             child: Arc::new(Mutex::new(None)),
-            refresh_pending: false,
             ctx,
             tx,
         }
@@ -182,34 +176,21 @@ impl<'a> ShellView<'a> {
         self.before.request_graph_clear();
     }
 
-    /// 指令正在背景執行緒跑（`rx.is_some()`）時，watcher 說 repo 有變動，
-    /// 呼叫這裡記旗標——這時 `take_refresh_context()` 會因為 `rx` 還沒空
-    /// 而回 `None`，重建得等指令跑完、`ShellOutputReady` 抵達時才能做。
-    /// 故意不叫 `refresh`：其他 view 的 `refresh()` 是「立刻送出
-    /// `AppEvent::Refresh`」，同名但語意不同容易混淆。
-    pub fn mark_refresh_pending(&mut self) {
-        self.refresh_pending = true;
+    /// 現在能不能換資料——指令沒在跑（`rx.is_none()`）才行。指令執行中
+    /// 換資料會讓正在跑的背景 thread 的 `Receiver` 被連帶丟掉，見
+    /// `poll_output` 對過期喚醒的處理；`App::try_swap()` 每輪都會問一次，
+    /// 指令跑完的下一輪自然就能換，不需要另外記一個「欠一次重載」的旗標。
+    pub fn can_swap(&self) -> bool {
+        self.rx.is_none()
     }
 
-    /// 使用者在指令執行中按 Esc 關閉命令列時（`app::close_shell`）呼叫，
-    /// 是這個旗標唯一還會被無條件消費（不管拿不拿得到 context）的地方——
-    /// 這種情況下命令列本身已經不在了，`before` 直接補送一般的
-    /// `AppEvent::Refresh` 即可，不需要經過 `RefreshViewContext::Shell`。
-    pub fn take_refresh_pending(&mut self) -> bool {
-        std::mem::take(&mut self.refresh_pending)
-    }
-
-    /// watcher 觸發、指令沒在跑時呼叫——把 `ShellView` 的狀態搬進
-    /// `RefreshViewContext::Shell`，供 `App::init_with_context` 重建後
-    /// 還原。`rx.is_some()`（指令執行中）回 `None`：那個時機不安全，狀態
-    /// 搬走的話正在跑的指令的 `Receiver` 會被連帶丟掉。
+    /// 換資料時呼叫，把 `ShellView` 的狀態搬進 `RefreshViewContext::Shell`，
+    /// 供 `App::apply_carry` 重建後還原。`can_swap()` 是這個函式唯一的
+    /// 前提，`App::try_swap()` 已經先檢查過，這裡不重複判斷。
     ///
     /// 不搬 `rx`／`child`——呼叫這裡的前提就是它們已經是 `None`。
     pub fn take_refresh_context(&mut self) -> Option<RefreshViewContext> {
-        if self.rx.is_some() {
-            return None;
-        }
-        let mut context = self.before.refresh_context()?;
+        let mut context = self.before.take_refresh_context()?;
         context.shell = Some(Box::new(ShellRefreshViewContext {
             input: std::mem::take(&mut self.input),
             history: std::mem::take(&mut self.history),
@@ -220,25 +201,7 @@ impl<'a> ShellView<'a> {
         Some(context)
     }
 
-    /// `AppEvent::ShellOutputReady` 抵達、指令剛跑完時呼叫。
-    ///
-    /// 旗標只能在**真的拿到 context** 之後才清——`poll_output()` 的
-    /// `Empty` 分支（過期喚醒打到已經換掉的新 `ShellView`）會讓 `rx`
-    /// 維持 `Some`，`take_refresh_context()` 這時回 `None`；`?` 在那之前
-    /// 短路，`refresh_pending` 因此留著，不會被平白吃掉。反過來先清旗標
-    /// 再判斷會漏更新：跑 `sleep 10` → Esc → 重開 → 跑 `sleep 20`
-    /// （新的 `rx`）→ 舊 thread 結束送出過期的 `ShellOutputReady`，這一刻
-    /// `refresh_pending` 若恰好是真的，就會被這次無效的呼叫吃掉。
-    pub fn take_pending_refresh_context(&mut self) -> Option<RefreshViewContext> {
-        if !self.refresh_pending {
-            return None;
-        }
-        let context = self.take_refresh_context()?;
-        self.refresh_pending = false;
-        Some(context)
-    }
-
-    /// `App::init_with_context` 在 Shell 重建之後呼叫，把
+    /// `App::apply_carry` 在 Shell 重建之後呼叫，把
     /// `take_refresh_context()` 搬走的狀態塞回新的 `ShellView`。
     pub fn restore_state(&mut self, shell: ShellRefreshViewContext) {
         self.input = shell.input;
@@ -473,15 +436,14 @@ impl<'a> ShellView<'a> {
 impl Drop for ShellView<'_> {
     /// 使用者按 Esc 關閉（`before` 被 `take_before_view` 取出後，`self.view`
     /// 被換成別的 view，這個 `Box<ShellView>` 就掉了）、整個 App 結束、或
-    /// watcher 觸發重建（`take_refresh_context` 之後舊 `App` 被
-    /// `lib.rs` drop，見 `App::into_parts` 與慢速路徑的 `drop(app)`）時都
-    /// 會經過這裡。
+    /// 換資料重建（`take_refresh_context` 之後舊 `App` 被 `lib.rs` drop，
+    /// 見 `App::into_parts`）時都會經過這裡。
     ///
-    /// 重建這條路徑不會誤砍還在跑的指令：`take_refresh_context()` 只在
-    /// `rx.is_none()` 時才會被呼叫，而 `rx` 變成 `None` 唯一的來源是
-    /// `poll_output()`，它只在背景 thread 已經把結果送回來（或提早
-    /// disconnect）之後才設。指令仍在跑時 `rx` 是 `Some`，watcher 只會
-    /// 設 `refresh_pending`，不會觸發重建，這個 `Drop` 也就不會被呼叫到。
+    /// 換資料這條路徑不會誤砍還在跑的指令：`can_swap()`／`take_refresh_context()`
+    /// 只在 `rx.is_none()` 時才會允許換資料，而 `rx` 變成 `None` 唯一的
+    /// 來源是 `poll_output()`，它只在背景 thread 已經把結果送回來（或提早
+    /// disconnect）之後才設。指令仍在跑時 `rx` 是 `Some`，`can_swap()`
+    /// 回 `false`，不會觸發重建，這個 `Drop` 也就不會被呼叫到。
     ///
     /// 指令本身結束後才會走到這裡：還在跑的指令（`git push` 卡認證、寫錯
     /// 的無窮迴圈）不會變成孤兒程序繼續握著 pipe。

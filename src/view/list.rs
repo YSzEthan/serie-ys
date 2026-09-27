@@ -12,7 +12,7 @@ use crate::{
     git::CommitHash,
     view::{
         dispatch_branch_copy, dispatch_checkout, dispatch_tag_copy, partition_branches,
-        partition_tags, ListRefreshViewContext, RefreshViewContext,
+        partition_tags, ListRefreshViewContext,
     },
     widget::commit_list::{ChildJump, CommitList, CommitListState, FilterState, SearchState},
 };
@@ -243,7 +243,7 @@ impl<'a> ListView<'a> {
                 dispatch_checkout(&self.tx, refs, &hash);
             }
             UserEvent::Refresh => {
-                self.refresh();
+                self.tx.send(AppEvent::Refresh);
             }
             _ => {}
         }
@@ -409,13 +409,6 @@ impl<'a> ListView<'a> {
 
     fn copy_to_clipboard(&self, name: String, value: String) {
         self.tx.send(AppEvent::CopyToClipboard { name, value });
-    }
-
-    pub fn refresh(&self) {
-        let list_state = self.as_list_state();
-        let list_context = ListRefreshViewContext::from(list_state);
-        self.tx
-            .send(AppEvent::Refresh(RefreshViewContext::list(list_context)));
     }
 
     /// 順序有影響，四步缺一不可：
