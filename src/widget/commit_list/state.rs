@@ -4,7 +4,7 @@ use ratatui::{layout::Rect, style::Color};
 use rustc_hash::FxHashMap;
 use tui_input::Input;
 
-use crate::git::{CommitHash, Head, Ref, WorkingChanges};
+use crate::git::{CommitHash, Head, Ref, Repository, WorkingChanges};
 use crate::graph::{CellWidthType, Graph, TextCell};
 use crate::widget::scroll;
 use crate::RemoteOnly;
@@ -48,7 +48,9 @@ fn child_pick_label(info: &CommitInfo) -> String {
 #[derive(Debug)]
 pub struct CommitListState<'a> {
     pub(super) commits: Vec<CommitInfo<'a>>,
-    commit_hash_to_raw: FxHashMap<CommitHash, RawCommitIdx>,
+    /// hash → raw index 查詢改走 `Repository::index_of`（跟 `commit_index`
+    /// 是同一份 `FxHashMap`），App 重建不必再另外配置一份 N 筆的 map。
+    repository: &'a Repository,
     graph: Rc<Graph>,
     // 由主要 graph 與 filtered graph 共用：兩者都是從同一份
     // `GraphColorSet` / `Repository` 建出來的，所以只有一份，
@@ -114,8 +116,6 @@ pub struct CommitListState<'a> {
     remote_only_commits: RemoteOnly,
     needs_graph_clear: bool,
 
-    name_cell_width: u16,
-
     working_changes: Option<WorkingChanges>,
 
     pub(crate) selected_row_overflows: Cell<bool>,
@@ -124,6 +124,7 @@ pub struct CommitListState<'a> {
 impl<'a> CommitListState<'a> {
     pub fn new(
         commits: Vec<CommitInfo<'a>>,
+        repository: &'a Repository,
         graph: Rc<Graph>,
         graph_colors: Vec<Color>,
         head_raw: Option<RawCommitIdx>,
@@ -139,19 +140,9 @@ impl<'a> CommitListState<'a> {
         let has_virtual_row = working_changes.as_ref().is_some_and(|wc| !wc.is_empty());
         let vr_offset = if has_virtual_row { 1 } else { 0 };
         let total = commit_count + vr_offset;
-        let name_cell_width = commits
-            .iter()
-            .map(|c| console::measure_text_width(&c.commit.author_name) as u16)
-            .max()
-            .unwrap_or(0);
-        let commit_hash_to_raw = commits
-            .iter()
-            .enumerate()
-            .map(|(i, c)| (c.commit.commit_hash.clone(), RawCommitIdx(i)))
-            .collect();
         CommitListState {
             commits,
-            commit_hash_to_raw,
+            repository,
             graph,
             graph_colors,
             head_raw,
@@ -183,7 +174,6 @@ impl<'a> CommitListState<'a> {
             show_remote_refs: true,
             remote_only_commits,
             needs_graph_clear: false,
-            name_cell_width,
             working_changes,
             selected_row_overflows: Cell::new(false),
         }
@@ -269,7 +259,7 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn name_cell_width(&self) -> u16 {
-        self.name_cell_width
+        self.repository.name_cell_width()
     }
 
     pub fn set_inline_detail_height(&mut self, h: u16) {
@@ -531,7 +521,7 @@ impl<'a> CommitListState<'a> {
         let Some(parent) = self.selected_commit_parent_hash() else {
             return;
         };
-        let Some(&raw) = self.commit_hash_to_raw.get(parent) else {
+        let Some(raw) = self.repository.index_of(parent).map(RawCommitIdx) else {
             return;
         };
         self.step_to_raw(raw);
@@ -721,7 +711,7 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn select_commit_hash(&mut self, commit_hash: &CommitHash) {
-        let Some(&raw) = self.commit_hash_to_raw.get(commit_hash) else {
+        let Some(raw) = self.repository.index_of(commit_hash).map(RawCommitIdx) else {
             return;
         };
         if let Some(target) = self.raw_to_visible(raw) {
@@ -736,7 +726,7 @@ impl<'a> CommitListState<'a> {
     /// 都要跟一般移動手感一致，用這支；refresh 還原視角改用
     /// `restore_selected_row`，不要跟這兩支混用。
     pub fn step_to_commit_hash(&mut self, commit_hash: &CommitHash) {
-        let Some(&raw) = self.commit_hash_to_raw.get(commit_hash) else {
+        let Some(raw) = self.repository.index_of(commit_hash).map(RawCommitIdx) else {
             return;
         };
         self.step_to_raw(raw);
@@ -1014,12 +1004,12 @@ mod tests {
     /// `n` 個互不相關的 commit，全部可見，游標停在第一列，`height`／
     /// `scrolloff` 照呼叫端指定的值設定。
     fn scrolloff_fixture(
-        commits: &[Commit],
+        repository: &Repository,
         height: usize,
         scrolloff: usize,
     ) -> CommitListState<'_> {
-        let visible: Vec<usize> = (0..commits.len()).collect();
-        let mut state = build_state_visible_raws(commits, &visible);
+        let visible: Vec<usize> = (0..repository.all_commits().len()).collect();
+        let mut state = build_state_visible_raws(repository, &visible);
         state.scrolloff = scrolloff;
         state.reset_height(height);
         state.select_first();
@@ -1035,7 +1025,8 @@ mod tests {
     #[test]
     fn scrolloff_keeps_context_for_selection_and_single_row_scrolling() {
         let commits = commits_fixture(12);
-        let mut state = scrolloff_fixture(&commits, 6, 2);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = scrolloff_fixture(&repository, 6, 2);
 
         for _ in 0..4 {
             state.select_next();
@@ -1063,7 +1054,8 @@ mod tests {
     #[test]
     fn scrolloff_is_limited_by_list_height() {
         let commits = commits_fixture(8);
-        let mut state = scrolloff_fixture(&commits, 2, 10);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = scrolloff_fixture(&repository, 2, 10);
 
         state.select_next();
         state.select_next();
@@ -1079,7 +1071,8 @@ mod tests {
     #[test]
     fn refresh_restores_selected_row_with_scrolloff() {
         let commits = commits_fixture(30);
-        let mut state = scrolloff_fixture(&commits, 10, 2);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = scrolloff_fixture(&repository, 10, 2);
 
         state.set_visible_selection(VisibleIdx(15));
         assert_eq!(state.current_list_status(), (2, 13, 10));
@@ -1097,7 +1090,8 @@ mod tests {
     fn restore_selected_row_on_last_page_keeps_same_commit() {
         for scrolloff in [0, 15] {
             let commits = commits_fixture(100);
-            let mut state = scrolloff_fixture(&commits, 10, scrolloff);
+            let repository = Repository::from_commits(commits.clone());
+            let mut state = scrolloff_fixture(&repository, 10, scrolloff);
 
             state.select_last();
             assert_eq!(state.current_list_status(), (9, 90, 10), "so={scrolloff}");
@@ -1112,7 +1106,8 @@ mod tests {
     #[test]
     fn restore_selected_row_clamps_row_to_height() {
         let commits = commits_fixture(30);
-        let mut state = scrolloff_fixture(&commits, 10, 0);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = scrolloff_fixture(&repository, 10, 0);
 
         state.set_visible_selection(VisibleIdx(20));
         assert_eq!(state.current_list_status(), (0, 20, 10));
@@ -1124,7 +1119,8 @@ mod tests {
     #[test]
     fn restore_selected_row_inside_margin_is_pushed_out() {
         let commits = commits_fixture(30);
-        let mut state = scrolloff_fixture(&commits, 10, 2);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = scrolloff_fixture(&repository, 10, 2);
 
         state.set_visible_selection(VisibleIdx(15));
         assert_eq!(state.current_list_status(), (2, 13, 10));
@@ -1136,7 +1132,8 @@ mod tests {
     #[test]
     fn default_scrolloff_15_in_tall_viewport() {
         let commits = commits_fixture(100);
-        let mut state = scrolloff_fixture(&commits, 40, 15);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = scrolloff_fixture(&repository, 40, 15);
 
         for _ in 0..24 {
             state.select_next();
@@ -1150,13 +1147,15 @@ mod tests {
     fn step_to_commit_hash_scrolls_minimally_but_select_commit_hash_pins_at_margin() {
         let commits = commits_fixture(50);
 
-        let mut stepped = scrolloff_fixture(&commits, 10, 2);
+        let repository = Repository::from_commits(commits.clone());
+        let mut stepped = scrolloff_fixture(&repository, 10, 2);
         stepped.step_to_commit_hash(&CommitHash::from("c20"));
         assert_eq!(stepped.current_list_status(), (7, 13, 10));
         stepped.step_to_commit_hash(&CommitHash::from("c16"));
         assert_eq!(stepped.current_list_status(), (3, 13, 10));
 
-        let mut pinned = scrolloff_fixture(&commits, 10, 2);
+        let repository = Repository::from_commits(commits.clone());
+        let mut pinned = scrolloff_fixture(&repository, 10, 2);
         pinned.select_commit_hash(&CommitHash::from("c20"));
         assert_eq!(pinned.current_list_status(), (2, 18, 10));
     }
@@ -1164,7 +1163,8 @@ mod tests {
     #[test]
     fn scroll_down_is_noop_when_height_zero() {
         let commits = commits_fixture(10);
-        let mut state = scrolloff_fixture(&commits, 10, 0);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = scrolloff_fixture(&repository, 10, 0);
         state.reset_height(0);
 
         state.scroll_down();
@@ -1178,7 +1178,8 @@ mod tests {
     #[test]
     fn scroll_down_does_not_collapse_margin_when_cursor_starts_inside_it() {
         let commits = commits_fixture(30);
-        let mut state = scrolloff_fixture(&commits, 10, 2);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = scrolloff_fixture(&repository, 10, 2);
 
         state.scroll_down();
 
@@ -1188,11 +1189,14 @@ mod tests {
     #[test]
     fn virtual_row_at_visible_zero_respects_scrolloff() {
         let commits = commits_fixture(20);
-        let infos = commits
+        let repository = Repository::from_commits(commits);
+        let infos = repository
+            .all_commits()
             .iter()
             .map(|c| CommitInfo::new(c, Vec::new()))
             .collect();
-        let graph = Graph::from_materialized(commits.len(), Vec::new(), Vec::new());
+        let graph =
+            Graph::from_materialized(repository.all_commits().len(), Vec::new(), Vec::new());
         let working_changes = WorkingChanges {
             unstaged: vec![FileChange::Untracked {
                 path: "new.txt".into(),
@@ -1202,6 +1206,7 @@ mod tests {
         };
         let mut state = CommitListState::new(
             infos,
+            &repository,
             Rc::new(graph),
             Vec::new(),
             None,
@@ -1241,7 +1246,8 @@ mod tests {
     #[test]
     fn set_working_changes_appears_at_offset_zero_shifts_selected_down() {
         let commits = commits_fixture(20);
-        let mut state = scrolloff_fixture(&commits, 10, 0);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = scrolloff_fixture(&repository, 10, 0);
         state.selected = 3; // offset=0, cur=3
 
         state.set_working_changes(Some(some_working_changes()));
@@ -1254,7 +1260,8 @@ mod tests {
     #[test]
     fn set_working_changes_appears_while_scrolled_keeps_screen_row() {
         let commits = commits_fixture(20);
-        let mut state = scrolloff_fixture(&commits, 10, 0);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = scrolloff_fixture(&repository, 10, 0);
         state.offset = 5;
         state.selected = 3; // cur=8
 
@@ -1268,7 +1275,8 @@ mod tests {
     #[test]
     fn set_working_changes_disappears_while_selected_lands_on_first_row() {
         let commits = commits_fixture(20);
-        let mut state = scrolloff_fixture(&commits, 10, 0);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = scrolloff_fixture(&repository, 10, 0);
         state.working_changes = Some(some_working_changes());
         state.total = commits.len() + 1;
         state.offset = 0;
@@ -1284,7 +1292,8 @@ mod tests {
     #[test]
     fn set_working_changes_disappears_while_scrolled_keeps_screen_row() {
         let commits = commits_fixture(20);
-        let mut state = scrolloff_fixture(&commits, 10, 0);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = scrolloff_fixture(&repository, 10, 0);
         state.working_changes = Some(some_working_changes());
         state.total = commits.len() + 1;
         state.offset = 5;
@@ -1301,7 +1310,8 @@ mod tests {
     #[test]
     fn set_working_changes_appears_when_total_was_zero() {
         let commits = commits_fixture(20);
-        let mut state = scrolloff_fixture(&commits, 10, 0);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = scrolloff_fixture(&repository, 10, 0);
         state.total = 0;
         state.offset = 0;
         state.selected = 0;
@@ -1317,7 +1327,8 @@ mod tests {
     #[test]
     fn set_working_changes_is_safe_when_height_is_zero() {
         let commits = commits_fixture(20);
-        let mut state = scrolloff_fixture(&commits, 10, 0);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = scrolloff_fixture(&repository, 10, 0);
         state.reset_height(0);
 
         state.set_working_changes(Some(some_working_changes()));
@@ -1332,7 +1343,8 @@ mod tests {
     #[test]
     fn set_working_changes_empty_option_is_same_as_none() {
         let commits = commits_fixture(20);
-        let mut state = scrolloff_fixture(&commits, 10, 0);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = scrolloff_fixture(&repository, 10, 0);
         state.selected = 3;
 
         state.set_working_changes(Some(WorkingChanges::default()));
@@ -1350,7 +1362,8 @@ mod tests {
     #[test]
     fn set_working_changes_non_empty_to_empty_option_counts_as_disappearing() {
         let commits = commits_fixture(20);
-        let mut state = scrolloff_fixture(&commits, 10, 0);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = scrolloff_fixture(&repository, 10, 0);
         state.working_changes = Some(some_working_changes());
         state.total = commits.len() + 1;
         state.offset = 0;
@@ -1375,16 +1388,19 @@ mod tests {
     /// `visible_raw` 指定哪些 raw index 留在 `filtered_indices` 內
     /// （其餘視為被 filter 藏起來），游標停在第一個可見列。
     fn build_state_visible_raws<'a>(
-        commits: &'a [Commit],
+        repository: &'a Repository,
         visible_raw: &[usize],
     ) -> CommitListState<'a> {
-        let infos = commits
+        let infos = repository
+            .all_commits()
             .iter()
             .map(|c| CommitInfo::new(c, Vec::new()))
             .collect();
-        let graph = Graph::from_materialized(commits.len(), Vec::new(), Vec::new());
+        let graph =
+            Graph::from_materialized(repository.all_commits().len(), Vec::new(), Vec::new());
         let mut state = CommitListState::new(
             infos,
+            repository,
             Rc::new(graph),
             Vec::new(),
             None,
@@ -1413,10 +1429,11 @@ mod tests {
             commit_fixture("parent", &["grandparent"]),
             commit_fixture("grandparent", &[]),
         ];
-        let mut state = build_state_visible_raws(&commits, &[0, 2]);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = build_state_visible_raws(&repository, &[0, 2]);
 
         // 修正前：select_next() 在 filtered total=2 觸底後直接 return，
-        // 但 while 迴圈比對的是全域 commit_hash_to_raw 找到的 hash，永遠
+        // 但 while 迴圈比對的是全域 index_of 找到的 hash，永遠
         // 走不到「parent」→ 無窮迴圈。這裡若卡住，測試本身就會逾時失敗。
         state.select_parent();
 
@@ -1434,7 +1451,8 @@ mod tests {
             commit_fixture("middle", &[]),
             commit_fixture("grandparent", &[]),
         ];
-        let mut state = build_state_visible_raws(&commits, &[0, 2]);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = build_state_visible_raws(&repository, &[0, 2]);
 
         state.select_parent();
 
@@ -1452,7 +1470,8 @@ mod tests {
             commit_fixture("merge", &["base"]),
             commit_fixture("base", &[]),
         ];
-        let mut state = build_state_visible_raws(&commits, &[0, 2, 3]);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = build_state_visible_raws(&repository, &[0, 2, 3]);
         state.select_parent(); // tip -> merge
 
         let jump = state.select_child();
@@ -1471,7 +1490,8 @@ mod tests {
             commit_fixture("branchB", &["fork"]),
             commit_fixture("fork", &[]),
         ];
-        let mut state = build_state_visible_raws(&commits, &[0, 1, 2]);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = build_state_visible_raws(&repository, &[0, 1, 2]);
         state.select_commit_hash(&CommitHash::from("fork"));
 
         let jump = state.select_child();
@@ -1489,7 +1509,8 @@ mod tests {
     #[test]
     fn select_child_at_tip_returns_none() {
         let commits = vec![commit_fixture("tip", &[]), commit_fixture("base", &[])];
-        let mut state = build_state_visible_raws(&commits, &[0, 1]);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = build_state_visible_raws(&repository, &[0, 1]);
 
         let jump = state.select_child();
 
@@ -1508,7 +1529,8 @@ mod tests {
             commit_fixture("hidden", &["base"]),
             commit_fixture("base", &[]),
         ];
-        let mut state = build_state_visible_raws(&commits, &[0, 2]);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = build_state_visible_raws(&repository, &[0, 2]);
         state.select_commit_hash(&CommitHash::from("base"));
 
         let jump = state.select_child();
