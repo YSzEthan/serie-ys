@@ -927,7 +927,7 @@ mod tests {
         use crate::{
             color::{GraphColorSet, GraphColors},
             config::{CoreConfig, UiConfig},
-            git::{FileChange, WorkingChanges},
+            git::{FileChange, Repository, WorkingChanges},
             graph::{CellWidthType, Edge, EdgeType, Graph, GraphStyle},
             keybind::KeyBind,
         };
@@ -1143,7 +1143,8 @@ mod tests {
             }
         }
 
-        fn build_state(commits: &[Commit], graph: Graph, opts: Opts) -> CommitListState<'_> {
+        fn build_state(repository: &Repository, graph: Graph, opts: Opts) -> CommitListState<'_> {
+            let commits = repository.all_commits();
             let head_raw = opts.head_hash.map(RawCommitIdx);
             let graph_colors: Vec<Color> = test_graph_color_set()
                 .colors
@@ -1168,6 +1169,7 @@ mod tests {
             }
             let mut state = CommitListState::new(
                 infos,
+                repository,
                 Rc::new(graph),
                 graph_colors,
                 head_raw,
@@ -1265,7 +1267,8 @@ mod tests {
         #[test]
         fn render_graph_draws_cells_below_header() {
             let commits = text_graph_commits();
-            let mut state = build_state(&commits, text_graph(&commits), Opts::default());
+            let repository = Repository::from_commits(commits.clone());
+            let mut state = build_state(&repository, text_graph(&commits), Opts::default());
             let buf = render_commit_list(&mut state, 10);
 
             assert_eq!(
@@ -1295,7 +1298,8 @@ mod tests {
         #[test]
         fn full_layout_snapshot_is_stable_before_compact_mode() {
             let commits = text_graph_commits();
-            let mut state = build_state(&commits, text_graph(&commits), Opts::default());
+            let repository = Repository::from_commits(commits.clone());
+            let mut state = build_state(&repository, text_graph(&commits), Opts::default());
             let buf = render_commit_list(&mut state, 10);
 
             assert_eq!(
@@ -1327,7 +1331,8 @@ mod tests {
             // 測試抓不到這個問題 —— 它們只看得到 cell 的內容，看不到 widget
             // 實際配置的欄寬。這裡是唯一能觀察到欄寬的地方。
             let commits = text_graph_commits();
-            let mut state = build_state(&commits, text_graph(&commits), Opts::default());
+            let repository = Repository::from_commits(commits.clone());
+            let mut state = build_state(&repository, text_graph(&commits), Opts::default());
             let buf = render_commit_list_styled(
                 &mut state,
                 10,
@@ -1352,7 +1357,9 @@ mod tests {
         #[test]
         fn render_graph_single_width_draws_junctions_where_edges_collide() {
             let commits = text_graph_commits();
-            let mut state = build_state(&commits, text_graph_colliding(&commits), Opts::default());
+            let repository = Repository::from_commits(commits.clone());
+            let mut state =
+                build_state(&repository, text_graph_colliding(&commits), Opts::default());
             let buf = render_commit_list_styled(
                 &mut state,
                 10,
@@ -1373,7 +1380,9 @@ mod tests {
         #[test]
         fn render_graph_double_width_keeps_winner_when_lines_differ() {
             let commits = text_graph_commits();
-            let mut state = build_state(&commits, text_graph_colliding(&commits), Opts::default());
+            let repository = Repository::from_commits(commits.clone());
+            let mut state =
+                build_state(&repository, text_graph_colliding(&commits), Opts::default());
             let buf = render_commit_list(&mut state, 10);
 
             assert_eq!(
@@ -1388,8 +1397,9 @@ mod tests {
         #[test]
         fn render_graph_double_width_unions_same_line_collisions() {
             let commits = text_graph_commits();
+            let repository = Repository::from_commits(commits.clone());
             let mut state = build_state(
-                &commits,
+                &repository,
                 text_graph_colliding_same_line(&commits),
                 Opts::default(),
             );
@@ -1409,7 +1419,8 @@ mod tests {
             // 串接，所以這是「-s ascii 真的會改變畫面內容」唯一的 end-to-end
             // 涵蓋。
             let commits = text_graph_commits();
-            let mut state = build_state(&commits, text_graph(&commits), Opts::default());
+            let repository = Repository::from_commits(commits.clone());
+            let mut state = build_state(&repository, text_graph(&commits), Opts::default());
             let buf = render_commit_list_styled(
                 &mut state,
                 10,
@@ -1433,13 +1444,15 @@ mod tests {
         fn head_commit_dot_is_hollow_and_bold() {
             let commits = text_graph_commits();
 
-            let mut with_head = build_state(&commits, text_graph(&commits), Opts::default());
+            let repository = Repository::from_commits(commits.clone());
+            let mut with_head = build_state(&repository, text_graph(&commits), Opts::default());
             let buf_a = render_commit_list(&mut with_head, 10);
             assert_eq!(buf_a[(2, 1)].symbol(), "◯");
             assert!(buf_a[(2, 1)].modifier.contains(Modifier::BOLD));
 
+            let repository = Repository::from_commits(commits.clone());
             let mut without_head = build_state(
-                &commits,
+                &repository,
                 text_graph(&commits),
                 Opts {
                     head_hash: None,
@@ -1464,8 +1477,9 @@ mod tests {
         #[test]
         fn spacer_row_extends_only_vertical_columns() {
             let commits = text_graph_commits();
+            let repository = Repository::from_commits(commits.clone());
             let mut state = build_state(
-                &commits,
+                &repository,
                 text_graph(&commits),
                 Opts {
                     inline_detail_height: 2,
@@ -1507,8 +1521,9 @@ mod tests {
             let commits = text_graph_commits();
 
             let spacer_symbols = |graph: Graph| {
+                let repository = Repository::from_commits(commits.clone());
                 let mut state = build_state(
-                    &commits,
+                    &repository,
                     graph,
                     Opts {
                         inline_detail_height: 1,
@@ -1542,8 +1557,9 @@ mod tests {
         #[test]
         fn virtual_row_draws_gray_head_dot_at_top() {
             let commits = text_graph_commits();
+            let repository = Repository::from_commits(commits.clone());
             let mut state = build_state(
-                &commits,
+                &repository,
                 text_graph(&commits),
                 Opts {
                     working_changes: true,
@@ -1607,8 +1623,9 @@ mod tests {
             let commits = &all_commits[..2];
             let graph =
                 Graph::from_materialized(commits.len(), vec![(0, 1), (1, 0)], vec![vec![], vec![]]);
+            let repository = Repository::from_commits(commits.to_vec());
             let mut state = build_state(
-                commits,
+                &repository,
                 graph,
                 Opts {
                     head_hash: Some(1),
@@ -1643,8 +1660,9 @@ mod tests {
             // 用不同形狀 —— 如果兩者渲染結果一樣，一個完全忽略 `filtered`
             // 的 `current_graph()` 依然會通過這個斷言而不被發現。
             let commits = text_graph_commits();
+            let repository = Repository::from_commits(commits.clone());
             let mut state = build_state(
-                &commits,
+                &repository,
                 text_graph(&commits),
                 Opts {
                     filtered: Some(text_graph_filtered),
@@ -1685,7 +1703,8 @@ mod tests {
         #[test]
         fn capped_columns_keep_width_cells_and_dot_cell_in_sync() {
             let commits = text_graph_commits();
-            let mut state = build_state(&commits, text_graph(&commits), Opts::default());
+            let repository = Repository::from_commits(commits.clone());
+            let mut state = build_state(&repository, text_graph(&commits), Opts::default());
             for width in [CellWidthType::Single, CellWidthType::Double] {
                 state.set_layout(width, false, 2);
                 let per_col = width.cells_per_column();
@@ -1708,8 +1727,9 @@ mod tests {
         #[test]
         fn marker_color_matches_the_dot_of_the_current_graph() {
             let commits = text_graph_commits();
+            let repository = Repository::from_commits(commits.clone());
             let mut state = build_state(
-                &commits,
+                &repository,
                 text_graph(&commits),
                 Opts {
                     filtered: Some(text_graph_hiding_c1),
@@ -1743,8 +1763,9 @@ mod tests {
         #[test]
         fn virtual_row_line_uses_head_row_of_filtered_graph() {
             let commits = text_graph_commits();
+            let repository = Repository::from_commits(commits.clone());
             let mut state = build_state(
-                &commits,
+                &repository,
                 text_graph(&commits),
                 Opts {
                     head_hash: Some(2),
@@ -1772,8 +1793,10 @@ mod tests {
             let primary = Graph::from_materialized(1, vec![(0, 5)], vec![vec![]]);
             // double 寬度：(0+1)*2 + 1 個 pad = 3
             let filtered = Graph::from_materialized(1, vec![(0, 0)], vec![vec![]]);
+            let repository = Repository::from_commits(Vec::new());
             let mut state = CommitListState::new(
                 Vec::new(),
+                &repository,
                 Rc::new(primary),
                 Vec::new(),
                 None,
@@ -1820,7 +1843,12 @@ mod tests {
         #[test]
         fn compact_row_text_starts_after_that_rows_last_glyph() {
             let commits = text_graph_commits();
-            let mut state = build_state(&commits, staggered_depth_graph(&commits), Opts::default());
+            let repository = Repository::from_commits(commits.clone());
+            let mut state = build_state(
+                &repository,
+                staggered_depth_graph(&commits),
+                Opts::default(),
+            );
             let buf = render_commit_list_compact(&mut state, 10, GraphWidthType::Single);
 
             // c0/c2：只有一顆 dot 在欄 0，text_x=1，前導空白在 x=1，
@@ -1849,7 +1877,12 @@ mod tests {
             // Subject 排在 Graph 前面：compact_possible 回 false，緊湊
             // 模式整個不生效，版面要跟非緊湊逐格一樣。
             let commits = text_graph_commits();
-            let mut state = build_state(&commits, staggered_depth_graph(&commits), Opts::default());
+            let repository = Repository::from_commits(commits.clone());
+            let mut state = build_state(
+                &repository,
+                staggered_depth_graph(&commits),
+                Opts::default(),
+            );
             let mut ui_config = UiConfig::default();
             ui_config.list.columns = vec![UserListColumnType::Subject, UserListColumnType::Graph];
             let ctx = Rc::new(AppContext {
@@ -1878,7 +1911,8 @@ mod tests {
         #[test]
         fn compact_removes_the_marker_column() {
             let commits = text_graph_commits();
-            let mut state = build_state(&commits, text_graph(&commits), Opts::default());
+            let repository = Repository::from_commits(commits.clone());
+            let mut state = build_state(&repository, text_graph(&commits), Opts::default());
             let buf = render_commit_list_compact(&mut state, 10, GraphWidthType::Double);
 
             // 非緊湊模式下這一格是 marker 的 `│`（見
@@ -1894,8 +1928,9 @@ mod tests {
         #[test]
         fn compact_virtual_row_text_follows_the_dot() {
             let commits = text_graph_commits();
+            let repository = Repository::from_commits(commits.clone());
             let mut state = build_state(
-                &commits,
+                &repository,
                 text_graph(&commits),
                 Opts {
                     working_changes: true,
@@ -1914,8 +1949,9 @@ mod tests {
         #[test]
         fn compact_spacer_rows_keep_their_vertical_lines() {
             let commits = text_graph_commits();
+            let repository = Repository::from_commits(commits.clone());
             let mut state = build_state(
-                &commits,
+                &repository,
                 text_graph_colliding_same_line(&commits),
                 Opts {
                     inline_detail_height: 1,
@@ -1945,8 +1981,9 @@ mod tests {
         #[test]
         fn compact_text_does_not_cover_the_synthesized_head_connector() {
             let commits = text_graph_commits();
+            let repository = Repository::from_commits(commits.clone());
             let mut state = build_state(
-                &commits,
+                &repository,
                 head_not_first_graph(&commits),
                 Opts {
                     head_hash: Some(1), // c1 是 HEAD，排在 c0 後面（顯示上 c0 在它上面）
@@ -1974,8 +2011,9 @@ mod tests {
         #[test]
         fn head_connector_extends_through_the_spacer() {
             let commits = text_graph_commits();
+            let repository = Repository::from_commits(commits.clone());
             let mut state = build_state(
-                &commits,
+                &repository,
                 head_not_first_graph(&commits),
                 Opts {
                     head_hash: Some(1), // c1 是 HEAD，顯示上排在 c0 下面
@@ -2005,12 +2043,14 @@ mod tests {
         fn compact_selected_row_keeps_graph_colors_under_the_selection_bg() {
             let commits = text_graph_commits();
 
-            let mut reference = build_state(&commits, text_graph(&commits), Opts::default());
+            let repository = Repository::from_commits(commits.clone());
+            let mut reference = build_state(&repository, text_graph(&commits), Opts::default());
             reference.selected = 2; // c2：唯一在 text_graph 裡有非零深度差的列
             let reference_buf = render_commit_list(&mut reference, 10);
             let expected_dot_fg = reference_buf[(4, 3)].fg;
 
-            let mut state = build_state(&commits, text_graph(&commits), Opts::default());
+            let repository = Repository::from_commits(commits.clone());
+            let mut state = build_state(&repository, text_graph(&commits), Opts::default());
             state.selected = 2;
             let buf = render_commit_list_compact(&mut state, 10, GraphWidthType::Double);
 

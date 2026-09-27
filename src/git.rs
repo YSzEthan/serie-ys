@@ -185,6 +185,11 @@ pub struct Repository {
 
     ref_map: RefMap,
     head: Head,
+
+    /// 全體 commit 的 author name 顯示寬度最大值，`commit_list` 的 Name
+    /// 欄寬拿這個當上限。載入時算一次——用它必須是全體最大值，不能只看
+    /// 目前捲動到的那幾列，否則欄寬會隨捲動跳動。
+    name_cell_width: u16,
 }
 
 impl Repository {
@@ -210,9 +215,22 @@ impl Repository {
         Ok(Self::new(path.to_path_buf(), commits, ref_map, head))
     }
 
+    /// 測試用：跳過 `git log` 等外部呼叫，直接用手造的 `Commit` 建
+    /// `Repository`——`commit_index`／parent CSR／`name_cell_width` 這些
+    /// 衍生資料照跑，跟 `load()` 走同一條 `new()`。
+    #[cfg(test)]
+    pub(crate) fn from_commits(commits: Vec<Commit>) -> Self {
+        Self::new(PathBuf::new(), commits, RefMap::default(), Head::None)
+    }
+
     fn new(path: PathBuf, mut commits: Vec<Commit>, ref_map: RefMap, head: Head) -> Self {
         let commit_index = build_commit_index(&commits);
         let (parent_start, parent_idx) = build_parent_csr(&mut commits, &commit_index);
+        let name_cell_width = commits
+            .iter()
+            .map(|c| console::measure_text_width(&c.author_name) as u16)
+            .max()
+            .unwrap_or(0);
         Self {
             path,
             commits,
@@ -221,6 +239,7 @@ impl Repository {
             parent_idx,
             ref_map,
             head,
+            name_cell_width,
         }
     }
 
@@ -237,6 +256,11 @@ impl Repository {
     /// `commit_hash` 在 `all_commits()` 裡的位置（raw index）。
     pub fn index_of(&self, commit_hash: &CommitHash) -> Option<usize> {
         self.commit_index.get(commit_hash).copied()
+    }
+
+    /// 全體 commit 的 author name 顯示寬度最大值，載入時算好，見欄位文件。
+    pub fn name_cell_width(&self) -> u16 {
+        self.name_cell_width
     }
 
     /// 第 `raw` 個 commit 有載入的 parent 的 raw index，順序同 `parent_commit_hashes`。
