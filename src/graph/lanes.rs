@@ -122,10 +122,103 @@ impl Lanes {
         out
     }
 
-    /// 從最近的 checkpoint 重播到 `rows.end`，把 `rows` 範圍內每一列排序過
-    /// 的 edge 交給 `f`。範圍外（checkpoint 到 `rows.start` 之間）只重播、
-    /// 不回呼，這是「查一列也要重播一段」的成本換來的：checkpoint 越密，
-    /// 這段越短，記憶體越大，`CHECKPOINT_INTERVAL` 就是這個取捨。
+    /// `open`：第 `y` 列開始前的狀態 → 第 `y` 列處理完之後（也就是第
+    /// `y + 1` 列開始前）的狀態。只推進 bitset，不組 edge——`row_edges_in`
+    /// 從 checkpoint 重播到 `rows.start` 這段只需要這半，不必連
+    /// `build_row` 的排序／dedup 都一起做一次又丟掉。
+    fn advance(&self, open: &mut [u64], y: usize) {
+        let c = self.cols[y] as usize;
+        let ev = self.events_of(y);
+        // 先收斂、再視 commit 自己是否往下延伸、最後開新／接手（open 的欄
+        // 本來就不在 A 裡；join 的欄本來就在，重複 set 沒有影響）。
+        for e in ev {
+            if !e.kind.opens() {
+                clear_bit(open, e.col as usize);
+            }
+        }
+        if self.down[y] {
+            set_bit(open, c);
+        } else {
+            clear_bit(open, c);
+        }
+        for e in ev {
+            if e.kind.opens() {
+                set_bit(open, e.col as usize);
+            }
+        }
+    }
+
+    /// 第 `y` 列排序過的 edge。`open` 是第 `y` 列開始前（呼叫
+    /// `advance(open, y)` 之前）的狀態，呼叫端負責推進。
+    fn build_row(&self, open: &[u64], y: usize, buf: &mut Vec<Edge>) {
+        let c = self.cols[y] as usize;
+        let ev = self.events_of(y);
+        // 上一列開的 `↑` 在這一列接到 parent（commit 自己的 Up 或收斂
+        // 轉角），顏色沿用 `↑` 的。直接查上一列的事件（CSR 可隨機存取），
+        // 不必把這個狀態塞進 checkpoint。
+        let prev = if y > 0 { self.events_of(y - 1) } else { &[] };
+        let line_of = |col: usize| {
+            prev.iter()
+                .find_map(|e| match e.kind {
+                    EventKind::ArrowUp { color } if e.col as usize == col => Some(color as usize),
+                    _ => None,
+                })
+                .unwrap_or(col)
+        };
+
+        buf.clear();
+        if is_open(open, c) {
+            buf.push(Edge::new(EdgeType::Up, c, line_of(c)));
+        }
+        // Vertical：(A ∩ B) \ {c}。A 是目前開著的集合，收斂欄會在下面
+        // 離開 B，其餘留在 B 裡的就是這裡要畫的；在這一列畫 `↓` 的欄
+        // 也開著，只是換成箭頭。
+        for_each_set_bit(open, |i| {
+            debug_assert!(i < self.cell_count, "padding bit 不該被設起來");
+            if i == c {
+                return;
+            }
+            match ev.iter().find(|e| e.col as usize == i).map(|e| e.kind) {
+                Some(EventKind::Converge) => {}
+                Some(EventKind::ArrowDown) => buf.push(Edge::new(EdgeType::TruncDown, i, i)),
+                _ => buf.push(Edge::new(EdgeType::Vertical, i, i)),
+            }
+        });
+        for e in ev {
+            let l = e.col as usize;
+            match e.kind {
+                EventKind::Converge => push_corner(buf, c, l, false, line_of(l)),
+                EventKind::Continue => push_corner(buf, c, l, true, l),
+                EventKind::ArrowDown => {}
+                EventKind::ArrowUp { color } => {
+                    buf.push(Edge::new(EdgeType::TruncUp, l, color as usize));
+                }
+            }
+        }
+        if self.down[y] {
+            buf.push(Edge::new(EdgeType::Down, c, c));
+        }
+
+        buf.sort_by_key(|e| (e.associated_line_pos_x, e.pos_x, e.edge_type));
+        // 唯一會重複的情況：`↑` 借用了別欄的顏色，而那一欄的 lane 也在
+        // 這一列收斂，兩個轉角在共用的那一段產生完全相同的 edge（畫出來
+        // 也一樣）。其他重複都是引擎的 bug。
+        debug_assert!(
+            buf.windows(2).all(|w| w[0] != w[1])
+                || prev
+                    .iter()
+                    .any(|e| matches!(e.kind, EventKind::ArrowUp { .. })),
+            "lane 引擎不該對同一列產生重複 edge"
+        );
+        buf.dedup();
+    }
+
+    /// 從最近的 checkpoint 重播到 `rows.start`，把 `rows` 範圍內每一列排序
+    /// 過的 edge 交給 `f`。checkpoint 到 `rows.start` 之間只推進 `open`
+    /// 這個 bitset（`advance`），不組 edge、不排序——組 edge（`build_row`）
+    /// 只在 `rows` 範圍內的列才做，範圍外那段因此不再是「白算一次又丟掉」。
+    /// checkpoint 越密，這段推進越短，記憶體越大，`CHECKPOINT_INTERVAL`
+    /// 就是這個取捨。
     pub(super) fn row_edges_in(&self, rows: Range<usize>, mut f: impl FnMut(usize, &[Edge])) {
         if rows.start >= rows.end || self.words == 0 {
             return;
@@ -133,94 +226,16 @@ impl Lanes {
         let ck_idx = rows.start / CHECKPOINT_INTERVAL;
         let ck_row = ck_idx * CHECKPOINT_INTERVAL;
         let mut open = self.checkpoints[ck_idx * self.words..(ck_idx + 1) * self.words].to_vec();
-        let mut buf: Vec<Edge> = Vec::new();
 
-        for y in ck_row..rows.end {
-            let c = self.cols[y] as usize;
-            let ev = self.events_of(y);
-            // 上一列開的 `↑` 在這一列接到 parent（commit 自己的 Up 或收斂
-            // 轉角），顏色沿用 `↑` 的。直接查上一列的事件（CSR 可隨機存取），
-            // 不必把這個狀態塞進 checkpoint。
-            let prev = if y > 0 { self.events_of(y - 1) } else { &[] };
-            let line_of = |col: usize| {
-                prev.iter()
-                    .find_map(|e| match e.kind {
-                        EventKind::ArrowUp { color } if e.col as usize == col => {
-                            Some(color as usize)
-                        }
-                        _ => None,
-                    })
-                    .unwrap_or(col)
-            };
+        for y in ck_row..rows.start {
+            self.advance(&mut open, y);
+        }
 
-            buf.clear();
-            if is_open(&open, c) {
-                buf.push(Edge::new(EdgeType::Up, c, line_of(c)));
-            }
-            // Vertical：(A ∩ B) \ {c}。A 是目前開著的集合，收斂欄會在下面
-            // 離開 B，其餘留在 B 裡的就是這裡要畫的；在這一列畫 `↓` 的欄
-            // 也開著，只是換成箭頭。
-            for_each_set_bit(&open, |i| {
-                debug_assert!(i < self.cell_count, "padding bit 不該被設起來");
-                if i == c {
-                    return;
-                }
-                match ev.iter().find(|e| e.col as usize == i).map(|e| e.kind) {
-                    Some(EventKind::Converge) => {}
-                    Some(EventKind::ArrowDown) => buf.push(Edge::new(EdgeType::TruncDown, i, i)),
-                    _ => buf.push(Edge::new(EdgeType::Vertical, i, i)),
-                }
-            });
-            for e in ev {
-                let l = e.col as usize;
-                match e.kind {
-                    EventKind::Converge => push_corner(&mut buf, c, l, false, line_of(l)),
-                    EventKind::Continue => push_corner(&mut buf, c, l, true, l),
-                    EventKind::ArrowDown => {}
-                    EventKind::ArrowUp { color } => {
-                        buf.push(Edge::new(EdgeType::TruncUp, l, color as usize));
-                    }
-                }
-            }
-            if self.down[y] {
-                buf.push(Edge::new(EdgeType::Down, c, c));
-            }
-
-            buf.sort_by_key(|e| (e.associated_line_pos_x, e.pos_x, e.edge_type));
-            // 唯一會重複的情況：`↑` 借用了別欄的顏色，而那一欄的 lane 也在
-            // 這一列收斂，兩個轉角在共用的那一段產生完全相同的 edge（畫出來
-            // 也一樣）。其他重複都是引擎的 bug。
-            debug_assert!(
-                buf.windows(2).all(|w| w[0] != w[1])
-                    || prev
-                        .iter()
-                        .any(|e| matches!(e.kind, EventKind::ArrowUp { .. })),
-                "lane 引擎不該對同一列產生重複 edge"
-            );
-            buf.dedup();
-
-            if y >= rows.start {
-                f(y, &buf);
-            }
-
-            // 推進到下一列的狀態：先收斂、再視 commit 自己是否往下延伸、
-            // 最後開新／接手（open 的欄本來就不在 A 裡；join 的欄本來就在，
-            // 重複 set 沒有影響）。
-            for e in ev {
-                if !e.kind.opens() {
-                    clear_bit(&mut open, e.col as usize);
-                }
-            }
-            if self.down[y] {
-                set_bit(&mut open, c);
-            } else {
-                clear_bit(&mut open, c);
-            }
-            for e in ev {
-                if e.kind.opens() {
-                    set_bit(&mut open, e.col as usize);
-                }
-            }
+        let mut buf = Vec::new();
+        for y in rows.start..rows.end {
+            self.build_row(&open, y, &mut buf);
+            f(y, &buf);
+            self.advance(&mut open, y);
         }
     }
 }

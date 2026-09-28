@@ -77,8 +77,8 @@ impl SearchMatcher {
             return self.query.is_ascii()
                 && ascii_ignore_case_contains(s.as_bytes(), self.query.as_bytes());
         }
-        // 非 ASCII haystack 維持原本做法：折疊後 `contains`。
-        fold_case(s).contains(&self.query)
+        // 非 ASCII haystack：跟 ASCII 分支同理，不建立新字串。
+        fold_contains(s, &self.query)
     }
 
     /// `SkimMatcherV2::fuzzy_match` 判斷「有沒有命中」本質上就是貪婪子序列測試
@@ -137,6 +137,18 @@ fn ascii_ignore_case_contains(haystack: &[u8], needle: &[u8]) -> bool {
     haystack
         .windows(needle.len())
         .any(|w| w.eq_ignore_ascii_case(needle))
+}
+
+/// `fold_case(haystack).contains(needle)` 的不配置版本；`needle` 已經在建構
+/// `SearchMatcher` 時折過。`fold_char` 保 char 數 1:1（見
+/// `fold_case_preserves_char_count`），所以「折疊後的字串含 needle」等價於
+/// 「從某個 char 起點開始，逐 char 折疊跟 needle 逐 char 相等」，不必先把
+/// 整段 haystack 折完再比。
+fn fold_contains(haystack: &str, needle: &str) -> bool {
+    haystack.char_indices().any(|(i, _)| {
+        let mut h = haystack[i..].chars().map(fold_char);
+        needle.chars().all(|n| h.next() == Some(n))
+    })
 }
 
 /// `fuzzy_indices` 回傳的是 char 位置（skim 內部走 `chars().enumerate()`），但下游的
@@ -242,6 +254,9 @@ mod tests {
             // ASCII；用它釘住「query 折完才變 ASCII」這個快速路徑分支。
             ("\u{212A}elvin", true, false),
             ("\u{212A}elvin", true, true),
+            // 非 ASCII substring 分支（`fold_contains`），釘住它跟
+            // `matched_position` 一致。
+            ("中", true, false),
         ];
         for (q, ignore_case, fuzzy) in queries {
             let m = SearchMatcher::new(q, ignore_case, fuzzy);
@@ -275,6 +290,16 @@ mod tests {
     fn ascii_ignore_case_substring_matches_mixed_case() {
         assert!(SearchMatcher::new("MiXeD", true, false).matches("this is a mixed CASE subject"));
         assert!(!SearchMatcher::new("zzz", true, false).matches("all ascii, no match"));
+    }
+
+    /// 非 ASCII haystack 走 `fold_contains`（`matches` 的最後一個分支），不是
+    /// `ascii_ignore_case_contains`；這裡直接釘正確性，`fold_contains` 內部
+    /// 有沒有配置由 doc comment 保證、不是這條測試能看出來的。
+    #[test]
+    fn non_ascii_ignore_case_substring_matches() {
+        assert!(SearchMatcher::new("修正", true, false).matches("fix: 修正登入流程"));
+        assert!(SearchMatcher::new("MIXED", true, false).matches("中文 mixed 英文"));
+        assert!(!SearchMatcher::new("找不到", true, false).matches("中文 mixed 英文"));
     }
 
     /// query 折完仍含非 ASCII 字元（über）時，純 ASCII haystack 不可能命中——

@@ -282,9 +282,15 @@ impl Repository {
     }
 
     /// 這份 repository 的內容指紋：commit hash 序列（hash 已涵蓋 parent 與
-    /// 內容）、`head`、每個 ref。Phase 6 背景重載拿它跟 App 手上那份比對——
-    /// 相同就代表資料沒變，worker 直接丟掉這次載入結果、不觸發換資料，
-    /// 取代舊的 `same_commits` fast path（見 `reload::Reloader`）。
+    /// 內容）＋每個 commit 的 author 身分、`head`、每個 ref。Phase 6 背景
+    /// 重載拿它跟 App 手上那份比對——相同就代表資料沒變，worker 直接丟掉
+    /// 這次載入結果、不觸發換資料，取代舊的 `same_commits` fast path
+    /// （見 `reload::Reloader`）。
+    ///
+    /// author name／email 要另外算進去：它們是 `%aN`／`%aE`，經
+    /// `.mailmap` 解析過，不是 commit 物件本身的內容，commit hash 涵蓋不
+    /// 到——只靠 commit hash 序列的話，改 `.mailmap` 不會讓指紋變，重載會
+    /// 誤判成「沒變」而丟掉新解析出來的作者名稱（`tests/mailmap.rs`）。
     ///
     /// `ref_map` 是 `HashMap`，迭代順序不固定：每個 entry 各自算一份 hash，
     /// 用 `wrapping_add` 合併——加法跟順序無關，兩次迭代順序不同也不會誤判
@@ -293,6 +299,8 @@ impl Repository {
         let mut hasher = DefaultHasher::new();
         for commit in &self.commits {
             commit.commit_hash.hash(&mut hasher);
+            commit.author_name.hash(&mut hasher);
+            commit.author_email.hash(&mut hasher);
         }
         self.head.hash(&mut hasher);
 
@@ -1927,5 +1935,29 @@ mod tests {
             .unwrap()
             .fingerprint();
         assert_ne!(before, after, "多一個 commit，指紋不該不變");
+    }
+
+    /// `.mailmap` 改變了 `%aN`／`%aE` 解析出來的作者身分，但不動任何 commit
+    /// 物件——只用 commit hash 序列當指紋的話，改 `.mailmap` 不會讓指紋變，
+    /// 背景重載會誤判成「沒變」而丟掉新解析出來的作者名稱
+    /// （見 `tests/mailmap.rs` 的 `assert_identity`）。
+    #[test]
+    fn fingerprint_changes_when_mailmap_identity_changes() {
+        let dir = build_branching_repo();
+        let path = dir.path();
+        let before = Repository::load(path, SortCommit::Chronological, None)
+            .unwrap()
+            .fingerprint();
+
+        std::fs::write(
+            path.join(".mailmap"),
+            "New Name <new@example.com> <a@example.com>\n",
+        )
+        .unwrap();
+
+        let after = Repository::load(path, SortCommit::Chronological, None)
+            .unwrap()
+            .fingerprint();
+        assert_ne!(before, after, ".mailmap 改變作者身分，指紋不該不變");
     }
 }
