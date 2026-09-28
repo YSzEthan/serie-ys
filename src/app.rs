@@ -421,6 +421,9 @@ impl App<'_> {
 
             match self.ec.recv() {
                 AppEvent::Tick => {
+                    if let View::GitHub(ref mut view) = self.view {
+                        view.on_tick(Instant::now());
+                    }
                     // Tick 是 100ms 一次，但倒數每秒才需要動一次——以「該顯示
                     // 的秒數變了」當重畫條件，沒開 auto-fetch 時
                     // `countdown_secs()` 恆為 `None`，`changed` 恆為 false，
