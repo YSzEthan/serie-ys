@@ -1330,7 +1330,7 @@ fn get_diff_numstat(path: &Path, args: &[&str]) -> FxHashMap<String, (usize, usi
     let mut stats = FxHashMap::default();
 
     for line in reader.lines() {
-        let line = line.unwrap();
+        let Ok(line) = line else { continue };
         let parts: Vec<&str> = line.split('\t').collect();
         if parts.len() >= 3 {
             let additions = parts[0].parse::<usize>().unwrap_or(0);
@@ -1384,7 +1384,7 @@ pub fn get_diff_summary(path: &Path, commit_hash: &CommitHash) -> Vec<FileChange
     let mut changes = Vec::new();
 
     for line in reader.lines() {
-        let line = line.unwrap();
+        let Ok(line) = line else { continue };
         let parts: Vec<&str> = line.split('\t').collect();
 
         match &parts[0][0..1] {
@@ -1435,7 +1435,7 @@ pub fn get_initial_commit_additions(path: &Path, commit_hash: &CommitHash) -> Ve
     let mut changes = Vec::new();
 
     for line in reader.lines() {
-        let line = line.unwrap();
+        let Ok(line) = line else { continue };
         changes.push(FileChange::Add {
             path: line,
             stats: None,

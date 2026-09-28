@@ -964,6 +964,13 @@ impl StatusLineState {
         numeric_prefix: &str,
         full_status: FullStatus,
     ) {
+        // 提早算好、只算一次：下面 `Input` 分支的 exact-fit padding 與
+        // 游標位置都要扣掉／讓開這個前綴的寬度——`full_reload_span` 不像
+        // `countdown_span` 有 `is_idle()` 擋著，Input 輸入框開著時一樣可能
+        // 同時被插進最前面，兩處若各自重算一次容易對不上。
+        let full_reload_span = self.full_reload_span(full_status);
+        let full_reload_w = full_reload_span.as_ref().map_or(0, Span::width);
+
         let mut text: Line = match &self.line {
             StatusLine::None => {
                 if numeric_prefix.is_empty() {
@@ -981,7 +988,8 @@ impl StatusLineState {
                     let pad_w = (area.width as usize)
                         .saturating_sub(msg_w)
                         .saturating_sub(t_msg_w)
-                        .saturating_sub(2 /* pad */);
+                        .saturating_sub(2 /* pad */)
+                        .saturating_sub(full_reload_w);
                     Line::from(vec![
                         msg.as_str().fg(self.ctx.color_theme.status_input_fg),
                         " ".repeat(pad_w).into(),
@@ -1081,7 +1089,7 @@ impl StatusLineState {
         if let Some(secs) = self.countdown_secs() {
             text.spans.insert(0, self.countdown_span(secs));
         }
-        if let Some(span) = self.full_reload_span(full_status) {
+        if let Some(span) = full_reload_span {
             text.spans.insert(0, span);
         }
 
@@ -1098,7 +1106,10 @@ impl StatusLineState {
         f.render_widget(paragraph, area);
 
         if let StatusLine::Input(_, Some(cursor_pos), _) = &self.line {
-            let (x, y) = (area.x + cursor_pos + 1, area.y + 1);
+            // `+ full_reload_w`：Full 重載指示插在 `msg` 前面時會把整行往右
+            // 推，游標必須跟著讓開，否則會畫在指示文字底下而不是輸入內容
+            // 對應的字元位置。
+            let (x, y) = (area.x + cursor_pos + full_reload_w as u16 + 1, area.y + 1);
             match &self.ctx.ui_config.cursor_type {
                 CursorType::Native => {
                     f.set_cursor_position((x, y));

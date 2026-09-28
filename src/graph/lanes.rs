@@ -407,10 +407,18 @@ pub(super) fn build(parent_start: &[u32], parent_idx: &[u32], opts: &BuildOpts) 
         _ => Vec::new(),
     };
     let nu = n as u32;
-    // 從第 `c` 列往 `p` 的線要不要截斷。
+    // 從第 `c` 列往 `p` 的線要不要截斷。`saturating_sub`：`p`／`nu` 理論上
+    // 一定 >= `c`（commit 排序保證 parent 不會排在 child 前面），但這個
+    // 順序不變量是在別處（`git.rs` 載入階段）建立的，這裡沒有本地檢查；
+    // 用飽和減法擋掉萬一排序被破壞時的 `u32` 溢位，寧可少截斷一條線，
+    // 也不要溢位成一個超大值誤判整條線都要截斷。
     let cut = |c: u32, p: u32| {
         k.is_some_and(|k| {
-            let len = if p == NOT_LOADED { nu - c } else { p - c };
+            let len = if p == NOT_LOADED {
+                nu.saturating_sub(c)
+            } else {
+                p.saturating_sub(c)
+            };
             len > k
         })
     };

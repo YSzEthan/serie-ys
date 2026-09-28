@@ -45,7 +45,7 @@ static LIVE: AtomicIsize = AtomicIsize::new(0);
 static PEAK: AtomicIsize = AtomicIsize::new(0);
 
 /// 只在有淨變化時更新 LIVE；PEAK 先用 load 比較，真的超過才 fetch_max，
-/// 省掉多數呼叫（配置密集時，絕大部分不會刷新峰值）裡的一次額外 RMW。
+/// 省掉多數呼叫（配置密集時，絕大部分不會更新峰值）裡的一次額外 RMW。
 fn track(delta: isize) {
     let now = LIVE.fetch_add(delta, Ordering::Relaxed) + delta;
     if now > PEAK.load(Ordering::Relaxed) {

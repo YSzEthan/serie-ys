@@ -113,9 +113,18 @@ impl Reloader {
             let latest = Arc::clone(&latest);
             let want_stats = Arc::clone(&want_stats);
             let tx = tx.clone();
-            thread::spawn(move || {
-                working_tree_worker_loop(repo_path, request_rx, latest, want_stats, tx)
-            });
+            // 具名 thread + `QUIET_PANIC_THREAD_PREFIX`：跟 Full worker
+            // 同一個理由——`git::load_working_changes`／
+            // `fill_working_changes_stats` 內部一樣可能 panic（例如檔名
+            // 含非法 UTF-8），沒有這個名稱前綴的話，panic 訊息會直接印進
+            // 已經是 alt-screen／raw mode 的終端機，且不會被 `lib.rs` 的
+            // 過濾 panic hook 接住。
+            thread::Builder::new()
+                .name(crate::QUIET_PANIC_THREAD_PREFIX.to_string())
+                .spawn(move || {
+                    working_tree_worker_loop(repo_path, request_rx, latest, want_stats, tx)
+                })
+                .expect("spawn working tree reload worker thread");
         }
 
         let (full_tx, full_rx) = mpsc::channel::<Instant>();
@@ -281,17 +290,32 @@ fn working_tree_worker_loop(
         while request_rx.try_recv().is_ok() {}
 
         let start = Instant::now();
-        match git::load_working_changes(&repo_path) {
-            Ok(mut wc) => {
-                if want_stats.load(Ordering::Acquire) {
-                    git::fill_working_changes_stats(&repo_path, &mut wc);
-                }
+        // `catch_unwind`：這條 thread 具名（`QUIET_PANIC_THREAD_PREFIX`），
+        // 沒有這層的話，`load_working_changes`／`fill_working_changes_stats`
+        // 內部任何 panic（例如檔名含非法 UTF-8）會直接讓這條 worker
+        // thread 死掉、往後再也不會更新 working changes——理由同
+        // `full_worker_loop` 的 `load_full` 呼叫。
+        let result = panic::catch_unwind(AssertUnwindSafe(|| {
+            let mut wc = git::load_working_changes(&repo_path)?;
+            if want_stats.load(Ordering::Acquire) {
+                git::fill_working_changes_stats(&repo_path, &mut wc);
+            }
+            crate::Result::Ok(wc)
+        }));
+        match result {
+            Ok(Ok(wc)) => {
                 *latest.lock().unwrap_or_else(PoisonError::into_inner) = Some(wc);
                 tx.send(AppEvent::WorkingChangesReady);
             }
-            Err(_) => {
+            Ok(Err(_)) => {
                 // 保留舊值、不通知——錯誤交給 Full 重載回報
                 // （`NotifyError`），這裡吞掉避免跟它搶狀態列。
+            }
+            Err(payload) => {
+                tx.send(AppEvent::NotifyError(format!(
+                    "working changes reload panicked: {}",
+                    panic_message(payload)
+                )));
             }
         }
         last_cost = start.elapsed();

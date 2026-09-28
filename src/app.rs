@@ -993,7 +993,7 @@ impl App<'_> {
 
         // `take_full()` 內部已經檢查過 Ready，這裡不必在它之前另外問一次
         // `full_status()`——省一次鎖，也省掉「兩次查詢之間狀態被 worker
-        // 换掉」這種要另外解釋的情況。
+        // 換掉」這種要另外解釋的情況。
         let loaded = self.reloader.take_full()?;
         let Some(view) = self.view.take_refresh_context() else {
             // 理論上不會發生：`can_swap()` 剛回 true，兩者的涵蓋範圍照
