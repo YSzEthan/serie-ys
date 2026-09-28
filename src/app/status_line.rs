@@ -15,6 +15,7 @@ use crate::{
         AppEvent, AutoFetchClock, CheckoutPickKind, RefCopyKind, RelatedItem, Sender, UserEvent,
     },
     github::{GhItemKind, MergeMethod, PrDraftAction, StateAction, StateFilter},
+    reload::FullStatus,
     view::View,
     widget::{
         commit_list::ChildPickOption, h, hint_line, hint_pairs, keybind_hint_line, truncate_line,
@@ -278,6 +279,14 @@ enum StatusLine {
     NotificationError(String),
 }
 
+/// Phase 6 換資料時要保留的通知——不透明包住 `StatusLine`，`app.rs` 拿到手
+/// 只能原樣帶著走，不能塞 picker／prompt 進來。`take_notification()`／
+/// `restore_notification()` 是唯一的生產與消費端；`blocks_swap()` 已經先
+/// 擋掉 picker／prompt／輸入框，走到這裡的 `StatusLine` 只可能是四種
+/// `Notification*` variant 之一。
+#[derive(Debug)]
+pub(super) struct Notification(StatusLine);
+
 #[derive(Debug)]
 pub(super) struct StatusLineState {
     line: StatusLine,
@@ -439,6 +448,65 @@ impl StatusLineState {
     /// `can_interrupt` 與背景通知的守衛共用同一份真值，不要各自手寫一次。
     pub(super) fn is_idle_or_notification(&self) -> bool {
         self.is_idle() || self.is_showing_notification()
+    }
+
+    /// 換資料能不能進行的判斷之一：狀態列現在是不是擋著——picker、prompt、
+    /// 或正在輸入的 search／filter 輸入框（`StatusLine::Input`）。跟
+    /// `is_idle_or_notification` 不同的地方是這裡把 `NotificationError`
+    /// 也算「不擋」：重載失敗的錯誤通知不該卡住下一次成功結果的顯示，
+    /// 使用者不需要先按鍵確認錯誤才能看到新資料。`Input` 則反過來一定要擋
+    /// ——換資料會重建 `StatusLineState`（回到 `None`），使用者半打的搜尋
+    /// 字串會憑空消失。
+    pub(super) fn blocks_swap(&self) -> bool {
+        !matches!(
+            self.line,
+            StatusLine::None
+                | StatusLine::NotificationInfo(_)
+                | StatusLine::NotificationSuccess(_)
+                | StatusLine::NotificationWarn(_)
+                | StatusLine::NotificationError(_)
+        )
+    }
+
+    /// 換資料時取出目前的通知（如果有）——只有四種 `Notification*`
+    /// variant 會被取到並清空狀態列；其餘情況原樣放回、回 `None`。呼叫端
+    /// （`App::try_swap`）在呼叫這個之前已經用 `blocks_swap()` 確認過狀態列
+    /// 不是 picker／prompt／輸入框，所以「其餘情況」實務上只有 `None`。
+    pub(super) fn take_notification(&mut self) -> Option<Notification> {
+        match std::mem::take(&mut self.line) {
+            line @ (StatusLine::NotificationInfo(_)
+            | StatusLine::NotificationSuccess(_)
+            | StatusLine::NotificationWarn(_)
+            | StatusLine::NotificationError(_)) => Some(Notification(line)),
+            other => {
+                self.line = other;
+                None
+            }
+        }
+    }
+
+    /// 換資料重建 `App` 之後呼叫，把 `take_notification()` 取走的通知放回
+    /// 新的 `StatusLineState` 上。
+    pub(super) fn restore_notification(&mut self, notification: Notification) {
+        self.line = notification.0;
+    }
+
+    /// Full 重載狀態指示——插在 hotkey hints／輸入框那一列最前面，跟倒數
+    /// span 共用同一個插入點模式（見 `render` 尾端的插入點註解）。
+    /// `Idle` 不畫任何東西；`Loading` 代表 worker 正在跑（含冷卻中排隊）；
+    /// `Ready` 只可能在 `render()` 被呼叫到時出現——它代表換資料被目前狀態
+    /// 擋住了（`App::try_swap()` 每輪都先試過，能換的話早就換掉、根本不會
+    /// 走到這裡渲染）。
+    fn full_reload_span(&self, status: FullStatus) -> Option<Span<'static>> {
+        let text = match status {
+            FullStatus::Idle => return None,
+            FullStatus::Loading => "\u{27F3} loading  ",
+            FullStatus::Ready => "\u{27F3} update pending  ",
+        };
+        Some(Span::styled(
+            text,
+            Style::default().fg(self.ctx.color_theme.status_input_transient_fg),
+        ))
     }
 
     pub(super) fn clear(&mut self) {
@@ -888,7 +956,21 @@ impl StatusLineState {
         )
     }
 
-    pub(super) fn render(&self, f: &mut Frame, area: Rect, view: &View, numeric_prefix: &str) {
+    pub(super) fn render(
+        &self,
+        f: &mut Frame,
+        area: Rect,
+        view: &View,
+        numeric_prefix: &str,
+        full_status: FullStatus,
+    ) {
+        // 提早算好、只算一次：下面 `Input` 分支的 exact-fit padding 與
+        // 游標位置都要扣掉／讓開這個前綴的寬度——`full_reload_span` 不像
+        // `countdown_span` 有 `is_idle()` 擋著，Input 輸入框開著時一樣可能
+        // 同時被插進最前面，兩處若各自重算一次容易對不上。
+        let full_reload_span = self.full_reload_span(full_status);
+        let full_reload_w = full_reload_span.as_ref().map_or(0, Span::width);
+
         let mut text: Line = match &self.line {
             StatusLine::None => {
                 if numeric_prefix.is_empty() {
@@ -906,7 +988,8 @@ impl StatusLineState {
                     let pad_w = (area.width as usize)
                         .saturating_sub(msg_w)
                         .saturating_sub(t_msg_w)
-                        .saturating_sub(2 /* pad */);
+                        .saturating_sub(2 /* pad */)
+                        .saturating_sub(full_reload_w);
                     Line::from(vec![
                         msg.as_str().fg(self.ctx.color_theme.status_input_fg),
                         " ".repeat(pad_w).into(),
@@ -1006,6 +1089,9 @@ impl StatusLineState {
         if let Some(secs) = self.countdown_secs() {
             text.spans.insert(0, self.countdown_span(secs));
         }
+        if let Some(span) = full_reload_span {
+            text.spans.insert(0, span);
+        }
 
         let block = Block::default()
             .borders(Borders::TOP)
@@ -1020,7 +1106,10 @@ impl StatusLineState {
         f.render_widget(paragraph, area);
 
         if let StatusLine::Input(_, Some(cursor_pos), _) = &self.line {
-            let (x, y) = (area.x + cursor_pos + 1, area.y + 1);
+            // `+ full_reload_w`：Full 重載指示插在 `msg` 前面時會把整行往右
+            // 推，游標必須跟著讓開，否則會畫在指示文字底下而不是輸入內容
+            // 對應的字元位置。
+            let (x, y) = (area.x + cursor_pos + full_reload_w as u16 + 1, area.y + 1);
             match &self.ctx.ui_config.cursor_type {
                 CursorType::Native => {
                     f.set_cursor_position((x, y));
@@ -1892,5 +1981,88 @@ mod tests {
                 "{label}: is_input_mode_variant 回傳值不對"
             );
         }
+    }
+
+    /// `blocks_swap` 決定 Phase 6 換資料能不能進行。跟
+    /// `is_idle_or_notification` 唯一的差異是 `NotificationError` 也算
+    /// 「不擋」（重載失敗不該卡住下一次成功結果），`Input`（正在打字的
+    /// search／filter）則反過來一定要擋，換資料會重建 `StatusLineState`
+    /// 把半打的字串吃掉。
+    #[test]
+    fn blocks_swap_matches_expected_table() {
+        fn make(line: StatusLine) -> StatusLineState {
+            let (tx, _rx) = Sender::channel_for_test();
+            StatusLineState {
+                line,
+                ctx: test_ctx(),
+                tx,
+                auto_fetch_clock: AutoFetchClock::default(),
+            }
+        }
+
+        let cases: Vec<(&str, StatusLine, bool)> = vec![
+            ("None", StatusLine::None, false),
+            (
+                "NotificationInfo",
+                StatusLine::NotificationInfo(String::new()),
+                false,
+            ),
+            (
+                "NotificationSuccess",
+                StatusLine::NotificationSuccess(String::new()),
+                false,
+            ),
+            (
+                "NotificationWarn",
+                StatusLine::NotificationWarn(String::new()),
+                false,
+            ),
+            (
+                "NotificationError",
+                StatusLine::NotificationError(String::new()),
+                false,
+            ),
+            ("Input", StatusLine::Input(String::new(), None, None), true),
+            (
+                "RefPicker",
+                StatusLine::RefPicker {
+                    options: vec![],
+                    kind: RefCopyKind::Local,
+                },
+                true,
+            ),
+            ("MergePrPrompt", merge_pr_prompt(), true),
+        ];
+
+        for (label, line, want_blocks) in cases {
+            let got = make(line).blocks_swap();
+            assert_eq!(got, want_blocks, "{label}: blocks_swap 回傳值不對");
+        }
+    }
+
+    /// 換資料時取出通知、重建之後放回去，內容原樣還原；其餘狀態（picker、
+    /// prompt、輸入框）不受影響，`take_notification` 回 `None`。
+    #[test]
+    fn take_and_restore_notification_round_trips() {
+        let (mut state, _rx) = test_state();
+        state.set_notification_error("boom".to_string());
+
+        let notification = state.take_notification().expect("應該取到通知");
+        assert!(matches!(state.line, StatusLine::None));
+
+        state.restore_notification(notification);
+        assert!(matches!(&state.line, StatusLine::NotificationError(m) if m == "boom"));
+    }
+
+    #[test]
+    fn take_notification_on_picker_returns_none_and_leaves_it_untouched() {
+        let (mut state, _rx) = test_state();
+        state.line = StatusLine::RefPicker {
+            options: vec!["main".into()],
+            kind: RefCopyKind::Local,
+        };
+
+        assert!(state.take_notification().is_none());
+        assert!(matches!(state.line, StatusLine::RefPicker { .. }));
     }
 }

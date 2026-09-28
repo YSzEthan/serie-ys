@@ -1,0 +1,11 @@
+0 col=0 Down@0/0 Right@0/1 RightTop@1/1
+1 col=2 Vertical@0/0 Vertical@1/1 Down@2/2 Right@2/3 RightTop@3/3
+2 col=4 Vertical@0/0 Vertical@1/1 Vertical@2/2 Vertical@3/3 Down@4/4 Right@4/5 RightTop@5/5
+3 col=6 Vertical@0/0 Vertical@1/1 LeftTop@1/1 Horizontal@2/1 Horizontal@3/1 Horizontal@4/1 Horizontal@5/1 Left@6/1 Vertical@2/2 Vertical@3/3 Vertical@4/4 Vertical@5/5 Down@6/6
+4 col=1 Vertical@0/0 Up@1/1 Down@1/1 Vertical@2/2 Vertical@3/3 Vertical@4/4 Vertical@5/5 Vertical@6/6
+5 col=1 Vertical@0/0 Up@1/1 Down@1/1 Vertical@2/2 Vertical@3/3 Vertical@4/4 Right@1/5 Horizontal@2/5 Horizontal@3/5 Horizontal@4/5 RightBottom@5/5 Vertical@6/6
+6 col=2 Vertical@0/0 Vertical@1/1 Up@2/2 Down@2/2 Vertical@3/3 Vertical@4/4 Vertical@6/6
+7 col=4 Vertical@0/0 Vertical@1/1 Vertical@2/2 Vertical@3/3 Up@4/4 Down@4/4 Vertical@6/6
+8 col=6 Vertical@0/0 Vertical@1/1 Vertical@2/2 Vertical@3/3 Vertical@4/4 Up@6/6 Down@6/6
+9 col=1 Vertical@0/0 Up@1/1 Down@1/1 Vertical@2/2 Right@1/3 Horizontal@2/3 RightBottom@3/3 Vertical@4/4 Vertical@6/6
+10 col=0 Up@0/0 Right@0/1 RightBottom@1/1 Right@0/2 Horizontal@1/2 RightBottom@2/2 Right@0/4 Horizontal@1/4 Horizontal@2/4 Horizontal@3/4 RightBottom@4/4 Right@0/6 Horizontal@1/6 Horizontal@2/6 Horizontal@3/6 Horizontal@4/6 Horizontal@5/6 RightBottom@6/6

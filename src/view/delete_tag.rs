@@ -13,7 +13,6 @@ use crate::{
     app::AppContext,
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
     git::{delete_remote_tag, delete_tag, CommitHash, Ref},
-    view::{ListRefreshViewContext, RefreshViewContext},
     widget::{
         commit_list::{CommitList, CommitListState},
         h, keybind_hint_line,
@@ -100,17 +99,6 @@ impl<'a> DeleteTagView<'a> {
         let delete_from_remote = self.delete_from_remote;
         let tx = self.tx.clone();
 
-        // 在關閉前先建好 refresh context
-        let list_context = self
-            .commit_list_state
-            .as_ref()
-            .map(ListRefreshViewContext::from)
-            .unwrap_or_else(|| ListRefreshViewContext {
-                commit_hash: self.commit_hash.clone(),
-                scroll_to_top: false,
-                ..Default::default()
-            });
-
         // 顯示 pending overlay 並關閉對話框
         let pending_msg = if delete_from_remote {
             format!("Deleting tag '{tag_name}' from local and remote...")
@@ -137,7 +125,7 @@ impl<'a> DeleteTagView<'a> {
                         "Local tag deleted, but failed to delete from remote: {e}"
                     )));
                     // 仍然要 refresh 以顯示刪除結果
-                    tx.send(AppEvent::Refresh(RefreshViewContext::list(list_context)));
+                    tx.send(AppEvent::Refresh);
                     return;
                 }
             }
@@ -150,7 +138,7 @@ impl<'a> DeleteTagView<'a> {
             };
             tx.send(AppEvent::NotifySuccess(msg));
             tx.send(AppEvent::HidePendingOverlay);
-            tx.send(AppEvent::Refresh(RefreshViewContext::list(list_context)));
+            tx.send(AppEvent::Refresh);
         });
     }
 
@@ -269,8 +257,10 @@ impl<'a> DeleteTagView<'a> {
         self.commit_list_state.take()
     }
 
-    pub fn refresh(&self) {
-        super::views::send_refresh(self.commit_list_state.as_ref(), &self.tx);
+    pub(super) fn as_mut_list_state(&mut self) -> &mut CommitListState<'a> {
+        self.commit_list_state
+            .as_mut()
+            .expect("commit_list_state already taken")
     }
 }
 

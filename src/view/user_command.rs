@@ -142,7 +142,7 @@ impl<'a> UserCommandView<'a> {
                 self.tx.send(AppEvent::CloseUserCommand);
             }
             UserEvent::Refresh => {
-                self.refresh();
+                self.tx.send(AppEvent::Refresh);
             }
             _ => {}
         }
@@ -261,8 +261,7 @@ impl<'a> UserCommandView<'a> {
         update_commit_list_state(commit_list_state);
 
         let selected = commit_list_state.selected_commit_hash().clone();
-        let (commit, _) = repository.commit_detail(&selected);
-        let refs: Vec<Ref> = repository.refs(&selected).into_iter().cloned().collect();
+        let (commit, refs) = repository.commit_refs(&selected);
         self.user_command_output_lines = exec_command(
             commit,
             &refs,
@@ -279,15 +278,15 @@ impl<'a> UserCommandView<'a> {
         self.output_pane_state.select_first();
     }
 
-    pub fn refresh(&self) {
+    /// 換資料時由 `View::take_refresh_context` 呼叫，見該處文件。
+    pub(super) fn refresh_context(&self) -> RefreshViewContext {
         let list_context = ListRefreshViewContext::from(self.as_list_state());
-        let context = RefreshViewContext::new(
+        RefreshViewContext::new(
             list_context,
             ViewContext::UserCommand {
                 n: self.user_command_number,
             },
-        );
-        self.tx.send(AppEvent::Refresh(context));
+        )
     }
 }
 

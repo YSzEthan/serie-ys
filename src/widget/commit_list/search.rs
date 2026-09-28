@@ -108,20 +108,22 @@ pub enum FilterState {
 }
 
 /// refresh 之後還原一次 search 或 filter 所需的全部輸入。兩者存的是同一個
-/// 概念（餵給 `SearchMatcher::new` 的 query + 設定），共用一個型別。
-#[derive(Debug, Clone, PartialEq, Eq)]
+/// 概念（餵給 `SearchMatcher::new` 的 query + 設定），共用一個型別。也是
+/// `MatchSet::key` 的型別——`Default` 的空字串 query 正好對應「還沒算過」。
+#[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct MatchQuery {
     pub query: String,
     pub options: MatchOptions,
 }
 
+/// 一列的 highlight 位置，只在 render 時對畫面上看得到的列建（見
+/// `CommitListState::search_matcher`），不再是每個 commit 都存一份。
 #[derive(Debug, Default, Clone)]
 pub(super) struct SearchMatch {
     pub(super) refs: FxHashMap<String, SearchMatchPosition>,
     pub(super) subject: Option<SearchMatchPosition>,
     pub(super) author_name: Option<SearchMatchPosition>,
     pub(super) commit_hash: Option<SearchMatchPosition>,
-    match_index: usize, // 從 1 起算
 }
 
 enum SearchField<'a> {
@@ -158,7 +160,7 @@ impl SearchField<'_> {
 
 /// 搜尋與過濾看的所有欄位，全專案唯一一份清單 —— 加欄位只改這裡，`SearchMatch::new`
 /// 與 `commit_quick_matches` 會自動跟上。兩邊各抄一份的話（包括 Stash 這條排除規則），
-/// 分歧會讓某列被算進 `match_index` 卻標不出 highlight。
+/// 分歧會讓某列算進 `hits` 卻標不出 highlight。
 ///
 /// subject 排第一：`target == All` 時 `commit_quick_matches` 的 `any()` 靠這個順序
 /// 短路；`target` 限定到單一欄位時，陣列裡另外兩個元素仍會先建好才被尾端的
@@ -185,7 +187,8 @@ fn search_fields<'a>(
 impl SearchMatch {
     /// 收 `&SearchMatcher` 而不是 `(query, ignore_case, fuzzy)`：呼叫端在迴圈外就建好
     /// 一個，自己再建一次等於每個 commit 都重折一次 query、多配置一個 `String`。
-    fn new(ci: &CommitInfo<'_>, matcher: &SearchMatcher, target: SearchTarget) -> Self {
+    /// `pub(super)`：render 每幀替畫面上的列建，不再是 `CommitListState` 自己存一份。
+    pub(super) fn new(ci: &CommitInfo<'_>, matcher: &SearchMatcher, target: SearchTarget) -> Self {
         let mut m = Self::default();
         for f in search_fields(ci, target) {
             let Some(pos) = matcher
@@ -206,18 +209,11 @@ impl SearchMatch {
         m
     }
 
-    fn matched(&self) -> bool {
+    pub(super) fn matched(&self) -> bool {
         !self.refs.is_empty()
             || self.subject.is_some()
             || self.author_name.is_some()
             || self.commit_hash.is_some()
-    }
-
-    fn clear(&mut self) {
-        self.refs.clear();
-        self.subject = None;
-        self.author_name = None;
-        self.commit_hash = None;
     }
 }
 
@@ -229,6 +225,121 @@ pub(super) struct SearchMatchPosition {
 impl SearchMatchPosition {
     pub(super) fn new(matched_indices: Vec<usize>) -> Self {
         Self { matched_indices }
+    }
+}
+
+/// filter／search 的命中判斷只要 bool，`any()` 命中即停。
+///
+/// **別把它換成 `SearchMatch::new(..).matched()`** —— 後者不會短路，會對每個欄位
+/// 算完整的 highlight 位置再全部丟掉。查詢 `a` 打在大 repo 上時幾乎每列都命中
+/// subject，那是每次按鍵好幾倍的差距。search 與 filter 共用同一份，見
+/// `MatchSet::update`。
+fn commit_quick_matches(
+    matcher: &SearchMatcher,
+    commit_info: &CommitInfo<'_>,
+    target: SearchTarget,
+) -> bool {
+    search_fields(commit_info, target).any(|f| matcher.matches(f.text()))
+}
+
+/// search 與 filter 共用：比對用的 `(query, options)` 連同算出來的命中清單
+/// （raw index，恆遞增排序）。search 與 filter 各持一份。
+///
+/// **不變式**：`hits` 永遠等於 `key` 對目前 commits 的完整比對結果。重置一律用
+/// `MatchSet::default()`，不提供只清 `hits` 的方法——否則下次打出延伸舊 query
+/// 的字串時，增量路徑會從空集合出發，永遠零命中。
+#[derive(Debug, Default, Clone)]
+pub(super) struct MatchSet {
+    pub(super) key: MatchQuery,
+    pub(super) hits: Vec<RawCommitIdx>,
+}
+
+impl MatchSet {
+    pub(super) fn total(&self) -> usize {
+        self.hits.len()
+    }
+
+    /// `raw` 在命中清單裡的排名，從 1 起算；沒命中回 `None`。
+    pub(super) fn rank_of(&self, raw: RawCommitIdx) -> Option<usize> {
+        self.hits.binary_search(&raw).ok().map(|pos| pos + 1)
+    }
+
+    /// 沿 `step` 方向、`is_visible` 為 true 的下一個命中；從緊接在 `current`
+    /// 之後（或之前）的位置開始找，不會選回 `current` 本身——即使它自己也是
+    /// 命中，跟舊版逐列掃描（`while i != current.0`）同一個規則。全部命中都
+    /// 不可見、或根本沒有命中時回 `None`。
+    ///
+    /// 只在 `hits` 內跳，不逐列掃 `commits`：最差 `hits.len()` 次
+    /// `is_visible` 呼叫，取代舊版最差 `commits.len()` 次。
+    pub(super) fn visible_hit_after(
+        &self,
+        current: RawCommitIdx,
+        step: MatchStep,
+        is_visible: impl Fn(RawCommitIdx) -> bool,
+    ) -> Option<RawCommitIdx> {
+        // `hits` 排序好，`partition_point` 切出來的兩段接起來就是繞 current 一圈
+        // 的走訪順序；`current` 本身若也是命中，切法保證它排在這一圈的最後一個，
+        // 交給後面的 `filter` 濾掉即可，不必另外算步數上限。
+        match step {
+            MatchStep::Next => {
+                let p = self.hits.partition_point(|&r| r <= current);
+                self.hits[p..]
+                    .iter()
+                    .chain(&self.hits[..p])
+                    .copied()
+                    .filter(|&r| r != current)
+                    .find(|&r| is_visible(r))
+            }
+            MatchStep::Prev => {
+                let p = self.hits.partition_point(|&r| r < current);
+                self.hits[..p]
+                    .iter()
+                    .rev()
+                    .chain(self.hits[p..].iter().rev())
+                    .copied()
+                    .filter(|&r| r != current)
+                    .find(|&r| is_visible(r))
+            }
+        }
+    }
+
+    /// 重算命中清單。`new_key.query` 是 `self.key.query` 的延伸、且設定沒變時，
+    /// 只在舊命中裡篩選；否則對全部 commits 掃一遍。兩條路徑共用同一次
+    /// `commit_quick_matches` 呼叫，比對結果不會分歧，`match` 發號（`rank_of`）
+    /// 也就不必擔心兩條路徑各算一套。
+    ///
+    /// `self.key.query` 為空時不能走增量：`SearchMatcher::matches` 對空 query
+    /// 固定回 false（也就是這裡的 `hits == []`），跟「一般子字串／子序列比對時
+    /// 空字串比對一切」的數學語意不同，拿空 query 的零命中當「舊命中子集」的
+    /// 起點會漏掉所有真正的命中。`self.key.query` 非空、`hits` 剛好是零命中
+    /// （例如查 "zzz"）時則相反：延伸後保證仍是零命中，這條件本身就允許沿用
+    /// （比全量重掃更快），不需要另外用 `!hits.is_empty()` 擋。
+    pub(super) fn update(&mut self, commits: &[CommitInfo<'_>], new_key: MatchQuery) {
+        if new_key.query.is_empty() {
+            *self = MatchSet {
+                key: new_key,
+                hits: Vec::new(),
+            };
+            return;
+        }
+        let matcher = SearchMatcher::new(
+            &new_key.query,
+            new_key.options.ignore_case,
+            new_key.options.fuzzy,
+        );
+        let can_use_incremental = new_key.options == self.key.options
+            && !self.key.query.is_empty()
+            && new_key.query.starts_with(&self.key.query);
+        let candidates: Vec<RawCommitIdx> = if can_use_incremental {
+            std::mem::take(&mut self.hits)
+        } else {
+            (0..commits.len()).map(RawCommitIdx).collect()
+        };
+        self.hits = candidates
+            .into_iter()
+            .filter(|raw| commit_quick_matches(&matcher, &commits[raw.0], new_key.options.target))
+            .collect();
+        self.key = new_key;
     }
 }
 
@@ -255,6 +366,22 @@ impl<'a> CommitListState<'a> {
         self.search_options
     }
 
+    /// 目前生效搜尋的 matcher／target，只在 `Searching`／`Applied` 且 query 非空
+    /// 時有值。`render` 每幀呼叫一次，只替畫面上的列算 highlight（見
+    /// `widget::commit_list::render::build_visible_rows`）。從 `self.search.key`
+    /// 建，不從 `search_input`／`search_options` 建：`set_search_options` 在
+    /// refresh 還原的中途只寫欄位、不重算，兩者在那個窗口內可能暫時不一致。
+    pub(super) fn search_matcher(&self) -> Option<(SearchMatcher, SearchTarget)> {
+        if matches!(self.search_state, SearchState::Inactive) || self.search.key.query.is_empty() {
+            return None;
+        }
+        let options = self.search.key.options;
+        Some((
+            SearchMatcher::new(&self.search.key.query, options.ignore_case, options.fuzzy),
+            options.target,
+        ))
+    }
+
     pub fn start_search(&mut self) {
         if let SearchState::Inactive | SearchState::Applied { .. } = self.search_state {
             self.search_state = SearchState::Searching {
@@ -263,7 +390,7 @@ impl<'a> CommitListState<'a> {
                 transient_message: TransientMessage::None,
             };
             self.search_input.reset();
-            self.clear_search_matches();
+            self.search = MatchSet::default();
         }
     }
 
@@ -291,10 +418,10 @@ impl<'a> CommitListState<'a> {
     }
 
     fn total_match(&self) -> usize {
-        self.search_matches.iter().filter(|m| m.matched()).count()
+        self.search.total()
     }
 
-    /// 目前游標所在列的 match_index；游標不在 match 上、或根本沒有可讀的選取列時
+    /// 目前游標所在列的排名（1 起算）；游標不在 match 上、或根本沒有可讀的選取列時
     /// 給 `0`，顯示成 `Match 0 of N`，按 GoToNext/GoToPrevious（預設 `]`/`[`）會
     /// 自然校正。
     ///
@@ -305,12 +432,9 @@ impl<'a> CommitListState<'a> {
         if self.total == 0 || self.is_virtual_row_selected() {
             return 0;
         }
-        let m = self.search_match(self.current_selected_raw());
-        if m.matched() {
-            m.match_index
-        } else {
-            0
-        }
+        self.search
+            .rank_of(self.current_selected_raw())
+            .unwrap_or(0)
     }
 
     /// 重算比對結果並重建 `Applied`。刻意不移動游標：
@@ -357,7 +481,7 @@ impl<'a> CommitListState<'a> {
         if let SearchState::Searching { .. } | SearchState::Applied { .. } = self.search_state {
             self.search_state = SearchState::Inactive;
             self.search_input.reset();
-            self.clear_search_matches();
+            self.search = MatchSet::default();
         }
     }
 
@@ -464,84 +588,20 @@ impl<'a> CommitListState<'a> {
     }
 
     fn update_search_matches(&mut self) {
-        let query = self.search_input.value().to_string();
-
-        // query 為空時提早返回
-        if query.is_empty() {
-            self.clear_search_matches();
-            self.last_search_query.clear();
-            self.last_matched_indices.clear();
-            return;
-        }
-
-        let options = self.search_options;
-        let matcher = SearchMatcher::new(&query, options.ignore_case, options.fuzzy);
-
-        // 判斷能不能用增量搜尋：
-        // - 新 query 是舊 query 的延伸（使用者多打了幾個字）
-        // - 搜尋設定沒變（見 `last_search_options` 欄位宣告處的理由）
-        let settings_unchanged = options == self.last_search_options;
-        let can_use_incremental = settings_unchanged
-            && !self.last_search_query.is_empty()
-            && query.starts_with(&self.last_search_query)
-            && !self.last_matched_indices.is_empty();
-
-        // 增量搜尋只是換候選來源，比對本身一模一樣 —— 兩條路徑各寫一份迴圈的話，
-        // 最不能分歧的 `match_index` 發號就有兩個地方會錯。
-        // `mem::take` 避免對 Vec 做額外 clone；函式結尾會覆寫回去。
-        let candidates: Vec<RawCommitIdx> = if can_use_incremental {
-            std::mem::take(&mut self.last_matched_indices)
-        } else {
-            (0..self.commits.len()).map(RawCommitIdx).collect()
+        let key = MatchQuery {
+            query: self.search_input.value().to_string(),
+            options: self.search_options,
         };
-        self.clear_search_matches();
-
-        let mut new_matched_indices = Vec::new();
-        let mut match_index = 1;
-        for raw in candidates {
-            // 不先用 `commit_quick_matches` 篩：那道閘門在這裡省不到東西。
-            // `SearchMatch::new` 不會短路，命中與否都要把每個欄位跑完，所以閘門對
-            // 沒命中的 commit 成本相同、對命中的則是純粹多跑一趟。少了它，
-            // `matched()` 也就成了「這列算不算命中」的唯一來源。
-            let mut m = SearchMatch::new(self.commit(raw), &matcher, options.target);
-            if m.matched() {
-                m.match_index = match_index;
-                match_index += 1;
-                *self.search_match_mut(raw) = m;
-                new_matched_indices.push(raw);
-            }
-        }
-
-        self.last_search_query = query;
-        self.last_matched_indices = new_matched_indices;
-        self.last_search_options = options;
-    }
-
-    /// filter 只要 bool，`any()` 命中即停。
-    ///
-    /// **別把它換成 `SearchMatch::new(..).matched()`** —— 後者不會短路，會對每個欄位
-    /// 算完整的 highlight 位置再全部丟掉。查詢 `a` 打在大 repo 上時幾乎每列都命中
-    /// subject，那是每次按鍵好幾倍的差距。反過來，搜尋路徑不該用這道閘門：它在那裡
-    /// 只是把同一份比對多跑一次（見 `update_search_matches`）。
-    fn commit_quick_matches(
-        matcher: &SearchMatcher,
-        commit_info: &CommitInfo<'_>,
-        target: SearchTarget,
-    ) -> bool {
-        search_fields(commit_info, target).any(|f| matcher.matches(f.text()))
-    }
-
-    fn clear_search_matches(&mut self) {
-        self.search_matches.iter_mut().for_each(|m| m.clear());
+        self.search.update(&self.commits, key);
     }
 
     fn select_current_or_next_match_index(&mut self, current: RawCommitIdx) {
-        if self.search_match(current).matched() && self.is_raw_visible(current) {
-            self.select_raw(current);
-            let mi = self.search_match(current).match_index;
-            self.search_state.update_match_index(mi);
-        } else {
-            self.select_next_match_index(current)
+        match self.search.rank_of(current) {
+            Some(mi) if self.is_raw_visible(current) => {
+                self.select_raw(current);
+                self.search_state.update_match_index(mi);
+            }
+            _ => self.select_next_match_index(current),
         }
     }
 
@@ -554,25 +614,15 @@ impl<'a> CommitListState<'a> {
     }
 
     fn select_match_in_direction(&mut self, current: RawCommitIdx, step: MatchStep) {
-        let len = self.commits.len();
-        if len == 0 {
+        let Some(raw) = self
+            .search
+            .visible_hit_after(current, step, |raw| self.is_raw_visible(raw))
+        else {
             return;
-        }
-        let advance = |i: usize| match step {
-            MatchStep::Next => (i + 1) % len,
-            MatchStep::Prev => (i + len - 1) % len,
         };
-        let mut i = advance(current.0);
-        while i != current.0 {
-            let raw = RawCommitIdx(i);
-            if self.search_match(raw).matched() && self.is_raw_visible(raw) {
-                self.select_raw(raw);
-                let mi = self.search_match(raw).match_index;
-                self.search_state.update_match_index(mi);
-                return;
-            }
-            i = advance(i);
-        }
+        self.select_raw(raw);
+        let mi = self.search.rank_of(raw).unwrap_or(0);
+        self.search_state.update_match_index(mi);
     }
 
     fn is_raw_visible(&self, raw: RawCommitIdx) -> bool {
@@ -598,7 +648,7 @@ impl<'a> CommitListState<'a> {
                 transient_message: TransientMessage::None,
             };
             self.filter_input.reset();
-            self.filtered_indices.clear();
+            self.filtered_indices = None;
             self.update_filter_matches();
         }
     }
@@ -623,7 +673,7 @@ impl<'a> CommitListState<'a> {
         }
         self.filter_state = FilterState::Inactive;
         self.filter_input.reset();
-        self.text_filtered_indices.clear();
+        self.filter = MatchSet::default();
         self.rebuild_filtered_indices();
         self.set_visible_selection(VisibleIdx(0));
     }
@@ -723,24 +773,11 @@ impl<'a> CommitListState<'a> {
     }
 
     fn update_filter_matches(&mut self) {
-        let query = self.filter_input.value().to_string();
-
-        self.text_filtered_indices.clear();
-
-        if !query.is_empty() {
-            let MatchOptions {
-                ignore_case,
-                fuzzy,
-                target,
-            } = self.filter_options;
-            let matcher = SearchMatcher::new(&query, ignore_case, fuzzy);
-            for (i, commit_info) in self.commits.iter().enumerate() {
-                if Self::commit_quick_matches(&matcher, commit_info, target) {
-                    self.text_filtered_indices.push(RawCommitIdx(i));
-                }
-            }
-        }
-
+        let key = MatchQuery {
+            query: self.filter_input.value().to_string(),
+            options: self.filter_options,
+        };
+        self.filter.update(&self.commits, key);
         self.rebuild_filtered_indices();
         self.set_visible_selection(VisibleIdx(0));
     }
@@ -748,7 +785,6 @@ impl<'a> CommitListState<'a> {
 
 #[cfg(test)]
 mod tests {
-    use ratatui::style::Color;
 
     use crate::git::Commit;
 
@@ -777,7 +813,7 @@ mod tests {
             message: "wip".into(),
             target: "abc1234def".into(),
         };
-        let info = CommitInfo::new(&c, vec![&branch, &stash], Color::Reset);
+        let info = CommitInfo::new(&c, vec![&branch, &stash]);
 
         let hit = |q: &str| {
             SearchMatch::new(
@@ -828,23 +864,22 @@ mod tests {
     fn with_commits<R>(commits: Vec<Commit>, f: impl FnOnce(&mut CommitListState<'_>) -> R) -> R {
         use std::rc::Rc;
 
-        use rustc_hash::{FxHashMap, FxHashSet};
+        use rustc_hash::FxHashMap;
 
-        use crate::git::Head;
+        use crate::git::{Head, Repository};
         use crate::graph::Graph;
 
-        let infos = commits
+        let repository = Repository::from_commits(commits);
+        let infos = repository
+            .all_commits()
             .iter()
-            .map(|c| CommitInfo::new(c, Vec::new(), Color::Reset))
+            .map(|c| CommitInfo::new(c, Vec::new()))
             .collect();
-        let graph = Graph {
-            commit_hashes: Vec::new(),
-            commit_pos_map: FxHashMap::default(),
-            edges: Vec::new(),
-            max_pos_x: 0,
-        };
+        let graph =
+            Graph::from_materialized(repository.all_commits().len(), Vec::new(), Vec::new());
         let mut state = CommitListState::new(
             infos,
+            &repository,
             Rc::new(graph),
             Vec::new(),
             None,
@@ -852,8 +887,7 @@ mod tests {
             FxHashMap::default(),
             MatchOptions::default(),
             None,
-            None,
-            FxHashSet::default(),
+            crate::RemoteOnly::default(),
             None,
             0,
         );
@@ -1065,6 +1099,108 @@ mod tests {
         });
     }
 
+    /// `filtered_indices` 改成 `Option` 後，零命中是 `Some(空)`，不是「沒有
+    /// filter」——`current_selected_raw` 得在 `Some(空)` 時明確 fallback 到 0，
+    /// 不能真的去解一個不存在的 filtered idx。這裡直接走互動路徑（`/` 開搜尋、
+    /// n／N 導航），不是只測 pure function。
+    #[test]
+    fn zero_hit_filter_then_start_search_and_navigate_does_not_panic() {
+        with_state(&["alpha", "beta"], |state| {
+            state.restore_filter(&exact("no-such-term"));
+            assert_eq!(state.total, 0);
+
+            state.start_search();
+            let SearchState::Searching { start_index, .. } = state.search_state() else {
+                panic!("expected Searching after start_search");
+            };
+            assert_eq!(start_index, RawCommitIdx(0));
+
+            state.select_next_match();
+            state.select_prev_match();
+            assert_eq!(state.total, 0, "游標不動，filter 仍是零命中");
+        });
+    }
+
+    /// `select_match_in_direction` 改成在 `MatchSet::hits` 裡二分搜尋＋循環走訪
+    /// 後（取代逐列掃 `0..commits.len()`），這裡釘住最基本的行為：往下找到下一個
+    /// match、往上找到上一個、繞過頭尾。
+    #[test]
+    fn select_next_match_and_prev_match_cycle_and_wrap() {
+        with_state(&["alpha", "keep-one", "beta", "keep-two"], |state| {
+            state.restore_search(&exact("keep"));
+            state.select_first(); // 游標回到 raw 0（"alpha"，不是命中）
+
+            state.select_next_match();
+            assert_eq!(state.selected_commit_hash(), &hash(2), "往下第一個 match");
+
+            state.select_next_match();
+            assert_eq!(state.selected_commit_hash(), &hash(4), "往下第二個 match");
+
+            state.select_next_match();
+            assert_eq!(
+                state.selected_commit_hash(),
+                &hash(2),
+                "繞回最前面那個 match"
+            );
+
+            state.select_prev_match();
+            assert_eq!(
+                state.selected_commit_hash(),
+                &hash(4),
+                "往上繞回最後一個 match"
+            );
+        });
+    }
+
+    /// search 與 filter 各自獨立：一個 raw 可能是搜尋命中，卻被 filter 藏起來。
+    /// n／N 要跳過它，直接落在下一個「命中且可見」的列，不能卡在隱藏列上。
+    #[test]
+    fn select_next_match_skips_hits_hidden_by_filter() {
+        with_state(&["aa keep", "bb keep", "aa keep2", "cc"], |state| {
+            state.restore_search(&exact("keep"));
+            // filter 只留含 "aa" 的兩筆：raw0（目前選取）跟 raw2；raw1 是搜尋命中，
+            // 但被 filter 藏起來。
+            state.restore_filter(&exact("aa"));
+            assert_eq!(
+                state.selected_commit_hash(),
+                &hash(1),
+                "restore_filter 後游標落在第一個可見列"
+            );
+
+            state.select_next_match();
+
+            assert_eq!(
+                state.selected_commit_hash(),
+                &hash(3),
+                "raw1（隱藏）被跳過，直接落在下一個可見命中 raw2"
+            );
+        });
+    }
+
+    /// 全部搜尋命中裡只有一個可見（其餘被 filter 藏起來），而游標剛好就停在它
+    /// 上面：往下找不到「別的」可見命中，游標不該被拉回原地重選一次。
+    #[test]
+    fn select_next_match_does_not_reselect_current_as_only_visible_hit() {
+        with_state(&["alpha", "keep-one", "beta"], |state| {
+            state.restore_search(&exact("keep"));
+            state.restore_filter(&exact("keep-one")); // 只留 raw1 自己
+            assert_eq!(
+                state.selected_commit_hash(),
+                &hash(2),
+                "唯一可見的一筆同時也是搜尋命中"
+            );
+
+            let before = state.current_list_status();
+            state.select_next_match();
+
+            assert_eq!(
+                state.current_list_status(),
+                before,
+                "沒有別的可見命中，游標不該動"
+            );
+        });
+    }
+
     #[test]
     fn start_search_reuses_browsing_mode_toggle_not_config_default() {
         with_state(&["FIX one", "fix two", "other"], |state| {
@@ -1192,7 +1328,7 @@ mod tests {
             name: "apple-branch".into(),
             target: "apple123".into(),
         };
-        let info = CommitInfo::new(&c, vec![&branch], Color::Reset);
+        let info = CommitInfo::new(&c, vec![&branch]);
         let matcher = SearchMatcher::new("apple", false, false);
 
         let subject_only = SearchMatch::new(&info, &matcher, SearchTarget::Subject);
@@ -1219,7 +1355,7 @@ mod tests {
     #[test]
     fn search_match_target_ref_on_commit_without_refs_is_no_match() {
         let c = commit_fixture();
-        let info = CommitInfo::new(&c, Vec::new(), Color::Reset);
+        let info = CommitInfo::new(&c, Vec::new());
         let matcher = SearchMatcher::new("anything", false, false);
 
         let m = SearchMatch::new(&info, &matcher, SearchTarget::Ref);
@@ -1236,7 +1372,7 @@ mod tests {
             message: "wip".into(),
             target: "abc1234def".into(),
         };
-        let info = CommitInfo::new(&c, vec![&stash], Color::Reset);
+        let info = CommitInfo::new(&c, vec![&stash]);
         let matcher = SearchMatcher::new("stash@", false, false);
 
         let m = SearchMatch::new(&info, &matcher, SearchTarget::Ref);
@@ -1339,5 +1475,67 @@ mod tests {
                 Some("Target: SUBJECT".to_string())
             );
         });
+    }
+
+    /// #122 手動量測：讀真實 repo，逐字打 "fix bug"，印出每一鍵耗時。
+    /// 不在一般 `cargo test` 跑，用法：
+    /// `SERIE_PERF_REPO=<repo path> cargo test --release perf_search -- --ignored --nocapture`
+    #[test]
+    #[ignore]
+    fn perf_search_keystrokes() {
+        use std::path::Path;
+        use std::rc::Rc;
+        use std::time::Instant;
+
+        use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+
+        use crate::git::{Repository, SortCommit};
+        use crate::graph::Graph;
+
+        let Ok(path) = std::env::var("SERIE_PERF_REPO") else {
+            eprintln!("skip: 設定 SERIE_PERF_REPO=<repo path> 才會跑這個測試");
+            return;
+        };
+
+        let load_start = Instant::now();
+        let repository = Repository::load(Path::new(&path), SortCommit::Topological, None)
+            .expect("load perf repo");
+        eprintln!(
+            "Repository::load: {:?} ({} commits)",
+            load_start.elapsed(),
+            repository.all_commits().len()
+        );
+
+        let build_start = Instant::now();
+        let commits: Vec<CommitInfo> = repository
+            .all_commits()
+            .iter()
+            .map(|c| CommitInfo::new(c, repository.refs(&c.commit_hash)))
+            .collect();
+        let commit_count = commits.len();
+        let graph = Graph::from_materialized(commit_count, Vec::new(), Vec::new());
+        let mut state = CommitListState::new(
+            commits,
+            &repository,
+            Rc::new(graph),
+            Vec::new(),
+            None,
+            crate::git::Head::None,
+            FxHashMap::default(),
+            MatchOptions::default(),
+            None,
+            crate::RemoteOnly::default(),
+            None,
+            0,
+        );
+        state.reset_height(50);
+        eprintln!("CommitListState::new: {:?}", build_start.elapsed());
+
+        state.start_search();
+        for c in "fix bug".chars() {
+            let key_start = Instant::now();
+            state.handle_search_input(KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty()));
+            eprintln!("key {c:?}: {:?}", key_start.elapsed());
+        }
     }
 }

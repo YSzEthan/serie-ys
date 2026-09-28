@@ -17,8 +17,7 @@ use serde::{
     Deserialize,
 };
 
-use crate::git::CommitHash;
-use crate::view::RefreshViewContext;
+use crate::git::{CommitHash, GitDirs};
 use crate::widget::commit_list::ChildPickOption;
 
 /// 驅動 UI 動畫（跑馬燈等）的 tick 事件間隔。
@@ -33,6 +32,18 @@ const WATCHDOG_STALL_TIMEOUT: Duration = Duration::from_secs(2);
 
 /// 送出 Quit 之後留給正常退出路徑的寬限時間，逾時就自己收尾。
 const WATCHDOG_GRACE: Duration = Duration::from_millis(300);
+
+/// watcher 事件粗分兩級，見 `classify_event`。`Ord` 讓一批事件用 `.max()`
+/// 就能取代「集合聯集」：working changes 是相對 HEAD 算的，HEAD 一動就
+/// 可能變，所以 `Full` 涵蓋了 `WorkingTree` 想表達的一切，值大的那個
+/// 天生就是聯集結果。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum Scope {
+    /// 只需要重新跑 `git status`：目前只有存檔會落在這一類。
+    WorkingTree,
+    /// HEAD／refs／commit 圖可能變了，需要完整重載。
+    Full,
+}
 
 #[derive(Debug)]
 pub enum AppEvent {
@@ -139,7 +150,11 @@ pub enum AppEvent {
         value: String,
     },
     OpenUrl(String),
-    Refresh(RefreshViewContext),
+    /// 手動觸發一次 Full 重載（`r` 鍵、對話框操作完成……）；不帶 payload
+    /// ——換資料時要帶的 view context 改在真的要換的那一刻，從當下的
+    /// `App::view` 現拿（`View::take_refresh_context`），不再靠事件 payload
+    /// 一路往前傳，見 `reload::Reloader::request_full`。
+    Refresh,
     ClearStatusLine,
     UpdateStatusInput(String, Option<u16>, Option<String>),
     NotifyInfo(String),
@@ -154,7 +169,23 @@ pub enum AppEvent {
     CheckoutCommit {
         target: String,
     },
-    AutoRefresh,
+    /// watcher 偵測到變化，或背景 git 操作（`spawn_git_task`）成功後自己
+    /// 觸發的重新整理。`Scope` 見該型別文件；`at` 是這次變化實際發生的時間
+    /// （watcher 用 debounce 視窗的起點，`spawn_git_task` 用送出當下）。
+    /// `Scope::Full` 原樣轉給 `reload::Reloader::request_full`，「已經被
+    /// 上一次成功載入涵蓋」的過濾在那個 worker 內部做，不在這裡。
+    AutoRefresh {
+        scope: Scope,
+        at: Instant,
+    },
+    /// `reload::Reloader` 背景跑完一次 `git status`。結果本身不隨事件走，
+    /// 收到後向 `Reloader::latest()` 拿——事件只是「該去看一眼」的信號。
+    WorkingChangesReady,
+    /// Full 重載 worker（`reload::Reloader`）狀態改變——開始跑、跑完、
+    /// 或失敗——都送一次。不帶 payload，收到後向 `Reloader::full_status()`
+    /// 拿；純粹是「該重畫一次狀態列」的信號（`App::run()` 的事件迴圈非
+    /// `Tick` 事件本來就會重畫），處理端不必特別做什麼。
+    FullReloadStatus,
     OpenRefPicker {
         options: Vec<String>,
         kind: RefCopyKind,
@@ -533,13 +564,6 @@ pub struct EventController {
     rx: Receiver,
     stop: Arc<AtomicBool>,
     handle: Arc<Mutex<Option<thread::JoinHandle<()>>>>,
-    /// 「已有 refresh 在路上」的一次性 token——`mark_pending_refresh` 設它、
-    /// `start_git_watcher` 的背景 thread 用 `swap(false, ...)` 消費，見該處
-    /// 註解。無條件建好（不是 `Option`）：沒有 watcher 時這個 flag 只是沒人
-    /// 讀，不是需要特判的錯誤狀態。唯一的寫入端都握有 `&EventController`
-    /// 本身（`app.rs` 的 `spawn_git_task`／`auto_fetch::spawn_due_fetch`），
-    /// 不需要另外包一層可攜把手給背景 thread 用。
-    pending_refresh: Arc<AtomicBool>,
     /// 下一輪 auto-fetch 的預定時間與比對基準，狀態列倒數、`auto_fetch`
     /// 模組共用。無條件建好：沒開 auto-fetch 時只是沒人 `arm`，
     /// `remaining()`／`baseline()` 恆為 `None`，不是需要特判的狀態。見
@@ -592,7 +616,6 @@ impl EventController {
             rx,
             stop: Arc::new(AtomicBool::new(false)),
             handle: Arc::new(Mutex::new(None)),
-            pending_refresh: Arc::new(AtomicBool::new(false)),
             auto_fetch_clock: AutoFetchClock::default(),
             term_signal,
             heartbeat: Arc::new(AtomicU64::new(0)),
@@ -763,19 +786,13 @@ impl EventController {
         self.rx.recv()
     }
 
+    /// `repo_root` 解不出 `GitDirs`（極舊版 git，或根本不在 work tree
+    /// 裡）就不啟動 watcher——沒有 watcher，使用者仍然能用，只是外部變更
+    /// 不會自動反映，比裝一個永遠比不中路徑的 watcher 誠實。
     pub fn start_git_watcher(&self, repo_root: &Path) {
-        start_git_watcher(self.tx.clone(), self.pending_refresh.clone(), repo_root);
-    }
-
-    /// 標記「已有 refresh 在路上」，讓 watcher 短期內偵測到的後續 fs 事件
-    /// 被 debounce 吃掉，避免主動 refresh 後 watcher 重複觸發 slow-path。
-    ///
-    /// 一次性 token：watcher 端消費掉就清掉（見 `claim_send_slot`），不需要任何
-    /// 呼叫端負責清除。就算標記後的操作本身失敗（只送 `NotifyError`、不送
-    /// `AutoRefresh`），watcher 也不會因此永久卡住——最壞情況是多吞一次
-    /// 無關的 fs 事件。
-    pub fn mark_pending_refresh(&self) {
-        self.pending_refresh.store(true, Ordering::Release);
+        if let Some(dirs) = GitDirs::resolve(repo_root) {
+            start_git_watcher(self.tx.clone(), dirs);
+        }
     }
 
     /// 狀態列倒數與 auto-fetch worker 共用的 deadline／基準把手，見
@@ -785,42 +802,17 @@ impl EventController {
     }
 }
 
-/// 節流視窗內、或 `pending` token 被設過，都不送 `AutoRefresh`——後者是
-/// 背景 git 操作（`spawn_git_task`）主動觸發的 refresh 順便產生的 fs 事件，
-/// 不必疊加一次。抽出來獨立測：watcher thread 本身只做管線接線，這個判斷
-/// 才是真正需要單元測試覆蓋的邏輯。
-///
-/// 注意這不是 predicate——呼叫一次就會消費 `pending` token、推進
-/// `last_sent`，語意跟著改變，不能被安全地重複呼叫來「先問再做」。
-///
-/// `pending` 用 `swap(false, ...)` 消費，讀了就清掉——不像單向閂鎖那樣需要
-/// 第三方負責清除，沒有人清得掉的話，一次背景操作失敗就會把 watcher 永久
-/// 卡住。
-fn claim_send_slot(
-    pending: &AtomicBool,
-    now: Instant,
-    last_sent: &mut Instant,
-    throttle: Duration,
-) -> bool {
-    if now.duration_since(*last_sent) < throttle {
-        return false;
-    }
-    // 過了節流視窗就重設時鐘；吞掉的這批也算「已送」，讓視窗蓋住背景操作
-    // 觸發的 fs 事件尾巴，不會緊接著又被下一批事件重新判定成「該送」。
-    *last_sent = now;
-    !pending.swap(false, Ordering::AcqRel)
-}
+/// `notify_debouncer_mini` 的 debounce 視窗：一批 fs 事件最多在這段時間內
+/// 被合併成一次。`AutoRefresh::at` 用 `Instant::now() - DEBOUNCE_WINDOW`
+/// 估這批事件底層變化實際發生的時間（視窗起點，不是視窗關閉、事件真正
+/// 送出的這一刻）——`App::request_full` 拿它跟上一次 Full 重載的開始時間
+/// 比對，才濾得掉「已經被那次重載涵蓋」的事件。
+const DEBOUNCE_WINDOW: Duration = Duration::from_millis(500);
 
-fn start_git_watcher(tx: Sender, pending: Arc<AtomicBool>, repo_root: &Path) {
+fn start_git_watcher(tx: Sender, dirs: GitDirs) {
     use notify_debouncer_mini::new_debouncer;
 
-    let repo_root = repo_root.to_path_buf();
-    let git_dir = repo_root
-        .join(".git")
-        .canonicalize()
-        .unwrap_or_else(|_| repo_root.join(".git"));
-
-    let mut ignored = read_gitignore_name_hints(&repo_root.join(".gitignore"));
+    let mut ignored = read_gitignore_name_hints(&dirs.toplevel.join(".gitignore"));
     // .gitignore 已涵蓋使用者專案噪音；這裡只兜底 macOS 系統檔案。
     for name in [".DS_Store", ".AppleDouble", ".Spotlight-V100", ".Trashes"] {
         ignored.insert(name.to_string());
@@ -829,61 +821,86 @@ fn start_git_watcher(tx: Sender, pending: Arc<AtomicBool>, repo_root: &Path) {
     thread::spawn(move || {
         let (debounce_tx, debounce_rx) = std::sync::mpsc::channel();
 
-        let mut debouncer = match new_debouncer(Duration::from_millis(500), debounce_tx) {
+        let mut debouncer = match new_debouncer(DEBOUNCE_WINDOW, debounce_tx) {
             Ok(d) => d,
             Err(_) => return,
         };
 
-        if debouncer
-            .watcher()
-            .watch(&repo_root, notify::RecursiveMode::Recursive)
-            .is_err()
+        // 監看 toplevel；git dir／common dir 在 toplevel 之外時（linked
+        // worktree、submodule）一併監看，否則那邊的變化完全看不到。三個
+        // 根目錄可能互相重疊（一般 repo 三者相同），`starts_with` 已經
+        // 涵蓋「完全相同」的情況，不用另外判斷相等。
+        let mut roots = vec![dirs.toplevel.clone()];
+        if !dirs.common_dir.starts_with(&dirs.toplevel) {
+            roots.push(dirs.common_dir.clone());
+        }
+        if !dirs.git_dir.starts_with(&dirs.toplevel) && !dirs.git_dir.starts_with(&dirs.common_dir)
         {
-            return;
+            roots.push(dirs.git_dir.clone());
         }
 
-        // 節流間隔：避免大量 fs 事件觸發 Repository::load 重跑（本身可能 200-500ms）。
-        let throttle = Duration::from_secs(1);
-        let mut last_sent = Instant::now()
-            .checked_sub(throttle)
-            .unwrap_or_else(Instant::now);
+        for root in &roots {
+            if debouncer
+                .watcher()
+                .watch(root, notify::RecursiveMode::Recursive)
+                .is_err()
+            {
+                return;
+            }
+        }
+
+        // 不再自己節流——`WorkingTree` 交給 `reload::Reloader` 的
+        // `MIN_INTERVAL`，`Full` 交給同一個 `Reloader` 的 `FULL_COOLDOWN`
+        // （`App::request_full`），兩者各自決定跑多快，watcher 只管分類
+        // 跟轉送，不重複做一層前緣節流把視窗內最後一次變更吃掉。
         loop {
             match debounce_rx.recv() {
                 Ok(Ok(events)) => {
-                    let has_relevant = events
+                    // 一批事件取 max：`Full` 涵蓋 `WorkingTree`，等同集合聯集。
+                    let Some(scope) = events
                         .iter()
-                        .any(|e| is_relevant_event(e, &git_dir, &repo_root, &ignored));
-                    if !has_relevant {
+                        .filter_map(|e| classify_event(e, &dirs, &ignored))
+                        .max()
+                    else {
                         continue;
-                    }
-                    let now = Instant::now();
-                    if claim_send_slot(&pending, now, &mut last_sent, throttle) {
-                        tx.send(AppEvent::AutoRefresh);
-                    }
+                    };
+                    let at = Instant::now()
+                        .checked_sub(DEBOUNCE_WINDOW)
+                        .unwrap_or_else(Instant::now);
+                    tx.send(AppEvent::AutoRefresh { scope, at });
                 }
-                Ok(Err(_)) => {}
+                Ok(Err(_)) => {
+                    // watcher 自己出錯（例如 inode 被回收），沒辦法再信任
+                    // 增量事件，保守當 Full 處理；`at = now()`——這種情況
+                    // 不該被任何「已經涵蓋」的判斷濾掉。
+                    tx.send(AppEvent::AutoRefresh {
+                        scope: Scope::Full,
+                        at: Instant::now(),
+                    });
+                }
                 Err(_) => break,
             }
         }
     });
 }
 
-/// 先走快速路徑：在任何 syscall 之前，先對原始 event path 做便宜的字串檢查。
-/// 只有在需要跟 `git_dir` 比較時才 canonicalize
-/// （在 macOS 上，worktree／submodule 的 `git_dir` 可能是 symlink）。
-fn is_relevant_event(
+/// 先走快速路徑：在任何 syscall 之前，先對原始 event path 做便宜的字串檢查；
+/// 只有留下來的路徑才 canonicalize（跟三個目錄比較需要，macOS 上
+/// `/tmp` → `/private/tmp` 這類 symlink 才站得住腳）。
+///
+/// `None` 是忽略；`Some(scope)` 由呼叫端跟同一批事件的其他結果取 max。
+fn classify_event(
     e: &notify_debouncer_mini::DebouncedEvent,
-    git_dir: &Path,
-    repo_root: &Path,
+    dirs: &GitDirs,
     ignored: &FxHashSet<String>,
-) -> bool {
+) -> Option<Scope> {
     use notify_debouncer_mini::DebouncedEventKind;
 
     if e.kind != DebouncedEventKind::Any {
-        return false;
+        return None;
     }
     if e.path.extension() == Some(OsStr::new("lock")) {
-        return false;
+        return None;
     }
     // macOS 在 HFS+ 上用 tar/cp 產生的 AppleDouble 檔案（._foo）。
     if e.path
@@ -891,19 +908,89 @@ fn is_relevant_event(
         .and_then(|n| n.to_str())
         .is_some_and(|n| n.starts_with("._"))
     {
-        return false;
+        return None;
     }
-    if path_has_ignored_component(&e.path, repo_root, ignored) {
-        return false;
+    if path_has_ignored_component(&e.path, &dirs.toplevel, ignored) {
+        return None;
     }
-    // 只對留下來的路徑做 canonicalize，讓跟 git_dir 的比較在 macOS 的
-    // symlink（例如 /tmp → /private/tmp）之下也能穩定。
+
     let path = e.path.canonicalize().unwrap_or_else(|_| e.path.clone());
-    if path.starts_with(git_dir) {
-        return true;
+
+    // 依序比對「自己的 git dir → common dir → toplevel」：linked worktree
+    // 的私有狀態（`HEAD`／`index`）在 `git_dir`；跟其他 worktree 共用的
+    // `refs`／`objects` 在 `common_dir`；一般 repo 三者相同，`git_dir` 這
+    // 一步就會接住所有 `.git` 底下的路徑，後面兩步是死路但無害。
+    if let Ok(rel) = path.strip_prefix(&dirs.git_dir) {
+        return classify_git_dir_relative(rel);
     }
-    // canonicalize 之後路徑可能改變，要重新檢查是否含被忽略的路徑片段。
-    !path_has_ignored_component(&path, repo_root, ignored)
+    if let Ok(rel) = path.strip_prefix(&dirs.common_dir) {
+        return classify_git_dir_relative(rel);
+    }
+    if let Ok(rel) = path.strip_prefix(&dirs.toplevel) {
+        if rel.as_os_str().is_empty() || rel == Path::new(".mailmap") {
+            return Some(Scope::Full);
+        }
+        // canonicalize 之後路徑可能改變，要重新檢查是否含被忽略的路徑片段。
+        return (!path_has_ignored_component(&path, &dirs.toplevel, ignored))
+            .then_some(Scope::WorkingTree);
+    }
+    // 三個根目錄都不是前綴——watcher 只監看這三個根，理論上不會發生，
+    // 保守當 Full。
+    Some(Scope::Full)
+}
+
+/// git dir（自己的或 common dir）內部路徑分類，`rel` 是已經 `strip_prefix`
+/// 過的相對路徑。有些規則要看兩三層——`refs/heads/**` 要 Full、
+/// `refs/prefetch/**`（`git maintenance` 每小時寫的）要忽略、
+/// `logs/refs/stash` 要 Full 但其餘 `logs/**` 忽略——所以用 slice pattern
+/// 逐段比對，不能只看第一段。
+///
+/// 空的 `refs`／`logs`（目錄本身的事件，沒有更深的路徑）歸類為忽略：
+/// watcher 是遞迴監看，目錄底下的實際內容變化一定會再各自觸發一次帶完整
+/// 路徑的事件，這裡不用為了目錄本身的 mtime 變動就觸發一次 Full。
+///
+/// `worktrees/**` 在這裡忽略：對主 worktree 來說，這條規則濾掉的是「其他」
+/// linked worktree 的私有 git dir——自己的私有路徑在 `classify_event` 裡
+/// 已經被 `git_dir` 接住，不會走到這裡比對 `common_dir`；而 linked
+/// worktree 自己的私有 git dir（`common_dir/worktrees/<name>`）底下不會再
+/// 有一層 `worktrees/`，所以這條規則不會誤傷自己的 `worktrees/<name>/HEAD`。
+fn classify_git_dir_relative(rel: &Path) -> Option<Scope> {
+    let comps: Vec<&str> = rel
+        .components()
+        .filter_map(|c| match c {
+            Component::Normal(s) => s.to_str(),
+            _ => None,
+        })
+        .collect();
+
+    match comps.as_slice() {
+        [] => Some(Scope::Full), // git dir 本身
+        ["HEAD"] | ["packed-refs"] | ["shallow"] => Some(Scope::Full),
+        ["reftable", ..] => Some(Scope::Full),
+        ["refs", "heads" | "remotes" | "tags" | "replace", ..] => Some(Scope::Full),
+        ["refs", "stash"] => Some(Scope::Full), // 是檔案，不是目錄
+        ["refs", ..] => None,
+        ["logs", "refs", "stash"] => Some(Scope::Full),
+        ["logs", ..] => None,
+        ["index"] | ["info", "exclude"] => Some(Scope::WorkingTree),
+        [name] if name.starts_with("sharedindex.") => Some(Scope::WorkingTree),
+        ["objects", ..]
+        | ["worktrees", ..]
+        | ["hooks", ..]
+        | ["rebase-merge", ..]
+        | ["rebase-apply", ..]
+        | ["sequencer", ..]
+        | ["fsmonitor--daemon", ..]
+        | ["fsmonitor--daemon.ipc"]
+        | ["gc.pid"]
+        | ["gc.log"]
+        | ["lfs", ..]
+        | ["modules", ..]
+        | ["FETCH_HEAD"]
+        | ["ORIG_HEAD"] => None,
+        [name] if name.contains("EDITMSG") || name.contains("_MSG") => None,
+        _ => Some(Scope::Full), // 未知路徑，保守當 Full
+    }
 }
 
 /// 從 .gitignore 收集純目錄／檔案名稱。Glob 模式、路徑、
@@ -1363,53 +1450,234 @@ mod tests {
         assert!(remaining > Duration::from_secs(90));
     }
 
-    // ── claim_send_slot() ──
+    // ── classify_git_dir_relative() ──
 
-    const THROTTLE: Duration = Duration::from_secs(1);
-
-    /// 節流視窗過了、沒有 pending token：正常送出，且更新 `last_sent`。
+    /// 表格測試：git dir（或 common dir）底下每一類路徑各一列，直接照
+    /// issue #120 的分類清單核對，不用真的建 worktree 或呼叫 git。
     #[test]
-    fn claim_send_slot_sends_when_not_throttled_and_no_pending_token() {
-        let pending = AtomicBool::new(false);
-        let mut last_sent = Instant::now() - THROTTLE * 2;
-        let now = Instant::now();
+    fn classify_git_dir_relative_covers_every_category() {
+        let cases: &[(&str, Option<Scope>)] = &[
+            ("", Some(Scope::Full)), // git dir 本身
+            ("HEAD", Some(Scope::Full)),
+            ("packed-refs", Some(Scope::Full)),
+            ("shallow", Some(Scope::Full)),
+            ("reftable/0x1.ref", Some(Scope::Full)),
+            ("refs/heads/main", Some(Scope::Full)),
+            ("refs/remotes/origin/main", Some(Scope::Full)),
+            ("refs/tags/v1", Some(Scope::Full)),
+            ("refs/replace/abc", Some(Scope::Full)),
+            ("refs/stash", Some(Scope::Full)), // 是檔案，不是目錄
+            ("refs/prefetch/abc", None),       // `git maintenance` 每小時寫的
+            ("refs", None),                    // 目錄本身；內容變化會另外觸發帶路徑的事件
+            ("logs/refs/stash", Some(Scope::Full)),
+            ("logs/HEAD", None),
+            ("logs/refs/heads/main", None),
+            ("logs", None),
+            ("index", Some(Scope::WorkingTree)),
+            ("info/exclude", Some(Scope::WorkingTree)),
+            ("sharedindex.abc123", Some(Scope::WorkingTree)),
+            ("objects/ab/cdef0123", None),
+            ("worktrees/other/HEAD", None),
+            ("hooks/pre-commit", None),
+            ("rebase-merge/head-name", None),
+            ("rebase-apply/patch", None),
+            ("sequencer/todo", None),
+            ("fsmonitor--daemon/cookies/xyz", None),
+            ("fsmonitor--daemon.ipc", None),
+            ("gc.pid", None),
+            ("gc.log", None),
+            ("lfs/objects/ab", None),
+            ("modules/sub/HEAD", None),
+            ("FETCH_HEAD", None),
+            ("ORIG_HEAD", None),
+            (".COMMIT_EDITMSG.swp", None), // vim 交換檔
+            ("COMMIT_EDITMSG", None),
+            ("MERGE_MSG", None),
+            ("some-unknown-future-file", Some(Scope::Full)), // 未知路徑保守當 Full
+        ];
 
-        assert!(claim_send_slot(&pending, now, &mut last_sent, THROTTLE));
-        assert_eq!(last_sent, now);
+        for (rel, expected) in cases {
+            assert_eq!(
+                classify_git_dir_relative(Path::new(rel)),
+                *expected,
+                "rel = {rel:?}"
+            );
+        }
     }
 
-    /// 節流視窗內：不送，且不觸碰 `pending`（沒有消費掉任何人設的 token）。
-    #[test]
-    fn claim_send_slot_swallows_within_throttle_window_without_consuming_token() {
-        let pending = AtomicBool::new(true);
-        let mut last_sent = Instant::now();
-        let now = last_sent + THROTTLE / 2;
+    // ── classify_event() ──
 
-        assert!(!claim_send_slot(&pending, now, &mut last_sent, THROTTLE));
-        assert!(
-            pending.load(Ordering::Acquire),
-            "節流視窗內不該消費 token，留給視窗外的下一次判斷"
+    fn touch(path: &Path) {
+        std::fs::create_dir_all(path.parent().unwrap()).unwrap();
+        std::fs::write(path, b"").unwrap();
+    }
+
+    fn any_event(path: PathBuf) -> notify_debouncer_mini::DebouncedEvent {
+        notify_debouncer_mini::DebouncedEvent::new(
+            path,
+            notify_debouncer_mini::DebouncedEventKind::Any,
+        )
+    }
+
+    /// 主 worktree（`toplevel`／`git_dir`／`common_dir` 三者相同）＋兩個
+    /// linked worktree 的假目錄樹，覆蓋 `classify_event` 依序比對三個根
+    /// 目錄、以及 `worktrees/**` 只濾掉「別人」的規則。不呼叫真的 git，
+    /// `GitDirs` 直接建構。
+    struct Fixture {
+        _root: tempfile::TempDir,
+        main: GitDirs,
+        linked: GitDirs,
+    }
+
+    fn fixture() -> Fixture {
+        let root = tempfile::tempdir().unwrap();
+        // 先 canonicalize 根目錄：macOS 的 tempdir 路徑（`/var/folders/...`）
+        // 本身可能含 symlink component，事後每個子路徑就不用再各自處理。
+        let base = root.path().canonicalize().unwrap();
+
+        let toplevel = base.join("repo");
+        let common_dir = toplevel.join(".git");
+        std::fs::create_dir_all(&common_dir).unwrap();
+
+        let linked_toplevel = base.join("linked");
+        let linked_git_dir = common_dir.join("worktrees").join("linked");
+        std::fs::create_dir_all(&linked_toplevel).unwrap();
+        std::fs::create_dir_all(&linked_git_dir).unwrap();
+        // 另一個 linked worktree，只用來確認「別人的」worktrees/<name>/
+        // 會被主 worktree 濾掉。
+        std::fs::create_dir_all(common_dir.join("worktrees").join("other")).unwrap();
+
+        Fixture {
+            _root: root,
+            main: GitDirs {
+                toplevel: toplevel.clone(),
+                git_dir: common_dir.clone(),
+                common_dir: common_dir.clone(),
+            },
+            linked: GitDirs {
+                toplevel: linked_toplevel,
+                git_dir: linked_git_dir,
+                common_dir,
+            },
+        }
+    }
+
+    /// linked worktree 自己的 `HEAD`（在它自己的 `git_dir` 底下）要能正常
+    /// 觸發 Full，不能被下面那條「別人的 worktrees/HEAD 忽略」規則誤傷。
+    #[test]
+    fn classify_event_own_linked_worktree_head_is_full() {
+        let f = fixture();
+        let path = f.linked.git_dir.join("HEAD");
+        touch(&path);
+        assert_eq!(
+            classify_event(&any_event(path), &f.linked, &FxHashSet::default()),
+            Some(Scope::Full)
         );
     }
 
-    /// `pending` 是一次性 token：第一次呼叫吞掉（不送）並清成 `false`，且更新
-    /// `last_sent`；緊接著第二次呼叫（視窗外）沒有 token 可吞，正常送出。
-    /// 這是把單向閂鎖換成消費式 token 的核心不變式：token 讀了就清，不需要
-    /// 任何第三方負責清除。
+    /// 從主 worktree 看，另一個 linked worktree 的私有 `HEAD` 要被忽略——
+    /// 這條路徑落在 `common_dir/worktrees/<name>/` 底下，跟自己的狀態無關。
     #[test]
-    fn claim_send_slot_consumes_pending_token_exactly_once() {
-        let pending = AtomicBool::new(true);
-        let mut last_sent = Instant::now() - THROTTLE * 2;
-        let first = Instant::now();
+    fn classify_event_other_worktree_head_is_ignored_from_main() {
+        let f = fixture();
+        let path = f
+            .main
+            .common_dir
+            .join("worktrees")
+            .join("linked")
+            .join("HEAD");
+        touch(&path);
+        assert_eq!(
+            classify_event(&any_event(path), &f.main, &FxHashSet::default()),
+            None
+        );
+    }
 
-        assert!(!claim_send_slot(&pending, first, &mut last_sent, THROTTLE));
-        assert!(!pending.load(Ordering::Acquire), "token 應該被消費掉");
-        assert_eq!(last_sent, first, "吞掉的這批也算已送，更新 last_sent");
+    #[test]
+    fn classify_event_mailmap_is_full() {
+        let f = fixture();
+        let path = f.main.toplevel.join(".mailmap");
+        touch(&path);
+        assert_eq!(
+            classify_event(&any_event(path), &f.main, &FxHashSet::default()),
+            Some(Scope::Full)
+        );
+    }
 
-        let second = first + THROTTLE * 2;
-        assert!(
-            claim_send_slot(&pending, second, &mut last_sent, THROTTLE),
-            "token 已經被上一次呼叫消費掉，這次沒有東西可吞，該正常送出"
+    #[test]
+    fn classify_event_toplevel_itself_is_full() {
+        let f = fixture();
+        assert_eq!(
+            classify_event(
+                &any_event(f.main.toplevel.clone()),
+                &f.main,
+                &FxHashSet::default()
+            ),
+            Some(Scope::Full)
+        );
+    }
+
+    #[test]
+    fn classify_event_ordinary_working_tree_file_is_working_tree() {
+        let f = fixture();
+        let path = f.main.toplevel.join("src").join("main.rs");
+        touch(&path);
+        assert_eq!(
+            classify_event(&any_event(path), &f.main, &FxHashSet::default()),
+            Some(Scope::WorkingTree)
+        );
+    }
+
+    /// `.gitignore` 收集到的名稱片段——不管出現在路徑的哪一層——都要濾掉，
+    /// 避免 build 產生子目錄時引發 Full 風暴。
+    #[test]
+    fn classify_event_ignored_component_is_ignored() {
+        let f = fixture();
+        let path = f.main.toplevel.join("target").join("debug").join("x");
+        touch(&path);
+        let mut ignored = FxHashSet::default();
+        ignored.insert("target".to_string());
+        assert_eq!(classify_event(&any_event(path), &f.main, &ignored), None);
+    }
+
+    /// `.lock` 副檔名在 canonicalize 之前就被濾掉，檔案不必真的存在。
+    #[test]
+    fn classify_event_lock_extension_is_ignored_without_touching_disk() {
+        let f = fixture();
+        let path = f.main.toplevel.join("index.lock");
+        assert_eq!(
+            classify_event(&any_event(path), &f.main, &FxHashSet::default()),
+            None
+        );
+    }
+
+    /// macOS HFS+ 上 tar／cp 產生的 AppleDouble 檔案。
+    #[test]
+    fn classify_event_appledouble_file_is_ignored() {
+        let f = fixture();
+        let path = f.main.toplevel.join("._foo");
+        assert_eq!(
+            classify_event(&any_event(path), &f.main, &FxHashSet::default()),
+            None
+        );
+    }
+
+    /// 開了 `core.fsmonitor` 的 repo（Scalar 在 macOS 預設開）每次
+    /// `git status` 都會在這裡建檔——歸類成 Full 就會變成
+    /// 「Full → status → cookie → Full」的無窮迴圈，必須是忽略。
+    #[test]
+    fn classify_event_fsmonitor_cookie_is_ignored() {
+        let f = fixture();
+        let path = f
+            .main
+            .git_dir
+            .join("fsmonitor--daemon")
+            .join("cookies")
+            .join("abc");
+        touch(&path);
+        assert_eq!(
+            classify_event(&any_event(path), &f.main, &FxHashSet::default()),
+            None
         );
     }
 

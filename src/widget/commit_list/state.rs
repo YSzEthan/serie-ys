@@ -1,14 +1,15 @@
 use std::{cell::Cell, rc::Rc};
 
 use ratatui::{layout::Rect, style::Color};
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashMap;
 use tui_input::Input;
 
-use crate::git::{CommitHash, Head, Ref, WorkingChanges};
+use crate::git::{CommitHash, Head, Ref, Repository, WorkingChanges};
 use crate::graph::{CellWidthType, Graph, TextCell};
 use crate::widget::scroll;
+use crate::RemoteOnly;
 
-use super::search::{FilterState, MatchOptions, SearchMatch, SearchState};
+use super::search::{FilterState, MatchOptions, MatchSet, SearchState};
 use super::{ChildPickOption, CommitInfo, FilteredIdx, RawCommitIdx, VisibleIdx};
 
 /// `CommitListState::select_child` 的結果。標 `#[must_use]`：忽略回傳值等於
@@ -47,14 +48,21 @@ fn child_pick_label(info: &CommitInfo) -> String {
 #[derive(Debug)]
 pub struct CommitListState<'a> {
     pub(super) commits: Vec<CommitInfo<'a>>,
-    commit_hash_to_raw: FxHashMap<CommitHash, RawCommitIdx>,
+    /// hash → raw index 查詢改走 `Repository::index_of`（跟 `commit_index`
+    /// 是同一份 `FxHashMap`），App 重建不必再另外配置一份 N 筆的 map。
+    repository: &'a Repository,
     graph: Rc<Graph>,
     // 由主要 graph 與 filtered graph 共用：兩者都是從同一份
     // `GraphColorSet` / `Repository` 建出來的，所以只有一份，
     // 不是每個 graph 各配一份。
     graph_colors: Vec<Color>,
-    pub(super) head_commit_hash: Option<CommitHash>,
+    pub(super) head_raw: Option<RawCommitIdx>,
     cell_width_type: CellWidthType,
+    /// 欄寬上限生效時畫得下的欄數（含最後的溢位欄），沒有上限時是
+    /// `usize::MAX`。跟 `cell_width_type` 一樣每幀由 `set_layout` 寫入；
+    /// 存成「上限」而不是「欄數」，兩幀之間切換 filtered graph 時
+    /// `graph_cols()` 也不會超過當下那張圖的寬度。
+    col_limit: usize,
     /// 緊湊模式：commit 文字貼齊該列 graph 實際畫到的最右邊，marker 欄與
     /// graph 右側留白都拿掉。跟 `cell_width_type` 一樣，每幀由
     /// `CommitList::render` 依 `area.width` 重新決定（見
@@ -68,35 +76,30 @@ pub struct CommitListState<'a> {
 
     // Filtered graph（remote-only commits 被隱藏時使用）
     filtered: Option<Rc<Graph>>,
-    // Marker-overlay 的顏色對照表（commit_hash -> color），鍵的方式跟上面的
-    // `graph_colors`（以 pos_x 為索引的調色盤）不同。雖然名稱相近，
-    // 但不是同一個概念 -- 不要合併。
-    filtered_graph_colors: Option<FxHashMap<CommitHash, Color>>,
 
     ref_name_to_commit_index_map: FxHashMap<String, RawCommitIdx>,
 
     pub(super) search_state: SearchState,
     pub(super) search_input: Input,
-    pub(super) search_matches: Vec<SearchMatch>,
     /// 目前生效的搜尋設定。刻意不放進 `SearchState::Searching`：套用之後
     /// （`Applied`）這組設定還要繼續驅動 refresh 還原，跟輸入模式無關。
     pub(super) search_options: MatchOptions,
-
-    // 最佳化：記住前一次搜尋，供增量搜尋使用。整包存 `MatchOptions`（而非拆成
-    // 散裝欄位）：`update_search_matches` 的 `settings_unchanged` 判斷式靠這個
-    // 型別的 `PartialEq` 一次比較 ignore_case/fuzzy/target 三個維度，往後這個
-    // struct 再加欄位，這裡結構上不可能漏比對。
-    pub(super) last_search_query: String,
-    pub(super) last_matched_indices: Vec<RawCommitIdx>,
-    pub(super) last_search_options: MatchOptions,
+    /// 上次算出的 query／設定／命中清單，供增量搜尋與 render highlight 用，
+    /// 見 `MatchSet` 文件。
+    pub(super) search: MatchSet,
 
     // Filter 模式
     pub(super) filter_state: FilterState,
     pub(super) filter_input: Input,
     /// 目前生效的 filter 設定，理由同 `search_options`。
     pub(super) filter_options: MatchOptions,
-    pub(super) filtered_indices: Vec<RawCommitIdx>,
-    pub(super) text_filtered_indices: Vec<RawCommitIdx>,
+    /// `None` = 沒有 filter 生效；`Some(v)` = filter 生效（`v` 可以是空的，
+    /// 代表零命中）。兩者不能都用空 `Vec` 表示，否則零命中會被誤判成沒有
+    /// filter（`current_selected_raw` 曾經踩過這個地雷，見該處註解）。
+    pub(super) filtered_indices: Option<Vec<RawCommitIdx>>,
+    /// 只跑過文字 filter 的命中清單，`rebuild_filtered_indices` 再跟
+    /// remote-only 過濾交集成 `filtered_indices`。
+    pub(super) filter: MatchSet,
 
     pub(super) selected: usize,
     pub(super) offset: usize,
@@ -110,10 +113,8 @@ pub struct CommitListState<'a> {
     pub(super) inline_detail_height: u16,
 
     pub(super) show_remote_refs: bool,
-    remote_only_commits: FxHashSet<CommitHash>,
+    remote_only_commits: RemoteOnly,
     needs_graph_clear: bool,
-
-    name_cell_width: u16,
 
     working_changes: Option<WorkingChanges>,
 
@@ -123,15 +124,15 @@ pub struct CommitListState<'a> {
 impl<'a> CommitListState<'a> {
     pub fn new(
         commits: Vec<CommitInfo<'a>>,
+        repository: &'a Repository,
         graph: Rc<Graph>,
         graph_colors: Vec<Color>,
-        head_commit_hash: Option<CommitHash>,
+        head_raw: Option<RawCommitIdx>,
         head: Head,
         ref_name_to_commit_index_map: FxHashMap<String, RawCommitIdx>,
         search_defaults: MatchOptions,
         filtered: Option<Rc<Graph>>,
-        filtered_graph_colors: Option<FxHashMap<CommitHash, Color>>,
-        remote_only_commits: FxHashSet<CommitHash>,
+        remote_only_commits: RemoteOnly,
         working_changes: Option<WorkingChanges>,
         scrolloff: usize,
     ) -> CommitListState<'a> {
@@ -139,47 +140,31 @@ impl<'a> CommitListState<'a> {
         let has_virtual_row = working_changes.as_ref().is_some_and(|wc| !wc.is_empty());
         let vr_offset = if has_virtual_row { 1 } else { 0 };
         let total = commit_count + vr_offset;
-        let name_cell_width = commits
-            .iter()
-            .map(|c| console::measure_text_width(&c.commit.author_name) as u16)
-            .max()
-            .unwrap_or(0);
-        let commit_hash_to_raw = commits
-            .iter()
-            .enumerate()
-            .map(|(i, c)| (c.commit.commit_hash.clone(), RawCommitIdx(i)))
-            .collect();
         CommitListState {
             commits,
-            commit_hash_to_raw,
+            repository,
             graph,
             graph_colors,
-            head_commit_hash,
+            head_raw,
             // 佔位值：`CommitList::render` 在第一次繪製時就會透過
             // `set_layout` 依實際 `area.width` 覆寫，這裡的值只是讓 struct
             // 在那之前保持合法狀態。
             cell_width_type: CellWidthType::Double,
+            col_limit: usize::MAX,
             compact: false,
             selected_text_x: 0,
             head,
             filtered,
-            filtered_graph_colors,
             ref_name_to_commit_index_map,
             search_state: SearchState::Inactive,
             search_input: Input::default(),
-            search_matches: vec![SearchMatch::default(); commit_count],
             search_options: search_defaults,
-            last_search_query: String::new(),
-            last_matched_indices: Vec::new(),
-            // 初始值不影響正確性：`can_use_incremental` 有
-            // `!last_search_query.is_empty()` 守衛，首次呼叫 `update_search_matches`
-            // 時 `last_search_query` 必為空字串，一定會走全量掃描並覆寫這個值。
-            last_search_options: search_defaults,
+            search: MatchSet::default(),
             filter_state: FilterState::Inactive,
             filter_input: Input::default(),
             filter_options: MatchOptions::FILTER_DEFAULT,
-            filtered_indices: Vec::new(),
-            text_filtered_indices: Vec::new(),
+            filtered_indices: None,
+            filter: MatchSet::default(),
             selected: 0,
             offset: 0,
             total,
@@ -189,13 +174,12 @@ impl<'a> CommitListState<'a> {
             show_remote_refs: true,
             remote_only_commits,
             needs_graph_clear: false,
-            name_cell_width,
             working_changes,
             selected_row_overflows: Cell::new(false),
         }
     }
 
-    pub fn into_graph_parts(self) -> (Option<Rc<Graph>>, FxHashSet<CommitHash>) {
+    pub fn into_graph_parts(self) -> (Option<Rc<Graph>>, RemoteOnly) {
         (self.filtered, self.remote_only_commits)
     }
 
@@ -203,7 +187,18 @@ impl<'a> CommitListState<'a> {
     /// -- 走的是跟 `current_graph()` 本身一樣的 filtered/`show_remote_refs`
     /// fallback，所以永遠對得上實際被渲染的那個 graph。
     pub(super) fn graph_cell_width(&self) -> u16 {
-        crate::graph::graph_cell_width(self.current_graph(), self.cell_width_type)
+        crate::graph::graph_cell_width(self.graph_cols(), self.cell_width_type)
+    }
+
+    /// 這一幀實際畫的 graph 欄數：`build_text_cells` 與 `graph_cell_width`
+    /// 共用這一個值（#21）。
+    pub(super) fn graph_cols(&self) -> usize {
+        self.current_cell_count().min(self.col_limit)
+    }
+
+    /// 目前的 graph 啟用了長線截斷；欄寬上限只在這時候套用。
+    pub(super) fn current_graph_truncated(&self) -> bool {
+        self.current_graph().truncated()
     }
 
     /// `graph_cell_width()` 加上右側留白（非緊湊模式下的版面才有這一格）。
@@ -217,10 +212,20 @@ impl<'a> CommitListState<'a> {
 
     /// 每幀由 `CommitList::render` 呼叫，寫入依 `area.width` 重新決定的
     /// 寬度／緊湊設定。要在 `build_visible_rows`（它內部呼叫的
-    /// `text_cells_for_hash`／`is_compact` 都讀這兩個欄位）之前呼叫。
-    pub(super) fn set_layout(&mut self, cell_width_type: CellWidthType, compact: bool) {
+    /// `text_cells_for_raw`／`is_compact` 都讀這兩個欄位）之前呼叫。
+    pub(super) fn set_layout(
+        &mut self,
+        cell_width_type: CellWidthType,
+        compact: bool,
+        cols: usize,
+    ) {
         self.cell_width_type = cell_width_type;
         self.compact = compact;
+        self.col_limit = if cols < self.current_cell_count() {
+            cols
+        } else {
+            usize::MAX
+        };
     }
 
     /// 每幀由 `CommitList::render` 在 `build_visible_rows` 算出選取列的
@@ -254,7 +259,7 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn name_cell_width(&self) -> u16 {
-        self.name_cell_width
+        self.repository.name_cell_width()
     }
 
     pub fn set_inline_detail_height(&mut self, h: u16) {
@@ -337,13 +342,11 @@ impl<'a> CommitListState<'a> {
         self.has_virtual_row() && self.offset + self.selected == 0
     }
 
-    pub(super) fn first_visible_commit_hash(&self) -> Option<&CommitHash> {
-        let idx: RawCommitIdx = if self.filtered_indices.is_empty() {
-            RawCommitIdx(0)
-        } else {
-            *self.filtered_indices.first()?
-        };
-        self.commits.get(idx.0).map(|c| &c.commit.commit_hash)
+    pub(super) fn first_visible_raw(&self) -> Option<RawCommitIdx> {
+        match &self.filtered_indices {
+            None => (!self.commits.is_empty()).then_some(RawCommitIdx(0)),
+            Some(v) => v.first().copied(),
+        }
     }
 
     // --- 座標系 accessor / 轉換 ---------------------------------------------
@@ -357,22 +360,14 @@ impl<'a> CommitListState<'a> {
         &self.commits[idx.0]
     }
 
-    pub(super) fn search_match(&self, idx: RawCommitIdx) -> &SearchMatch {
-        &self.search_matches[idx.0]
-    }
-
-    pub(super) fn search_match_mut(&mut self, idx: RawCommitIdx) -> &mut SearchMatch {
-        &mut self.search_matches[idx.0]
-    }
-
     pub(super) fn raw_to_filtered(&self, raw: RawCommitIdx) -> Option<FilteredIdx> {
-        resolve_raw_to_filtered(&self.filtered_indices, self.commits.len(), raw)
+        resolve_raw_to_filtered(self.filtered_indices.as_deref(), self.commits.len(), raw)
     }
 
     /// `None` 代表輸入的 `FilteredIdx` 越界。caller 不得 fallback 成 `RawCommitIdx(0)`：
     /// 合法對應只有「早退 / 游標不動」或 `debug_assert!`（render path invariant）。
     pub(super) fn filtered_to_raw(&self, f: FilteredIdx) -> Option<RawCommitIdx> {
-        resolve_filtered_to_raw(&self.filtered_indices, self.commits.len(), f)
+        resolve_filtered_to_raw(self.filtered_indices.as_deref(), self.commits.len(), f)
     }
 
     fn visible_to_filtered(&self, v: VisibleIdx) -> FilteredIdx {
@@ -431,36 +426,79 @@ impl<'a> CommitListState<'a> {
         self.working_changes.as_ref()
     }
 
+    /// 背景重新整理（`reload::Reloader`）送達新的 working changes 時呼叫，
+    /// 就地更新，不重建整個 `CommitListState`。
+    ///
+    /// 虛擬列的有無（`has_virtual_row()`，`Some` 且非空才算有）沒有變的話
+    /// 只換內容，游標／捲動完全不動。有變的話換算 `delta`（`+1` 出現、
+    /// `-1` 消失），永遠透過 `place()` 寫入新的 `offset`／`selected`——不
+    /// 直接改這兩個欄位：filter 篩到 0 筆時 `total` 可能是 0，`place` 在
+    /// `target >= total` 時是 no-op，直接改的話不變式會破，這裡改成先算
+    /// 目標再交給 `place` 夾回，`target`／`prev_offset` 兩處 `.max(0)`
+    /// 就是為了在那類情況下夾出合法值，不需要再另外特判。
+    ///
+    /// - `target = 目前 visible index + delta`，夾到 `[0, total-1]`——虛擬列
+    ///   消失、原本選在虛擬列上（`cur == 0`）時，`target` 正好落在 0，也
+    ///   就是新的第一列。
+    /// - `prev_offset`：`offset == 0` 時傳 `0`（跳轉語意不變，被選的
+    ///   commit 隨虛擬列出現/消失上下移一列）；否則傳 `offset + delta`
+    ///   （捲動語意，被選的 commit 留在同一個螢幕列）。
+    pub fn set_working_changes(&mut self, working_changes: Option<WorkingChanges>) {
+        let old_vr = self.virtual_row_offset();
+        self.working_changes = working_changes;
+        let new_vr = self.virtual_row_offset();
+
+        if old_vr == new_vr {
+            return;
+        }
+
+        let delta = new_vr as isize - old_vr as isize;
+        let cur = self.current_visible().0;
+        let target = (cur as isize + delta).max(0) as usize;
+        let prev_offset = if self.offset == 0 {
+            0
+        } else {
+            (self.offset as isize + delta).max(0) as usize
+        };
+
+        self.total = self.total.saturating_sub(old_vr) + new_vr;
+        if self.total == 0 || self.height == 0 {
+            // `place` 在這兩種情況下是 no-op，不能指望它幫忙夾回——對齊
+            // `rebuild_filtered_indices` 開頭那個既有例外的作法，直接歸零。
+            self.offset = 0;
+            self.selected = 0;
+            return;
+        }
+        self.place(VisibleIdx(target.min(self.total - 1)), prev_offset);
+    }
+
     pub(super) fn rebuild_filtered_indices(&mut self) {
         let has_text_filter = !self.filter_input.value().is_empty();
         let has_remote_filter = !self.show_remote_refs;
         let vr = self.virtual_row_offset();
         let prev_visible = self.current_visible();
 
-        if !has_text_filter && !has_remote_filter {
-            self.filtered_indices.clear();
-            self.total = self.commits.len() + vr;
+        self.filtered_indices = if !has_text_filter && !has_remote_filter {
+            None
         } else {
             let base: Box<dyn Iterator<Item = RawCommitIdx>> = if has_text_filter {
-                Box::new(self.text_filtered_indices.iter().copied())
+                Box::new(self.filter.hits.iter().copied())
             } else {
                 Box::new((0..self.commits.len()).map(RawCommitIdx))
             };
 
-            if has_remote_filter {
-                self.filtered_indices = base
-                    .filter(|raw| {
-                        !self
-                            .remote_only_commits
-                            .contains(self.commits[raw.0].commit_hash())
-                    })
-                    .collect();
+            Some(if has_remote_filter {
+                base.filter(|raw| !self.remote_only_commits.contains(raw.0))
+                    .collect()
             } else {
-                self.filtered_indices = base.collect();
-            }
-
-            self.total = self.filtered_indices.len() + vr;
-        }
+                base.collect()
+            })
+        };
+        self.total = self
+            .filtered_indices
+            .as_ref()
+            .map_or(self.commits.len(), Vec::len)
+            + vr;
 
         let clamped = prev_visible.0.min(self.total.saturating_sub(1));
         self.offset = 0;
@@ -483,7 +521,7 @@ impl<'a> CommitListState<'a> {
         let Some(parent) = self.selected_commit_parent_hash() else {
             return;
         };
-        let Some(&raw) = self.commit_hash_to_raw.get(parent) else {
+        let Some(raw) = self.repository.index_of(parent).map(RawCommitIdx) else {
             return;
         };
         self.step_to_raw(raw);
@@ -620,9 +658,15 @@ impl<'a> CommitListState<'a> {
         self.commit(self.current_selected_raw()).refs()
     }
 
-    /// 當前選中的 raw commit index。虛擬行選中時退而求其次回 `RawCommitIdx(0)`。
+    /// 當前選中的 raw commit index。虛擬行選中、或 filter 零命中（`total == 0`）
+    /// 時退而求其次回 `RawCommitIdx(0)`——後者不是合法的選取，只是讓呼叫端不必
+    /// 為「沒有東西可選」另外分岔；呼叫端已各自用 `total == 0` 或
+    /// `is_virtual_row_selected()` 判斷是否要理會這個 fallback。
     /// Invariant：`total > 0` 時必回合法 raw；render path 依此不處理 `None`。
     pub fn current_selected_raw(&self) -> RawCommitIdx {
+        if self.total == 0 {
+            return RawCommitIdx(0);
+        }
         let filtered = self.visible_to_filtered(self.current_visible());
         match self.filtered_to_raw(filtered) {
             Some(raw) => raw,
@@ -667,7 +711,7 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn select_commit_hash(&mut self, commit_hash: &CommitHash) {
-        let Some(&raw) = self.commit_hash_to_raw.get(commit_hash) else {
+        let Some(raw) = self.repository.index_of(commit_hash).map(RawCommitIdx) else {
             return;
         };
         if let Some(target) = self.raw_to_visible(raw) {
@@ -682,7 +726,7 @@ impl<'a> CommitListState<'a> {
     /// 都要跟一般移動手感一致，用這支；refresh 還原視角改用
     /// `restore_selected_row`，不要跟這兩支混用。
     pub fn step_to_commit_hash(&mut self, commit_hash: &CommitHash) {
-        let Some(&raw) = self.commit_hash_to_raw.get(commit_hash) else {
+        let Some(raw) = self.repository.index_of(commit_hash).map(RawCommitIdx) else {
             return;
         };
         self.step_to_raw(raw);
@@ -691,10 +735,10 @@ impl<'a> CommitListState<'a> {
     /// 把游標移到 HEAD 指向的 commit,畫面比照上下移動的最小捲動手感
     /// (不把 HEAD 硬拉到最上面)。HEAD 不存在或被 filter 濾掉時靜默不動。
     pub fn select_head(&mut self) {
-        let Some(head) = self.head_commit_hash.clone() else {
+        let Some(head) = self.head_raw else {
             return;
         };
-        self.step_to_commit_hash(&head);
+        self.step_to_raw(head);
     }
 
     fn current_graph(&self) -> &Graph {
@@ -706,53 +750,71 @@ impl<'a> CommitListState<'a> {
         &self.graph
     }
 
-    pub(super) fn text_cells_for_hash(&self, hash: &CommitHash) -> Option<Vec<TextCell>> {
-        crate::graph::text_cells(
-            self.current_graph(),
-            hash,
+    /// `raw` 在目前 graph 上的 text cells；不在這張 graph 裡時回 `None`。
+    pub(super) fn text_cells_for_raw(&self, raw: RawCommitIdx) -> Option<Vec<TextCell>> {
+        let graph = self.current_graph();
+        let row = graph.row_of(raw.0)?;
+        Some(crate::graph::text_cells(
+            graph,
+            row,
+            self.virtual_head_row(),
             &self.graph_colors,
             self.cell_width_type,
-        )
+            self.graph_cols(),
+        ))
     }
 
-    pub(super) fn marker_color(&self, commit_info: &CommitInfo<'_>) -> Color {
-        if !self.show_remote_refs {
-            if let Some(ref colors) = self.filtered_graph_colors {
-                if let Some(&color) = colors.get(commit_info.commit_hash()) {
-                    return color;
-                }
-            }
+    /// virtual row 顯示中時，HEAD 在目前 graph 的列（`text_cells` 從這裡往上補線）。
+    fn virtual_head_row(&self) -> Option<usize> {
+        if !self.has_virtual_row() {
+            return None;
         }
-        commit_info.graph_color
+        self.current_graph().row_of(self.head_raw?.0)
+    }
+
+    /// `raw` 的 dot 在目前 graph 上的起始 cell（不是 char）；不在這張 graph 裡時回 `None`。
+    pub(super) fn dot_cell(&self, raw: RawCommitIdx) -> Option<usize> {
+        let graph = self.current_graph();
+        let row = graph.row_of(raw.0)?;
+        // 落在溢位範圍的 commit，dot 畫在溢位欄（見 `build_text_cells`）。
+        let col = graph.col(row).min(self.graph_cols().saturating_sub(1));
+        Some(col * self.cell_width_type.cells_per_column())
+    }
+
+    /// marker 跟 dot 同色：取 commit 所在欄的調色盤顏色。filtered graph 裡沒有
+    /// 這個 commit 時退回主 graph 的欄。
+    pub(super) fn marker_color(&self, raw: RawCommitIdx) -> Color {
+        let col = [self.current_graph(), &self.graph]
+            .into_iter()
+            .find_map(|g| g.row_of(raw.0).map(|row| g.col(row)));
+        col.map_or(Color::Reset, |col| {
+            crate::graph::palette_color(&self.graph_colors, col)
+        })
     }
 }
 
-/// Pure：把 raw commit index 轉成 filtered view 的位置。filter 空時 alias 到 raw。
+/// Pure：把 raw commit index 轉成 filtered view 的位置。`None`（沒有 filter）
+/// 時 alias 到 raw。`filtered_indices` 恆為遞增序列，用 `binary_search`。
 fn resolve_raw_to_filtered(
-    filtered_indices: &[RawCommitIdx],
+    filtered_indices: Option<&[RawCommitIdx]>,
     commits_len: usize,
     raw: RawCommitIdx,
 ) -> Option<FilteredIdx> {
-    if filtered_indices.is_empty() {
-        (raw.0 < commits_len).then_some(FilteredIdx(raw.0))
-    } else {
-        filtered_indices
-            .iter()
-            .position(|r| *r == raw)
-            .map(FilteredIdx)
+    match filtered_indices {
+        None => (raw.0 < commits_len).then_some(FilteredIdx(raw.0)),
+        Some(v) => v.binary_search(&raw).ok().map(FilteredIdx),
     }
 }
 
 /// Pure：把 filtered view 的位置轉回 raw commit index。越界回 None。
 fn resolve_filtered_to_raw(
-    filtered_indices: &[RawCommitIdx],
+    filtered_indices: Option<&[RawCommitIdx]>,
     commits_len: usize,
     f: FilteredIdx,
 ) -> Option<RawCommitIdx> {
-    if filtered_indices.is_empty() {
-        (f.0 < commits_len).then_some(RawCommitIdx(f.0))
-    } else {
-        filtered_indices.get(f.0).copied()
+    match filtered_indices {
+        None => (f.0 < commits_len).then_some(RawCommitIdx(f.0)),
+        Some(v) => v.get(f.0).copied(),
     }
 }
 
@@ -787,16 +849,22 @@ mod tests {
     // 避開 CommitListState fixture 的建構成本；涵蓋原始 panic 路徑。
 
     #[test]
-    fn filtered_to_raw_empty_filter_passes_through_when_in_range() {
+    fn filtered_to_raw_no_filter_passes_through_when_in_range() {
         assert_eq!(
-            resolve_filtered_to_raw(&[], 10, FilteredIdx(5)),
+            resolve_filtered_to_raw(None, 10, FilteredIdx(5)),
             Some(RawCommitIdx(5))
         );
     }
 
     #[test]
-    fn filtered_to_raw_empty_filter_out_of_range_returns_none() {
-        assert_eq!(resolve_filtered_to_raw(&[], 10, FilteredIdx(10)), None);
+    fn filtered_to_raw_no_filter_out_of_range_returns_none() {
+        assert_eq!(resolve_filtered_to_raw(None, 10, FilteredIdx(10)), None);
+    }
+
+    #[test]
+    fn filtered_to_raw_empty_filter_is_zero_hits_not_no_filter() {
+        // Some(空) 是「filter 生效但零命中」，不是「沒有 filter」——不能 alias 到 raw。
+        assert_eq!(resolve_filtered_to_raw(Some(&[]), 10, FilteredIdx(0)), None);
     }
 
     #[test]
@@ -804,7 +872,7 @@ mod tests {
         // 原始 panic 場景：filtered_indices.len() = 234，index 309 越界。
         let filtered: Vec<RawCommitIdx> = (0..234).map(RawCommitIdx).collect();
         assert_eq!(
-            resolve_filtered_to_raw(&filtered, 500, FilteredIdx(309)),
+            resolve_filtered_to_raw(Some(&filtered), 500, FilteredIdx(309)),
             None,
             "越界 FilteredIdx 應返回 None 而非 panic"
         );
@@ -814,7 +882,7 @@ mod tests {
     fn filtered_to_raw_active_filter_returns_mapped_raw() {
         let filtered = vec![RawCommitIdx(3), RawCommitIdx(7), RawCommitIdx(12)];
         assert_eq!(
-            resolve_filtered_to_raw(&filtered, 20, FilteredIdx(2)),
+            resolve_filtered_to_raw(Some(&filtered), 20, FilteredIdx(2)),
             Some(RawCommitIdx(12))
         );
     }
@@ -823,7 +891,7 @@ mod tests {
     fn raw_to_filtered_finds_position() {
         let filtered = vec![RawCommitIdx(3), RawCommitIdx(7), RawCommitIdx(12)];
         assert_eq!(
-            resolve_raw_to_filtered(&filtered, 20, RawCommitIdx(7)),
+            resolve_raw_to_filtered(Some(&filtered), 20, RawCommitIdx(7)),
             Some(FilteredIdx(1))
         );
     }
@@ -833,15 +901,15 @@ mod tests {
         let filtered = vec![RawCommitIdx(3), RawCommitIdx(7), RawCommitIdx(12)];
         // raw=5 不在 filter 內 → None（caller 應「游標不動」而非 fallback 到 0）
         assert_eq!(
-            resolve_raw_to_filtered(&filtered, 20, RawCommitIdx(5)),
+            resolve_raw_to_filtered(Some(&filtered), 20, RawCommitIdx(5)),
             None
         );
     }
 
     #[test]
-    fn raw_to_filtered_empty_filter_alias_to_raw() {
+    fn raw_to_filtered_no_filter_alias_to_raw() {
         assert_eq!(
-            resolve_raw_to_filtered(&[], 10, RawCommitIdx(5)),
+            resolve_raw_to_filtered(None, 10, RawCommitIdx(5)),
             Some(FilteredIdx(5))
         );
     }
@@ -918,12 +986,12 @@ mod tests {
         // caller 不動游標，整體不 panic。
         let filtered: Vec<RawCommitIdx> = (0..234).map(RawCommitIdx).collect();
         let target_raw = RawCommitIdx(309);
-        let visible = resolve_raw_to_filtered(&filtered, 500, target_raw);
+        let visible = resolve_raw_to_filtered(Some(&filtered), 500, target_raw);
         assert_eq!(visible, None, "raw=309 不在 filtered_indices 內 → None");
 
         // 若 target_raw 恰好在 filter 內（例如 raw=100 → filtered=100），
         // 再走 compute_selection 必得合法 (offset, selected)。
-        let in_filter = resolve_raw_to_filtered(&filtered, 500, RawCommitIdx(100)).unwrap();
+        let in_filter = resolve_raw_to_filtered(Some(&filtered), 500, RawCommitIdx(100)).unwrap();
         // filtered total = 234 + vr(0); height=50；target=100
         let (offset, selected) = compute_selection(VisibleIdx(in_filter.0), 234, 50, 0).unwrap();
         assert!(offset + selected < 234);
@@ -936,12 +1004,12 @@ mod tests {
     /// `n` 個互不相關的 commit，全部可見，游標停在第一列，`height`／
     /// `scrolloff` 照呼叫端指定的值設定。
     fn scrolloff_fixture(
-        commits: &[Commit],
+        repository: &Repository,
         height: usize,
         scrolloff: usize,
     ) -> CommitListState<'_> {
-        let visible: Vec<usize> = (0..commits.len()).collect();
-        let mut state = build_state_visible_raws(commits, &visible);
+        let visible: Vec<usize> = (0..repository.all_commits().len()).collect();
+        let mut state = build_state_visible_raws(repository, &visible);
         state.scrolloff = scrolloff;
         state.reset_height(height);
         state.select_first();
@@ -957,7 +1025,8 @@ mod tests {
     #[test]
     fn scrolloff_keeps_context_for_selection_and_single_row_scrolling() {
         let commits = commits_fixture(12);
-        let mut state = scrolloff_fixture(&commits, 6, 2);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = scrolloff_fixture(&repository, 6, 2);
 
         for _ in 0..4 {
             state.select_next();
@@ -985,7 +1054,8 @@ mod tests {
     #[test]
     fn scrolloff_is_limited_by_list_height() {
         let commits = commits_fixture(8);
-        let mut state = scrolloff_fixture(&commits, 2, 10);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = scrolloff_fixture(&repository, 2, 10);
 
         state.select_next();
         state.select_next();
@@ -1001,7 +1071,8 @@ mod tests {
     #[test]
     fn refresh_restores_selected_row_with_scrolloff() {
         let commits = commits_fixture(30);
-        let mut state = scrolloff_fixture(&commits, 10, 2);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = scrolloff_fixture(&repository, 10, 2);
 
         state.set_visible_selection(VisibleIdx(15));
         assert_eq!(state.current_list_status(), (2, 13, 10));
@@ -1019,7 +1090,8 @@ mod tests {
     fn restore_selected_row_on_last_page_keeps_same_commit() {
         for scrolloff in [0, 15] {
             let commits = commits_fixture(100);
-            let mut state = scrolloff_fixture(&commits, 10, scrolloff);
+            let repository = Repository::from_commits(commits.clone());
+            let mut state = scrolloff_fixture(&repository, 10, scrolloff);
 
             state.select_last();
             assert_eq!(state.current_list_status(), (9, 90, 10), "so={scrolloff}");
@@ -1034,7 +1106,8 @@ mod tests {
     #[test]
     fn restore_selected_row_clamps_row_to_height() {
         let commits = commits_fixture(30);
-        let mut state = scrolloff_fixture(&commits, 10, 0);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = scrolloff_fixture(&repository, 10, 0);
 
         state.set_visible_selection(VisibleIdx(20));
         assert_eq!(state.current_list_status(), (0, 20, 10));
@@ -1046,7 +1119,8 @@ mod tests {
     #[test]
     fn restore_selected_row_inside_margin_is_pushed_out() {
         let commits = commits_fixture(30);
-        let mut state = scrolloff_fixture(&commits, 10, 2);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = scrolloff_fixture(&repository, 10, 2);
 
         state.set_visible_selection(VisibleIdx(15));
         assert_eq!(state.current_list_status(), (2, 13, 10));
@@ -1058,7 +1132,8 @@ mod tests {
     #[test]
     fn default_scrolloff_15_in_tall_viewport() {
         let commits = commits_fixture(100);
-        let mut state = scrolloff_fixture(&commits, 40, 15);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = scrolloff_fixture(&repository, 40, 15);
 
         for _ in 0..24 {
             state.select_next();
@@ -1072,13 +1147,15 @@ mod tests {
     fn step_to_commit_hash_scrolls_minimally_but_select_commit_hash_pins_at_margin() {
         let commits = commits_fixture(50);
 
-        let mut stepped = scrolloff_fixture(&commits, 10, 2);
+        let repository = Repository::from_commits(commits.clone());
+        let mut stepped = scrolloff_fixture(&repository, 10, 2);
         stepped.step_to_commit_hash(&CommitHash::from("c20"));
         assert_eq!(stepped.current_list_status(), (7, 13, 10));
         stepped.step_to_commit_hash(&CommitHash::from("c16"));
         assert_eq!(stepped.current_list_status(), (3, 13, 10));
 
-        let mut pinned = scrolloff_fixture(&commits, 10, 2);
+        let repository = Repository::from_commits(commits.clone());
+        let mut pinned = scrolloff_fixture(&repository, 10, 2);
         pinned.select_commit_hash(&CommitHash::from("c20"));
         assert_eq!(pinned.current_list_status(), (2, 18, 10));
     }
@@ -1086,7 +1163,8 @@ mod tests {
     #[test]
     fn scroll_down_is_noop_when_height_zero() {
         let commits = commits_fixture(10);
-        let mut state = scrolloff_fixture(&commits, 10, 0);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = scrolloff_fixture(&repository, 10, 0);
         state.reset_height(0);
 
         state.scroll_down();
@@ -1100,7 +1178,8 @@ mod tests {
     #[test]
     fn scroll_down_does_not_collapse_margin_when_cursor_starts_inside_it() {
         let commits = commits_fixture(30);
-        let mut state = scrolloff_fixture(&commits, 10, 2);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = scrolloff_fixture(&repository, 10, 2);
 
         state.scroll_down();
 
@@ -1110,16 +1189,14 @@ mod tests {
     #[test]
     fn virtual_row_at_visible_zero_respects_scrolloff() {
         let commits = commits_fixture(20);
-        let infos = commits
+        let repository = Repository::from_commits(commits);
+        let infos = repository
+            .all_commits()
             .iter()
-            .map(|c| CommitInfo::new(c, Vec::new(), Color::Reset))
+            .map(|c| CommitInfo::new(c, Vec::new()))
             .collect();
-        let graph = Graph {
-            commit_hashes: Vec::new(),
-            commit_pos_map: FxHashMap::default(),
-            edges: Vec::new(),
-            max_pos_x: 0,
-        };
+        let graph =
+            Graph::from_materialized(repository.all_commits().len(), Vec::new(), Vec::new());
         let working_changes = WorkingChanges {
             unstaged: vec![FileChange::Untracked {
                 path: "new.txt".into(),
@@ -1129,6 +1206,7 @@ mod tests {
         };
         let mut state = CommitListState::new(
             infos,
+            &repository,
             Rc::new(graph),
             Vec::new(),
             None,
@@ -1136,8 +1214,7 @@ mod tests {
             FxHashMap::default(),
             MatchOptions::default(),
             None,
-            None,
-            FxHashSet::default(),
+            crate::RemoteOnly::default(),
             Some(working_changes),
             2,
         );
@@ -1150,6 +1227,152 @@ mod tests {
         state.set_visible_selection(VisibleIdx(1));
         assert!(!state.is_virtual_row_selected());
         assert_eq!(state.current_list_status().1, 0);
+    }
+
+    // --- set_working_changes() 回歸測試 ----------------------------------------
+    // `current_list_status()` 回傳 `(selected, offset, height)`。
+
+    fn some_working_changes() -> WorkingChanges {
+        WorkingChanges {
+            unstaged: vec![FileChange::Untracked {
+                path: "new.txt".into(),
+                stats: None,
+            }],
+            staged: Vec::new(),
+        }
+    }
+
+    /// 出現、`offset == 0`：被選的 commit 下移一列，`offset` 不動。
+    #[test]
+    fn set_working_changes_appears_at_offset_zero_shifts_selected_down() {
+        let commits = commits_fixture(20);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = scrolloff_fixture(&repository, 10, 0);
+        state.selected = 3; // offset=0, cur=3
+
+        state.set_working_changes(Some(some_working_changes()));
+
+        assert!(state.has_virtual_row());
+        assert_eq!(state.current_list_status(), (4, 0, 10));
+    }
+
+    /// 出現、`offset != 0`：捲動量 +1，被選的 commit 留在同一個螢幕列。
+    #[test]
+    fn set_working_changes_appears_while_scrolled_keeps_screen_row() {
+        let commits = commits_fixture(20);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = scrolloff_fixture(&repository, 10, 0);
+        state.offset = 5;
+        state.selected = 3; // cur=8
+
+        state.set_working_changes(Some(some_working_changes()));
+
+        assert!(state.has_virtual_row());
+        assert_eq!(state.current_list_status(), (3, 6, 10));
+    }
+
+    /// 消失、選在虛擬列上（`cur == 0`）：游標落在新的第一列。
+    #[test]
+    fn set_working_changes_disappears_while_selected_lands_on_first_row() {
+        let commits = commits_fixture(20);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = scrolloff_fixture(&repository, 10, 0);
+        state.working_changes = Some(some_working_changes());
+        state.total = commits.len() + 1;
+        state.offset = 0;
+        state.selected = 0; // 選在虛擬列上
+
+        state.set_working_changes(None);
+
+        assert!(!state.has_virtual_row());
+        assert_eq!(state.current_list_status(), (0, 0, 10));
+    }
+
+    /// 消失、沒選在虛擬列上：反向處理，同一個 commit 留在同一個螢幕列。
+    #[test]
+    fn set_working_changes_disappears_while_scrolled_keeps_screen_row() {
+        let commits = commits_fixture(20);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = scrolloff_fixture(&repository, 10, 0);
+        state.working_changes = Some(some_working_changes());
+        state.total = commits.len() + 1;
+        state.offset = 5;
+        state.selected = 3; // cur=8
+
+        state.set_working_changes(None);
+
+        assert!(!state.has_virtual_row());
+        assert_eq!(state.current_list_status(), (3, 4, 10));
+    }
+
+    /// filter 篩到 0 筆時 `total == 0`——`place()` 在這種情況下是 no-op，
+    /// 舊寫法（先直接改欄位、指望 `place` 夾回）在這裡會讓不變式破裂。
+    #[test]
+    fn set_working_changes_appears_when_total_was_zero() {
+        let commits = commits_fixture(20);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = scrolloff_fixture(&repository, 10, 0);
+        state.total = 0;
+        state.offset = 0;
+        state.selected = 0;
+
+        state.set_working_changes(Some(some_working_changes()));
+
+        assert!(state.has_virtual_row());
+        assert_eq!(state.current_list_status(), (0, 0, 10));
+    }
+
+    /// `height == 0`（第一幀畫出來之前）：`place()` 同樣是 no-op，這裡直接
+    /// 把游標歸零，對齊 `rebuild_filtered_indices` 開頭的既有例外。
+    #[test]
+    fn set_working_changes_is_safe_when_height_is_zero() {
+        let commits = commits_fixture(20);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = scrolloff_fixture(&repository, 10, 0);
+        state.reset_height(0);
+
+        state.set_working_changes(Some(some_working_changes()));
+
+        assert!(state.has_virtual_row());
+        assert_eq!(state.current_list_status(), (0, 0, 0));
+    }
+
+    /// `Some(empty)` 跟 `None` 同樣是「沒有虛擬列」——判斷依據必須是
+    /// `has_virtual_row()`，不能只看 `Option` 本身，否則 `Some(empty)` 換成
+    /// `Some(non-empty)` 會被誤判成「有無不變」而漏掉游標調整。
+    #[test]
+    fn set_working_changes_empty_option_is_same_as_none() {
+        let commits = commits_fixture(20);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = scrolloff_fixture(&repository, 10, 0);
+        state.selected = 3;
+
+        state.set_working_changes(Some(WorkingChanges::default()));
+
+        assert!(!state.has_virtual_row());
+        assert_eq!(
+            state.current_list_status(),
+            (3, 0, 10),
+            "Some(empty) 不是虛擬列，游標不該被調整"
+        );
+    }
+
+    /// 上一個測試的反面：`Some(non-empty)` → `Some(empty)` 要被當成「虛擬列
+    /// 消失」，不能因為兩邊都是 `Some` 就誤判成沒變化。
+    #[test]
+    fn set_working_changes_non_empty_to_empty_option_counts_as_disappearing() {
+        let commits = commits_fixture(20);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = scrolloff_fixture(&repository, 10, 0);
+        state.working_changes = Some(some_working_changes());
+        state.total = commits.len() + 1;
+        state.offset = 0;
+        state.selected = 0; // 選在虛擬列上
+
+        state.set_working_changes(Some(WorkingChanges::default()));
+
+        assert!(!state.has_virtual_row());
+        assert_eq!(state.current_list_status(), (0, 0, 10));
     }
 
     // --- select_parent() / select_child() 回歸測試 ----------------------------
@@ -1165,21 +1388,19 @@ mod tests {
     /// `visible_raw` 指定哪些 raw index 留在 `filtered_indices` 內
     /// （其餘視為被 filter 藏起來），游標停在第一個可見列。
     fn build_state_visible_raws<'a>(
-        commits: &'a [Commit],
+        repository: &'a Repository,
         visible_raw: &[usize],
     ) -> CommitListState<'a> {
-        let infos = commits
+        let infos = repository
+            .all_commits()
             .iter()
-            .map(|c| CommitInfo::new(c, Vec::new(), Color::Reset))
+            .map(|c| CommitInfo::new(c, Vec::new()))
             .collect();
-        let graph = Graph {
-            commit_hashes: Vec::new(),
-            commit_pos_map: FxHashMap::default(),
-            edges: Vec::new(),
-            max_pos_x: 0,
-        };
+        let graph =
+            Graph::from_materialized(repository.all_commits().len(), Vec::new(), Vec::new());
         let mut state = CommitListState::new(
             infos,
+            repository,
             Rc::new(graph),
             Vec::new(),
             None,
@@ -1187,13 +1408,13 @@ mod tests {
             FxHashMap::default(),
             MatchOptions::default(),
             None,
-            None,
-            FxHashSet::default(),
+            crate::RemoteOnly::default(),
             None,
             0,
         );
-        state.filtered_indices = visible_raw.iter().copied().map(RawCommitIdx).collect();
-        state.total = state.filtered_indices.len();
+        let filtered: Vec<RawCommitIdx> = visible_raw.iter().copied().map(RawCommitIdx).collect();
+        state.total = filtered.len();
+        state.filtered_indices = Some(filtered);
         state.reset_height(10);
         state.select_first();
         state
@@ -1208,10 +1429,11 @@ mod tests {
             commit_fixture("parent", &["grandparent"]),
             commit_fixture("grandparent", &[]),
         ];
-        let mut state = build_state_visible_raws(&commits, &[0, 2]);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = build_state_visible_raws(&repository, &[0, 2]);
 
         // 修正前：select_next() 在 filtered total=2 觸底後直接 return，
-        // 但 while 迴圈比對的是全域 commit_hash_to_raw 找到的 hash，永遠
+        // 但 while 迴圈比對的是全域 index_of 找到的 hash，永遠
         // 走不到「parent」→ 無窮迴圈。這裡若卡住，測試本身就會逾時失敗。
         state.select_parent();
 
@@ -1229,7 +1451,8 @@ mod tests {
             commit_fixture("middle", &[]),
             commit_fixture("grandparent", &[]),
         ];
-        let mut state = build_state_visible_raws(&commits, &[0, 2]);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = build_state_visible_raws(&repository, &[0, 2]);
 
         state.select_parent();
 
@@ -1247,7 +1470,8 @@ mod tests {
             commit_fixture("merge", &["base"]),
             commit_fixture("base", &[]),
         ];
-        let mut state = build_state_visible_raws(&commits, &[0, 2, 3]);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = build_state_visible_raws(&repository, &[0, 2, 3]);
         state.select_parent(); // tip -> merge
 
         let jump = state.select_child();
@@ -1266,7 +1490,8 @@ mod tests {
             commit_fixture("branchB", &["fork"]),
             commit_fixture("fork", &[]),
         ];
-        let mut state = build_state_visible_raws(&commits, &[0, 1, 2]);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = build_state_visible_raws(&repository, &[0, 1, 2]);
         state.select_commit_hash(&CommitHash::from("fork"));
 
         let jump = state.select_child();
@@ -1284,7 +1509,8 @@ mod tests {
     #[test]
     fn select_child_at_tip_returns_none() {
         let commits = vec![commit_fixture("tip", &[]), commit_fixture("base", &[])];
-        let mut state = build_state_visible_raws(&commits, &[0, 1]);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = build_state_visible_raws(&repository, &[0, 1]);
 
         let jump = state.select_child();
 
@@ -1303,7 +1529,8 @@ mod tests {
             commit_fixture("hidden", &["base"]),
             commit_fixture("base", &[]),
         ];
-        let mut state = build_state_visible_raws(&commits, &[0, 2]);
+        let repository = Repository::from_commits(commits.clone());
+        let mut state = build_state_visible_raws(&repository, &[0, 2]);
         state.select_commit_hash(&CommitHash::from("base"));
 
         let jump = state.select_child();
@@ -1327,13 +1554,13 @@ mod tests {
             target: "deadbeef".into(),
         };
 
-        let both = CommitInfo::new(&commit, vec![&branch, &tag], Color::Reset);
+        let both = CommitInfo::new(&commit, vec![&branch, &tag]);
         assert_eq!(child_pick_label(&both), "v1.0: fix things");
 
-        let branch_only = CommitInfo::new(&commit, vec![&branch], Color::Reset);
+        let branch_only = CommitInfo::new(&commit, vec![&branch]);
         assert_eq!(child_pick_label(&branch_only), "feature/x: fix things");
 
-        let none = CommitInfo::new(&commit, vec![], Color::Reset);
+        let none = CommitInfo::new(&commit, vec![]);
         assert_eq!(child_pick_label(&none), "fix things");
     }
 }

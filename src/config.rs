@@ -488,6 +488,17 @@ pub struct UiListConfig {
     #[garde(range(min = 0))]
     #[default = 15]
     pub scrolloff: u16,
+    /// 長線截斷的 K：線長超過這麼多列，就在 child 下方畫 `↓`、parent 上方
+    /// 畫 `↑`，中間不畫。只在圖寬超過 `graph::TRUNCATE_MIN_GRAPH_WIDTH`
+    /// 時啟用，一般 repo 不受影響。
+    #[garde(range(min = 3))]
+    #[default = 100]
+    pub graph_edge_max_rows: usize,
+    /// 截斷啟用時，graph 欄最多佔清單寬度的百分比；超出的 lane 收進最後
+    /// 一欄的溢位欄。
+    #[garde(range(min = 10, max = 100))]
+    #[default = 50]
+    pub graph_max_width_percent: u16,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -856,6 +867,8 @@ mod tests {
                     date_local: true,
                     name_width: 20,
                     scrolloff: 15,
+                    graph_edge_max_rows: 100,
+                    graph_max_width_percent: 50,
                 },
                 detail: UiDetailConfig {
                     date_format: "%Y-%m-%d %H:%M:%S %z".into(),
@@ -900,6 +913,8 @@ mod tests {
             date_local = false
             name_width = 30
             scrolloff = 3
+            graph_edge_max_rows = 200
+            graph_max_width_percent = 70
             [ui.detail]
             date_format = "%Y/%m/%d %H:%M:%S"
             date_local = false
@@ -1005,6 +1020,8 @@ mod tests {
                     date_local: false,
                     name_width: 30,
                     scrolloff: 3,
+                    graph_edge_max_rows: 200,
+                    graph_max_width_percent: 70,
                 },
                 detail: UiDetailConfig {
                     date_format: "%Y/%m/%d %H:%M:%S".into(),

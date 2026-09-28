@@ -71,10 +71,11 @@ fn commit_and_stash_text_expand_emoji_shortcodes() {
         .find(|c| c.subject.contains("上線"))
         .expect("找不到剛建立的 commit");
     assert_eq!(head.subject, "🎉 上線");
+    let (_, extra, _) = repo.commit_detail(&head.commit_hash);
     assert!(
-        head.body.contains("細節 👍"),
+        extra.body.contains("細節 👍"),
         "body 也要展開：{:?}",
-        head.body
+        extra.body
     );
 
     // refs 樹的 stash message 是另一條載入路徑，不會被 commit 那條覆蓋到。

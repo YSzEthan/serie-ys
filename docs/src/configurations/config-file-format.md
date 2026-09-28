@@ -76,6 +76,8 @@ date_width = 10
 date_local = true
 name_width = 20
 scrolloff = 15
+graph_edge_max_rows = 100
+graph_max_width_percent = 50
 
 [ui.detail]
 date_format = "%Y-%m-%d %H:%M:%S %z"
@@ -504,6 +506,27 @@ Commit 清單中 author name 的寬度。
 
 - 型別：`u16`
 - 預設值：`15`
+
+### `ui.list.graph_edge_max_rows`
+
+超寬 graph 的長線截斷：線長（child 到 parent 相隔的列數）超過這個值，就在
+child 下方畫 `↓`、parent 上方畫 `↑`，中間不畫；HEAD 的 first-parent 鏈不截斷。
+只在還沒截斷的圖寬超過 64 條 lane 時啟用，一般 repo 的畫面完全不受影響。
+
+- 型別：`usize`
+- 預設值：`100`
+- 最小值：`3`
+
+merge 密集的 repo（例如 linux）改用 `--order topo`，圖寬約只有預設排序的 1/3。
+
+### `ui.list.graph_max_width_percent`
+
+長線截斷啟用時，graph 欄最多佔清單寬度的百分比。超出的 lane 收進最後一欄的
+溢位欄：顯示 `…`，或顯示落在溢位範圍的 commit 的 dot。
+
+- 型別：`u16`
+- 預設值：`50`
+- 範圍：`10`～`100`
 
 ### `ui.detail.date_format`
 

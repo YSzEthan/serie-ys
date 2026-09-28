@@ -110,7 +110,7 @@ impl<'a> RefsView<'a> {
                 self.checkout_selected_ref();
             }
             UserEvent::Refresh => {
-                self.refresh();
+                self.tx.send(AppEvent::Refresh);
             }
             _ => {}
         }
@@ -183,7 +183,7 @@ impl<'a> RefsView<'a> {
             .expect("commit_list_state already taken")
     }
 
-    fn as_mut_list_state(&mut self) -> &mut CommitListState<'a> {
+    pub(super) fn as_mut_list_state(&mut self) -> &mut CommitListState<'a> {
         self.commit_list_state
             .as_mut()
             .expect("commit_list_state already taken")
@@ -197,21 +197,21 @@ impl<'a> RefsView<'a> {
         }
     }
 
-    pub fn refresh(&self) {
+    /// 換資料時由 `View::take_refresh_context` 呼叫，見該處文件。
+    pub(super) fn refresh_context(&self) -> RefreshViewContext {
         let list_context = ListRefreshViewContext::from(self.as_list_state());
         let (tree_selected, tree_opened) = self.ref_list_state.current_tree_status();
         let refs_context = RefsRefreshViewContext {
             selected: tree_selected,
             opened: tree_opened,
         };
-        let context = RefreshViewContext::new(
+        RefreshViewContext::new(
             list_context,
             ViewContext::Refs {
                 refs_context,
                 origin: self.origin,
             },
-        );
-        self.tx.send(AppEvent::Refresh(context));
+        )
     }
 
     pub fn reset_refs_with(&mut self, refs_context: RefsRefreshViewContext) {

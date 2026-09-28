@@ -14,7 +14,6 @@ use crate::{
     app::AppContext,
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
     git::{create_tag, push_tag, CommitHash},
-    view::{ListRefreshViewContext, RefreshViewContext},
     widget::{
         commit_list::{CommitList, CommitListState},
         h, keybind_hint_line,
@@ -174,17 +173,6 @@ impl<'a> CreateTagView<'a> {
         let push_to_remote = self.push_to_remote;
         let tx = self.tx.clone();
 
-        // 在關閉前先建好 refresh context
-        let list_context = self
-            .commit_list_state
-            .as_ref()
-            .map(ListRefreshViewContext::from)
-            .unwrap_or_else(|| ListRefreshViewContext {
-                commit_hash: commit_hash.clone(),
-                scroll_to_top: false,
-                ..Default::default()
-            });
-
         // 顯示 pending overlay 並關閉對話框
         let pending_msg = if push_to_remote {
             format!("Creating and pushing tag '{tag_name}'...")
@@ -211,7 +199,7 @@ impl<'a> CreateTagView<'a> {
                         "Tag created locally, but push failed: {e}"
                     )));
                     // 仍然要 refresh 以顯示本機已建立的 tag
-                    tx.send(AppEvent::Refresh(RefreshViewContext::list(list_context)));
+                    tx.send(AppEvent::Refresh);
                     return;
                 }
             }
@@ -224,7 +212,7 @@ impl<'a> CreateTagView<'a> {
             };
             tx.send(AppEvent::NotifySuccess(msg));
             tx.send(AppEvent::HidePendingOverlay);
-            tx.send(AppEvent::Refresh(RefreshViewContext::list(list_context)));
+            tx.send(AppEvent::Refresh);
         });
     }
 
@@ -396,7 +384,9 @@ impl<'a> CreateTagView<'a> {
         self.commit_list_state.take()
     }
 
-    pub fn refresh(&self) {
-        super::views::send_refresh(self.commit_list_state.as_ref(), &self.tx);
+    pub(super) fn as_mut_list_state(&mut self) -> &mut CommitListState<'a> {
+        self.commit_list_state
+            .as_mut()
+            .expect("commit_list_state already taken")
     }
 }

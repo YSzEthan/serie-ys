@@ -2,10 +2,7 @@ use clap::ValueEnum;
 use ratatui::style::Color as RatatuiColor;
 use serde::Deserialize;
 
-use crate::{
-    git::CommitHash,
-    graph::{Edge, EdgeType, Graph},
-};
+use crate::graph::{Edge, EdgeType, Graph};
 
 /// 文字圖 glyph 的語義角色，跟 `GlyphSet` 把它解成哪個字元無關。分開這一層，
 /// `glyph_priority` 與 `Glyph::extends_downward` 才能依語義比對而不是比字元 ——
@@ -33,6 +30,12 @@ pub enum Glyph {
     TeeRight,
     TeeLeft,
     Cross,
+    /// 長線截斷：線在這裡斷開（`EdgeType::TruncDown`）。
+    ArrowDown,
+    /// 長線截斷：線從這裡接回（`EdgeType::TruncUp`）。
+    ArrowUp,
+    /// 欄寬上限的溢位欄：右邊還有畫不下的 lane。
+    Overflow,
 }
 
 impl Glyph {
@@ -67,6 +70,10 @@ impl Glyph {
             | Glyph::TeeLeft
             | Glyph::Cross => true,
             Glyph::Blank | Glyph::Horiz | Glyph::CornerBL | Glyph::CornerBR | Glyph::TeeUp => false,
+            // 箭頭不是方向位元推得出來的形狀：`↓` 是線的終點，`↑` 往下接到
+            // parent。溢位欄只是提示，底下沒有對應的線可接。
+            Glyph::ArrowUp => true,
+            Glyph::ArrowDown | Glyph::Overflow => false,
         }
     }
 }
@@ -99,6 +106,21 @@ fn edge_dirs(edge_type: EdgeType) -> u8 {
         EdgeType::RightBottom => DIR_UP | DIR_LEFT,
         EdgeType::LeftTop => DIR_DOWN | DIR_RIGHT,
         EdgeType::LeftBottom => DIR_UP | DIR_RIGHT,
+        // 箭頭的 glyph 不從方向位元推（見 `arrow_glyph`），這裡只記它接到
+        // 哪一側，讓 `leaves_no_trace` 之類只看方向的判斷仍然有答案。
+        EdgeType::TruncDown => DIR_UP,
+        EdgeType::TruncUp => DIR_DOWN,
+    }
+}
+
+/// 截斷箭頭的 glyph。箭頭沒辦法用方向位元表示（`↓` 跟單獨的 `Up` 方向相同，
+/// 畫出來卻不同），所以在 `accumulate_columns`／`winner_takes_all_cells`
+/// 另走一條路：箭頭永遠獨佔 symbol 半格，不跟其他 edge 取聯集。
+fn arrow_glyph(edge_type: EdgeType) -> Option<Glyph> {
+    match edge_type {
+        EdgeType::TruncDown => Some(Glyph::ArrowDown),
+        EdgeType::TruncUp => Some(Glyph::ArrowUp),
+        _ => None,
     }
 }
 
@@ -172,6 +194,9 @@ pub struct GlyphSet {
     pub tee_right: &'static str,
     pub tee_left: &'static str,
     pub cross: &'static str,
+    pub arrow_down: &'static str,
+    pub arrow_up: &'static str,
+    pub overflow: &'static str,
 }
 
 impl GlyphSet {
@@ -191,6 +216,9 @@ impl GlyphSet {
         tee_right: "├",
         tee_left: "┤",
         cross: "┼",
+        arrow_down: "↓",
+        arrow_up: "↑",
+        overflow: "…",
     };
 
     pub const ANGULAR: GlyphSet = GlyphSet {
@@ -207,6 +235,9 @@ impl GlyphSet {
         tee_right: "├",
         tee_left: "┤",
         cross: "┼",
+        arrow_down: "↓",
+        arrow_up: "↑",
+        overflow: "…",
     };
 
     pub const ASCII: GlyphSet = GlyphSet {
@@ -223,6 +254,9 @@ impl GlyphSet {
         tee_right: "+",
         tee_left: "+",
         cross: "+",
+        arrow_down: "v",
+        arrow_up: "^",
+        overflow: "~",
     };
 
     pub fn from_style(style: GraphStyle) -> GlyphSet {
@@ -249,6 +283,9 @@ impl GlyphSet {
             Glyph::TeeRight => self.tee_right,
             Glyph::TeeLeft => self.tee_left,
             Glyph::Cross => self.cross,
+            Glyph::ArrowDown => self.arrow_down,
+            Glyph::ArrowUp => self.arrow_up,
+            Glyph::Overflow => self.overflow,
         }
     }
 }
@@ -281,39 +318,69 @@ pub enum GraphStyle {
     Ascii,
 }
 
-/// 共用的「一個 commit → 它的 text cells」查詢，逐幀渲染路徑
-///（`CommitListState::text_cells_for_hash`）與批次快照產生器（`build_text_graph`）
-/// 都走這裡。只留一份定義，兩個呼叫端就不可能在 `pos_x`／`pos_y`／`cell_count`
-/// 怎麼推出來這件事上悄悄分岔。
-pub(crate) fn text_cells(
+/// 共用的「一列 → 它的 text cells」查詢，逐幀渲染路徑
+///（`CommitListState::text_cells_for_raw`）與批次快照產生器（`build_text_graph`）
+/// 都走這裡。只留一份定義，兩個呼叫端就不可能在欄位、edge、virtual row 的
+/// 連線怎麼推出來這件事上悄悄分岔。
+///
+/// `virtual_head_row` 是 HEAD 在這張 graph 的列，只在工作區有變更（virtual row
+/// 顯示中）時給：HEAD 欄從第 0 列到 HEAD 補一條線，接到最上面的 virtual row。
+/// 這條線不存進 graph，graph 因此不依賴 working changes。
+///
+/// `cols` 是這一幀實際畫得下的欄數（見 `build_text_cells`）；不套欄寬上限時
+/// 就傳 `graph.cell_count()`。
+pub fn text_cells(
     graph: &Graph,
-    commit_hash: &CommitHash,
+    row: usize,
+    virtual_head_row: Option<usize>,
     colors: &[RatatuiColor],
     width: CellWidthType,
-) -> Option<Vec<TextCell>> {
-    let &(pos_x, pos_y) = graph.commit_pos_map.get(commit_hash)?;
-    let edges = &graph.edges[pos_y];
-    let cell_count = graph.cell_count();
-    Some(build_text_cells(pos_x, cell_count, edges, colors, width))
+    cols: usize,
+) -> Vec<TextCell> {
+    let col = graph.col(row);
+    let mut edges = graph.row_edges(row);
+    if let Some(head_row) = virtual_head_row {
+        if let Some(extra) = virtual_row_edge(graph, &edges, head_row, row) {
+            // 接在排序後的 edge 之後：同 rank 平手時看 edge 順序。
+            edges.push(extra);
+        }
+    }
+    build_text_cells(col, graph.cell_count(), &edges, colors, width, cols)
 }
 
-/// 依 `commit_hashes` 的順序，把 `graph` 裡每個 commit 都批次渲染成文字。
+/// virtual row 連到 HEAD 的線在 `row` 這一列的那一段：HEAD 上方是 `Vertical`，
+/// HEAD 那列是 `Up`。HEAD 在第 0 列時兩者直接相鄰，不用補；該列已經有同樣的
+/// edge 時也不補。`edges` 是 `row` 這一列已經查過的 edge（lane 引擎每查一次
+/// 都要從最近的 checkpoint 重播，這裡不重查第二次）。
+fn virtual_row_edge(graph: &Graph, edges: &[Edge], head_row: usize, row: usize) -> Option<Edge> {
+    if head_row == 0 || row > head_row {
+        return None;
+    }
+    let head_col = graph.col(head_row);
+    let edge_type = if row < head_row {
+        EdgeType::Vertical
+    } else {
+        EdgeType::Up
+    };
+    let exists = edges
+        .iter()
+        .any(|e| e.pos_x == head_col && e.edge_type == edge_type);
+    (!exists).then(|| Edge::new(edge_type, head_col, head_col))
+}
+
+/// 依列的順序，把 `graph` 的每一列都批次渲染成文字。
 ///
 /// 給 `tests/graph.rs` 的快照測試用 —— 它要的是一次拿到整張圖，而不是 UI 那種
-/// 逐 commit 查詢。若 `graph.commit_hashes` 與 `graph.commit_pos_map` 不同步就
-/// panic（兩者在 `calc.rs` 是一起建的，所以實務上不該觸發）。
+/// 逐列查詢。`virtual_head_row`／`cols` 同 `text_cells`。
 pub fn build_text_graph(
     graph: &Graph,
+    virtual_head_row: Option<usize>,
     colors: &[RatatuiColor],
     width: CellWidthType,
+    cols: usize,
 ) -> Vec<Vec<TextCell>> {
-    graph
-        .commit_hashes
-        .iter()
-        .map(|hash| {
-            text_cells(graph, hash, colors, width)
-                .expect("commit_hashes / commit_pos_map out of sync")
-        })
+    (0..graph.row_count())
+        .map(|row| text_cells(graph, row, virtual_head_row, colors, width, cols))
         .collect()
 }
 
@@ -329,27 +396,75 @@ pub fn build_text_graph(
 ///
 /// 兩者都還留著一個已知的缺口：落在 commit 自己那一欄的 edge 會被丟掉，因為那格
 /// 屬於 dot。實務上無害（線會在隔壁欄繼續），但確實是真的丟了資訊。
+///
+/// `cols < cell_count` 時套用欄寬上限：真正的 lane 只畫到第 `cols - 2` 欄，
+/// 最後一欄留給溢位欄（見 `overflow_cell`），回傳 `cols * cells_per_column()`
+/// 格。這樣溢位提示不會蓋掉任何一條真正畫出來的 lane。
 pub(crate) fn build_text_cells(
     commit_pos_x: usize,
     cell_count: usize,
     edges: &[Edge],
     colors: &[RatatuiColor],
     width: CellWidthType,
+    cols: usize,
 ) -> Vec<TextCell> {
     // 空調色盤會讓每條 edge 都是 `Reset`，於是每一欄都被判為同色，`Double` 會
     // 到處取聯集。只有測試走得到。
-    let color_of = |idx: usize| -> RatatuiColor {
-        if colors.is_empty() {
-            RatatuiColor::Reset
-        } else {
-            colors[idx % colors.len()]
-        }
-    };
+    let color_of = |idx: usize| palette_color(colors, idx);
 
-    let columns = accumulate_columns(cell_count, edges, color_of);
-    match width {
+    let overflow = cols < cell_count;
+    // 超出 `drawn` 的 edge 與 dot，`accumulate_columns`／`place` 本來就會
+    // 忽略，不必先濾掉。
+    let drawn = if overflow {
+        cols.saturating_sub(1)
+    } else {
+        cell_count
+    };
+    let columns = accumulate_columns(drawn, edges, color_of);
+    let mut cells = match width {
         CellWidthType::Double => double_cells(&columns, commit_pos_x, edges, color_of),
         CellWidthType::Single => single_cells(&columns, commit_pos_x, color_of(commit_pos_x)),
+    };
+    if overflow {
+        cells.extend(overflow_cell(commit_pos_x, drawn, edges, color_of, width));
+    }
+    cells
+}
+
+/// 溢位欄（第 `drawn` 欄）的內容：commit 本身落在溢位範圍就畫它的 dot（顏色
+/// 跟它原本那一欄一致，跟 marker 對得上）；否則只要有任何 edge 落在溢位範圍
+/// 就畫 `…`，顏色取第一條。兩者衝突時 dot 優先——dot 是這一列的主角。
+fn overflow_cell(
+    commit_pos_x: usize,
+    drawn: usize,
+    edges: &[Edge],
+    color_of: impl Fn(usize) -> RatatuiColor,
+    width: CellWidthType,
+) -> Vec<TextCell> {
+    let symbol = if commit_pos_x >= drawn {
+        Some(TextCell {
+            glyph: Glyph::CommitDot,
+            color: color_of(commit_pos_x),
+        })
+    } else {
+        edges.iter().find(|e| e.pos_x >= drawn).map(|e| TextCell {
+            glyph: Glyph::Overflow,
+            color: color_of(e.associated_line_pos_x),
+        })
+    };
+    let mut out = vec![TextCell::BLANK; width.cells_per_column()];
+    if let Some(cell) = symbol {
+        out[0] = cell;
+    }
+    out
+}
+
+/// 第 `idx` 欄 lane 的顏色：調色盤循環使用。空調色盤一律 `Reset`（只有測試走得到）。
+pub(crate) fn palette_color(colors: &[RatatuiColor], idx: usize) -> RatatuiColor {
+    if colors.is_empty() {
+        RatatuiColor::Reset
+    } else {
+        colors[idx % colors.len()]
     }
 }
 
@@ -390,6 +505,9 @@ struct Column {
     colors: ColumnColors,
     /// 這裡有幾條 edge 若輸了會消失得毫無痕跡。只在乎數到 2 為止。
     traceless: u8,
+    /// 截斷箭頭（`arrow_glyph`）與它的顏色。有箭頭的欄，symbol 永遠是箭頭，
+    /// 兩種寬度都不跟其他 edge 取聯集；箭頭不進 `dirs`。
+    arrow: Option<(Glyph, RatatuiColor)>,
 }
 
 impl Column {
@@ -452,6 +570,10 @@ fn accumulate_columns(
         let Some(column) = columns.get_mut(edge.pos_x) else {
             continue;
         };
+        if let Some(glyph) = arrow_glyph(edge.edge_type) {
+            column.arrow = Some((glyph, color_of(edge.associated_line_pos_x)));
+            continue;
+        }
         column.absorb(
             edge_dirs(edge.edge_type),
             color_of(edge.associated_line_pos_x),
@@ -471,6 +593,8 @@ fn single_cells(columns: &[Column], commit_pos_x: usize, dot_color: RatatuiColor
                     glyph: Glyph::CommitDot,
                     color: dot_color,
                 }
+            } else if let Some((glyph, color)) = column.arrow {
+                TextCell { glyph, color }
             } else {
                 TextCell {
                     glyph: merged(column.dirs),
@@ -511,7 +635,7 @@ fn double_cells(
 
     for (col, column) in columns.iter().enumerate() {
         // 這一欄屬於 dot：`place` 給了它 priority 10，沒有東西的排名比它高。
-        if col == commit_pos_x || !column.can_merge() {
+        if col == commit_pos_x || column.arrow.is_some() || !column.can_merge() {
             continue;
         }
         let symbol = halves(column.dirs).0;
@@ -557,7 +681,10 @@ fn winner_takes_all_cells(
     );
 
     for edge in edges {
-        let (symbol, connector) = halves(edge_dirs(edge.edge_type));
+        let (symbol, connector) = match arrow_glyph(edge.edge_type) {
+            Some(arrow) => (arrow, Glyph::Blank),
+            None => halves(edge_dirs(edge.edge_type)),
+        };
         let color = color_of(edge.associated_line_pos_x);
         let idx = edge.pos_x * per_col;
 
@@ -583,7 +710,13 @@ fn glyph_priority(glyph: Glyph) -> u8 {
         // doc）。列在這裡是為了 exhaustive，排名
         // 也選得讓萬一以後真的用得到時順序依然合理。
         Glyph::TeeDown | Glyph::TeeUp | Glyph::TeeRight | Glyph::TeeLeft | Glyph::Cross => 7,
+        // 箭頭高於 `│`：virtual row 補的那條 Vertical 跟 HEAD 的 `↑` 同格時，
+        // 畫 `↑`（箭頭本身就是一段連線）；撞到 `─` 時也是箭頭勝出。
+        Glyph::ArrowDown | Glyph::ArrowUp => 6,
         Glyph::Vert => 5,
+        // 溢位欄由 `overflow_cell` 直接寫入，不經過任何比較；列在這裡只為
+        // exhaustive。
+        Glyph::Overflow => 4,
         Glyph::CornerTL | Glyph::CornerTR | Glyph::CornerBL | Glyph::CornerBR => 3,
         Glyph::Horiz => 1,
         Glyph::Blank => 0,
@@ -610,20 +743,96 @@ impl CellWidthType {
 /// graph 欄的寬度，以格數計 —— 就結構而言，一定跟 `build_text_cells` 的輸出
 /// 長度一致。這個「一致」正是 issue #21 修的東西：bug 是這個寬度跟
 /// `build_text_cells` 的格數在不同地方各算各的，結果可能（而且真的）對不上。
-pub fn graph_cell_width(graph: &Graph, width: CellWidthType) -> u16 {
-    (graph.cell_count() * width.cells_per_column()) as u16
+/// 所以兩邊收的是同一個 `cols`（套過欄寬上限的欄數），不各自從 graph 推。
+pub fn graph_cell_width(cols: usize, width: CellWidthType) -> u16 {
+    (cols * width.cells_per_column()) as u16
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// HEAD 在第 3 列第 1 欄；第 1 列本來就有第 1 欄的 Vertical（例如別條線剛好
+    /// 經過），不能重複補。
+    fn head_below_graph() -> Graph {
+        Graph::from_materialized(
+            4,
+            vec![(0, 0), (1, 0), (2, 0), (3, 1)],
+            vec![
+                vec![Edge::new(EdgeType::Vertical, 0, 0)],
+                vec![
+                    Edge::new(EdgeType::Vertical, 0, 0),
+                    Edge::new(EdgeType::Vertical, 1, 1),
+                ],
+                vec![Edge::new(EdgeType::Vertical, 0, 0)],
+                vec![Edge::new(EdgeType::Down, 1, 1)],
+            ],
+        )
+    }
+
+    #[test]
+    fn virtual_row_edge_connects_head_to_top() {
+        let graph = head_below_graph();
+        let vertical = Some(Edge::new(EdgeType::Vertical, 1, 1));
+        assert_eq!(
+            virtual_row_edge(&graph, &graph.row_edges(0), 3, 0),
+            vertical
+        );
+        assert_eq!(
+            virtual_row_edge(&graph, &graph.row_edges(1), 3, 1),
+            None,
+            "already has one"
+        );
+        assert_eq!(
+            virtual_row_edge(&graph, &graph.row_edges(2), 3, 2),
+            vertical
+        );
+        assert_eq!(
+            virtual_row_edge(&graph, &graph.row_edges(3), 3, 3),
+            Some(Edge::new(EdgeType::Up, 1, 1))
+        );
+    }
+
+    #[test]
+    fn virtual_row_edge_skips_rows_below_head_and_head_on_top() {
+        let graph = head_below_graph();
+        assert_eq!(virtual_row_edge(&graph, &graph.row_edges(3), 2, 3), None);
+        assert_eq!(virtual_row_edge(&graph, &graph.row_edges(0), 0, 0), None);
+    }
+
+    /// overlay 接在排序後的 edge 之後，而且不存進 graph。
+    #[test]
+    fn text_cells_overlays_virtual_row_line_without_touching_graph() {
+        let graph = head_below_graph();
+        let colors = [RatatuiColor::Red, RatatuiColor::Green];
+        let with = text_cells(
+            &graph,
+            0,
+            Some(3),
+            &colors,
+            CellWidthType::Single,
+            graph.cell_count(),
+        );
+        let without = text_cells(
+            &graph,
+            0,
+            None,
+            &colors,
+            CellWidthType::Single,
+            graph.cell_count(),
+        );
+        assert_eq!(with[1].glyph, Glyph::Vert);
+        assert_eq!(with[1].color, RatatuiColor::Green);
+        assert_eq!(without[1].glyph, Glyph::Blank);
+        assert_eq!(graph.row_edges(0).len(), 1);
+    }
+
     #[test]
     fn text_cells_simple_vertical() {
         // 單一 commit dot，同一欄有一條 vertical edge。
         let edges = vec![Edge::new(EdgeType::Vertical, 0, 0)];
         let colors = vec![RatatuiColor::Red, RatatuiColor::Green];
-        let cells = build_text_cells(0, 1, &edges, &colors, CellWidthType::Double);
+        let cells = build_text_cells(0, 1, &edges, &colors, CellWidthType::Double, 1);
         assert_eq!(cells.len(), 2);
         // commit dot 在 pos_x=0 贏（edge 蓋不掉它）。
         assert_eq!(cells[0].glyph, Glyph::CommitDot);
@@ -640,7 +849,7 @@ mod tests {
             Edge::new(EdgeType::LeftTop, 1, 1),
         ];
         let colors = vec![RatatuiColor::Red, RatatuiColor::Green];
-        let cells = build_text_cells(0, 2, &edges, &colors, CellWidthType::Double);
+        let cells = build_text_cells(0, 2, &edges, &colors, CellWidthType::Double, 2);
         assert_eq!(cells.len(), 4);
         assert_eq!(cells[0].glyph, Glyph::CommitDot);
         // col 1：╭ 配 ─ connector。
@@ -657,7 +866,7 @@ mod tests {
             Edge::new(EdgeType::Horizontal, 1, 0),
         ];
         let colors = vec![RatatuiColor::Red];
-        let cells = build_text_cells(2, 3, &edges, &colors, CellWidthType::Double);
+        let cells = build_text_cells(2, 3, &edges, &colors, CellWidthType::Double, 3);
         assert_eq!(cells.len(), 6);
         assert_eq!(cells[0].glyph, Glyph::Horiz);
         assert_eq!(cells[1].glyph, Glyph::Horiz);
@@ -671,13 +880,13 @@ mod tests {
     fn text_cells_left_right_stubs_stay_on_own_half() {
         // col 1 的 left stub：左半格 `─`，右半格空白
         let edges = vec![Edge::new(EdgeType::Left, 1, 0)];
-        let cells = build_text_cells(0, 2, &edges, &[RatatuiColor::Red], CellWidthType::Double);
+        let cells = build_text_cells(0, 2, &edges, &[RatatuiColor::Red], CellWidthType::Double, 2);
         assert_eq!(cells[2].glyph, Glyph::Horiz);
         assert_eq!(cells[3].glyph, Glyph::Blank);
 
         // col 0 的 right stub：左半格空白，右半格 `─`
         let edges = vec![Edge::new(EdgeType::Right, 0, 0)];
-        let cells = build_text_cells(1, 2, &edges, &[RatatuiColor::Red], CellWidthType::Double);
+        let cells = build_text_cells(1, 2, &edges, &[RatatuiColor::Red], CellWidthType::Double, 2);
         // commit 在 col 1，所以 cells[2] 是 dot；col 0 的左半格保持空白
         assert_eq!(cells[0].glyph, Glyph::Blank);
         assert_eq!(cells[1].glyph, Glyph::Horiz);
@@ -691,7 +900,7 @@ mod tests {
     fn text_cells_double_keeps_winner_when_a_column_is_multi_coloured() {
         let colors = vec![RatatuiColor::Red, RatatuiColor::Green, RatatuiColor::Blue];
         for edges in colliding_edge_orders(EdgeType::Horizontal, 0, EdgeType::Vertical, 2) {
-            let cells = build_text_cells(0, 3, &edges, &colors, CellWidthType::Double);
+            let cells = build_text_cells(0, 3, &edges, &colors, CellWidthType::Double, 3);
             assert_eq!(cells[2].glyph, Glyph::Vert);
             assert_eq!(cells[2].color, RatatuiColor::Blue);
             assert_eq!(cells[3].glyph, Glyph::Horiz);
@@ -704,7 +913,7 @@ mod tests {
     fn text_cells_double_unions_a_single_coloured_column() {
         let colors = vec![RatatuiColor::Red, RatatuiColor::Green, RatatuiColor::Blue];
         for edges in colliding_edge_orders(EdgeType::Horizontal, 2, EdgeType::Vertical, 2) {
-            let cells = build_text_cells(0, 3, &edges, &colors, CellWidthType::Double);
+            let cells = build_text_cells(0, 3, &edges, &colors, CellWidthType::Double, 3);
             assert_eq!(cells[2].glyph, Glyph::Cross);
             assert_eq!(cells[2].color, RatatuiColor::Blue);
             assert_eq!(cells[3].glyph, Glyph::Horiz);
@@ -714,7 +923,7 @@ mod tests {
     #[test]
     fn text_cells_empty_colors_fallback() {
         let edges = vec![Edge::new(EdgeType::Vertical, 0, 0)];
-        let cells = build_text_cells(0, 1, &edges, &[], CellWidthType::Double);
+        let cells = build_text_cells(0, 1, &edges, &[], CellWidthType::Double, 1);
         assert_eq!(cells[0].glyph, Glyph::CommitDot);
         assert_eq!(cells[0].color, RatatuiColor::Reset);
     }
@@ -753,7 +962,7 @@ mod tests {
         for (a, b) in cases {
             // 兩條 edge 都落在 column 1，它的兩個半格是 cells 2 和 3。
             for edges in colliding_edge_orders(*a, 0, *b, 0) {
-                let cells = build_text_cells(0, 2, &edges, &colors, CellWidthType::Double);
+                let cells = build_text_cells(0, 2, &edges, &colors, CellWidthType::Double, 2);
                 assert_eq!(cells[2].glyph, Glyph::TeeLeft, "{a:?} + {b:?}");
                 assert_eq!(cells[3].glyph, Glyph::Blank, "{a:?} + {b:?} connector");
 
@@ -783,7 +992,7 @@ mod tests {
     fn text_cells_double_unions_multi_coloured_columns_that_would_lose_a_line() {
         let colors = vec![RatatuiColor::Red, RatatuiColor::Green, RatatuiColor::Blue];
         for edges in colliding_edge_orders(EdgeType::RightBottom, 1, EdgeType::Vertical, 2) {
-            let cells = build_text_cells(0, 2, &edges, &colors, CellWidthType::Double);
+            let cells = build_text_cells(0, 2, &edges, &colors, CellWidthType::Double, 2);
             assert_eq!(cells[2].glyph, Glyph::TeeLeft);
             assert_eq!(cells[3].glyph, Glyph::Blank);
         }
@@ -803,7 +1012,7 @@ mod tests {
             Edge::new(EdgeType::Right, 1, 1),
             Edge::new(EdgeType::Right, 1, 2),
         ];
-        let cells = build_text_cells(0, 2, &edges, &colors, CellWidthType::Single);
+        let cells = build_text_cells(0, 2, &edges, &colors, CellWidthType::Single, 2);
         assert_eq!(cells[1].glyph, Glyph::Horiz);
         assert_eq!(cells[1].color, RatatuiColor::Green);
 
@@ -824,7 +1033,7 @@ mod tests {
                 RatatuiColor::Blue,
             ),
         ] {
-            let cells = build_text_cells(0, 2, &edges, &colors, CellWidthType::Single);
+            let cells = build_text_cells(0, 2, &edges, &colors, CellWidthType::Single, 2);
             assert_eq!(cells[1].glyph, Glyph::TeeLeft);
             assert_eq!(cells[1].color, expected);
         }
@@ -929,7 +1138,7 @@ mod tests {
     fn single_width_unions_colliding_edges_into_a_junction() {
         let colors = vec![RatatuiColor::Red, RatatuiColor::Green, RatatuiColor::Blue];
         for edges in colliding_edge_orders(EdgeType::Horizontal, 0, EdgeType::Vertical, 2) {
-            let cells = build_text_cells(0, 3, &edges, &colors, CellWidthType::Single);
+            let cells = build_text_cells(0, 3, &edges, &colors, CellWidthType::Single, 3);
             assert_eq!(cells[1].glyph, Glyph::Cross);
             assert_eq!(cells[1].color, RatatuiColor::Blue);
         }
@@ -951,7 +1160,7 @@ mod tests {
         ];
         for (a, b, expected) in cases {
             let edges = vec![Edge::new(*a, 1, 0), Edge::new(*b, 1, 0)];
-            let cells = build_text_cells(0, 2, &edges, &colors, CellWidthType::Single);
+            let cells = build_text_cells(0, 2, &edges, &colors, CellWidthType::Single, 2);
             assert_eq!(cells[1].glyph, *expected, "{a:?} + {b:?}");
         }
     }
@@ -961,7 +1170,7 @@ mod tests {
     #[test]
     fn single_width_ignores_out_of_range_edges() {
         let edges = vec![Edge::new(EdgeType::Vertical, 9, 0)];
-        let cells = build_text_cells(0, 2, &edges, &[RatatuiColor::Red], CellWidthType::Single);
+        let cells = build_text_cells(0, 2, &edges, &[RatatuiColor::Red], CellWidthType::Single, 2);
         assert_eq!(cells.len(), 2);
         assert_eq!(cells[1].glyph, Glyph::Blank);
     }
@@ -987,7 +1196,7 @@ mod tests {
         ];
         for (edge_type, expected) in cases {
             let edges = vec![Edge::new(*edge_type, 1, 0)];
-            let cells = build_text_cells(0, 2, &edges, &colors, CellWidthType::Single);
+            let cells = build_text_cells(0, 2, &edges, &colors, CellWidthType::Single, 2);
             assert_eq!(cells.len(), 2, "{edge_type:?}");
             assert_eq!(cells[1].glyph, *expected, "{edge_type:?}");
         }
@@ -995,7 +1204,7 @@ mod tests {
 
     #[test]
     fn text_cells_single_width_commit_dot_uses_one_cell_per_column() {
-        let cells = build_text_cells(1, 3, &[], &[RatatuiColor::Red], CellWidthType::Single);
+        let cells = build_text_cells(1, 3, &[], &[RatatuiColor::Red], CellWidthType::Single, 3);
         assert_eq!(cells.len(), 3);
         assert_eq!(cells[1].glyph, Glyph::CommitDot);
     }
@@ -1006,9 +1215,105 @@ mod tests {
     /// `corner_bl` / `head_dot` 的地方：這三個 glyph 在 rounded 風格底下沒有
     /// 出現在任何 golden snapshot 裡（見 tests/graph.rs），沒有這張表它們就
     /// 完全沒有測試涵蓋。
+    /// 箭頭不是 `merged` 推得出來的形狀，上面那條等價關係碰不到它們，所以
+    /// 跟 dot 一樣另外釘：`↓` 是線的終點，`↑` 往下接到 parent。
+    #[test]
+    fn arrows_and_overflow_extend_downward_for_a_non_geometric_reason() {
+        assert!(!Glyph::ArrowDown.extends_downward());
+        assert!(Glyph::ArrowUp.extends_downward());
+        assert!(!Glyph::Overflow.extends_downward());
+    }
+
+    /// 箭頭跟橫線、virtual row 的 Vertical 同格時，兩種寬度都畫箭頭；Double
+    /// 的 connector 半格照樣由橫線帶，所以橫線不會在這一格完全斷掉。
+    #[test]
+    fn arrow_owns_the_symbol_half_in_both_widths() {
+        let colors = vec![RatatuiColor::Red, RatatuiColor::Green, RatatuiColor::Blue];
+        for (trunc, glyph) in [
+            (EdgeType::TruncDown, Glyph::ArrowDown),
+            (EdgeType::TruncUp, Glyph::ArrowUp),
+        ] {
+            for other in [EdgeType::Horizontal, EdgeType::Vertical] {
+                for edges in colliding_edge_orders(trunc, 1, other, 2) {
+                    let double = build_text_cells(0, 3, &edges, &colors, CellWidthType::Double, 3);
+                    assert_eq!(double[2].glyph, glyph, "{other:?} {edges:?}");
+                    assert_eq!(double[2].color, RatatuiColor::Green);
+                    let expect_connector = if other == EdgeType::Horizontal {
+                        Glyph::Horiz
+                    } else {
+                        Glyph::Blank
+                    };
+                    assert_eq!(double[3].glyph, expect_connector);
+
+                    let single = build_text_cells(0, 3, &edges, &colors, CellWidthType::Single, 3);
+                    assert_eq!(single[1].glyph, glyph, "{other:?} {edges:?}");
+                    assert_eq!(single[1].color, RatatuiColor::Green);
+                }
+            }
+        }
+    }
+
+    /// 溢位欄：真正的 lane 只畫到倒數第二欄，最後一欄畫 `…`（顏色取第一條
+    /// 落在溢位範圍的 edge），格數正好是 `cols * cells_per_column()`。
+    #[test]
+    fn overflow_column_marks_lanes_beyond_the_cap() {
+        let colors = vec![
+            RatatuiColor::Red,
+            RatatuiColor::Green,
+            RatatuiColor::Blue,
+            RatatuiColor::Yellow,
+        ];
+        let edges = vec![
+            Edge::new(EdgeType::Vertical, 1, 1),
+            Edge::new(EdgeType::Vertical, 2, 2),
+            Edge::new(EdgeType::Vertical, 3, 3),
+        ];
+        let double = build_text_cells(0, 4, &edges, &colors, CellWidthType::Double, 3);
+        assert_eq!(double.len(), 6);
+        assert_eq!(double[0].glyph, Glyph::CommitDot);
+        assert_eq!(double[2].glyph, Glyph::Vert);
+        assert_eq!(double[4].glyph, Glyph::Overflow);
+        assert_eq!(double[4].color, RatatuiColor::Blue);
+        assert_eq!(double[5].glyph, Glyph::Blank);
+
+        let single = build_text_cells(0, 4, &edges, &colors, CellWidthType::Single, 3);
+        assert_eq!(single.len(), 3);
+        assert_eq!(single[1].glyph, Glyph::Vert);
+        assert_eq!(single[2].glyph, Glyph::Overflow);
+    }
+
+    /// commit 自己落在溢位範圍時畫它的 dot（顏色跟原本那一欄一致），蓋過 `…`。
+    #[test]
+    fn overflow_column_prefers_the_commit_dot() {
+        let colors = vec![
+            RatatuiColor::Red,
+            RatatuiColor::Green,
+            RatatuiColor::Blue,
+            RatatuiColor::Yellow,
+        ];
+        let edges = vec![
+            Edge::new(EdgeType::Vertical, 0, 0),
+            Edge::new(EdgeType::Vertical, 2, 2),
+        ];
+        let single = build_text_cells(3, 4, &edges, &colors, CellWidthType::Single, 2);
+        assert_eq!(single.len(), 2);
+        assert_eq!(single[0].glyph, Glyph::Vert);
+        assert_eq!(single[1].glyph, Glyph::CommitDot);
+        assert_eq!(single[1].color, RatatuiColor::Yellow);
+    }
+
+    /// 沒有東西落在溢位範圍的列，溢位欄留白。
+    #[test]
+    fn overflow_column_is_blank_when_nothing_overflows() {
+        let edges = vec![Edge::new(EdgeType::Vertical, 0, 0)];
+        let cells = build_text_cells(1, 4, &edges, &[], CellWidthType::Single, 3);
+        assert_eq!(cells.len(), 3);
+        assert_eq!(cells[2].glyph, Glyph::Blank);
+    }
+
     #[test]
     fn glyph_set_tables_match_style_charts() {
-        let cases: &[(GlyphSet, [(Glyph, &str); 14])] = &[
+        let cases: &[(GlyphSet, [(Glyph, &str); 17])] = &[
             (
                 GlyphSet::ROUNDED,
                 [
@@ -1028,6 +1333,9 @@ mod tests {
                     (Glyph::TeeRight, "├"),
                     (Glyph::TeeLeft, "┤"),
                     (Glyph::Cross, "┼"),
+                    (Glyph::ArrowDown, "↓"),
+                    (Glyph::ArrowUp, "↑"),
+                    (Glyph::Overflow, "…"),
                 ],
             ),
             (
@@ -1047,6 +1355,9 @@ mod tests {
                     (Glyph::TeeRight, "├"),
                     (Glyph::TeeLeft, "┤"),
                     (Glyph::Cross, "┼"),
+                    (Glyph::ArrowDown, "↓"),
+                    (Glyph::ArrowUp, "↑"),
+                    (Glyph::Overflow, "…"),
                 ],
             ),
             (
@@ -1066,6 +1377,9 @@ mod tests {
                     (Glyph::TeeRight, "+"),
                     (Glyph::TeeLeft, "+"),
                     (Glyph::Cross, "+"),
+                    (Glyph::ArrowDown, "v"),
+                    (Glyph::ArrowUp, "^"),
+                    (Glyph::Overflow, "~"),
                 ],
             ),
         ];

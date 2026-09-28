@@ -6,11 +6,10 @@ use crate::{
     config::UserListColumnType,
     diff::{self, DiffNotes, ModeNote, RenderedDiff},
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
-    git::{Commit, CommitHash, DiffTarget, FileChange, Ref, Repository, WorkingChanges},
-    view::{
-        dispatch_branch_copy, dispatch_tag_copy, partition_branches, partition_tags,
-        ListRefreshViewContext, RefreshViewContext, ViewContext,
+    git::{
+        Commit, CommitExtra, CommitHash, DiffTarget, FileChange, Ref, Repository, WorkingChanges,
     },
+    view::{dispatch_branch_copy, dispatch_tag_copy, partition_branches, partition_tags},
     widget::{
         commit_detail::{
             build_commit_tree_rows, build_working_changes_tree_rows, CommitDetail,
@@ -84,6 +83,7 @@ pub fn status_hints_for(pane: DetailPane) -> Vec<HintSpec> {
 enum DetailContent {
     Commit {
         commit: Box<Commit>,
+        extra: CommitExtra,
         refs: Vec<Ref>,
         rows: Vec<TreeRow>,
     },
@@ -97,6 +97,7 @@ enum DetailContent {
 impl DetailContent {
     fn from_commit(
         commit: Commit,
+        extra: CommitExtra,
         changes: Vec<FileChange>,
         refs: Vec<Ref>,
         theme: &ColorTheme,
@@ -104,6 +105,7 @@ impl DetailContent {
         let rows = build_commit_tree_rows(&changes, &commit.commit_hash, theme);
         DetailContent::Commit {
             commit: Box::new(commit),
+            extra,
             refs,
             rows,
         }
@@ -167,13 +169,14 @@ impl<'a> DetailView<'a> {
     pub fn new(
         commit_list_state: CommitListState<'a>,
         commit: Commit,
+        extra: CommitExtra,
         changes: Vec<FileChange>,
         refs: Vec<Ref>,
         repository: &'a Repository,
         ctx: Rc<AppContext>,
         tx: Sender,
     ) -> DetailView<'a> {
-        let content = DetailContent::from_commit(commit, changes, refs, &ctx.color_theme);
+        let content = DetailContent::from_commit(commit, extra, changes, refs, &ctx.color_theme);
         let mut commit_detail_state = CommitDetailState::default();
         commit_detail_state.reset(content.rows());
 
@@ -320,7 +323,7 @@ impl<'a> DetailView<'a> {
                 self.tx.send(AppEvent::OpenShell);
             }
             UserEvent::Refresh => {
-                self.refresh();
+                self.tx.send(AppEvent::Refresh);
             }
             _ => {}
         }
@@ -352,10 +355,13 @@ impl<'a> DetailView<'a> {
             self.content
                 .max_height(area_cap, self.ctx.ui_config.pane_height.detail, show_diff);
         let content_height = match &self.content {
-            DetailContent::Commit { commit, refs, rows } => {
-                CommitDetail::new(commit, rows, refs, self.ctx.clone(), marquee_frame)
-                    .content_height()
-            }
+            DetailContent::Commit {
+                commit,
+                extra,
+                refs,
+                rows,
+            } => CommitDetail::new(commit, extra, rows, refs, self.ctx.clone(), marquee_frame)
+                .content_height(),
             DetailContent::WorkingChanges {
                 staged_count,
                 unstaged_count,
@@ -395,9 +401,20 @@ impl<'a> DetailView<'a> {
             f.render_widget(Clear, detail_rect);
 
             match &self.content {
-                DetailContent::Commit { commit, refs, rows } => {
-                    let commit_detail =
-                        CommitDetail::new(commit, rows, refs, self.ctx.clone(), marquee_frame);
+                DetailContent::Commit {
+                    commit,
+                    extra,
+                    refs,
+                    rows,
+                } => {
+                    let commit_detail = CommitDetail::new(
+                        commit,
+                        extra,
+                        rows,
+                        refs,
+                        self.ctx.clone(),
+                        marquee_frame,
+                    );
                     f.render_stateful_widget(
                         commit_detail,
                         detail_rect,
@@ -485,6 +502,12 @@ impl<'a> DetailView<'a> {
         self.commit_list_state.as_ref().unwrap()
     }
 
+    pub(super) fn as_mut_list_state(&mut self) -> &mut CommitListState<'a> {
+        self.commit_list_state
+            .as_mut()
+            .expect("commit_list_state already taken")
+    }
+
     pub fn marquee_id(&self) -> Option<std::sync::Arc<str>> {
         match &self.content {
             DetailContent::Commit { commit, .. } => Some(commit.commit_hash.as_arc()),
@@ -550,10 +573,15 @@ impl<'a> DetailView<'a> {
             }
         } else {
             let selected = commit_list_state.selected_commit_hash().clone();
-            let (commit, changes) = repository.commit_detail(&selected);
+            let (commit, extra, changes) = repository.commit_detail(&selected);
             let (_, refs) = repository.commit_refs(&selected);
-            self.content =
-                DetailContent::from_commit(commit.clone(), changes, refs, &self.ctx.color_theme);
+            self.content = DetailContent::from_commit(
+                commit.clone(),
+                extra,
+                changes,
+                refs,
+                &self.ctx.color_theme,
+            );
         }
 
         self.commit_detail_state.reset(self.content.rows());
@@ -674,10 +702,31 @@ impl<'a> DetailView<'a> {
         self.tx.send(AppEvent::CopyToClipboard { name, value });
     }
 
-    pub fn refresh(&self) {
-        let list_context = ListRefreshViewContext::from(self.as_list_state());
-        let context = RefreshViewContext::new(list_context, ViewContext::Detail);
-        self.tx.send(AppEvent::Refresh(context));
+    /// `reload::Reloader` 背景重新整理送達時呼叫（`View::apply_working_changes`），
+    /// 這時 `commit_list_state` 裡的 working changes 已經換成新的了。目前
+    /// 顯示的不是 working changes 就什麼都不做——正在看某個 commit 的
+    /// detail，跟背景重新整理無關。
+    ///
+    /// 游標儘量留在原本選的檔案（`reselect`），且強制清掉 `diff_target`
+    /// 再呼叫 `sync_diff`：即使游標留在同一個檔案，那個檔案的實際 diff
+    /// 內容可能已經變了（這正是背景重新整理的目的），`sync_diff` 原本
+    /// 「target 沒變就不重新載入」的去重邏輯在這裡不適用。
+    pub(super) fn refresh_working_changes(&mut self) {
+        if !matches!(self.content, DetailContent::WorkingChanges { .. }) {
+            return;
+        }
+        let Some(wc) = self
+            .commit_list_state
+            .as_ref()
+            .and_then(|s| s.working_changes())
+        else {
+            return;
+        };
+        self.content = DetailContent::from_working_changes(wc, &self.ctx.color_theme);
+        let previous_target = self.diff_target.take();
+        self.commit_detail_state
+            .reselect(self.content.rows(), previous_target.as_ref());
+        self.sync_diff();
     }
 }
 

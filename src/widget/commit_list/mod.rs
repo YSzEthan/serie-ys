@@ -7,15 +7,15 @@ pub use render::CommitList;
 pub use search::{FilterState, MatchOptions, MatchQuery, SearchState};
 pub use state::{ChildJump, CommitListState};
 
-use ratatui::style::Color;
-
 use crate::git::{Commit, CommitHash, Ref};
 
-/// 索引到 `commits: Vec<CommitInfo>` 與 `search_matches: Vec<SearchMatch>` 的位置。
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+/// 索引到 `commits: Vec<CommitInfo>` 的位置。`Ord` 供 `filtered_indices`／
+/// `MatchSet::hits`（皆遞增排序）的 binary_search 使用。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub(crate) struct RawCommitIdx(pub(crate) usize);
 
-/// `filtered_indices` 內的位置；filter 空時 alias 到 raw（語意上仍是獨立座標）。
+/// `filtered_indices` 內的位置；沒有 filter（`None`）時 alias 到 raw（語意上
+/// 仍是獨立座標）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 struct FilteredIdx(usize);
 
@@ -34,16 +34,11 @@ enum MatchStep {
 pub struct CommitInfo<'a> {
     commit: &'a Commit,
     refs: Vec<&'a Ref>,
-    graph_color: Color,
 }
 
 impl<'a> CommitInfo<'a> {
-    pub fn new(commit: &'a Commit, refs: Vec<&'a Ref>, graph_color: Color) -> Self {
-        Self {
-            commit,
-            refs,
-            graph_color,
-        }
+    pub fn new(commit: &'a Commit, refs: Vec<&'a Ref>) -> Self {
+        Self { commit, refs }
     }
 
     pub fn commit_hash(&self) -> &CommitHash {

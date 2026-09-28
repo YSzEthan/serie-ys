@@ -14,7 +14,7 @@ use unicode_width::UnicodeWidthChar;
 use crate::{
     app::AppContext,
     color::ColorTheme,
-    git::{Commit, CommitHash, DiffTarget, FileChange, Ref, WorkingChanges},
+    git::{Commit, CommitExtra, CommitHash, DiffTarget, FileChange, Ref, WorkingChanges},
     graph::GlyphSet,
     widget::scroll::scrolled_offset,
 };
@@ -101,6 +101,18 @@ impl CommitDetailState {
         self.file_cursor = rows.iter().position(|r| r.file.is_some());
     }
 
+    /// working changes 背景重新整理時呼叫：儘量保留使用者正在看的檔案，
+    /// 不像 `reset` 那樣無條件跳回第一列——不然存檔工具每次 autosave 都會
+    /// 把游標拉回檔案樹頂端。`target` 是重新整理前選到的檔案；新的 rows
+    /// 裡找不到同一個檔案（已經沒有變更了）才退化成 `reset` 的行為。
+    /// `right_offset` 不必在這裡重新收斂，下一次 render 的
+    /// `resync_files_window` 會自己用新游標算。
+    pub fn reselect(&mut self, rows: &[TreeRow], target: Option<&DiffTarget>) {
+        self.file_cursor = target
+            .and_then(|t| rows.iter().position(|r| r.file.as_ref() == Some(t)))
+            .or_else(|| rows.iter().position(|r| r.file.is_some()));
+    }
+
     /// 游標移到下一個檔案列（跳過目錄／標題／空行）。回傳 true 代表游標真的
     /// 移動了，呼叫端據此決定要不要重新載入 diff。
     pub fn move_file_cursor_down(&mut self, rows: &[TreeRow]) -> bool {
@@ -169,6 +181,7 @@ impl CommitDetailState {
 
 pub struct CommitDetail<'a> {
     commit: &'a Commit,
+    extra: &'a CommitExtra,
     rows: &'a [TreeRow],
     refs: &'a Vec<Ref>,
     ctx: Rc<AppContext>,
@@ -178,6 +191,7 @@ pub struct CommitDetail<'a> {
 impl<'a> CommitDetail<'a> {
     pub fn new(
         commit: &'a Commit,
+        extra: &'a CommitExtra,
         rows: &'a [TreeRow],
         refs: &'a Vec<Ref>,
         ctx: Rc<AppContext>,
@@ -185,6 +199,7 @@ impl<'a> CommitDetail<'a> {
     ) -> Self {
         Self {
             commit,
+            extra,
             rows,
             refs,
             ctx,
@@ -271,12 +286,12 @@ impl CommitDetail<'_> {
                 ),
                 self.commit
                     .author_name
-                    .as_str()
+                    .as_ref()
                     .fg(self.ctx.color_theme.detail_name_fg),
                 " <".into(),
                 self.commit
                     .author_email
-                    .as_str()
+                    .as_ref()
                     .fg(self.ctx.color_theme.detail_email_fg),
                 ">".into(),
             ]),
@@ -294,7 +309,7 @@ impl CommitDetail<'_> {
             wrap_at,
         );
 
-        if is_author_committer_different(self.commit) {
+        if is_author_committer_different(self.commit, self.extra) {
             push_wrapped(
                 &mut lines,
                 Line::from(vec![
@@ -302,12 +317,12 @@ impl CommitDetail<'_> {
                         "Committer: ",
                         Style::default().fg(self.ctx.color_theme.detail_label_fg),
                     ),
-                    self.commit
+                    self.extra
                         .committer_name
                         .as_str()
                         .fg(self.ctx.color_theme.detail_name_fg),
                     " <".into(),
-                    self.commit
+                    self.extra
                         .committer_email
                         .as_str()
                         .fg(self.ctx.color_theme.detail_email_fg),
@@ -320,7 +335,7 @@ impl CommitDetail<'_> {
                 Line::from(vec![
                     Span::raw("           "),
                     Span::styled(
-                        self.format_date(&self.commit.committer_date),
+                        self.format_date(&self.extra.committer_date),
                         Style::default().fg(self.ctx.color_theme.detail_date_fg),
                     ),
                 ]),
@@ -385,9 +400,9 @@ impl CommitDetail<'_> {
         );
         lines.push(Line::from(Span::raw(subject_slice.text).bold()));
 
-        if !self.commit.body.is_empty() {
+        if !self.extra.body.is_empty() {
             lines.push(Line::raw(""));
-            for body_line in self.commit.body.lines() {
+            for body_line in self.extra.body.lines() {
                 match wrap_at {
                     Some(w) => lines.extend(wrap_to_width(body_line, w).into_iter().map(Line::raw)),
                     None => lines.push(Line::raw(body_line)),
@@ -538,10 +553,10 @@ fn detail_block(divider_fg: Color, glyphs: GlyphSet) -> Block<'static> {
         .padding(Padding::new(1, 1, 0, 0))
 }
 
-fn is_author_committer_different(commit: &Commit) -> bool {
-    commit.author_name != commit.committer_name
-        || commit.author_email != commit.committer_email
-        || commit.author_date != commit.committer_date
+fn is_author_committer_different(commit: &Commit, extra: &CommitExtra) -> bool {
+    commit.author_name.as_ref() != extra.committer_name
+        || commit.author_email.as_ref() != extra.committer_email
+        || commit.author_date != extra.committer_date
 }
 
 fn has_parent(commit: &Commit) -> bool {
