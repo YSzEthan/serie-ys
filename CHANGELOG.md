@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.5.0](https://github.com/YSzEthan/serie-ys/compare/v4.4.0...v4.5.0) (2026-09-28)
+
+
+### Features
+
+* 百萬 commit 大 repo 效能優化 (#115) (#136) ([2390603](https://github.com/YSzEthan/serie-ys/commit/239060387c879ffb2579f835431bc3eae9720f05))
+
 ## [4.4.0](https://github.com/YSzEthan/serie-ys/compare/v4.3.0...v4.4.0) (2026-09-26)
 
 
