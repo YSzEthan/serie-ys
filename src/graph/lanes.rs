@@ -123,11 +123,9 @@ impl Lanes {
     }
 
     /// `open`：第 `y` 列開始前的狀態 → 第 `y` 列處理完之後（也就是第
-    /// `y + 1` 列開始前）的狀態。只推進 bitset，不組 edge——`row_edges_in`
-    /// 從 checkpoint 重播到 `rows.start` 這段只需要這半，不必連
-    /// `build_row` 的排序／dedup 都一起做一次又丟掉。
+    /// `y + 1` 列開始前）的狀態。只推進 bitset，不組 edge。
     fn advance(&self, open: &mut [u64], y: usize) {
-        let c = self.cols[y] as usize;
+        let c = self.col(y);
         let ev = self.events_of(y);
         // 先收斂、再視 commit 自己是否往下延伸、最後開新／接手（open 的欄
         // 本來就不在 A 裡；join 的欄本來就在，重複 set 沒有影響）。
@@ -151,7 +149,7 @@ impl Lanes {
     /// 第 `y` 列排序過的 edge。`open` 是第 `y` 列開始前（呼叫
     /// `advance(open, y)` 之前）的狀態，呼叫端負責推進。
     fn build_row(&self, open: &[u64], y: usize, buf: &mut Vec<Edge>) {
-        let c = self.cols[y] as usize;
+        let c = self.col(y);
         let ev = self.events_of(y);
         // 上一列開的 `↑` 在這一列接到 parent（commit 自己的 Up 或收斂
         // 轉角），顏色沿用 `↑` 的。直接查上一列的事件（CSR 可隨機存取），
@@ -214,11 +212,9 @@ impl Lanes {
     }
 
     /// 從最近的 checkpoint 重播到 `rows.start`，把 `rows` 範圍內每一列排序
-    /// 過的 edge 交給 `f`。checkpoint 到 `rows.start` 之間只推進 `open`
-    /// 這個 bitset（`advance`），不組 edge、不排序——組 edge（`build_row`）
-    /// 只在 `rows` 範圍內的列才做，範圍外那段因此不再是「白算一次又丟掉」。
-    /// checkpoint 越密，這段推進越短，記憶體越大，`CHECKPOINT_INTERVAL`
-    /// 就是這個取捨。
+    /// 過的 edge 交給 `f`。範圍外那段只推進 `open`（`advance`），組 edge
+    /// （`build_row`）只在 `rows` 內做。checkpoint 越密，這段推進越短，
+    /// 記憶體越大，`CHECKPOINT_INTERVAL` 就是這個取捨。
     pub(super) fn row_edges_in(&self, rows: Range<usize>, mut f: impl FnMut(usize, &[Edge])) {
         if rows.start >= rows.end || self.words == 0 {
             return;
@@ -232,7 +228,7 @@ impl Lanes {
         }
 
         let mut buf = Vec::new();
-        for y in rows.start..rows.end {
+        for y in rows {
             self.build_row(&open, y, &mut buf);
             f(y, &buf);
             self.advance(&mut open, y);
@@ -422,20 +418,13 @@ pub(super) fn build(parent_start: &[u32], parent_idx: &[u32], opts: &BuildOpts) 
         _ => Vec::new(),
     };
     let nu = n as u32;
-    // 從第 `c` 列往 `p` 的線要不要截斷。`saturating_sub`：`p`／`nu` 理論上
-    // 一定 >= `c`（commit 排序保證 parent 不會排在 child 前面），但這個
-    // 順序不變量是在別處（`git.rs` 載入階段）建立的，這裡沒有本地檢查；
-    // 用飽和減法擋掉萬一排序被破壞時的 `u32` 溢位，寧可少截斷一條線，
-    // 也不要溢位成一個超大值誤判整條線都要截斷。
+    // 從第 `c` 列往 `p` 的線要不要截斷。`p`／`nu` 理論上一定 >= `c`（這個
+    // 順序不變量在 `git.rs` 載入階段建立，這裡沒有本地檢查）；用飽和減法
+    // 擋萬一順序被破壞時的 `u32` 溢位，寧可少截斷一條線，也不要溢位成一
+    // 個超大值誤判整條線都要截斷。
     let cut = |c: u32, p: u32| {
-        k.is_some_and(|k| {
-            let len = if p == NOT_LOADED {
-                nu.saturating_sub(c)
-            } else {
-                p.saturating_sub(c)
-            };
-            len > k
-        })
+        let end = if p == NOT_LOADED { nu } else { p };
+        k.is_some_and(|k| end.saturating_sub(c) > k)
     };
 
     // lane 狀態：`lane_open[col]` 開著時，`is_fp[col]` 分辨它是不是 commit

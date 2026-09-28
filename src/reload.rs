@@ -113,12 +113,7 @@ impl Reloader {
             let latest = Arc::clone(&latest);
             let want_stats = Arc::clone(&want_stats);
             let tx = tx.clone();
-            // 具名 thread + `QUIET_PANIC_THREAD_PREFIX`：跟 Full worker
-            // 同一個理由——`git::load_working_changes`／
-            // `fill_working_changes_stats` 內部一樣可能 panic（例如檔名
-            // 含非法 UTF-8），沒有這個名稱前綴的話，panic 訊息會直接印進
-            // 已經是 alt-screen／raw mode 的終端機，且不會被 `lib.rs` 的
-            // 過濾 panic hook 接住。
+            // 具名 thread：見 `QUIET_PANIC_THREAD_PREFIX`。
             thread::Builder::new()
                 .name(crate::QUIET_PANIC_THREAD_PREFIX.to_string())
                 .spawn(move || {
@@ -138,11 +133,7 @@ impl Reloader {
         {
             let full_state = Arc::clone(&full_state);
             let applied = Arc::clone(&applied);
-            // 具名 thread：跟它可能 spawn 出的 segment thread（`git.rs` 的
-            // `load_commits_parallel_with_segments`）共用同一個名稱前綴，
-            // `lib.rs` 裝的過濾 panic hook 靠它判斷要不要靜音——這條 thread
-            // 本身也可能直接 panic（`Repository::load` 內部的 `unwrap`），
-            // 不是只有它 spawn 出的子 thread 需要被涵蓋。
+            // 具名 thread：見 `QUIET_PANIC_THREAD_PREFIX`。
             thread::Builder::new()
                 .name(crate::QUIET_PANIC_THREAD_PREFIX.to_string())
                 .spawn(move || full_worker_loop(full, full_rx, full_state, applied, tx))
@@ -290,11 +281,9 @@ fn working_tree_worker_loop(
         while request_rx.try_recv().is_ok() {}
 
         let start = Instant::now();
-        // `catch_unwind`：這條 thread 具名（`QUIET_PANIC_THREAD_PREFIX`），
-        // 沒有這層的話，`load_working_changes`／`fill_working_changes_stats`
-        // 內部任何 panic（例如檔名含非法 UTF-8）會直接讓這條 worker
-        // thread 死掉、往後再也不會更新 working changes——理由同
-        // `full_worker_loop` 的 `load_full` 呼叫。
+        // 這條 thread 的 panic 被 `QUIET_PANIC_THREAD_PREFIX` 靜音，不接住
+        // 的話 worker 會無聲死掉、working changes 從此不再更新；接住後比照
+        // `full_worker_loop` 轉成 `NotifyError`。
         let result = panic::catch_unwind(AssertUnwindSafe(|| {
             let mut wc = git::load_working_changes(&repo_path)?;
             if want_stats.load(Ordering::Acquire) {

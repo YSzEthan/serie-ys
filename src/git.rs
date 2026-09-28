@@ -1937,10 +1937,6 @@ mod tests {
         assert_ne!(before, after, "多一個 commit，指紋不該不變");
     }
 
-    /// `.mailmap` 改變了 `%aN`／`%aE` 解析出來的作者身分，但不動任何 commit
-    /// 物件——只用 commit hash 序列當指紋的話，改 `.mailmap` 不會讓指紋變，
-    /// 背景重載會誤判成「沒變」而丟掉新解析出來的作者名稱
-    /// （見 `tests/mailmap.rs` 的 `assert_identity`）。
     #[test]
     fn fingerprint_changes_when_mailmap_identity_changes() {
         let dir = build_branching_repo();

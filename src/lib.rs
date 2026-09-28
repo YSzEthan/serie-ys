@@ -442,13 +442,15 @@ const EXE_REPLACED_NOTICE_ENV: &str = "YSGIT_EXE_REPLACED_NOTICE";
 /// 以下差異量不到需要提示使用者的程度。
 const COMMIT_GRAPH_HINT_THRESHOLD: usize = 100_000;
 
-/// Full 重載 worker（`reload::Reloader`）與它可能 spawn 出的 segment
-/// thread（`git::load_commits_parallel_with_segments`）共用的 thread 名稱
-/// 前綴。兩者都在 TUI 已經進入 alt screen／raw mode 之後執行、都可能因為
-/// `Repository::load` 內部的 `unwrap` 而 panic；下面裝的過濾 panic hook
-/// 靠這個前綴判斷要不要靜音（讓 `catch_unwind`／`join` 接手轉成
-/// `NotifyError`，不讓預設 hook 去動終端機）——event thread 不在涵蓋範圍
-/// 內，見該處的過濾 hook 註解。
+/// 背景重載 thread 共用的 thread 名稱前綴：`reload::Reloader` 的 working
+/// changes／Full 兩條 worker，以及 Full 可能 spawn 出的 segment thread
+/// （`git::load_commits_parallel_with_segments`）。這些 thread 會跑到
+/// session 結束，panic 可能發生在 TUI 已經進入 alt screen／raw mode 之後
+/// （`run()` 裡 `ratatui::init()` 那之後才裝上過濾 panic hook）；那之後直接
+/// 印 panic 到終端機會弄花畫面，下面裝的過濾 panic hook 就靠這個前綴判斷要
+/// 不要靜音。用了這個前綴就必須自己用 `catch_unwind`／`join` 接住 panic、
+/// 轉成 `NotifyError`，否則 thread 會無聲死掉——event thread 不用這個前綴，
+/// 它的 panic 由 `event.rs` 的 `start_watchdog` 處理。
 pub(crate) const QUIET_PANIC_THREAD_PREFIX: &str = "ysgit-quiet-panic";
 
 pub fn run() -> Result<()> {

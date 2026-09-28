@@ -292,9 +292,8 @@ mod tests {
         assert!(!SearchMatcher::new("zzz", true, false).matches("all ascii, no match"));
     }
 
-    /// 非 ASCII haystack 走 `fold_contains`（`matches` 的最後一個分支），不是
-    /// `ascii_ignore_case_contains`；這裡直接釘正確性，`fold_contains` 內部
-    /// 有沒有配置由 doc comment 保證、不是這條測試能看出來的。
+    /// 非 ASCII haystack 走 `fold_contains`（`matches` 的最後一個分支），
+    /// 不是 `ascii_ignore_case_contains`。
     #[test]
     fn non_ascii_ignore_case_substring_matches() {
         assert!(SearchMatcher::new("修正", true, false).matches("fix: 修正登入流程"));
