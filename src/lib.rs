@@ -14,6 +14,7 @@ mod fuzzy;
 mod keybind;
 mod process;
 mod reload;
+mod startup_progress;
 mod update;
 mod view;
 mod widget;
@@ -587,6 +588,10 @@ pub fn run() -> Result<()> {
         }
     }
 
+    // 從這裡到 `ratatui::init()` 之前都在一般模式下同步載入，大 repo 要好幾秒；
+    // 起點要在上面 path browser 之後——它自己會 init／restore 終端機。
+    let progress = startup_progress::StartupProgress::start();
+
     let shell_command =
         app::resolve_shell_command(&core_config.shell, std::env::var("SHELL").ok().as_deref());
 
@@ -736,6 +741,7 @@ pub fn run() -> Result<()> {
     // 「暫時沒有 working changes」，稍後 `AppEvent::WorkingChangesReady`
     // 會自動補上，不阻塞啟動。
     let mut working_changes = reloader.wait_first(Duration::from_secs(2));
+    drop(progress);
 
     // 初始載入到這裡結束，才進入 alt screen／raw mode。`ratatui::init()`
     // 從舊版迴圈內的 `terminal.is_none()` lazy 初始化攤平到這裡——效果
