@@ -91,7 +91,11 @@ pub(super) fn build_preview_content(
     );
     lines.push(header_rule(
         width,
-        if has_relations { "Related" } else { "Body" },
+        if has_relations {
+            "Related"
+        } else {
+            Section::Body.label()
+        },
     ));
 
     if let SelectedItemExtra::Issue { parent, sub_issues } = item.extra {
@@ -382,7 +386,7 @@ fn append_relation_lines(
         }
     }
     if parent.is_some() || !sub_issues.is_empty() {
-        lines.push(header_rule(width, "Body"));
+        lines.push(header_rule(width, Section::Body.label()));
     }
 }
 
