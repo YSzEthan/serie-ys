@@ -295,11 +295,7 @@ fn parse_issues_graphql(json: &str) -> Result<GhPage<GhIssue>, String> {
     let resp: GqlIssuesResp =
         serde_json::from_str(json).map_err(|e| format!("JSON parse error: {e}"))?;
     let list = resp.data.repository.issues;
-    let next_cursor = if list.page_info.has_next_page {
-        list.page_info.end_cursor
-    } else {
-        None
-    };
+    let next_cursor = list.page_info.next_cursor();
     Ok(GhPage {
         items: list
             .nodes
@@ -319,6 +315,13 @@ struct GqlPageInfo {
     end_cursor: Option<String>,
 }
 
+impl GqlPageInfo {
+    /// 只有 `has_next_page` 為真才回游標：`end_cursor` 在最後一頁也可能是非 null。
+    fn next_cursor(self) -> Option<String> {
+        self.has_next_page.then_some(self.end_cursor).flatten()
+    }
+}
+
 #[derive(Deserialize)]
 struct GqlIssuesResp {
     data: GqlIssuesData,
@@ -329,14 +332,7 @@ struct GqlIssuesData {
 }
 #[derive(Deserialize)]
 struct GqlIssuesRepo {
-    issues: GqlIssueList,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct GqlIssueList {
-    #[serde(default)]
-    page_info: GqlPageInfo,
-    nodes: Vec<GqlIssueNode>,
+    issues: GqlConnection<GqlIssueNode>,
 }
 
 #[derive(Deserialize)]
@@ -363,14 +359,22 @@ struct GqlIssueNode {
 }
 
 #[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
 struct GqlConnection<T> {
+    /// 沒查 `pageInfo` 的 connection（labels 等）拿到 `has_next_page = false`。
+    /// `nodes` 刻意不加 default：查詢漏寫 `nodes` 要報錯，不要悄悄變空。
+    #[serde(default)]
+    page_info: GqlPageInfo,
     nodes: Vec<T>,
 }
 /// 手寫而非 `#[derive(Default)]`：derive 會加上多餘的 `T: Default` bound，
 /// 但一個空 `Vec<T>` 從不需要 `T` 本身可以是預設值。
 impl<T> Default for GqlConnection<T> {
     fn default() -> Self {
-        GqlConnection { nodes: Vec::new() }
+        GqlConnection {
+            page_info: GqlPageInfo::default(),
+            nodes: Vec::new(),
+        }
     }
 }
 
@@ -444,11 +448,7 @@ fn parse_prs_graphql(json: &str) -> Result<GhPage<GhPullRequest>, String> {
     let repo = resp.data.repository;
     let default_branch = repo.default_branch_ref.map(|r| r.name);
     let list = repo.pull_requests;
-    let next_cursor = if list.page_info.has_next_page {
-        list.page_info.end_cursor
-    } else {
-        None
-    };
+    let next_cursor = list.page_info.next_cursor();
     Ok(GhPage {
         items: list
             .nodes
@@ -485,18 +485,11 @@ struct GqlPrsData {
 struct GqlPrsRepo {
     #[serde(default)]
     default_branch_ref: Option<GqlRefName>,
-    pull_requests: GqlPrList,
+    pull_requests: GqlConnection<GqlPrNode>,
 }
 #[derive(Deserialize)]
 struct GqlRefName {
     name: String,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct GqlPrList {
-    #[serde(default)]
-    page_info: GqlPageInfo,
-    nodes: Vec<GqlPrNode>,
 }
 
 #[derive(Deserialize)]
@@ -607,6 +600,22 @@ pub struct GhStatusCheckRollup {
     pub state: String,
 }
 
+/// 單一 CI check 的結果。宣告順序即排序：fail → pending → pass，收合截斷時優先丟掉綠色。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CheckState {
+    Failed,
+    Pending,
+    Passed,
+}
+
+/// PR head commit 上的一個 check。`head_ci_checks` 已經去重、判定狀態、
+/// 排序完畢，view 層拿到的就是最終清單，不再判斷狀態字串。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GhCheck {
+    pub name: String,
+    pub state: CheckState,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GhReviewCommentConn {
@@ -664,6 +673,86 @@ pub struct GhTimelinePage {
     pub items: Vec<GhTimelineItem>,
     pub next_cursor: Option<String>,
     pub mergeable: Option<Mergeable>,
+    /// PR head commit 的 check 清單，只有首頁（`after` 為 `None`）才查：
+    /// 載入更多的頁面與 Issue 一律是空的，呼叫端只該在首頁採用，不然會把
+    /// 既有清單清掉。首頁為空代表尚無 CI（例如 force-push 後的新 head）。
+    pub ci_checks: Vec<GhCheck>,
+}
+
+/// 每頁 contexts 筆數（connection 上限 100），首頁與續頁共用。
+const CONTEXTS_PAGE_SIZE: usize = 100;
+
+/// 首頁之後最多再追幾頁（CI contexts、review threads 各自算）。超過就截斷：
+/// 這是確定性的，重試也不會變，回 `Err` 只會讓那個 PR 的 timeline 永遠載不出來。
+const MAX_EXTRA_PAGES: usize = 10;
+
+/// 每頁 review thread 筆數（connection 上限 100），首頁與續頁共用。
+const THREADS_PAGE_SIZE: usize = 100;
+
+/// review thread 要取的欄位，首頁與續頁查詢共用，不會漂移。只取 comment id：
+/// `PullRequestReviewComment` 沒有 resolved 欄位，只能靠 thread 反查。
+///
+/// thread 內的留言取前 100 則，單一 thread 超過這個數量時，多出來的留言會被
+/// 當成未 resolved（實測最長的 thread 只有 6 則）。
+const REVIEW_THREADS_SELECTION: &str = r#"pageInfo { hasNextPage endCursor }
+    nodes { isResolved comments(first:100) { nodes { id } } }"#;
+
+/// 每筆 context 要取的欄位，首頁與續頁查詢共用，不會漂移。
+const CHECK_CONTEXT_NODES: &str = r#"__typename
+    ... on CheckRun {
+        name conclusion databaseId
+        checkSuite { app { slug } workflowRun { event workflow { name } } }
+    }
+    ... on StatusContext { context state }"#;
+
+/// PR head commit 的 CI 查詢片段。`oid` 讓續頁能釘住同一個 commit。
+fn head_commit_ci_fragment() -> String {
+    format!(
+        "commits(last:1) {{ nodes {{ commit {{ oid statusCheckRollup {{
+            contexts(first:{CONTEXTS_PAGE_SIZE}) {{
+                pageInfo {{ hasNextPage endCursor }}
+                nodes {{ {CHECK_CONTEXT_NODES} }}
+            }}
+        }} }} }} }}"
+    )
+}
+
+/// head commit 剩下的 contexts。用 `object(oid:)` 而非 `pullRequest.commits`：
+/// 追頁途中被 force-push 時，游標才不會跑到另一個 commit 上。
+/// 游標是 offset 式，所以追頁期間新增的 check 造成的位移防不了：重複會被
+/// `head_ci_checks` 去重吃掉，漏掉的等下次重抓補回來。
+fn build_contexts_query() -> String {
+    format!(
+        r#"query($owner:String!,$name:String!,$oid:GitObjectID!,$after:String){{
+            repository(owner:$owner,name:$name){{
+                object(oid:$oid){{
+                    ... on Commit {{ statusCheckRollup {{
+                        contexts(first:{CONTEXTS_PAGE_SIZE},after:$after) {{
+                            pageInfo {{ hasNextPage endCursor }}
+                            nodes {{ {CHECK_CONTEXT_NODES} }}
+                        }}
+                    }} }}
+                }}
+            }}
+        }}"#
+    )
+}
+
+/// 剩下的 review threads，以 PR 編號定位：thread 屬於 PR，不像 CI 會被
+/// force-push 換掉，沒有東西需要釘住。游標以 `(createdAt, id)` 為鍵，追頁期間
+/// 新增或刪除 thread 不會造成重複或漏抓。
+fn build_review_threads_query() -> String {
+    format!(
+        r#"query($owner:String!,$name:String!,$number:Int!,$after:String){{
+            repository(owner:$owner,name:$name){{
+                pullRequest(number:$number){{
+                    reviewThreads(first:{THREADS_PAGE_SIZE},after:$after) {{
+                        {REVIEW_THREADS_SELECTION}
+                    }}
+                }}
+            }}
+        }}"#
+    )
 }
 
 /// issue 與 PR 的 timeline 是兩個不同的 union：`Issue.timelineItems` 給的是
@@ -671,19 +760,29 @@ pub struct GhTimelinePage {
 /// 對 issue 送出這些片段會讓整個查詢被 GraphQL 擋下（"Fragment on
 /// PullRequestCommit can't be spread inside IssueTimelineItems"），而不是安靜地
 /// 回傳空結果 —— 所以四處分岔綁在同一個 match 上，漏掉其中一項就編不過。
-fn build_timeline_query(kind: GhItemKind) -> String {
+///
+/// CI（`commits(last:1)`）只有首頁要：`first_page` 為假時省略，載入更多不必
+/// 每次重抓一遍最多 100 筆 check。分岔一樣綁在 `PullRequest` arm 裡，不會
+/// 產生「Issue 帶 CI」這種會被整個退回的組合。
+fn build_timeline_query(kind: GhItemKind, first_page: bool) -> String {
     let (item_field, item_types, pr_only_fields, pr_fragments) = match kind {
-        GhItemKind::Issue => ("issue", "ISSUE_COMMENT", "", ""),
+        GhItemKind::Issue => ("issue", "ISSUE_COMMENT", String::new(), ""),
         GhItemKind::PullRequest => (
             "pullRequest",
             "ISSUE_COMMENT, PULL_REQUEST_COMMIT, PULL_REQUEST_REVIEW",
             // reviewThreads 是 resolved 狀態唯一的來源——`PullRequestReviewComment`
             // 本身沒有這個欄位，只在 `PullRequestReviewThread` 上。跟 timelineItems
             // 平行查詢，回應裡靠 comment id 對應回去（見 parse_timeline_graphql）。
-            r#"mergeable
-                    reviewThreads(first:100) {
-                        nodes { isResolved comments(first:20) { nodes { id } } }
-                    }"#,
+            format!(
+                r#"mergeable
+                    reviewThreads(first:{THREADS_PAGE_SIZE}) {{ {REVIEW_THREADS_SELECTION} }}
+                    {ci}"#,
+                ci = if first_page {
+                    head_commit_ci_fragment()
+                } else {
+                    String::new()
+                }
+            ),
             r#"... on PullRequestCommit { commit {
                                 abbreviatedOid messageHeadline
                                 statusCheckRollup { state }
@@ -725,7 +824,7 @@ pub fn get_timeline(
     after: Option<&str>,
 ) -> Result<GhTimelinePage, String> {
     let (owner, name) = fetch_repo_name_with_owner(path)?;
-    let query = build_timeline_query(kind);
+    let query = build_timeline_query(kind, after.is_none());
     let owner_f = format!("owner={owner}");
     let name_f = format!("name={name}");
     let number_f = format!("number={number}");
@@ -740,10 +839,40 @@ pub fn get_timeline(
         args.push(&after_f);
     }
     let json = run_gh(path, &args)?;
-    parse_timeline_graphql(&json, kind)
+    // 續頁的 owner／name／oid／after 一律 `-f`：`-F` 會把純數字轉成整數，oid 有可能
+    // 全是數字。唯獨 threads 的 `$number:Int!` 需要整數，那個變數用 `-F`。
+    parse_timeline_graphql(&json, kind, |target, cursor| {
+        let (query, flag, var) = match target {
+            Target::Contexts { oid } => (build_contexts_query(), "-f", format!("oid={oid}")),
+            Target::ReviewThreads => (build_review_threads_query(), "-F", number_f.clone()),
+        };
+        let query_f = format!("query={query}");
+        let cursor_f = format!("after={cursor}");
+        run_gh(
+            path,
+            &[
+                "api", "graphql", "-f", &owner_f, "-f", &name_f, flag, &var, "-f", &cursor_f, "-f",
+                &query_f,
+            ],
+        )
+    })
 }
 
-fn parse_timeline_graphql(json: &str, kind: GhItemKind) -> Result<GhTimelinePage, String> {
+/// 續頁要抓什麼。游標 `after` 每種都有，所以不放進 variant。
+enum Target<'a> {
+    /// head commit 剩下的 CI contexts；`oid` 釘住首頁那個 commit。
+    Contexts { oid: &'a str },
+    /// 剩下的 review threads。
+    ReviewThreads,
+}
+
+/// `fetch_more(target, after)` 回傳續頁的原始 JSON，只在 head commit 的 contexts
+/// 或 review threads 超過一頁時才會被呼叫。注入而非直接呼叫 `gh`，分頁邏輯才測得到。
+fn parse_timeline_graphql(
+    json: &str,
+    kind: GhItemKind,
+    mut fetch_more: impl FnMut(Target<'_>, &str) -> Result<String, String>,
+) -> Result<GhTimelinePage, String> {
     let resp: GqlTimelineResp =
         serde_json::from_str(json).map_err(|e| format!("JSON parse error: {e}"))?;
     let container = match kind {
@@ -754,16 +883,13 @@ fn parse_timeline_graphql(json: &str, kind: GhItemKind) -> Result<GhTimelinePage
         return Ok(GhTimelinePage::default());
     };
     let conn = container.timeline_items;
-    let next_cursor = if conn.page_info.has_next_page {
-        conn.page_info.end_cursor
-    } else {
-        None
-    };
+    let next_cursor = conn.page_info.next_cursor();
     // resolved 狀態與 line/originalLine 的收斂都在這裡做一次，view 層因此
     // 只需要認識收斂後的單一 `Option<u32>` 與 `bool`，不必知道 reviewThreads
     // 這條平行查詢的存在。
-    let resolved_ids = resolved_comment_ids(&container.review_threads);
     let mut items = conn.nodes;
+    let threads = collect_review_threads(container.review_threads, &items, &mut fetch_more)?;
+    let resolved_ids = resolved_comment_ids(&threads);
     for item in &mut items {
         if let GhTimelineItem::PullRequestReview { comments, .. } = item {
             for c in &mut comments.nodes {
@@ -772,10 +898,12 @@ fn parse_timeline_graphql(json: &str, kind: GhItemKind) -> Result<GhTimelinePage
             }
         }
     }
+    let ci_checks = head_ci_checks(&collect_head_contexts(container.commits, &mut fetch_more)?);
     Ok(GhTimelinePage {
         items,
         next_cursor,
         mergeable: container.mergeable.as_deref().and_then(Mergeable::from_api),
+        ci_checks,
     })
 }
 
@@ -800,28 +928,113 @@ struct GqlTimelineRepo {
 struct GqlTimelineContainer {
     #[serde(default)]
     mergeable: Option<String>,
-    timeline_items: GqlTimelineConn,
+    timeline_items: GqlConnection<GhTimelineItem>,
     #[serde(default)]
     review_threads: GqlConnection<GqlReviewThread>,
-}
-#[derive(Deserialize)]
-#[serde(rename_all = "camelCase")]
-struct GqlTimelineConn {
     #[serde(default)]
-    page_info: GqlPageInfo,
-    nodes: Vec<GhTimelineItem>,
+    commits: GqlConnection<GqlHeadCommit>,
 }
 
 /// resolved 狀態不在 `PullRequestReviewComment` 上，只在
 /// `PullRequestReviewThread` 上——這裡把已 resolved 的 thread 底下每則
 /// 留言的 id 收集起來，讓 `parse_timeline_graphql` 拿去回填。
-fn resolved_comment_ids(threads: &GqlConnection<GqlReviewThread>) -> FxHashSet<&str> {
+fn resolved_comment_ids(threads: &[GqlReviewThread]) -> FxHashSet<&str> {
     threads
-        .nodes
         .iter()
         .filter(|t| t.is_resolved)
         .flat_map(|t| t.comments.nodes.iter().map(|c| c.id.as_str()))
         .collect()
+}
+
+/// 續頁回應的 `data.repository` 外殼，底下那層（`R`）依查詢而異。
+#[derive(Deserialize)]
+struct GqlRepoResp<R> {
+    data: GqlRepoData<R>,
+}
+#[derive(Deserialize)]
+struct GqlRepoData<R> {
+    repository: R,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlThreadsRepo {
+    #[serde(default)]
+    pull_request: Option<GqlThreadsPr>,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlThreadsPr {
+    review_threads: GqlConnection<GqlReviewThread>,
+}
+
+/// 首頁 review threads 加上追頁。回填只針對這一頁**已送出**的 review 留言
+/// （view 會丟掉 PENDING，這裡也不算），所以追到這些留言的 thread 都找到就停：
+/// 一則留言只屬於一個 thread，找到之後後面的頁不可能改變它的狀態。沒有這種
+/// 留言時一頁都不追；找不到的 id（例如 thread 超過 100 則留言）會追到
+/// `MAX_EXTRA_PAGES` 為止。
+///
+/// 失敗（fetch、解析、PR 找不到）是暫時性的，回 `Err` 讓使用者按 `r` 重試，
+/// 訊息加前綴——不然畫面上的 `(comments failed: …)` 會誤導成留言載入失敗。
+fn collect_review_threads(
+    threads: GqlConnection<GqlReviewThread>,
+    items: &[GhTimelineItem],
+    fetch_more: &mut impl FnMut(Target<'_>, &str) -> Result<String, String>,
+) -> Result<Vec<GqlReviewThread>, String> {
+    let mut pending: FxHashSet<&str> = items
+        .iter()
+        .filter_map(|item| match item {
+            GhTimelineItem::PullRequestReview {
+                comments,
+                submitted_at: Some(_),
+                ..
+            } => Some(comments.nodes.iter().map(|c| c.id.as_str())),
+            _ => None,
+        })
+        .flatten()
+        .collect();
+    let need_more = |page: &[GqlReviewThread]| {
+        for c in page.iter().flat_map(|t| &t.comments.nodes) {
+            pending.remove(c.id.as_str());
+        }
+        !pending.is_empty()
+    };
+    collect_pages("Review threads", threads, need_more, |after| {
+        let json = fetch_more(Target::ReviewThreads, after)?;
+        let resp: GqlRepoResp<GqlThreadsRepo> =
+            serde_json::from_str(&json).map_err(|e| format!("JSON parse error: {e}"))?;
+        resp.data
+            .repository
+            .pull_request
+            .map(|pr| pr.review_threads)
+            .ok_or_else(|| "pull request not found".to_string())
+    })
+}
+
+/// 依序抓完一個分頁 connection：`first` 是首頁，`fetch(after)` 抓下一頁，
+/// `need_more` 看過剛收到的那一頁後決定要不要繼續（用不到提早停止就傳
+/// `|_| true`）。停止條件是正規化後的游標（`GqlPageInfo::next_cursor`）加上
+/// `MAX_EXTRA_PAGES`；失敗訊息以 `what` 與頁碼為前綴，首頁是第 1 頁。
+fn collect_pages<T>(
+    what: &str,
+    first: GqlConnection<T>,
+    mut need_more: impl FnMut(&[T]) -> bool,
+    mut fetch: impl FnMut(&str) -> Result<GqlConnection<T>, String>,
+) -> Result<Vec<T>, String> {
+    let mut next = first
+        .page_info
+        .next_cursor()
+        .filter(|_| need_more(&first.nodes));
+    let mut all = first.nodes;
+    for page in 2..=1 + MAX_EXTRA_PAGES {
+        let Some(after) = next.take() else { break };
+        let conn = fetch(&after).map_err(|e| format!("{what} page {page}: {e}"))?;
+        next = conn
+            .page_info
+            .next_cursor()
+            .filter(|_| need_more(&conn.nodes));
+        all.extend(conn.nodes);
+    }
+    Ok(all)
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -835,6 +1048,211 @@ struct GqlReviewThread {
 struct GqlReviewThreadCommentId {
     #[serde(default)]
     id: String,
+}
+
+// head commit 的 check 清單：`commits(last:1)` 只會有 0 或 1 個 node。
+#[derive(Deserialize)]
+struct GqlHeadCommit {
+    commit: GqlHeadCommitInner,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlHeadCommitInner {
+    /// 續頁用來釘住 commit（見 `build_contexts_query`）。
+    #[serde(default)]
+    oid: String,
+    #[serde(default)]
+    status_check_rollup: Option<GqlRollupContexts>,
+}
+#[derive(Deserialize)]
+struct GqlRollupContexts {
+    /// 首頁與續頁共用：contexts 是分頁的 connection，`nodes` 是含重複的原始筆數。
+    #[serde(default)]
+    contexts: GqlConnection<GqlCheckContext>,
+}
+
+#[derive(Deserialize)]
+struct GqlContextsRepo {
+    /// oid 不存在（或不是 Commit）時是 null；續頁沒查 `oid`，會是 `""`。
+    #[serde(default)]
+    object: Option<GqlHeadCommitInner>,
+}
+
+/// 首頁 contexts 加上追頁，回傳 head commit 全部的原始 context。
+///
+/// 失敗（fetch、解析、oid 找不到）是暫時性的，回 `Err` 讓使用者按 `r`
+/// 重試，訊息加前綴——不然畫面上的 `(comments failed: …)` 會誤導成
+/// 留言載入失敗。達到 `MAX_EXTRA_PAGES` 則截斷、回 `Ok`。
+fn collect_head_contexts(
+    commits: GqlConnection<GqlHeadCommit>,
+    fetch_more: &mut impl FnMut(Target<'_>, &str) -> Result<String, String>,
+) -> Result<Vec<GqlCheckContext>, String> {
+    let Some(head) = commits.nodes.into_iter().next() else {
+        return Ok(Vec::new());
+    };
+    let oid = head.commit.oid;
+    let Some(rollup) = head.commit.status_check_rollup else {
+        return Ok(Vec::new());
+    };
+    collect_pages(
+        "CI checks",
+        rollup.contexts,
+        |_| true,
+        |after| {
+            let json = fetch_more(Target::Contexts { oid: &oid }, after)?;
+            let resp: GqlRepoResp<GqlContextsRepo> =
+                serde_json::from_str(&json).map_err(|e| format!("JSON parse error: {e}"))?;
+            resp.data
+                .repository
+                .object
+                .and_then(|o| o.status_check_rollup)
+                .map(|r| r.contexts)
+                .ok_or_else(|| format!("commit {oid} not found"))
+        },
+    )
+}
+
+/// 不能在 enum 上用 `rename_all`：那會改 variant 名，`__typename` 就對不上，
+/// 每一筆都會悄悄落進 `Unknown`。欄位各自 `rename`。
+#[derive(Deserialize)]
+#[serde(tag = "__typename")]
+enum GqlCheckContext {
+    CheckRun {
+        #[serde(default)]
+        name: String,
+        #[serde(default)]
+        conclusion: Option<String>,
+        #[serde(default, rename = "databaseId")]
+        database_id: u64,
+        #[serde(default, rename = "checkSuite")]
+        check_suite: Option<GqlCheckSuite>,
+    },
+    StatusContext {
+        #[serde(default)]
+        context: String,
+        #[serde(default)]
+        state: String,
+    },
+    #[serde(other)]
+    Unknown,
+}
+#[derive(Deserialize)]
+struct GqlCheckSuite {
+    #[serde(default)]
+    app: Option<GqlApp>,
+    #[serde(default, rename = "workflowRun")]
+    workflow_run: Option<GqlWorkflowRun>,
+}
+impl GqlCheckSuite {
+    /// 去重範圍 `(app, workflow, event)`，缺的欄位都是 `""`：同名 check 在範圍
+    /// 相同時才算同一個。Actions 的 job 靠 workflow 分，第三方 App 沒有
+    /// `workflowRun`，靠 `app` 分；同一個 workflow 被 push 與 pull_request
+    /// 各觸發一輪，靠 `event` 分。
+    fn scope(&self) -> (&str, &str, &str) {
+        let app = self.app.as_ref().map_or("", |a| a.slug.as_str());
+        let (workflow, event) = self
+            .workflow_run
+            .as_ref()
+            .map_or(("", ""), |w| (w.workflow.name.as_str(), w.event.as_str()));
+        (app, workflow, event)
+    }
+}
+#[derive(Deserialize)]
+struct GqlApp {
+    #[serde(default)]
+    slug: String,
+}
+#[derive(Deserialize)]
+struct GqlWorkflowRun {
+    #[serde(default)]
+    event: String,
+    workflow: GqlWorkflow,
+}
+#[derive(Deserialize)]
+struct GqlWorkflow {
+    name: String,
+}
+
+/// `None` = 不顯示（skipped／neutral／stale）。CANCELLED 算 fail：GitHub 的
+/// rollup 也把它算 FAILURE，commit 行出現紅 ✗ 時，清單要找得到對應的紅色。
+/// 被取消後又重跑的舊 run 已在 `head_ci_checks` 去重時被蓋掉，不會出現。
+fn check_run_state(conclusion: Option<&str>) -> Option<CheckState> {
+    match conclusion {
+        Some("SUCCESS") => Some(CheckState::Passed),
+        Some("FAILURE" | "TIMED_OUT" | "STARTUP_FAILURE" | "ACTION_REQUIRED" | "CANCELLED") => {
+            Some(CheckState::Failed)
+        }
+        // 排隊或執行中時 conclusion 是 null
+        None => Some(CheckState::Pending),
+        Some(_) => None,
+    }
+}
+
+fn status_context_state(state: &str) -> Option<CheckState> {
+    match state {
+        "SUCCESS" => Some(CheckState::Passed),
+        "FAILURE" | "ERROR" => Some(CheckState::Failed),
+        "PENDING" | "EXPECTED" => Some(CheckState::Pending),
+        _ => None,
+    }
+}
+
+/// head commit 的 check 清單。順序不能換：
+///
+/// 1. **去重**：CheckRun 以 `(GqlCheckSuite::scope, name)` 為 key，只留
+///    `databaseId` 最大的一筆——PR 標題改一次，`pr-title.yml` 就在同一個 commit
+///    上多跑一輪，GitHub 的 rollup 不會去重。StatusContext 由 GitHub 保證
+///    每個 context 只留最新一筆。要在所有頁合併之後才做：同一個 key 的新舊
+///    run 可能落在不同頁。
+/// 2. **判定狀態**並丟掉 `None`。必須在去重之後：先濾會讓「最新一筆跑中」
+///    被濾掉，留下舊的 ✗。
+/// 3. **排序** `(state, name)`：展開與收合共用，收合截斷時優先丟掉綠色。
+///
+/// commit 行上的 rollup 標記沒有去重，所以可能出現 commit 行是 ✗、清單卻
+/// 全是 ✓ 的情況；跟 GitHub 網頁一致，不為 head commit 另寫特例。
+fn head_ci_checks(contexts: &[GqlCheckContext]) -> Vec<GhCheck> {
+    type Scope<'a> = (&'a str, &'a str, &'a str);
+    let mut latest: FxHashMap<(Scope, &str), (u64, Option<&str>)> = FxHashMap::default();
+    let mut checks = Vec::new();
+    for ctx in contexts {
+        match ctx {
+            GqlCheckContext::CheckRun {
+                name,
+                conclusion,
+                database_id,
+                check_suite,
+            } => {
+                let scope = check_suite.as_ref().map_or(("", "", ""), |s| s.scope());
+                let entry = latest
+                    .entry((scope, name.as_str()))
+                    .or_insert((*database_id, conclusion.as_deref()));
+                if *database_id > entry.0 {
+                    *entry = (*database_id, conclusion.as_deref());
+                }
+            }
+            GqlCheckContext::StatusContext { context, state } => {
+                if let Some(state) = status_context_state(state) {
+                    checks.push(GhCheck {
+                        name: context.clone(),
+                        state,
+                    });
+                }
+            }
+            GqlCheckContext::Unknown => {}
+        }
+    }
+    checks.extend(
+        latest
+            .into_iter()
+            .filter_map(|((_scope, name), (_, conclusion))| {
+                check_run_state(conclusion).map(|state| GhCheck {
+                    name: name.to_string(),
+                    state,
+                })
+            }),
+    );
+    checks.sort_by(|a, b| (a.state, &a.name).cmp(&(b.state, &b.name)));
+    checks
 }
 
 // ── Checkbox／工作清單 ──
@@ -1151,6 +1569,12 @@ pub fn set_pr_draft(path: &Path, number: u64, action: PrDraftAction) -> Result<(
 mod tests {
     use super::*;
 
+    /// 單頁 fixture 不該觸發任何續頁（CI contexts 或 review threads）；
+    /// 追了就是解析或 fixture 有誤。
+    fn parse(json: &str, kind: GhItemKind) -> Result<GhTimelinePage, String> {
+        parse_timeline_graphql(json, kind, |_, _| panic!("unexpected continuation fetch"))
+    }
+
     /// 狀態 → 動作的映射是 hint 與實際動作的唯一來源，錯了兩邊會一起錯。
     #[test]
     fn state_action_for_state() {
@@ -1319,7 +1743,7 @@ mod tests {
                 }
             }
         }"#;
-        let page = parse_timeline_graphql(json, GhItemKind::Issue).unwrap();
+        let page = parse(json, GhItemKind::Issue).unwrap();
         assert_eq!(page.next_cursor.as_deref(), Some("C2"));
         assert_eq!(page.items.len(), 2);
         match &page.items[0] {
@@ -1349,7 +1773,7 @@ mod tests {
                 }
             }
         }"#;
-        let page = parse_timeline_graphql(json, GhItemKind::PullRequest).unwrap();
+        let page = parse(json, GhItemKind::PullRequest).unwrap();
         assert!(page.next_cursor.is_none());
         assert!(page.items.is_empty());
     }
@@ -1418,9 +1842,7 @@ mod tests {
                 }
             }
         }"#;
-        let items = parse_timeline_graphql(json, GhItemKind::PullRequest)
-            .unwrap()
-            .items;
+        let items = parse(json, GhItemKind::PullRequest).unwrap().items;
 
         match &items[0] {
             GhTimelineItem::IssueComment { body, .. } => assert_eq!(body, ":tada: 留言"),
@@ -1467,7 +1889,7 @@ mod tests {
                 }
             }
         }"#;
-        let page = parse_timeline_graphql(json, GhItemKind::PullRequest).unwrap();
+        let page = parse(json, GhItemKind::PullRequest).unwrap();
         assert_eq!(page.items.len(), 2);
         match &page.items[0] {
             GhTimelineItem::PullRequestCommit { commit } => {
@@ -1513,19 +1935,19 @@ mod tests {
     #[test]
     fn parse_timeline_mergeable_states() {
         let json = timeline_json(Some("MERGEABLE"));
-        let page = parse_timeline_graphql(&json, GhItemKind::PullRequest).unwrap();
+        let page = parse(&json, GhItemKind::PullRequest).unwrap();
         assert_eq!(page.mergeable, Some(Mergeable::Mergeable));
 
         let json = timeline_json(Some("CONFLICTING"));
-        let page = parse_timeline_graphql(&json, GhItemKind::PullRequest).unwrap();
+        let page = parse(&json, GhItemKind::PullRequest).unwrap();
         assert_eq!(page.mergeable, Some(Mergeable::Conflicting));
 
         let json = timeline_json(Some("UNKNOWN"));
-        let page = parse_timeline_graphql(&json, GhItemKind::PullRequest).unwrap();
+        let page = parse(&json, GhItemKind::PullRequest).unwrap();
         assert_eq!(page.mergeable, None);
 
         let json = timeline_json(None);
-        let page = parse_timeline_graphql(&json, GhItemKind::PullRequest).unwrap();
+        let page = parse(&json, GhItemKind::PullRequest).unwrap();
         assert_eq!(page.mergeable, None);
     }
 
@@ -1534,16 +1956,19 @@ mod tests {
     /// "comments failed"。
     #[test]
     fn timeline_query_omits_pr_only_pieces_for_issues() {
-        let q = build_timeline_query(GhItemKind::Issue);
-        assert!(q.contains("issue(number:$number)"));
-        assert!(!q.contains("PullRequestCommit"));
-        assert!(!q.contains("PULL_REQUEST_COMMIT"));
-        assert!(!q.contains("mergeable"));
-        assert!(!q.contains("PullRequestReview"));
-        assert!(!q.contains("PULL_REQUEST_REVIEW"));
-        assert!(!q.contains("reviewThreads"));
+        for first_page in [true, false] {
+            let q = build_timeline_query(GhItemKind::Issue, first_page);
+            assert!(q.contains("issue(number:$number)"));
+            assert!(!q.contains("PullRequestCommit"));
+            assert!(!q.contains("PULL_REQUEST_COMMIT"));
+            assert!(!q.contains("mergeable"));
+            assert!(!q.contains("PullRequestReview"));
+            assert!(!q.contains("PULL_REQUEST_REVIEW"));
+            assert!(!q.contains("reviewThreads"));
+            assert!(!q.contains("commits(last:1)"));
+        }
 
-        let q = build_timeline_query(GhItemKind::PullRequest);
+        let q = build_timeline_query(GhItemKind::PullRequest, true);
         assert!(q.contains("pullRequest(number:$number)"));
         assert!(q.contains("PullRequestCommit"));
         assert!(q.contains("PULL_REQUEST_COMMIT"));
@@ -1551,6 +1976,57 @@ mod tests {
         assert!(q.contains("PullRequestReview"));
         assert!(q.contains("PULL_REQUEST_REVIEW"));
         assert!(q.contains("reviewThreads"));
+        assert!(q.contains("commits(last:1)"));
+    }
+
+    /// CI 只有首頁要：首頁帶 oid（續頁釘 commit 用）、`app`、`event` 與
+    /// contexts 的 `pageInfo`；載入更多不重抓，但 `reviewThreads`／`mergeable`
+    /// 每頁都要（resolved 回填靠它）。
+    #[test]
+    fn timeline_query_carries_ci_only_on_the_first_page() {
+        let first = build_timeline_query(GhItemKind::PullRequest, true);
+        assert!(first.contains("commit { oid statusCheckRollup"));
+        assert!(first.contains(&format!("contexts(first:{CONTEXTS_PAGE_SIZE})")));
+        assert!(first.contains(&head_commit_ci_fragment()));
+        assert!(first.contains("app { slug }"));
+        assert!(first.contains("event workflow { name }"));
+
+        let more = build_timeline_query(GhItemKind::PullRequest, false);
+        assert!(!more.contains("commits(last:1)"));
+        assert!(!more.contains("contexts("));
+        assert!(more.contains("reviewThreads"));
+        assert!(more.contains("mergeable"));
+        // commit 行上的 rollup 標記是 timeline item 的一部分，每頁都要
+        assert!(more.contains("statusCheckRollup { state }"));
+    }
+
+    #[test]
+    fn contexts_query_pins_the_commit_and_shares_the_node_selection() {
+        let q = build_contexts_query();
+        assert!(q.contains("$oid:GitObjectID!"));
+        assert!(q.contains("object(oid:$oid)"));
+        assert!(q.contains("after:$after"));
+        assert!(q.contains(CHECK_CONTEXT_NODES));
+        assert!(build_timeline_query(GhItemKind::PullRequest, true).contains(CHECK_CONTEXT_NODES));
+    }
+
+    /// resolved 回填每頁都要（載入更多的頁面也有自己的 review 留言），
+    /// 首頁與續頁查詢共用同一份 thread 選取。
+    #[test]
+    fn review_threads_query_shares_the_selection_with_every_pr_page() {
+        for first_page in [true, false] {
+            let q = build_timeline_query(GhItemKind::PullRequest, first_page);
+            assert!(
+                q.contains(REVIEW_THREADS_SELECTION),
+                "first_page={first_page}"
+            );
+            assert!(q.contains(&format!("reviewThreads(first:{THREADS_PAGE_SIZE})")));
+        }
+        let q = build_review_threads_query();
+        assert!(q.contains("$number:Int!"));
+        assert!(q.contains("pullRequest(number:$number)"));
+        assert!(q.contains("after:$after"));
+        assert!(q.contains(REVIEW_THREADS_SELECTION));
     }
 
     /// `itemTypes` 理論上只會產生兩種已知的 variant，但這個測試釘住了
@@ -1578,7 +2054,7 @@ mod tests {
                 }
             }
         }"#;
-        let page = parse_timeline_graphql(json, GhItemKind::Issue).unwrap();
+        let page = parse(json, GhItemKind::Issue).unwrap();
         assert_eq!(page.items.len(), 2);
         assert!(matches!(page.items[0], GhTimelineItem::Unknown));
         assert!(matches!(page.items[1], GhTimelineItem::IssueComment { .. }));
@@ -1764,7 +2240,7 @@ mod tests {
                 }
             }
         }"#;
-        let page = parse_timeline_graphql(json, GhItemKind::PullRequest).unwrap();
+        let page = parse(json, GhItemKind::PullRequest).unwrap();
         let GhTimelineItem::PullRequestReview { comments, .. } = &page.items[0] else {
             panic!("expected a review item, got {:?}", page.items[0]);
         };
@@ -1805,11 +2281,592 @@ mod tests {
                 }
             }
         }"#;
-        let page = parse_timeline_graphql(json, GhItemKind::PullRequest).unwrap();
+        let page = parse(json, GhItemKind::PullRequest).unwrap();
         let GhTimelineItem::PullRequestReview { comments, .. } = &page.items[0] else {
             panic!("expected a review item, got {:?}", page.items[0]);
         };
         assert_eq!(comments.nodes[0].line, Some(5));
         assert_eq!(comments.nodes[1].line, None);
+    }
+
+    fn run(workflow: &str, name: &str, id: u64, conclusion: Option<&str>) -> String {
+        let conclusion = conclusion.map_or("null".to_string(), |c| format!(r#""{c}""#));
+        format!(
+            r#"{{"__typename":"CheckRun","name":"{name}","conclusion":{conclusion},
+                "databaseId":{id},
+                "checkSuite":{{"workflowRun":{{"workflow":{{"name":"{workflow}"}}}}}}}}"#
+        )
+    }
+
+    fn status(context: &str, state: &str) -> String {
+        format!(r#"{{"__typename":"StatusContext","context":"{context}","state":"{state}"}}"#)
+    }
+
+    fn checks_from(contexts: &[String]) -> Vec<GhCheck> {
+        let json = format!(
+            r#"{{"data":{{"repository":{{"pullRequest":{{
+                "commits":{{"nodes":[{{"commit":{{"statusCheckRollup":
+                    {{"contexts":{{"nodes":[{}]}}}}}}}}]}},
+                "timelineItems":{{"pageInfo":{{"hasNextPage":false,"endCursor":null}},
+                    "nodes":[]}}}}}}}}}}"#,
+            contexts.join(",")
+        );
+        parse(&json, GhItemKind::PullRequest).unwrap().ci_checks
+    }
+
+    fn check(name: &str, state: CheckState) -> GhCheck {
+        GhCheck {
+            name: name.to_string(),
+            state,
+        }
+    }
+
+    /// PR 標題改一次，`pr-title.yml` 就在同一個 commit 上多跑一輪，
+    /// GitHub 的 rollup 不去重——同 `(workflow, name)` 只留 `databaseId` 最大的。
+    #[test]
+    fn head_checks_keep_only_latest_run_per_workflow_and_name() {
+        let checks = checks_from(&[
+            run("PR Title", "check", 1, Some("FAILURE")),
+            run("PR Title", "check", 3, Some("SUCCESS")),
+            run("PR Title", "check", 2, Some("CANCELLED")),
+        ]);
+        assert_eq!(checks, vec![check("check", CheckState::Passed)]);
+    }
+
+    /// 去重必須在丟掉非 pass/fail 之前：最新一筆還在跑，就不能讓舊的 ✗ 浮上來。
+    #[test]
+    fn head_checks_rerun_in_progress_hides_stale_result() {
+        let checks = checks_from(&[
+            run("Build", "lint", 1, Some("FAILURE")),
+            run("Build", "lint", 2, None),
+        ]);
+        assert_eq!(checks, vec![check("lint", CheckState::Pending)]);
+    }
+
+    #[test]
+    fn head_checks_same_name_in_different_workflows_are_kept_apart() {
+        let checks = checks_from(&[
+            run("A", "build", 1, Some("SUCCESS")),
+            run("B", "build", 2, Some("FAILURE")),
+        ]);
+        assert_eq!(
+            checks,
+            vec![
+                check("build", CheckState::Failed),
+                check("build", CheckState::Passed)
+            ]
+        );
+    }
+
+    #[test]
+    fn head_checks_state_table() {
+        let checks = checks_from(&[
+            run("W", "success", 1, Some("SUCCESS")),
+            run("W", "failure", 2, Some("FAILURE")),
+            run("W", "timed_out", 3, Some("TIMED_OUT")),
+            run("W", "startup", 4, Some("STARTUP_FAILURE")),
+            run("W", "action", 5, Some("ACTION_REQUIRED")),
+            run("W", "cancelled", 6, Some("CANCELLED")),
+            run("W", "running", 7, None),
+            run("W", "skipped", 8, Some("SKIPPED")),
+            run("W", "neutral", 9, Some("NEUTRAL")),
+            run("W", "stale", 10, Some("STALE")),
+            status("ctx-ok", "SUCCESS"),
+            status("ctx-bad", "ERROR"),
+            status("ctx-fail", "FAILURE"),
+            status("ctx-wait", "PENDING"),
+            status("ctx-exp", "EXPECTED"),
+            r#"{"__typename":"SomethingNew"}"#.to_string(),
+        ]);
+        let state_of = |n: &str| checks.iter().find(|c| c.name == n).map(|c| c.state);
+        for n in ["success", "ctx-ok"] {
+            assert_eq!(state_of(n), Some(CheckState::Passed), "{n}");
+        }
+        for n in [
+            "failure",
+            "timed_out",
+            "startup",
+            "action",
+            "cancelled",
+            "ctx-bad",
+            "ctx-fail",
+        ] {
+            assert_eq!(state_of(n), Some(CheckState::Failed), "{n}");
+        }
+        for n in ["running", "ctx-wait", "ctx-exp"] {
+            assert_eq!(state_of(n), Some(CheckState::Pending), "{n}");
+        }
+        for n in ["skipped", "neutral", "stale"] {
+            assert_eq!(state_of(n), None, "{n}");
+        }
+        assert_eq!(checks.len(), 12);
+    }
+
+    /// fail 在前、綠色在後：收合截斷時優先丟掉綠色。
+    #[test]
+    fn head_checks_sorted_failed_then_pending_then_passed_then_name() {
+        let checks = checks_from(&[
+            run("W", "b", 1, Some("SUCCESS")),
+            run("W", "a", 2, Some("SUCCESS")),
+            run("W", "z", 3, Some("FAILURE")),
+            run("W", "m", 4, None),
+        ]);
+        let order: Vec<_> = checks.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(order, ["z", "m", "a", "b"]);
+    }
+
+    #[test]
+    fn head_checks_empty_when_commit_has_no_rollup() {
+        let json = r#"{"data":{"repository":{"pullRequest":{
+            "commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]},
+            "timelineItems":{"pageInfo":{"hasNextPage":false,"endCursor":null},
+                "nodes":[]}}}}}"#;
+        let page = parse(json, GhItemKind::PullRequest).unwrap();
+        assert!(page.ci_checks.is_empty());
+    }
+
+    /// 第三方 App 的 check 沒有 `workflowRun`，只能靠 `app.slug` 區分。
+    fn app_run(app: &str, name: &str, id: u64, conclusion: Option<&str>) -> String {
+        serde_json::json!({
+            "__typename": "CheckRun", "name": name, "conclusion": conclusion,
+            "databaseId": id, "checkSuite": {"app": {"slug": app}, "workflowRun": null},
+        })
+        .to_string()
+    }
+
+    fn event_run(
+        workflow: &str,
+        event: &str,
+        name: &str,
+        id: u64,
+        conclusion: Option<&str>,
+    ) -> String {
+        serde_json::json!({
+            "__typename": "CheckRun", "name": name, "conclusion": conclusion,
+            "databaseId": id,
+            "checkSuite": {"workflowRun": {"event": event, "workflow": {"name": workflow}}},
+        })
+        .to_string()
+    }
+
+    /// 兩個 App 各報一個叫 `build` 的 check：紅燈不能被另一個 App 的綠燈蓋掉。
+    #[test]
+    fn head_checks_same_name_from_different_apps_are_kept_apart() {
+        let checks = checks_from(&[
+            app_run("codeql", "build", 9, Some("SUCCESS")),
+            app_run("other-ci", "build", 1, Some("FAILURE")),
+        ]);
+        assert_eq!(
+            checks,
+            vec![
+                check("build", CheckState::Failed),
+                check("build", CheckState::Passed)
+            ]
+        );
+    }
+
+    /// 同一個 workflow 被 push 與 pull_request 各觸發一輪：兩輪都要留著；
+    /// 同一個 event 重跑仍然只留最新一筆。
+    #[test]
+    fn head_checks_same_workflow_from_different_events_are_kept_apart() {
+        let checks = checks_from(&[
+            event_run("CI", "push", "test", 1, Some("FAILURE")),
+            event_run("CI", "pull_request", "test", 2, Some("SUCCESS")),
+            event_run("CI", "push", "test", 3, Some("FAILURE")),
+        ]);
+        assert_eq!(
+            checks,
+            vec![
+                check("test", CheckState::Failed),
+                check("test", CheckState::Passed)
+            ]
+        );
+
+        let checks = checks_from(&[
+            event_run("CI", "push", "test", 1, Some("FAILURE")),
+            event_run("CI", "push", "test", 2, Some("SUCCESS")),
+        ]);
+        assert_eq!(checks, vec![check("test", CheckState::Passed)]);
+    }
+
+    fn page_info(has_next: bool, cursor: Option<&str>) -> serde_json::Value {
+        serde_json::json!({"hasNextPage": has_next, "endCursor": cursor})
+    }
+
+    fn raw_nodes(contexts: &[String]) -> Vec<serde_json::Value> {
+        contexts
+            .iter()
+            .map(|c| serde_json::from_str(c).unwrap())
+            .collect()
+    }
+
+    /// PR 首頁回應，head commit 的 contexts 帶著指定的 `pageInfo`。
+    fn head_timeline(oid: &str, contexts: &[String], info: serde_json::Value) -> String {
+        serde_json::json!({"data": {"repository": {"pullRequest": {
+            "commits": {"nodes": [{"commit": {"oid": oid, "statusCheckRollup": {
+                "contexts": {"pageInfo": info, "nodes": raw_nodes(contexts)}
+            }}}]},
+            "timelineItems": {"pageInfo": page_info(false, None), "nodes": []},
+        }}}})
+        .to_string()
+    }
+
+    /// `object(oid:)` 續頁查詢的回應。
+    fn contexts_page(contexts: &[String], info: serde_json::Value) -> String {
+        serde_json::json!({"data": {"repository": {"object": {"statusCheckRollup": {
+            "contexts": {"pageInfo": info, "nodes": raw_nodes(contexts)}
+        }}}}})
+        .to_string()
+    }
+
+    /// 續頁要拿首頁的 oid 與上一頁的游標去抓，且去重在所有頁合併*之後*：
+    /// 同一個 check 的舊 run 在首頁、新 run 在續頁，只能留新的。
+    #[test]
+    fn head_contexts_follow_pagination_and_dedupe_across_pages() {
+        let first = head_timeline(
+            "abc123",
+            &[
+                run("W", "a", 1, Some("FAILURE")),
+                run("W", "b", 2, Some("SUCCESS")),
+            ],
+            page_info(true, Some("c1")),
+        );
+        let mut calls = Vec::new();
+        let page = parse_timeline_graphql(&first, GhItemKind::PullRequest, |target, after| {
+            let Target::Contexts { oid } = target else {
+                panic!("expected a contexts fetch");
+            };
+            calls.push((oid.to_string(), after.to_string()));
+            Ok(contexts_page(
+                &[run("W", "a", 3, Some("SUCCESS"))],
+                page_info(false, None),
+            ))
+        })
+        .unwrap();
+
+        assert_eq!(calls, [("abc123".to_string(), "c1".to_string())]);
+        assert_eq!(
+            page.ci_checks,
+            vec![
+                check("a", CheckState::Passed),
+                check("b", CheckState::Passed)
+            ]
+        );
+    }
+
+    /// 最後一頁的 `endCursor` 也可能非 null：停不停只看 `hasNextPage`。
+    #[test]
+    fn head_contexts_do_not_fetch_when_has_next_page_is_false() {
+        let json = head_timeline(
+            "abc123",
+            &[run("W", "a", 1, Some("SUCCESS"))],
+            page_info(false, Some("stale")),
+        );
+        let page = parse(&json, GhItemKind::PullRequest).unwrap();
+        assert_eq!(page.ci_checks, vec![check("a", CheckState::Passed)]);
+    }
+
+    /// 上限是確定性的：到頂就截斷、仍回 `Ok`，不然那個 PR 永遠載不出來。
+    #[test]
+    fn head_contexts_stop_at_the_page_cap_and_still_succeed() {
+        let first = head_timeline(
+            "abc123",
+            &[run("W", "job0", 1, Some("SUCCESS"))],
+            page_info(true, Some("c0")),
+        );
+        let mut calls = 0;
+        let page = parse_timeline_graphql(&first, GhItemKind::PullRequest, |_, _| {
+            calls += 1;
+            Ok(contexts_page(
+                &[run(
+                    "W",
+                    &format!("job{calls}"),
+                    calls as u64 + 1,
+                    Some("SUCCESS"),
+                )],
+                page_info(true, Some("more")),
+            ))
+        })
+        .unwrap();
+
+        assert_eq!(calls, MAX_EXTRA_PAGES);
+        assert_eq!(page.ci_checks.len(), 1 + MAX_EXTRA_PAGES);
+    }
+
+    /// 失敗訊息要指出是 CI 續頁，不然畫面上的 `(comments failed: …)` 會誤導。
+    #[test]
+    fn head_contexts_failures_name_the_ci_page() {
+        let first = head_timeline(
+            "abc123",
+            &[run("W", "a", 1, Some("SUCCESS"))],
+            page_info(true, Some("c1")),
+        );
+        let fail = |fetch: fn(Target<'_>, &str) -> Result<String, String>| {
+            parse_timeline_graphql(&first, GhItemKind::PullRequest, fetch).unwrap_err()
+        };
+
+        let e = fail(|_, _| Err("boom".to_string()));
+        assert!(e.contains("CI checks page 2") && e.contains("boom"), "{e}");
+
+        let e = fail(|_, _| Ok("not json".to_string()));
+        assert!(e.contains("CI checks page 2: JSON parse error"), "{e}");
+
+        // oid 不存在（或不是 Commit）
+        let e = fail(|_, _| Ok(r#"{"data":{"repository":{"object":null}}}"#.to_string()));
+        assert!(
+            e.contains("CI checks page 2") && e.contains("not found"),
+            "{e}"
+        );
+    }
+
+    /// 帶行內留言的 review node；`submitted_at` 為 `None` 是還沒送出的草稿。
+    fn review_node(comment_ids: &[&str], submitted_at: Option<&str>) -> serde_json::Value {
+        let nodes: Vec<_> = comment_ids
+            .iter()
+            .map(|id| {
+                serde_json::json!({"id": id, "path": "a.rs", "line": 1, "originalLine": 1,
+                    "outdated": false, "body": "x"})
+            })
+            .collect();
+        serde_json::json!({"__typename": "PullRequestReview", "state": "COMMENTED", "body": "",
+            "submittedAt": submitted_at, "author": {"login": "carol"},
+            "comments": {"totalCount": nodes.len(), "nodes": nodes}})
+    }
+
+    fn thread(resolved: bool, comment_ids: &[&str]) -> serde_json::Value {
+        let nodes: Vec<_> = comment_ids
+            .iter()
+            .map(|id| serde_json::json!({"id": id}))
+            .collect();
+        serde_json::json!({"isResolved": resolved, "comments": {"nodes": nodes}})
+    }
+
+    /// PR 首頁回應：threads 帶指定的 `pageInfo`，timeline 只有給定的 review。
+    fn threads_timeline(
+        threads: Vec<serde_json::Value>,
+        info: serde_json::Value,
+        reviews: Vec<serde_json::Value>,
+    ) -> String {
+        serde_json::json!({"data": {"repository": {"pullRequest": {
+            "reviewThreads": {"pageInfo": info, "nodes": threads},
+            "timelineItems": {"pageInfo": page_info(false, None), "nodes": reviews},
+        }}}})
+        .to_string()
+    }
+
+    /// `pullRequest.reviewThreads` 續頁查詢的回應。
+    fn threads_page(threads: Vec<serde_json::Value>, info: serde_json::Value) -> String {
+        serde_json::json!({"data": {"repository": {"pullRequest": {
+            "reviewThreads": {"pageInfo": info, "nodes": threads}
+        }}}})
+        .to_string()
+    }
+
+    /// 所有 review 的留言 `(id, resolved)`。
+    fn resolved_of(page: &GhTimelinePage) -> Vec<(String, bool)> {
+        page.items
+            .iter()
+            .filter_map(|item| match item {
+                GhTimelineItem::PullRequestReview { comments, .. } => Some(&comments.nodes),
+                _ => None,
+            })
+            .flatten()
+            .map(|c| (c.id.clone(), c.resolved))
+            .collect()
+    }
+
+    fn resolved(id: &str, resolved: bool) -> (String, bool) {
+        (id.to_string(), resolved)
+    }
+
+    /// 第 101 個之後的 thread 也要收到：C2、C3 的 thread 在續頁，
+    /// C2 的 thread 已 resolved、C3 沒有。
+    #[test]
+    fn review_threads_follow_pagination_and_backfill_resolved() {
+        let first = threads_timeline(
+            vec![thread(true, &["C1"])],
+            page_info(true, Some("t1")),
+            vec![review_node(
+                &["C1", "C2", "C3"],
+                Some("2026-01-01T00:00:00Z"),
+            )],
+        );
+        let mut calls = Vec::new();
+        let page = parse_timeline_graphql(&first, GhItemKind::PullRequest, |target, after| {
+            assert!(matches!(target, Target::ReviewThreads));
+            calls.push(after.to_string());
+            Ok(threads_page(
+                vec![thread(true, &["C2"]), thread(false, &["C3"])],
+                page_info(false, None),
+            ))
+        })
+        .unwrap();
+
+        assert_eq!(calls, ["t1"]);
+        assert_eq!(
+            resolved_of(&page),
+            [
+                resolved("C1", true),
+                resolved("C2", true),
+                resolved("C3", false)
+            ]
+        );
+    }
+
+    /// 這一頁的留言都找到 thread 之後就停：一則留言只屬於一個 thread，
+    /// 後面的頁不可能改變它的狀態。
+    #[test]
+    fn review_threads_stop_once_every_comment_is_located() {
+        let all_on_first_page = threads_timeline(
+            vec![thread(true, &["C1"])],
+            page_info(true, Some("t1")),
+            vec![review_node(&["C1"], Some("2026-01-01T00:00:00Z"))],
+        );
+        // `parse` 的 fetch 會 panic：追了頁就是錯
+        let page = parse(&all_on_first_page, GhItemKind::PullRequest).unwrap();
+        assert_eq!(resolved_of(&page), [resolved("C1", true)]);
+
+        let second_page_has_more = threads_timeline(
+            vec![thread(false, &["C1"])],
+            page_info(true, Some("t1")),
+            vec![review_node(&["C1", "C2"], Some("2026-01-01T00:00:00Z"))],
+        );
+        let mut calls = 0;
+        let page =
+            parse_timeline_graphql(&second_page_has_more, GhItemKind::PullRequest, |_, _| {
+                calls += 1;
+                Ok(threads_page(
+                    vec![thread(true, &["C2"])],
+                    page_info(true, Some("t2")),
+                ))
+            })
+            .unwrap();
+        assert_eq!(calls, 1, "C2 在第 2 頁找到，不該再抓第 3 頁");
+        assert_eq!(
+            resolved_of(&page),
+            [resolved("C1", false), resolved("C2", true)]
+        );
+    }
+
+    /// 沒有已送出的 review 留言就不需要 resolved 狀態，一頁都不追；
+    /// 使用者自己的 PENDING 草稿 view 也不顯示，不能拿來觸發追頁。
+    #[test]
+    fn review_threads_are_not_fetched_without_submitted_review_comments() {
+        for reviews in [
+            Vec::new(),
+            vec![review_node(&["C1"], None)],
+            vec![review_node(&[], Some("2026-01-01T00:00:00Z"))],
+        ] {
+            let json = threads_timeline(
+                vec![thread(false, &["Z"])],
+                page_info(true, Some("t1")),
+                reviews,
+            );
+            parse(&json, GhItemKind::PullRequest).unwrap();
+        }
+    }
+
+    /// 找不到的 id 會一路追到上限：到頂就截斷、仍回 `Ok`。
+    #[test]
+    fn review_threads_stop_at_the_page_cap_and_still_succeed() {
+        let first = threads_timeline(
+            vec![thread(false, &["A"])],
+            page_info(true, Some("t0")),
+            vec![review_node(&["missing"], Some("2026-01-01T00:00:00Z"))],
+        );
+        let mut calls = 0;
+        let page = parse_timeline_graphql(&first, GhItemKind::PullRequest, |_, _| {
+            calls += 1;
+            Ok(threads_page(
+                vec![thread(false, &["B"])],
+                page_info(true, Some("more")),
+            ))
+        })
+        .unwrap();
+
+        assert_eq!(calls, MAX_EXTRA_PAGES);
+        assert_eq!(resolved_of(&page), [resolved("missing", false)]);
+    }
+
+    #[test]
+    fn review_threads_failures_name_the_page() {
+        let first = threads_timeline(
+            vec![thread(false, &["A"])],
+            page_info(true, Some("t1")),
+            vec![review_node(&["C1"], Some("2026-01-01T00:00:00Z"))],
+        );
+        let fail = |fetch: fn(Target<'_>, &str) -> Result<String, String>| {
+            parse_timeline_graphql(&first, GhItemKind::PullRequest, fetch).unwrap_err()
+        };
+
+        let e = fail(|_, _| Err("boom".to_string()));
+        assert!(
+            e.contains("Review threads page 2") && e.contains("boom"),
+            "{e}"
+        );
+
+        let e = fail(|_, _| Ok("not json".to_string()));
+        assert!(e.contains("Review threads page 2: JSON parse error"), "{e}");
+
+        let e = fail(|_, _| Ok(r#"{"data":{"repository":{"pullRequest":null}}}"#.to_string()));
+        assert!(
+            e.contains("Review threads page 2") && e.contains("not found"),
+            "{e}"
+        );
+    }
+
+    /// 同一頁 contexts 與 threads 都有下一頁：兩個 collector 共用同一個
+    /// `fetch_more`，各自恰好收到自己的那一次續頁。
+    #[test]
+    fn contexts_and_threads_continuations_are_dispatched_to_the_right_query() {
+        let first = serde_json::json!({"data": {"repository": {"pullRequest": {
+            "reviewThreads": {"pageInfo": page_info(true, Some("t1")),
+                "nodes": [thread(false, &["C1"])]},
+            "commits": {"nodes": [{"commit": {"oid": "abc123", "statusCheckRollup": {
+                "contexts": {"pageInfo": page_info(true, Some("c1")),
+                    "nodes": raw_nodes(&[run("W", "a", 1, Some("SUCCESS"))])}
+            }}}]},
+            "timelineItems": {"pageInfo": page_info(false, None),
+                "nodes": [review_node(&["C1", "C2"], Some("2026-01-01T00:00:00Z"))]},
+        }}}})
+        .to_string();
+
+        let mut calls = Vec::new();
+        let page =
+            parse_timeline_graphql(
+                &first,
+                GhItemKind::PullRequest,
+                |target, after| match target {
+                    Target::Contexts { oid } => {
+                        calls.push(format!("contexts:{oid}:{after}"));
+                        Ok(contexts_page(
+                            &[run("W", "b", 2, Some("FAILURE"))],
+                            page_info(false, None),
+                        ))
+                    }
+                    Target::ReviewThreads => {
+                        calls.push(format!("threads:{after}"));
+                        Ok(threads_page(
+                            vec![thread(true, &["C2"])],
+                            page_info(false, None),
+                        ))
+                    }
+                },
+            )
+            .unwrap();
+
+        calls.sort();
+        assert_eq!(calls, ["contexts:abc123:c1", "threads:t1"]);
+        assert_eq!(
+            resolved_of(&page),
+            [resolved("C1", false), resolved("C2", true)]
+        );
+        assert_eq!(
+            page.ci_checks,
+            vec![
+                check("b", CheckState::Failed),
+                check("a", CheckState::Passed)
+            ]
+        );
     }
 }

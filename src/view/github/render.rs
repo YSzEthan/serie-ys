@@ -542,17 +542,23 @@ pub(super) fn label_spans(labels: &[crate::github::GhLabel]) -> Vec<Span<'static
     spans
 }
 
-/// 精簡模式：每個 label 一個該顏色的方塊，緊密排列，不顯示名稱。用 `▮`
+/// 色塊字元，label 精簡模式與 CI check 收合摘要共用。用 `▮`
 /// （U+25AE，East Asian Width = Neutral）而不是看起來更方正的 `■`
 /// （U+25A0，Ambiguous）——CJK 終端機把 ambiguous 字元設成寬字元時，`■`
-/// 會佔 2 格但 `Span::width` 只算 1 格，label 一多 pad 就整排錯位。
+/// 會佔 2 格但 `Span::width` 只算 1 格，色塊一多 pad 就整排錯位。
+pub(super) const SWATCH: &str = "▮";
+
+/// 精簡模式：每個 label 一個該顏色的方塊，緊密排列，不顯示名稱。
 fn label_swatch_spans(labels: &[crate::github::GhLabel]) -> Vec<Span<'static>> {
     if labels.is_empty() {
         return vec![];
     }
     let mut spans = vec![Span::raw(" ")];
     for label in labels {
-        spans.push(Span::styled("▮", Style::default().fg(label_color(label))));
+        spans.push(Span::styled(
+            SWATCH,
+            Style::default().fg(label_color(label)),
+        ));
     }
     spans
 }

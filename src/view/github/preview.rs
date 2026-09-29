@@ -15,20 +15,21 @@ use super::{
     GitHubTab, Section,
 };
 
+/// 第三個回傳值是 timeline 起點的*邏輯*行號（第一條區段分隔線的位置），
+/// 供 `PreviewCache` 換算成折行後的行號。
 pub(super) fn build_preview_content(
     input: &PreviewInput,
-) -> (Vec<Line<'static>>, Option<PreviewOverlay>) {
+) -> (Vec<Line<'static>>, Option<PreviewOverlay>, usize) {
     let mut overlay = None;
     let width = input.width as usize;
     let number = input.number;
     let Some(item) = input.item.as_ref() else {
-        return (
-            vec![Line::styled(
-                "(no item selected)",
-                Style::default().fg(Color::DarkGray),
-            )],
-            overlay,
-        );
+        let lines = vec![Line::styled(
+            "(no item selected)",
+            Style::default().fg(Color::DarkGray),
+        )];
+        let timeline_start = lines.len();
+        return (lines, overlay, timeline_start);
     };
 
     let mut lines = Vec::new();
@@ -84,7 +85,18 @@ pub(super) fn build_preview_content(
         lines.push(Line::from(spans));
     }
 
-    lines.push(crate::view::markdown::rule_line(width));
+    let has_relations = matches!(
+        item.extra,
+        SelectedItemExtra::Issue { parent, sub_issues } if parent.is_some() || !sub_issues.is_empty()
+    );
+    lines.push(header_rule(
+        width,
+        if has_relations {
+            "Related"
+        } else {
+            Section::Body.label()
+        },
+    ));
 
     if let SelectedItemExtra::Issue { parent, sub_issues } = item.extra {
         append_relation_lines(&mut lines, parent, sub_issues, width);
@@ -99,9 +111,10 @@ pub(super) fn build_preview_content(
         lines.extend(crate::view::markdown::render(item.body, width));
     }
 
+    let timeline_start = lines.len();
     append_comment_lines(&mut lines, input.entry, input.expand_commits, width);
 
-    (lines, overlay)
+    (lines, overlay, timeline_start)
 }
 
 pub(super) fn append_comment_lines(
@@ -112,7 +125,7 @@ pub(super) fn append_comment_lines(
 ) {
     let mut prev = Section::Body;
     for block in build_timeline(entry, expand_commits) {
-        lines.push(prev.divider(width));
+        lines.push(prev.divider(block.section, width));
         for item in block.items {
             item.render(lines, width);
         }
@@ -224,6 +237,8 @@ struct CachedPreview {
     overlay: Option<PreviewOverlay>,
     /// 折行*之後*的行數——`preview_offset` 就是以這個為單位量測。
     visual_len: usize,
+    /// timeline 第一條分隔線的視覺行號（header 加 body 折行後的行數）。
+    timeline_start: usize,
 }
 
 #[derive(Debug, Default)]
@@ -254,17 +269,35 @@ impl PreviewCache {
         {
             self.build_count += 1;
         }
-        let (lines, overlay) = build_preview_content(input);
-        let visual_len = Paragraph::new(borrow_lines(&lines))
-            .wrap(Wrap { trim: false })
-            .line_count(input.width);
+        let (lines, overlay, logical_start) = build_preview_content(input);
+        // 分兩段量：`Paragraph` 每個 `Line` 各自折行、互不影響，所以兩段
+        // 相加等於整段，順便得到 timeline 起點的視覺行號，不用多走一趟。
+        let wrapped_len = |lines: &[Line<'static>]| {
+            Paragraph::new(borrow_lines(lines))
+                .wrap(Wrap { trim: false })
+                .line_count(input.width)
+        };
+        let (head, timeline) = lines.split_at(logical_start);
+        let timeline_start = wrapped_len(head);
+        let visual_len = timeline_start + wrapped_len(timeline);
         self.cached = Some(CachedPreview {
             key,
             lines,
             overlay,
             visual_len,
+            timeline_start,
         });
         visual_len
+    }
+
+    /// timeline 起點的視覺行號。只在 cache 對應的正是 `(tab, number)` 時才
+    /// 有值；冷快取或 cache 還停在別的項目上回傳 `None`，呼叫端據此略過
+    /// 捲動補償，不會拿別人的行號算。
+    pub(super) fn timeline_start(&self, tab: GitHubTab, number: u64) -> Option<usize> {
+        self.cached
+            .as_ref()
+            .filter(|c| c.key.tab == tab && c.key.number == number)
+            .map(|c| c.timeline_start)
     }
 
     /// 冷快取回傳空切片；`render_preview` 一定先呼叫 `get_or_build`。
@@ -353,8 +386,14 @@ fn append_relation_lines(
         }
     }
     if parent.is_some() || !sub_issues.is_empty() {
-        lines.push(crate::view::markdown::rule_line(width));
+        lines.push(header_rule(width, Section::Body.label()));
     }
+}
+
+/// header／relations 區塊下方的分隔線：線條維持 markdown 分隔線的灰色，
+/// 標籤用 body 區段的顏色。
+fn header_rule(width: usize, label: &str) -> Line<'static> {
+    crate::view::markdown::labeled_rule(width, label, Color::DarkGray, Section::Body.color())
 }
 
 #[cfg(test)]
@@ -454,5 +493,49 @@ mod tests {
             cache.build_count, 2,
             "body_rev change must invalidate the cache"
         );
+    }
+
+    /// 長 body 在窄寬度下會折成多行：`timeline_start` 必須是折行*後*的
+    /// 視覺行號（跟 `preview_offset` 同單位），而且分段量測的總長要等於
+    /// 整段一起量。
+    #[test]
+    fn timeline_start_counts_wrapped_lines_and_sums_to_visual_len() {
+        let long_body = "word ".repeat(40);
+        let entry = loaded_entry(None);
+        let mut input = pr_input(&entry);
+        input.item = input.item.map(|item| SelectedItem {
+            body: &long_body,
+            ..item
+        });
+
+        let (lines, _, logical_start) = build_preview_content(&input);
+        let mut cache = PreviewCache::default();
+        let visual_len = cache.get_or_build(&input);
+
+        let whole = Paragraph::new(borrow_lines(&lines))
+            .wrap(Wrap { trim: false })
+            .line_count(input.width);
+        assert_eq!(visual_len, whole);
+
+        let start = cache
+            .timeline_start(GitHubTab::PullRequests, 1)
+            .expect("cache is warm for the input's item");
+        assert!(
+            start > logical_start,
+            "wrapped start ({start}) must exceed logical start ({logical_start})"
+        );
+    }
+
+    /// cache 還停在別的項目（或別的分頁）時不能拿它的行號給呼叫端用。
+    #[test]
+    fn timeline_start_is_none_for_a_different_item_or_a_cold_cache() {
+        let entry = loaded_entry(None);
+        let mut cache = PreviewCache::default();
+        assert_eq!(cache.timeline_start(GitHubTab::PullRequests, 1), None);
+
+        cache.get_or_build(&pr_input(&entry));
+        assert!(cache.timeline_start(GitHubTab::PullRequests, 1).is_some());
+        assert_eq!(cache.timeline_start(GitHubTab::PullRequests, 2), None);
+        assert_eq!(cache.timeline_start(GitHubTab::Issues, 1), None);
     }
 }

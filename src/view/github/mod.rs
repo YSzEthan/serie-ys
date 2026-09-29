@@ -31,13 +31,15 @@ const TIMELINE_LOAD_MORE_THRESHOLD: usize = 5;
 /// 由 100ms 的 Tick 輪詢，實際延遲是 150～250ms。
 const TIMELINE_DEBOUNCE: Duration = Duration::from_millis(150);
 
-/// 分隔線關閉的是 timeline 的哪個區段。顏色由分隔線*之前*的內容決定，
-/// 不是後面的——由上往下讀時，那才是眼睛在捲動時需要的上下文。
+/// 分隔線關閉的是 timeline 的哪個區段。線條顏色由分隔線*之前*的內容決定，
+/// 不是後面的——由上往下讀時，那才是眼睛在捲動時需要的上下文；標籤文字
+/// 則寫出*後面*是什麼，用後面那個區段自己的顏色。
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Section {
     Body,
     Comment,
     Commit,
+    Ci,
     Review,
 }
 
@@ -48,12 +50,24 @@ impl Section {
             Section::Body => Color::Indexed(146),    // 粉藍灰 (#afafd7)
             Section::Comment => Color::Indexed(151), // 粉綠灰 (#afd7af)
             Section::Commit => Color::Indexed(186),  // 粉黃灰 (#d7d787)
+            Section::Ci => Color::Indexed(152),      // 粉青灰 (#afd7d7)
             Section::Review => Color::Indexed(181),  // 粉紅灰 (#d7afaf)
         }
     }
 
-    fn divider(self, width: usize) -> Line<'static> {
-        super::markdown::rule_line_colored(width, self.color())
+    fn label(self) -> &'static str {
+        match self {
+            Section::Body => "Body",
+            Section::Comment => "Comment",
+            Section::Commit => "Commits",
+            Section::Ci => "CI",
+            Section::Review => "Review",
+        }
+    }
+
+    /// `self` 是分隔線上方的區段，`next` 是下方的。
+    fn divider(self, next: Section, width: usize) -> Line<'static> {
+        super::markdown::labeled_rule(width, next.label(), self.color(), next.color())
     }
 }
 
@@ -516,18 +530,32 @@ impl<'a> GitHubView<'a> {
         after: Option<String>,
         page: GhTimelinePage,
     ) {
-        // commit block 畫在 timeline 最前面（見 `timeline::build_timeline`），
-        // 所以「載入更多」把新 commit 插進正在檢視的項目時，等於在使用者
-        // 視窗上方塞進新內容。只補償這個情況——首頁替換／背景刷新不移動
-        // 既有內容的相對位置，`preview_offset` 不用動。
-        let track_scroll =
-            after.is_some() && self.selected_number_and_kind() == Some((number, kind));
+        // commit／CI block 畫在 timeline 最前面（見 `timeline::build_timeline`），
+        // 它們的行數一變（載入更多插進新 commit、刷新時 CI 狀態改變），
+        // 位在下面的內容就整段位移。commit 與 CI 各自的高度可能變多也可能
+        // 變少（force-push 後新 head 還沒有 check），所以分開量、分段對映
+        // （見 `LeadingHeights::remap`）：頂端在 CI 區塊內、commit 區塊長高
+        // 時，CI 的內容也被推下去，同樣要補。頂端在 body／header 內時
+        // 上面的內容沒動，不補。超出底端的情況交給 `render_preview` 的
+        // clamp。冷快取（還沒 render 過）沒有起點可比，使用者也不可能已經
+        // 捲動，直接略過。
+        let timeline_start = if self.selected_number_and_kind() == Some((number, kind)) {
+            self.preview_cache.timeline_start(self.active_tab, number)
+        } else {
+            None
+        };
 
         let entry = self.timeline.entry((kind, number)).or_default();
-        let before_height =
-            track_scroll.then(|| timeline::commit_block_height(&entry.items, self.expand_commits));
+        // 首次載入／重試（state 還不是 Loaded）時畫面上的是 loading／錯誤提示，
+        // 沒有 leading 區塊可位移，補償只會把視窗推過剛落地的 commit／CI。
+        let before = timeline_start
+            .filter(|_| entry.state == TimelineLoad::Loaded)
+            .map(|start| (start, timeline::leading_heights(entry, self.expand_commits)));
+        // CI 只有首頁會查（見 `github::build_timeline_query`），載入更多的頁面
+        // 帶的是空清單，不能拿來覆寫。
         if after.is_none() {
             entry.items.clear();
+            entry.ci_checks = page.ci_checks;
         }
         entry.items.extend(page.items);
         entry.next_cursor = page.next_cursor;
@@ -537,11 +565,11 @@ impl<'a> GitHubView<'a> {
         entry.refreshing = false;
         entry.rev = entry.rev.wrapping_add(1);
 
-        if let Some(before_height) = before_height {
-            let after_height = timeline::commit_block_height(&entry.items, self.expand_commits);
-            self.preview_offset = self
-                .preview_offset
-                .saturating_add(after_height.saturating_sub(before_height));
+        if let Some((start, before)) = before {
+            if let Some(rel) = self.preview_offset.checked_sub(start) {
+                let now = timeline::leading_heights(entry, self.expand_commits);
+                self.preview_offset = start + before.remap(now, rel);
+            }
         }
     }
 
@@ -765,6 +793,8 @@ impl<'a> GitHubView<'a> {
         all
     }
 
+    /// 同時收合／展開 commit 與 CI 區塊。
+    ///
     /// 收合／展開不會重置 `preview_offset`——跟另外約 20 個在導覽時會重置
     /// 它的地方不同，這只是內容密度的切換，不是「你現在看的是別的東西了」
     /// 那種時刻。`render_preview` 裡既有的 clamp 會擋住捲過新結尾的情況。
@@ -1194,7 +1224,388 @@ mod tests {
             items,
             next_cursor,
             mergeable: None,
+            ci_checks: Vec::new(),
         }
+    }
+
+    fn ci_check(name: &str, state: crate::github::CheckState) -> crate::github::GhCheck {
+        crate::github::GhCheck {
+            name: name.to_string(),
+            state,
+        }
+    }
+
+    fn ci_page(
+        items: Vec<GhTimelineItem>,
+        next_cursor: Option<String>,
+        ci_checks: Vec<crate::github::GhCheck>,
+    ) -> GhTimelinePage {
+        GhTimelinePage {
+            ci_checks,
+            ..timeline_page(items, next_cursor)
+        }
+    }
+
+    /// 按 `z` 時 CI 區塊跟 commit 一起收合：展開列出每個 check，收合變成
+    /// 一行計數加色塊。
+    #[test]
+    fn ci_checks_render_and_collapse_with_the_commit_toggle() {
+        use crate::github::CheckState::{Failed, Passed};
+        let mut view = view_with_body("body".to_string());
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            ci_page(
+                vec![timeline_commit("aaaaaaa", "FAILURE")],
+                None,
+                vec![ci_check("lint", Failed), ci_check("test", Passed)],
+            ),
+        );
+        let screen = render_to_string(&mut view);
+        assert!(screen.contains("✗ lint"), "got:\n{screen}");
+        assert!(screen.contains("✓ test"), "got:\n{screen}");
+
+        view.toggle_commit_log();
+        let screen = render_to_string(&mut view);
+        assert!(screen.contains("▸ 2 checks ▮▮"), "got:\n{screen}");
+        assert!(!screen.contains("✗ lint"), "got:\n{screen}");
+    }
+
+    /// 先 render 一次讓 preview cache 暖起來，回傳 timeline 起點的視覺行號。
+    /// 捲動補償靠這個值判斷使用者在看 body 還是 timeline，冷快取不補償。
+    fn warm_timeline_start(view: &mut GitHubView<'_>) -> usize {
+        render_to_string(view);
+        view.preview_cache
+            .timeline_start(view.active_tab, 1)
+            .expect("cache must be warm for the selected item")
+    }
+
+    /// 視窗頂端在 CI 區塊內、載入更多讓 commit 區塊長高：CI 的內容被往下推，
+    /// `preview_offset` 要跟著位移，不然畫面會往上跳。
+    #[test]
+    fn loading_more_shifts_preview_offset_inside_ci_block_when_commit_block_grows() {
+        use crate::github::CheckState::Passed;
+        let mut view = view_with_body("body".to_string());
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            ci_page(
+                vec![timeline_commit("aaaaaaa", "SUCCESS")],
+                Some("cursor".to_string()),
+                vec![
+                    ci_check("a", Passed),
+                    ci_check("b", Passed),
+                    ci_check("c", Passed),
+                ],
+            ),
+        );
+        let start = warm_timeline_start(&mut view);
+        // commit 區塊 = 分隔線 + 1 行；停在 CI 區塊的第二行
+        view.preview_offset = start + 2 + 1;
+
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            Some("cursor".to_string()),
+            timeline_page(
+                vec![
+                    timeline_commit("bbbbbbb", "SUCCESS"),
+                    timeline_commit("ccccccc", "SUCCESS"),
+                ],
+                None,
+            ),
+        );
+
+        assert_eq!(view.preview_offset, start + 2 + 1 + 2);
+    }
+
+    /// CI 只有首頁會查：載入更多的頁面帶的是空清單，不能覆寫既有的 check，
+    /// 也就不會讓 CI 區塊塌掉、把視窗位置帶歪。
+    #[test]
+    fn loading_more_keeps_the_existing_ci_checks() {
+        use crate::github::CheckState::{Failed, Passed};
+        let mut view = view_with_body("body".to_string());
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            ci_page(
+                vec![timeline_comment("a", "one")],
+                Some("cursor".to_string()),
+                vec![ci_check("a", Passed), ci_check("b", Passed)],
+            ),
+        );
+        let start = warm_timeline_start(&mut view);
+        view.preview_offset = start + 10;
+
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            Some("cursor".to_string()),
+            ci_page(Vec::new(), None, Vec::new()),
+        );
+        let entry = &view.timeline[&(GhItemKind::PullRequest, 1)];
+        assert_eq!(entry.ci_checks.len(), 2);
+        assert_eq!(view.preview_offset, start + 10);
+
+        // 就算載入更多的頁面帶了 check，也不採用
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            Some("cursor".to_string()),
+            ci_page(Vec::new(), None, vec![ci_check("z", Failed)]),
+        );
+        let entry = &view.timeline[&(GhItemKind::PullRequest, 1)];
+        assert_eq!(
+            entry.ci_checks,
+            [ci_check("a", Passed), ci_check("b", Passed)]
+        );
+    }
+
+    /// 載入更多時使用者還在看 body（長 body、短 timeline 也會走到 near-bottom）：
+    /// 視窗頂端在 timeline 之上，新 commit 插進 timeline 不影響它，不能補償。
+    #[test]
+    fn loading_more_does_not_shift_preview_offset_while_viewing_body() {
+        let mut view = view_with_long_body();
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            timeline_page(
+                vec![timeline_comment("a", "one")],
+                Some("cursor".to_string()),
+            ),
+        );
+        let start = warm_timeline_start(&mut view);
+        assert!(start > 2, "long body must push the timeline down");
+        view.preview_offset = 2;
+
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            Some("cursor".to_string()),
+            timeline_page(vec![timeline_commit("aaaaaaa", "SUCCESS")], None),
+        );
+
+        assert_eq!(view.preview_offset, 2);
+    }
+
+    /// 刷新（`after: None`）時 CI 行數變多：使用者正在看留言區，
+    /// 下面的內容被往下推，`preview_offset` 要跟著位移。
+    #[test]
+    fn refreshing_shifts_preview_offset_when_ci_block_grows() {
+        use crate::github::CheckState::Passed;
+        let mut view = view_with_body("body".to_string());
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            ci_page(
+                vec![timeline_comment("a", "one")],
+                None,
+                vec![ci_check("a", Passed)],
+            ),
+        );
+        let start = warm_timeline_start(&mut view);
+        // CI 區塊（分隔線 + 1）之下
+        view.preview_offset = start + 2 + 3;
+
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            ci_page(
+                vec![timeline_comment("a", "one")],
+                None,
+                vec![
+                    ci_check("a", Passed),
+                    ci_check("b", Passed),
+                    ci_check("c", Passed),
+                ],
+            ),
+        );
+
+        assert_eq!(view.preview_offset, start + 2 + 3 + 2);
+    }
+
+    /// 重跑中的 check 暫時消失，CI 區塊縮小：補償量是負的。
+    #[test]
+    fn refreshing_shifts_preview_offset_back_when_ci_block_shrinks() {
+        use crate::github::CheckState::Passed;
+        let mut view = view_with_body("body".to_string());
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            ci_page(
+                vec![timeline_comment("a", "one")],
+                None,
+                vec![ci_check("a", Passed), ci_check("b", Passed)],
+            ),
+        );
+        let start = warm_timeline_start(&mut view);
+        view.preview_offset = start + 10;
+
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            ci_page(vec![timeline_comment("a", "one")], None, Vec::new()),
+        );
+
+        assert_eq!(view.preview_offset, start + 10 - 3);
+    }
+
+    /// 視窗頂端停在 CI 區塊最後一行，刷新後 CI 縮到頂端之上：落在第一則
+    /// 留言，不會越過它。
+    #[test]
+    fn refreshing_clamps_preview_offset_when_ci_block_shrinks_above_it() {
+        use crate::github::CheckState::Passed;
+        let mut view = view_with_body("body".to_string());
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            ci_page(
+                vec![
+                    timeline_commit("aaaaaaa", "SUCCESS"),
+                    timeline_comment("a", "one"),
+                ],
+                None,
+                vec![
+                    ci_check("a", Passed),
+                    ci_check("b", Passed),
+                    ci_check("c", Passed),
+                ],
+            ),
+        );
+        let start = warm_timeline_start(&mut view);
+        // commit 區塊 2 行、CI 區塊 4 行；停在 CI 最後一行
+        view.preview_offset = start + 2 + 3;
+
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            ci_page(
+                vec![
+                    timeline_commit("aaaaaaa", "SUCCESS"),
+                    timeline_comment("a", "one"),
+                ],
+                None,
+                vec![ci_check("a", Passed)],
+            ),
+        );
+
+        // commit 2 行 + CI 2 行，之後就是第一則留言
+        assert_eq!(view.preview_offset, start + 2 + 2);
+    }
+
+    /// 收合後 CI 區塊從無到有是「分隔線 + 一行摘要」= 2 行，不是 check 筆數。
+    #[test]
+    fn refreshing_shifts_preview_offset_by_the_collapsed_ci_block_height() {
+        use crate::github::CheckState::Passed;
+        let mut view = view_with_body("body".to_string());
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            timeline_page(vec![timeline_comment("a", "one")], None),
+        );
+        view.toggle_commit_log();
+        let start = warm_timeline_start(&mut view);
+        view.preview_offset = start + 1;
+
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            ci_page(
+                vec![timeline_comment("a", "one")],
+                None,
+                vec![
+                    ci_check("a", Passed),
+                    ci_check("b", Passed),
+                    ci_check("c", Passed),
+                ],
+            ),
+        );
+
+        assert_eq!(view.preview_offset, start + 1 + 2);
+    }
+
+    /// 視窗頂端落在 commit 區塊內時，頂端內容本身沒位移（CI 區塊在它
+    /// 之後），刷新讓 CI 變多不能補償。
+    #[test]
+    fn refreshing_does_not_shift_preview_offset_inside_leading_blocks() {
+        use crate::github::CheckState::Passed;
+        let mut view = view_with_body("body".to_string());
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            ci_page(
+                vec![timeline_commit("aaaaaaa", "SUCCESS")],
+                None,
+                vec![ci_check("a", Passed)],
+            ),
+        );
+        let start = warm_timeline_start(&mut view);
+        // commit 區塊 = 分隔線 + 1 行；停在它的第二行
+        view.preview_offset = start + 1;
+
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            ci_page(
+                vec![timeline_commit("aaaaaaa", "SUCCESS")],
+                None,
+                vec![ci_check("a", Passed), ci_check("b", Passed)],
+            ),
+        );
+
+        assert_eq!(view.preview_offset, start + 1);
+    }
+
+    /// 收合後 leading 區塊固定是「分隔線 + 一行摘要」×2，check 筆數變動
+    /// 不改變高度，`preview_offset` 不動。
+    #[test]
+    fn refreshing_does_not_shift_preview_offset_when_collapsed() {
+        use crate::github::CheckState::Passed;
+        let mut view = view_with_body("body".to_string());
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            ci_page(
+                vec![timeline_commit("aaaaaaa", "SUCCESS")],
+                None,
+                vec![ci_check("a", Passed)],
+            ),
+        );
+        view.toggle_commit_log();
+        let start = warm_timeline_start(&mut view);
+        view.preview_offset = start + 4 + 3;
+
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            ci_page(
+                vec![timeline_commit("aaaaaaa", "SUCCESS")],
+                None,
+                vec![
+                    ci_check("a", Passed),
+                    ci_check("b", Passed),
+                    ci_check("c", Passed),
+                ],
+            ),
+        );
+
+        assert_eq!(view.preview_offset, start + 4 + 3);
     }
 
     #[test]
@@ -1453,7 +1864,8 @@ mod tests {
             ),
         );
 
-        view.preview_offset = 5;
+        let start = warm_timeline_start(&mut view);
+        view.preview_offset = start;
 
         // 續接第二頁，這頁帶了兩個新 commit——commit block 從無到有，
         // 佔掉 1 條分隔線 + 2 行 commit（展開模式）。
@@ -1470,20 +1882,45 @@ mod tests {
             ),
         );
 
-        assert_eq!(view.preview_offset, 5 + 3);
+        assert_eq!(view.preview_offset, start + 3);
     }
 
-    /// 首頁替換（`after: None`，刷新或切換選取）不移動既有內容的相對
-    /// 位置，`preview_offset` 不該被這個補償邏輯動到。
+    /// 首次載入落地時（畫面上只有 loading 提示），視窗即使已捲到 timeline
+    /// 起點之下，也不能被推過剛出現的 commit／CI 區塊。
     #[test]
-    fn refreshing_first_page_does_not_shift_preview_offset() {
+    fn first_load_does_not_shift_preview_offset() {
+        use crate::github::CheckState::Passed;
         let mut view = view_with_body("body".to_string());
+        let start = warm_timeline_start(&mut view);
+        view.preview_offset = start + 1;
+
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            ci_page(
+                vec![timeline_commit("aaaaaaa", "SUCCESS")],
+                None,
+                vec![ci_check("a", Passed)],
+            ),
+        );
+
+        assert_eq!(view.preview_offset, start + 1);
+    }
+
+    /// 刷新時視窗頂端還在 body 內（在 timeline 之上），新出現的 commit 區塊
+    /// 不影響它，`preview_offset` 不該被補償邏輯動到。
+    #[test]
+    fn refreshing_first_page_does_not_shift_preview_offset_while_viewing_body() {
+        let mut view = view_with_long_body();
         view.append_timeline_items(
             1,
             GhItemKind::PullRequest,
             None,
             timeline_page(vec![timeline_comment("a", "one")], None),
         );
+        let start = warm_timeline_start(&mut view);
+        assert!(start > 5, "long body must push the timeline down");
         view.preview_offset = 5;
 
         view.append_timeline_items(
@@ -1609,7 +2046,7 @@ mod tests {
             ),
         );
 
-        let (lines, _) = build_preview_content(&view.preview_input(40));
+        let (lines, _, _) = build_preview_content(&view.preview_input(40));
         let dividers: Vec<(char, Option<Color>)> = lines
             .iter()
             .filter_map(|l| {
@@ -1650,6 +2087,54 @@ mod tests {
             .collect()
     }
 
+    /// 每條分隔線都寫出「下面是什麼」：header 下方是 Body，之後依序是各 block
+    /// 自己的 section 名稱。
+    #[test]
+    fn every_divider_is_labeled_with_the_section_below_it() {
+        use crate::github::CheckState::Passed;
+        let mut view = view_with_body("body".to_string());
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            ci_page(
+                vec![
+                    timeline_commit("aaaaaaa", "SUCCESS"),
+                    timeline_comment("a", "one"),
+                    timeline_review(
+                        "reviewer",
+                        "APPROVED",
+                        Some("2026-08-30T12:00:00Z"),
+                        "lgtm",
+                        Vec::new(),
+                    ),
+                ],
+                None,
+                vec![ci_check("lint", Passed)],
+            ),
+        );
+
+        let (lines, _, _) = build_preview_content(&view.preview_input(60));
+        let labels: Vec<String> = lines
+            .iter()
+            .map(|l| {
+                l.spans
+                    .iter()
+                    .map(|s| s.content.as_ref())
+                    .collect::<String>()
+            })
+            .filter(|t| t.starts_with("── "))
+            .map(|t| {
+                t.trim_start_matches("── ")
+                    .split(' ')
+                    .next()
+                    .unwrap()
+                    .to_string()
+            })
+            .collect();
+        assert_eq!(labels, ["Body", "Commits", "CI", "Comment", "Review"]);
+    }
+
     /// 分隔線顏色來自它*之前*那個 block 的 section，所以 `Section::Review`
     /// 的顏色要在 review block *之後*還有其他 block 時才會被畫出來。
     #[test]
@@ -1675,7 +2160,7 @@ mod tests {
             ),
         );
 
-        let (lines, _) = build_preview_content(&view.preview_input(40));
+        let (lines, _, _) = build_preview_content(&view.preview_input(40));
         assert_eq!(
             block_divider_colors(&lines),
             vec![
@@ -1716,7 +2201,7 @@ mod tests {
         // `dividers_are_colour_coded_by_section`），這裡唯一的 block 前面
         // 是初始值 `Section::Body`，所以直接數「不是 markdown 自己那條
         // 固定 DarkGray 分隔線」的數量——一個 block 只會有一條。
-        let (lines, _) = build_preview_content(&view.preview_input(40));
+        let (lines, _, _) = build_preview_content(&view.preview_input(40));
         let block_dividers = block_divider_colors(&lines).len();
         assert_eq!(
             block_dividers, 1,
@@ -1881,7 +2366,7 @@ mod tests {
             ),
         );
 
-        let (lines, _) = build_preview_content(&view.preview_input(40));
+        let (lines, _, _) = build_preview_content(&view.preview_input(40));
         let texts: Vec<String> = lines
             .iter()
             .map(|l| l.spans.iter().map(|s| s.content.to_string()).collect())
@@ -2012,7 +2497,7 @@ mod tests {
             timeline_page(Vec::new(), None),
         );
 
-        let (lines, _) = build_preview_content(&view.preview_input(40));
+        let (lines, _, _) = build_preview_content(&view.preview_input(40));
         let has_body_divider = lines.iter().any(|l| {
             let text: String = l.spans.iter().map(|s| s.content.to_string()).collect();
             text.starts_with('─') && l.style.fg == Some(Section::Body.color())
@@ -2039,7 +2524,7 @@ mod tests {
         let screen = render_to_string(&mut view);
         assert!(screen.contains("no comments"), "got:\n{screen}");
 
-        let (lines, _) = build_preview_content(&view.preview_input(40));
+        let (lines, _, _) = build_preview_content(&view.preview_input(40));
         let has_body_divider = lines.iter().any(|l| {
             let text: String = l.spans.iter().map(|s| s.content.to_string()).collect();
             text.starts_with('─') && l.style.fg == Some(Section::Body.color())
@@ -2051,7 +2536,7 @@ mod tests {
     }
 
     fn rendered_mergeable_marker(view: &GitHubView<'_>) -> Option<(String, Option<Color>)> {
-        let (lines, _) = build_preview_content(&view.preview_input(40));
+        let (lines, _, _) = build_preview_content(&view.preview_input(40));
         lines.iter().find_map(|l| {
             l.spans
                 .iter()
@@ -2087,7 +2572,7 @@ mod tests {
             additions: 600,
             deletions: 71,
         };
-        let (lines, _) = build_preview_content(&view.preview_input(40));
+        let (lines, _, _) = build_preview_content(&view.preview_input(40));
         let rendered: String = lines
             .iter()
             .find(|l| l.spans.iter().any(|s| s.content.contains("←")))

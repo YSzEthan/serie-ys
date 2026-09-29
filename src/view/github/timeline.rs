@@ -3,9 +3,9 @@ use ratatui::{
     text::{Line, Span},
 };
 
-use crate::github::{DiffStat, GhTimelineItem, Mergeable};
+use crate::github::{CheckState, DiffStat, GhCheck, GhTimelineItem, Mergeable};
 
-use super::Section;
+use super::{render::SWATCH, Section};
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub(super) enum TimelineLoad {
@@ -30,6 +30,9 @@ pub(super) struct TimelineEntry {
     /// `None`——兩者都代表「沒有標記」。每一頁都帶著自己的副本，所以後面
     /// 的頁面只是冪等地覆蓋掉這個值。
     pub(super) mergeable: Option<Mergeable>,
+    /// PR head commit 的 check 清單，`head_ci_checks` 已去重排序。只有首頁
+    /// （首次載入與刷新）會覆寫；載入更多的頁面不查 CI，不會動它。
+    pub(super) ci_checks: Vec<GhCheck>,
     /// 每次有新一頁資料落地（不管是首頁替換還是續接）就 +1。`PreviewKey`
     /// 靠這個欄位偵測「commit 數／mergeable 都沒變，但內容變了」——CI 狀態
     /// 從 PENDING 換成 SUCCESS 正是這種情況，其他既有欄位偵測不到。
@@ -143,27 +146,16 @@ pub(super) fn build_timeline(
             vec![notice_block(format!("(comments failed: {e})"), Color::Red)]
         }
         TimelineLoad::Loaded => {
-            let (commit_blocks, rest): (Vec<_>, Vec<_>) = entry
-                .items
-                .iter()
-                .filter_map(TimelineBlock::from_gh)
-                .partition(|b| b.section == Section::Commit);
-
             let mut blocks = Vec::new();
-            if !commit_blocks.is_empty() {
-                let commit_items: Vec<_> =
-                    commit_blocks.into_iter().flat_map(|b| b.items).collect();
-                let items = if expand_commits {
-                    commit_items
-                } else {
-                    vec![TimelineItem::CollapsedCommits(commit_items.len())]
-                };
-                blocks.push(TimelineBlock {
-                    section: Section::Commit,
-                    items,
-                });
-            }
-            blocks.extend(rest);
+            blocks.extend(commit_block(entry, expand_commits));
+            blocks.extend(ci_block(entry, expand_commits));
+            blocks.extend(
+                entry
+                    .items
+                    .iter()
+                    .filter(|item| !is_commit(item))
+                    .filter_map(TimelineBlock::from_gh),
+            );
 
             // 判斷用的是*過濾/分組後*的 block 清單，不是 `entry.items`：一頁
             // 全是 `Unknown` 節點時，仍然要 fallback 到提示訊息，而不是渲染
@@ -196,21 +188,94 @@ fn notice_block(text: impl Into<String>, color: Color) -> TimelineBlock<'static>
     }
 }
 
-/// commit block 在 timeline 裡佔的視覺行數：沒有 commit 就是 0（不畫這個
-/// block，也不畫它前面那條分隔線）；否則是 1 條分隔線，加上展開時每個
-/// commit 各一行、收合時固定一行的收合摘要。`append_timeline_items` 用
-/// 它算分頁載入前後的差值來補償 `preview_offset`——commit block 插在
-/// timeline 最前面，插入的視覺行數必須讓捲動位置跟著往下位移，畫面才不會
-/// 因為視窗上方多出內容而往回跳。
-pub(super) fn commit_block_height(items: &[GhTimelineItem], expand_commits: bool) -> usize {
-    let count = items
+fn is_commit(item: &GhTimelineItem) -> bool {
+    matches!(item, GhTimelineItem::PullRequestCommit { .. })
+}
+
+/// 所有 commit 併成一個 block；收合時只剩一行計數。沒有 commit 就沒有 block。
+fn commit_block(entry: &TimelineEntry, expand_commits: bool) -> Option<TimelineBlock<'_>> {
+    let commit_items: Vec<_> = entry
+        .items
         .iter()
-        .filter(|item| matches!(item, GhTimelineItem::PullRequestCommit { .. }))
-        .count();
-    match (count, expand_commits) {
-        (0, _) => 0,
-        (n, true) => 1 + n,
-        (_, false) => 2,
+        .filter(|item| is_commit(item))
+        .filter_map(TimelineBlock::from_gh)
+        .flat_map(|b| b.items)
+        .collect();
+    if commit_items.is_empty() {
+        return None;
+    }
+    let items = if expand_commits {
+        commit_items
+    } else {
+        vec![TimelineItem::CollapsedCommits(commit_items.len())]
+    };
+    Some(TimelineBlock {
+        section: Section::Commit,
+        items,
+    })
+}
+
+/// head commit 的 CI check；收合時只剩一行計數加色塊。沒有 check 就沒有 block。
+fn ci_block(entry: &TimelineEntry, expand_commits: bool) -> Option<TimelineBlock<'_>> {
+    if entry.ci_checks.is_empty() {
+        return None;
+    }
+    let items = if expand_commits {
+        entry.ci_checks.iter().map(TimelineItem::Check).collect()
+    } else {
+        vec![TimelineItem::CollapsedChecks(&entry.ci_checks)]
+    };
+    Some(TimelineBlock {
+        section: Section::Ci,
+        items,
+    })
+}
+
+/// timeline 最前面兩個 block 各自佔的視覺行數。每個 block 是 1 條分隔線加上
+/// 每個 item 各一行（收合時 item 只有一個摘要），前提是這兩種 block 的每個
+/// item 都只渲染一行（有測試固定）。
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub(super) struct LeadingHeights {
+    pub(super) commit: usize,
+    pub(super) ci: usize,
+}
+
+impl LeadingHeights {
+    fn total(self) -> usize {
+        self.commit + self.ci
+    }
+
+    /// 視窗頂端在 timeline 內第 `rel` 行；內容從 `self` 變成 `new` 之後，
+    /// 同一段內容的新位置。三段用同一條規則：新區段起點加上
+    /// `min(區段內位移, 新區段長度)`——區段縮小到頂端之上時落在區段末端，
+    /// 不會越界進下一段。
+    ///
+    /// 只保住位置、保不住內容：CI 依狀態重新排序時，頂端那一行可能換成
+    /// 另一個 check。超出底端的部分交給 `render_preview` 的 clamp。
+    pub(super) fn remap(self, new: Self, rel: usize) -> usize {
+        if rel < self.commit {
+            rel.min(new.commit)
+        } else if rel < self.total() {
+            new.commit + (rel - self.commit).min(new.ci)
+        } else {
+            new.total() + (rel - self.total())
+        }
+    }
+}
+
+/// commit／CI block 目前的高度。`append_timeline_items` 用落地前後的兩份
+/// 高度來位移 `preview_offset`：這些 block 插在 timeline 最前面，行數變化
+/// 必須讓捲動位置跟著位移，畫面才不會因為視窗上方的內容變動而跳動。
+/// 版面規則只有 `commit_block`／`ci_block` 一個來源，與渲染不會不同步。
+/// 非 `Loaded` 時畫面上是提示訊息，沒有這兩個 block。
+pub(super) fn leading_heights(entry: &TimelineEntry, expand_commits: bool) -> LeadingHeights {
+    if entry.state != TimelineLoad::Loaded {
+        return LeadingHeights::default();
+    }
+    let rows = |block: Option<TimelineBlock>| block.map_or(0, |b| 1 + b.items.len());
+    LeadingHeights {
+        commit: rows(commit_block(entry, expand_commits)),
+        ci: rows(ci_block(entry, expand_commits)),
     }
 }
 
@@ -231,6 +296,9 @@ pub(super) enum TimelineItem<'a> {
         ci_state: Option<&'a str>,
     },
     CollapsedCommits(usize),
+    Check(&'a GhCheck),
+    /// 收合後的 CI 摘要：計數加每個 check 一個色塊，永遠只佔一行。
+    CollapsedChecks(&'a [GhCheck]),
     Review {
         state: &'a str,
         author: &'a str,
@@ -287,6 +355,26 @@ impl<'a> TimelineItem<'a> {
                     format!("▸ {n} commits"),
                     Style::default().fg(Color::DarkGray),
                 ));
+            }
+            TimelineItem::Check(check) => {
+                let (marker, color) = check_state_marker(check.state);
+                let name_width = width.saturating_sub(console::measure_text_width(marker));
+                let name = console::truncate_str(&check.name, name_width, "…").to_string();
+                lines.push(Line::from(vec![
+                    Span::styled(marker, Style::default().fg(color)),
+                    Span::raw(name),
+                ]));
+            }
+            TimelineItem::CollapsedChecks(checks) => {
+                let label = format!("▸ {} checks ", checks.len());
+                // 色塊只取塞得進剩餘寬度的數量：保證單行，捲動補償才算得準。
+                // `checks` 依 fail → pending → pass 排序，截斷時優先丟掉綠色。
+                let room = width.saturating_sub(console::measure_text_width(&label));
+                let mut spans = vec![Span::styled(label, Style::default().fg(Color::DarkGray))];
+                spans.extend(checks.iter().take(room).map(|c| {
+                    Span::styled(SWATCH, Style::default().fg(check_state_marker(c.state).1))
+                }));
+                lines.push(Line::from(spans));
             }
             TimelineItem::Review {
                 state,
@@ -361,6 +449,15 @@ fn commit_ci_marker(state: Option<&str>) -> (&'static str, Color) {
         Some("FAILURE" | "ERROR") => ("✗ ", Color::Red),
         Some("PENDING" | "EXPECTED") => ("● ", Color::Yellow),
         _ => ("  ", Color::DarkGray),
+    }
+}
+
+/// CI check 狀態的標記字元 + 顏色，展開列與收合色塊共用。
+fn check_state_marker(state: CheckState) -> (&'static str, Color) {
+    match state {
+        CheckState::Failed => ("✗ ", Color::Red),
+        CheckState::Pending => ("● ", Color::DarkGray),
+        CheckState::Passed => ("✓ ", Color::Green),
     }
 }
 
@@ -509,5 +606,218 @@ mod tests {
             "line must not exceed width {width}, got {} cells: {rendered:?}",
             console::measure_text_width(&rendered)
         );
+    }
+
+    fn gh_check(name: &str, state: CheckState) -> GhCheck {
+        GhCheck {
+            name: name.to_string(),
+            state,
+        }
+    }
+
+    fn loaded_entry(items: Vec<GhTimelineItem>, ci_checks: Vec<GhCheck>) -> TimelineEntry {
+        TimelineEntry {
+            state: TimelineLoad::Loaded,
+            items,
+            ci_checks,
+            ..Default::default()
+        }
+    }
+
+    fn commit_item() -> GhTimelineItem {
+        GhTimelineItem::PullRequestCommit {
+            commit: crate::github::GhCommit {
+                abbreviated_oid: "abc1234".to_string(),
+                message_headline: "headline".to_string(),
+                status_check_rollup: None,
+            },
+        }
+    }
+
+    fn three_checks() -> Vec<GhCheck> {
+        vec![
+            gh_check("lint", CheckState::Failed),
+            gh_check("build", CheckState::Pending),
+            gh_check("test", CheckState::Passed),
+        ]
+    }
+
+    fn render_block(block: TimelineBlock<'_>, width: usize) -> Vec<Line<'static>> {
+        let mut lines = Vec::new();
+        for item in block.items {
+            item.render(&mut lines, width);
+        }
+        lines
+    }
+
+    fn text(line: &Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn expanded_ci_block_follows_commit_block_one_line_per_check() {
+        let entry = loaded_entry(vec![commit_item()], three_checks());
+        let mut blocks = build_timeline(Some(&entry), true);
+        assert_eq!(blocks.len(), 2);
+        assert!(blocks[0].section == Section::Commit);
+        assert!(blocks[1].section == Section::Ci);
+
+        let lines = render_block(blocks.remove(1), 40);
+        let rendered: Vec<_> = lines.iter().map(text).collect();
+        assert_eq!(rendered, ["✗ lint", "● build", "✓ test"]);
+        let colors: Vec<_> = lines.iter().map(|l| l.spans[0].style.fg).collect();
+        assert_eq!(
+            colors,
+            [Some(Color::Red), Some(Color::DarkGray), Some(Color::Green)]
+        );
+    }
+
+    #[test]
+    fn collapsed_ci_block_is_one_line_with_colored_swatches() {
+        let entry = loaded_entry(vec![commit_item()], three_checks());
+        let mut blocks = build_timeline(Some(&entry), false);
+        let lines = render_block(blocks.remove(1), 40);
+        assert_eq!(lines.len(), 1);
+        assert_eq!(text(&lines[0]), "▸ 3 checks ▮▮▮");
+        let swatch_colors: Vec<_> = lines[0].spans[1..].iter().map(|s| s.style.fg).collect();
+        assert_eq!(
+            swatch_colors,
+            [Some(Color::Red), Some(Color::DarkGray), Some(Color::Green)]
+        );
+    }
+
+    /// 窄寬度下色塊被截斷而不是換行；排在前面的 fail 留下，被丟掉的是排在後面的。
+    #[test]
+    fn collapsed_ci_swatches_truncate_to_width_keeping_failures() {
+        let entry = loaded_entry(Vec::new(), three_checks());
+        let mut blocks = build_timeline(Some(&entry), false);
+        let width = console::measure_text_width("▸ 3 checks ") + 1;
+        let lines = render_block(blocks.remove(0), width);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].width() <= width);
+        assert_eq!(lines[0].spans.len(), 2);
+        assert_eq!(lines[0].spans[1].style.fg, Some(Color::Red));
+    }
+
+    #[test]
+    fn long_check_name_is_truncated_to_width() {
+        let entry = loaded_entry(
+            Vec::new(),
+            vec![gh_check(&"x".repeat(100), CheckState::Passed)],
+        );
+        let mut blocks = build_timeline(Some(&entry), true);
+        let lines = render_block(blocks.remove(0), 20);
+        assert_eq!(lines.len(), 1);
+        assert!(lines[0].width() <= 20);
+    }
+
+    #[test]
+    fn no_ci_block_without_checks() {
+        let entry = loaded_entry(vec![commit_item()], Vec::new());
+        let blocks = build_timeline(Some(&entry), true);
+        assert!(blocks.iter().all(|b| b.section != Section::Ci));
+    }
+
+    fn heights(commit: usize, ci: usize) -> LeadingHeights {
+        LeadingHeights { commit, ci }
+    }
+
+    #[test]
+    fn leading_heights_counts_commit_and_ci_blocks_separately() {
+        let entry = loaded_entry(vec![commit_item()], three_checks());
+        // 展開：commit（分隔線 + 1）、CI（分隔線 + 3）
+        assert_eq!(leading_heights(&entry, true), heights(2, 4));
+        // 收合：兩個 block 各是分隔線 + 一行摘要
+        assert_eq!(leading_heights(&entry, false), heights(2, 2));
+
+        let no_ci = loaded_entry(vec![commit_item()], Vec::new());
+        assert_eq!(leading_heights(&no_ci, true), heights(2, 0));
+        assert_eq!(leading_heights(&no_ci, false), heights(2, 0));
+
+        let no_commit = loaded_entry(Vec::new(), three_checks());
+        assert_eq!(leading_heights(&no_commit, true), heights(0, 4));
+
+        // 還沒載入完：只有「loading」提示，不算 commit／CI
+        assert_eq!(
+            leading_heights(&TimelineEntry::default(), true),
+            LeadingHeights::default()
+        );
+    }
+
+    /// commit 與 CI 各自的高度必須和 `build_timeline` 實際排出的 block 一致，
+    /// 版面規則才真的只有一個來源。
+    #[test]
+    fn leading_heights_match_the_blocks_build_timeline_emits() {
+        let entry = loaded_entry(vec![commit_item(), commit_item()], three_checks());
+        for expand in [true, false] {
+            let blocks = build_timeline(Some(&entry), expand);
+            let rows = |section| {
+                blocks
+                    .iter()
+                    .filter(|b| b.section == section)
+                    .map(|b| 1 + b.items.len())
+                    .sum::<usize>()
+            };
+            assert_eq!(
+                leading_heights(&entry, expand),
+                heights(rows(Section::Commit), rows(Section::Ci)),
+                "expand={expand}"
+            );
+        }
+    }
+
+    /// 三段（commit、CI、其後）各取邊界：區段第一行、最後一行、剛越過去的一行。
+    #[test]
+    fn remap_keeps_the_top_content_in_place_across_all_three_segments() {
+        // commit 2→4 行，CI 3 行不變
+        let (old, new) = (heights(2, 3), heights(4, 3));
+        // commit 區塊內：上面的內容沒動
+        assert_eq!(old.remap(new, 0), 0);
+        assert_eq!(old.remap(new, 1), 1);
+        // CI 區塊內：跟著 commit 的增加位移
+        assert_eq!(old.remap(new, 2), 4);
+        assert_eq!(old.remap(new, 4), 6);
+        // 兩區塊之下（留言）：跟著總和位移
+        assert_eq!(old.remap(new, 5), 7);
+        assert_eq!(old.remap(new, 9), 11);
+    }
+
+    #[test]
+    fn remap_clamps_when_a_segment_shrinks_above_the_top() {
+        // CI 3→0 行（force-push 後新 head 沒有 check）：頂端落在第一則留言
+        assert_eq!(heights(2, 3).remap(heights(2, 0), 3), 2);
+        // 頂端在 CI 最後一行，CI 縮成 2 行：落在 CI 區塊之後（第一則留言）
+        assert_eq!(heights(2, 3).remap(heights(2, 2), 4), 4);
+        // commit 4→2 行（重抓截回第一頁），頂端在 commit 內第 3 行：夾在
+        // commit 區塊末端，也就是 CI 的起點
+        assert_eq!(heights(4, 3).remap(heights(2, 3), 3), 2);
+        // commit 消失，頂端原本在 commit 內
+        assert_eq!(heights(2, 3).remap(heights(0, 3), 1), 0);
+    }
+
+    #[test]
+    fn remap_handles_missing_leading_blocks() {
+        // 一開始什麼都沒有（rel 一定落在第三段）：整段位移新增的高度
+        assert_eq!(heights(0, 0).remap(heights(2, 4), 0), 6);
+        assert_eq!(heights(0, 0).remap(heights(2, 4), 5), 11);
+        // 全部消失：往回位移
+        assert_eq!(heights(2, 4).remap(heights(0, 0), 8), 2);
+        // commit 是 0 行時，rel = 0 就是 CI 的第一行
+        assert_eq!(heights(0, 3).remap(heights(2, 3), 0), 2);
+    }
+
+    /// `leading_heights` 以「每個 item 一行」為前提，這裡固定住它。
+    #[test]
+    fn every_commit_and_ci_item_renders_exactly_one_line() {
+        let entry = loaded_entry(vec![commit_item(), commit_item()], three_checks());
+        for expand in [true, false] {
+            for block in build_timeline(Some(&entry), expand) {
+                if !matches!(block.section, Section::Commit | Section::Ci) {
+                    continue;
+                }
+                let n = block.items.len();
+                assert_eq!(render_block(block, 40).len(), n, "expand={expand}");
+            }
+        }
     }
 }
