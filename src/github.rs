@@ -607,6 +607,22 @@ pub struct GhStatusCheckRollup {
     pub state: String,
 }
 
+/// 單一 CI check 的結果。宣告順序即排序：fail → pending → pass，收合截斷時優先丟掉綠色。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub enum CheckState {
+    Failed,
+    Pending,
+    Passed,
+}
+
+/// PR head commit 上的一個 check。`head_ci_checks` 已經去重、判定狀態、
+/// 排序完畢，view 層拿到的就是最終清單，不再判斷狀態字串。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GhCheck {
+    pub name: String,
+    pub state: CheckState,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct GhReviewCommentConn {
@@ -664,6 +680,8 @@ pub struct GhTimelinePage {
     pub items: Vec<GhTimelineItem>,
     pub next_cursor: Option<String>,
     pub mergeable: Option<Mergeable>,
+    /// PR head commit 的 check 清單；Issue 與尚無 CI 的 PR 是空的。
+    pub ci_checks: Vec<GhCheck>,
 }
 
 /// issue 與 PR 的 timeline 是兩個不同的 union：`Issue.timelineItems` 給的是
@@ -683,7 +701,17 @@ fn build_timeline_query(kind: GhItemKind) -> String {
             r#"mergeable
                     reviewThreads(first:100) {
                         nodes { isResolved comments(first:20) { nodes { id } } }
-                    }"#,
+                    }
+                    commits(last:1) { nodes { commit { statusCheckRollup {
+                        contexts(first:100) { nodes {
+                            __typename
+                            ... on CheckRun {
+                                name conclusion databaseId
+                                checkSuite { workflowRun { workflow { name } } }
+                            }
+                            ... on StatusContext { context state }
+                        } }
+                    } } } }"#,
             r#"... on PullRequestCommit { commit {
                                 abbreviatedOid messageHeadline
                                 statusCheckRollup { state }
@@ -772,10 +800,12 @@ fn parse_timeline_graphql(json: &str, kind: GhItemKind) -> Result<GhTimelinePage
             }
         }
     }
+    let ci_checks = head_ci_checks(&container.commits);
     Ok(GhTimelinePage {
         items,
         next_cursor,
         mergeable: container.mergeable.as_deref().and_then(Mergeable::from_api),
+        ci_checks,
     })
 }
 
@@ -803,6 +833,8 @@ struct GqlTimelineContainer {
     timeline_items: GqlTimelineConn,
     #[serde(default)]
     review_threads: GqlConnection<GqlReviewThread>,
+    #[serde(default)]
+    commits: GqlConnection<GqlHeadCommit>,
 }
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -835,6 +867,153 @@ struct GqlReviewThread {
 struct GqlReviewThreadCommentId {
     #[serde(default)]
     id: String,
+}
+
+// head commit 的 check 清單：`commits(last:1)` 只會有 0 或 1 個 node。
+#[derive(Deserialize)]
+struct GqlHeadCommit {
+    commit: GqlHeadCommitInner,
+}
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlHeadCommitInner {
+    #[serde(default)]
+    status_check_rollup: Option<GqlRollupContexts>,
+}
+#[derive(Deserialize)]
+struct GqlRollupContexts {
+    #[serde(default)]
+    contexts: GqlConnection<GqlCheckContext>,
+}
+
+/// 不能在 enum 上用 `rename_all`：那會改 variant 名，`__typename` 就對不上，
+/// 每一筆都會悄悄落進 `Unknown`。欄位各自 `rename`。
+#[derive(Deserialize)]
+#[serde(tag = "__typename")]
+enum GqlCheckContext {
+    CheckRun {
+        #[serde(default)]
+        name: String,
+        #[serde(default)]
+        conclusion: Option<String>,
+        #[serde(default, rename = "databaseId")]
+        database_id: u64,
+        #[serde(default, rename = "checkSuite")]
+        check_suite: Option<GqlCheckSuite>,
+    },
+    StatusContext {
+        #[serde(default)]
+        context: String,
+        #[serde(default)]
+        state: String,
+    },
+    #[serde(other)]
+    Unknown,
+}
+#[derive(Deserialize)]
+struct GqlCheckSuite {
+    #[serde(default, rename = "workflowRun")]
+    workflow_run: Option<GqlWorkflowRun>,
+}
+#[derive(Deserialize)]
+struct GqlWorkflowRun {
+    workflow: GqlWorkflow,
+}
+#[derive(Deserialize)]
+struct GqlWorkflow {
+    name: String,
+}
+
+/// `None` = 不顯示（skipped／neutral／stale）。CANCELLED 算 fail：GitHub 的
+/// rollup 也把它算 FAILURE，commit 行出現紅 ✗ 時，清單要找得到對應的紅色。
+/// 被取消後又重跑的舊 run 已在 `head_ci_checks` 去重時被蓋掉，不會出現。
+fn check_run_state(conclusion: Option<&str>) -> Option<CheckState> {
+    match conclusion {
+        Some("SUCCESS") => Some(CheckState::Passed),
+        Some("FAILURE" | "TIMED_OUT" | "STARTUP_FAILURE" | "ACTION_REQUIRED" | "CANCELLED") => {
+            Some(CheckState::Failed)
+        }
+        // 排隊或執行中時 conclusion 是 null
+        None => Some(CheckState::Pending),
+        Some(_) => None,
+    }
+}
+
+fn status_context_state(state: &str) -> Option<CheckState> {
+    match state {
+        "SUCCESS" => Some(CheckState::Passed),
+        "FAILURE" | "ERROR" => Some(CheckState::Failed),
+        "PENDING" | "EXPECTED" => Some(CheckState::Pending),
+        _ => None,
+    }
+}
+
+/// head commit 的 check 清單。順序不能換：
+///
+/// 1. **去重**：CheckRun 以 `(workflow, name)` 為 key，只留 `databaseId` 最大的
+///    一筆——PR 標題改一次，`pr-title.yml` 就在同一個 commit 上多跑一輪，
+///    GitHub 的 rollup 不會去重。StatusContext 由 GitHub 保證每個 context
+///    只留最新一筆。
+/// 2. **判定狀態**並丟掉 `None`。必須在去重之後：先濾會讓「最新一筆跑中」
+///    被濾掉，留下舊的 ✗。
+/// 3. **排序** `(state, name)`：展開與收合共用，收合截斷時優先丟掉綠色。
+///
+/// commit 行上的 rollup 標記沒有去重，所以可能出現 commit 行是 ✗、清單卻
+/// 全是 ✓ 的情況；跟 GitHub 網頁一致，不為 head commit 另寫特例。
+/// `contexts(first:100)` 是含重複的原始筆數，一個 commit 要跑 20 輪以上
+/// 才會碰到上限。
+fn head_ci_checks(commits: &GqlConnection<GqlHeadCommit>) -> Vec<GhCheck> {
+    let contexts = commits
+        .nodes
+        .first()
+        .and_then(|n| n.commit.status_check_rollup.as_ref())
+        .map(|r| r.contexts.nodes.as_slice())
+        .unwrap_or_default();
+
+    let mut latest: FxHashMap<(&str, &str), (u64, Option<&str>)> = FxHashMap::default();
+    let mut checks = Vec::new();
+    for ctx in contexts {
+        match ctx {
+            GqlCheckContext::CheckRun {
+                name,
+                conclusion,
+                database_id,
+                check_suite,
+            } => {
+                let workflow = check_suite
+                    .as_ref()
+                    .and_then(|s| s.workflow_run.as_ref())
+                    .map_or("", |w| w.workflow.name.as_str());
+                let entry = latest
+                    .entry((workflow, name.as_str()))
+                    .or_insert((*database_id, conclusion.as_deref()));
+                if *database_id > entry.0 {
+                    *entry = (*database_id, conclusion.as_deref());
+                }
+            }
+            GqlCheckContext::StatusContext { context, state } => {
+                if let Some(state) = status_context_state(state) {
+                    checks.push(GhCheck {
+                        name: context.clone(),
+                        state,
+                    });
+                }
+            }
+            GqlCheckContext::Unknown => {}
+        }
+    }
+    checks.extend(
+        latest
+            .into_iter()
+            .filter_map(|((_, name), (_, conclusion))| {
+                check_run_state(conclusion).map(|state| GhCheck {
+                    name: name.to_string(),
+                    state,
+                })
+            }),
+    );
+    checks.sort_by(|a, b| (a.state, &a.name).cmp(&(b.state, &b.name)));
+    checks
 }
 
 // ── Checkbox／工作清單 ──
@@ -1542,6 +1721,7 @@ mod tests {
         assert!(!q.contains("PullRequestReview"));
         assert!(!q.contains("PULL_REQUEST_REVIEW"));
         assert!(!q.contains("reviewThreads"));
+        assert!(!q.contains("commits(last:1)"));
 
         let q = build_timeline_query(GhItemKind::PullRequest);
         assert!(q.contains("pullRequest(number:$number)"));
@@ -1551,6 +1731,7 @@ mod tests {
         assert!(q.contains("PullRequestReview"));
         assert!(q.contains("PULL_REQUEST_REVIEW"));
         assert!(q.contains("reviewThreads"));
+        assert!(q.contains("commits(last:1)"));
     }
 
     /// `itemTypes` 理論上只會產生兩種已知的 variant，但這個測試釘住了
@@ -1811,5 +1992,143 @@ mod tests {
         };
         assert_eq!(comments.nodes[0].line, Some(5));
         assert_eq!(comments.nodes[1].line, None);
+    }
+
+    fn run(workflow: &str, name: &str, id: u64, conclusion: Option<&str>) -> String {
+        let conclusion = conclusion.map_or("null".to_string(), |c| format!(r#""{c}""#));
+        format!(
+            r#"{{"__typename":"CheckRun","name":"{name}","conclusion":{conclusion},
+                "databaseId":{id},
+                "checkSuite":{{"workflowRun":{{"workflow":{{"name":"{workflow}"}}}}}}}}"#
+        )
+    }
+
+    fn status(context: &str, state: &str) -> String {
+        format!(r#"{{"__typename":"StatusContext","context":"{context}","state":"{state}"}}"#)
+    }
+
+    fn checks_from(contexts: &[String]) -> Vec<GhCheck> {
+        let json = format!(
+            r#"{{"data":{{"repository":{{"pullRequest":{{
+                "commits":{{"nodes":[{{"commit":{{"statusCheckRollup":
+                    {{"contexts":{{"nodes":[{}]}}}}}}}}]}},
+                "timelineItems":{{"pageInfo":{{"hasNextPage":false,"endCursor":null}},
+                    "nodes":[]}}}}}}}}}}"#,
+            contexts.join(",")
+        );
+        parse_timeline_graphql(&json, GhItemKind::PullRequest)
+            .unwrap()
+            .ci_checks
+    }
+
+    fn check(name: &str, state: CheckState) -> GhCheck {
+        GhCheck {
+            name: name.to_string(),
+            state,
+        }
+    }
+
+    /// PR 標題改一次，`pr-title.yml` 就在同一個 commit 上多跑一輪，
+    /// GitHub 的 rollup 不去重——同 `(workflow, name)` 只留 `databaseId` 最大的。
+    #[test]
+    fn head_checks_keep_only_latest_run_per_workflow_and_name() {
+        let checks = checks_from(&[
+            run("PR Title", "check", 1, Some("FAILURE")),
+            run("PR Title", "check", 3, Some("SUCCESS")),
+            run("PR Title", "check", 2, Some("CANCELLED")),
+        ]);
+        assert_eq!(checks, vec![check("check", CheckState::Passed)]);
+    }
+
+    /// 去重必須在丟掉非 pass/fail 之前：最新一筆還在跑，就不能讓舊的 ✗ 浮上來。
+    #[test]
+    fn head_checks_rerun_in_progress_hides_stale_result() {
+        let checks = checks_from(&[
+            run("Build", "lint", 1, Some("FAILURE")),
+            run("Build", "lint", 2, None),
+        ]);
+        assert_eq!(checks, vec![check("lint", CheckState::Pending)]);
+    }
+
+    #[test]
+    fn head_checks_same_name_in_different_workflows_are_kept_apart() {
+        let checks = checks_from(&[
+            run("A", "build", 1, Some("SUCCESS")),
+            run("B", "build", 2, Some("FAILURE")),
+        ]);
+        assert_eq!(
+            checks,
+            vec![
+                check("build", CheckState::Failed),
+                check("build", CheckState::Passed)
+            ]
+        );
+    }
+
+    #[test]
+    fn head_checks_state_table() {
+        let checks = checks_from(&[
+            run("W", "success", 1, Some("SUCCESS")),
+            run("W", "failure", 2, Some("FAILURE")),
+            run("W", "timed_out", 3, Some("TIMED_OUT")),
+            run("W", "startup", 4, Some("STARTUP_FAILURE")),
+            run("W", "action", 5, Some("ACTION_REQUIRED")),
+            run("W", "cancelled", 6, Some("CANCELLED")),
+            run("W", "running", 7, None),
+            run("W", "skipped", 8, Some("SKIPPED")),
+            run("W", "neutral", 9, Some("NEUTRAL")),
+            run("W", "stale", 10, Some("STALE")),
+            status("ctx-ok", "SUCCESS"),
+            status("ctx-bad", "ERROR"),
+            status("ctx-fail", "FAILURE"),
+            status("ctx-wait", "PENDING"),
+            status("ctx-exp", "EXPECTED"),
+            r#"{"__typename":"SomethingNew"}"#.to_string(),
+        ]);
+        let state_of = |n: &str| checks.iter().find(|c| c.name == n).map(|c| c.state);
+        for n in ["success", "ctx-ok"] {
+            assert_eq!(state_of(n), Some(CheckState::Passed), "{n}");
+        }
+        for n in [
+            "failure",
+            "timed_out",
+            "startup",
+            "action",
+            "cancelled",
+            "ctx-bad",
+            "ctx-fail",
+        ] {
+            assert_eq!(state_of(n), Some(CheckState::Failed), "{n}");
+        }
+        for n in ["running", "ctx-wait", "ctx-exp"] {
+            assert_eq!(state_of(n), Some(CheckState::Pending), "{n}");
+        }
+        for n in ["skipped", "neutral", "stale"] {
+            assert_eq!(state_of(n), None, "{n}");
+        }
+        assert_eq!(checks.len(), 12);
+    }
+
+    /// fail 在前、綠色在後：收合截斷時優先丟掉綠色。
+    #[test]
+    fn head_checks_sorted_failed_then_pending_then_passed_then_name() {
+        let checks = checks_from(&[
+            run("W", "b", 1, Some("SUCCESS")),
+            run("W", "a", 2, Some("SUCCESS")),
+            run("W", "z", 3, Some("FAILURE")),
+            run("W", "m", 4, None),
+        ]);
+        let order: Vec<_> = checks.iter().map(|c| c.name.as_str()).collect();
+        assert_eq!(order, ["z", "m", "a", "b"]);
+    }
+
+    #[test]
+    fn head_checks_empty_when_commit_has_no_rollup() {
+        let json = r#"{"data":{"repository":{"pullRequest":{
+            "commits":{"nodes":[{"commit":{"statusCheckRollup":null}}]},
+            "timelineItems":{"pageInfo":{"hasNextPage":false,"endCursor":null},
+                "nodes":[]}}}}}"#;
+        let page = parse_timeline_graphql(json, GhItemKind::PullRequest).unwrap();
+        assert!(page.ci_checks.is_empty());
     }
 }

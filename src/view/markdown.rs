@@ -205,6 +205,28 @@ pub(super) fn rule_line_colored(width: usize, color: Color) -> Line<'static> {
     Line::styled("─".repeat(width), Style::default().fg(color))
 }
 
+/// 帶文字標籤的區段分隔線：`── 標籤 ─────`，打滿整個可用寬度。線條用
+/// `line_color`，標籤文字用 `label_color`——兩者在 timeline 裡刻意不同色
+/// （線條沿用「上一個區段」的顏色，標籤說明「下面是什麼」）。窄到連標籤都
+/// 放不下時退回純色線，不截斷標籤。
+pub(super) fn labeled_rule(
+    width: usize,
+    label: &str,
+    line_color: Color,
+    label_color: Color,
+) -> Line<'static> {
+    let head = format!("── {label} ");
+    let head_width = console::measure_text_width(&head);
+    if head_width >= width {
+        return rule_line_colored(width, line_color);
+    }
+    Line::from(vec![
+        Span::styled(head, Style::default().fg(label_color)),
+        Span::raw("─".repeat(width - head_width)),
+    ])
+    .style(Style::default().fg(line_color))
+}
+
 /// `[label]: url`——渲染後的 markdown 看不到。
 ///
 /// 連結目的地依 CommonMark 規範必須是 ASCII 且不含空白字元。
@@ -975,6 +997,25 @@ mod tests {
     fn rule_line_colored_fills_full_width() {
         let line = super::rule_line_colored(80, Color::Red);
         assert_eq!(line.width(), 80);
+    }
+
+    #[test]
+    fn labeled_rule_fills_width_and_colors_line_and_label_separately() {
+        let line = super::labeled_rule(30, "CI", Color::Red, Color::Green);
+        assert_eq!(line.width(), 30);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.starts_with("── CI ─"), "got: {text}");
+        assert_eq!(line.style.fg, Some(Color::Red));
+        assert_eq!(line.spans[0].style.fg, Some(Color::Green));
+    }
+
+    /// 窄到放不下標籤時退回純線，寬度仍然剛好。
+    #[test]
+    fn labeled_rule_falls_back_to_plain_rule_when_too_narrow() {
+        let line = super::labeled_rule(5, "Comment", Color::Red, Color::Green);
+        assert_eq!(line.width(), 5);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert_eq!(text, "─────");
     }
 
     /// 促成以上所有測試的留言型態：一則 Vercel 部署 bot 貼文，

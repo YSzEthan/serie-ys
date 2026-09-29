@@ -84,7 +84,14 @@ pub(super) fn build_preview_content(
         lines.push(Line::from(spans));
     }
 
-    lines.push(crate::view::markdown::rule_line(width));
+    let has_relations = matches!(
+        item.extra,
+        SelectedItemExtra::Issue { parent, sub_issues } if parent.is_some() || !sub_issues.is_empty()
+    );
+    lines.push(header_rule(
+        width,
+        if has_relations { "Related" } else { "Body" },
+    ));
 
     if let SelectedItemExtra::Issue { parent, sub_issues } = item.extra {
         append_relation_lines(&mut lines, parent, sub_issues, width);
@@ -112,7 +119,7 @@ pub(super) fn append_comment_lines(
 ) {
     let mut prev = Section::Body;
     for block in build_timeline(entry, expand_commits) {
-        lines.push(prev.divider(width));
+        lines.push(prev.divider(block.section, width));
         for item in block.items {
             item.render(lines, width);
         }
@@ -353,8 +360,14 @@ fn append_relation_lines(
         }
     }
     if parent.is_some() || !sub_issues.is_empty() {
-        lines.push(crate::view::markdown::rule_line(width));
+        lines.push(header_rule(width, "Body"));
     }
+}
+
+/// header／relations 區塊下方的分隔線：線條維持 markdown 分隔線的灰色，
+/// 標籤用 body 區段的顏色。
+fn header_rule(width: usize, label: &str) -> Line<'static> {
+    crate::view::markdown::labeled_rule(width, label, Color::DarkGray, Section::Body.color())
 }
 
 #[cfg(test)]
