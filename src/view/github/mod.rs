@@ -28,6 +28,7 @@ use timeline::{TimelineEntry, TimelineLoad};
 const PREFETCH_THRESHOLD: usize = 5;
 const TIMELINE_LOAD_MORE_THRESHOLD: usize = 5;
 /// 選取停住多久才真的送 timeline 請求；按住 `j` 滑過去的項目不必各打一次 API。
+/// 由 100ms 的 Tick 輪詢，實際延遲是 150～250ms。
 const TIMELINE_DEBOUNCE: Duration = Duration::from_millis(150);
 
 /// 分隔線關閉的是 timeline 的哪個區段。顏色由分隔線*之前*的內容決定，
@@ -202,7 +203,9 @@ impl<'a> GitHubView<'a> {
             request_generation: 0,
             pending_jump: None,
             timeline: FxHashMap::default(),
-            timeline_due: None,
+            // 帶快取資料重開時沒有任何選取變動或 update_data 會觸發請求，
+            // 由第一個 Tick 補送初始選取項目的 timeline。
+            timeline_due: Some(Instant::now()),
             last_preview_len: 0,
             body_rev: 0,
             preview_cache: PreviewCache::default(),
@@ -425,6 +428,8 @@ impl<'a> GitHubView<'a> {
     }
 
     fn request_timeline_for_selected(&mut self) {
+        // 排程的請求對象永遠是到期當下的選取項目，立即送出就等於把它做完了
+        self.timeline_due = None;
         let Some((number, kind)) = self.selected_number_and_kind() else {
             return;
         };
@@ -2458,6 +2463,18 @@ mod tests {
 
         view.on_tick(Instant::now() + TIMELINE_DEBOUNCE);
         assert_eq!(timeline_requests(&rx), vec![3]);
+    }
+
+    /// 帶快取資料重開 view（`open_github` → `new`）時，初始選取項目的
+    /// timeline 要在第一個 Tick 補送，不能卡在 loading 等使用者移動選取。
+    #[test]
+    fn reopen_with_cached_data_requests_timeline_on_first_tick() {
+        let (mut view, rx) = debounce_view();
+        assert!(timeline_requests(&rx).is_empty());
+
+        view.on_tick(Instant::now());
+
+        assert_eq!(timeline_requests(&rx), vec![1]);
     }
 
     #[test]
