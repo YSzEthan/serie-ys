@@ -1,3 +1,5 @@
+use std::time::Instant;
+
 use ratatui::crossterm::event::{Event, KeyEvent};
 use tui_input::backend::crossterm::EventHandler;
 
@@ -21,15 +23,15 @@ impl<'a> GitHubView<'a> {
 
         self.flash_message = None;
 
-        let before = (self.active_tab, self.selected_index);
+        let before = self.selected_number_and_kind();
         match self.focus {
             GitHubFocus::CheckboxEdit => self.handle_checkbox_edit_event(event, count),
             GitHubFocus::Preview => self.handle_preview_event(event, count),
             GitHubFocus::Prompt => self.handle_prompt_event(event, count, key),
             GitHubFocus::List => self.handle_list_event(event, count),
         }
-        if (self.active_tab, self.selected_index) != before {
-            self.request_timeline_for_selected();
+        if self.selected_number_and_kind() != before {
+            self.schedule_timeline_for_selected(Instant::now());
         }
     }
 

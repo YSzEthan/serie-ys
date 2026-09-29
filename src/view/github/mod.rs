@@ -3,7 +3,10 @@ mod preview;
 mod render;
 mod timeline;
 
-use std::cell::Cell;
+use std::{
+    cell::Cell,
+    time::{Duration, Instant},
+};
 
 use ratatui::{style::Color, text::Line};
 use rustc_hash::FxHashMap;
@@ -24,6 +27,9 @@ use timeline::{TimelineEntry, TimelineLoad};
 
 const PREFETCH_THRESHOLD: usize = 5;
 const TIMELINE_LOAD_MORE_THRESHOLD: usize = 5;
+/// 選取停住多久才真的送 timeline 請求；按住 `j` 滑過去的項目不必各打一次 API。
+/// 由 100ms 的 Tick 輪詢，實際延遲是 150～250ms。
+const TIMELINE_DEBOUNCE: Duration = Duration::from_millis(150);
 
 /// 分隔線關閉的是 timeline 的哪個區段。顏色由分隔線*之前*的內容決定，
 /// 不是後面的——由上往下讀時，那才是眼睛在捲動時需要的上下文。
@@ -143,6 +149,8 @@ pub struct GitHubView<'a> {
     pending_jump: Option<u64>,
 
     timeline: FxHashMap<(GhItemKind, u64), TimelineEntry>,
+    /// 選取變動後排定的 timeline 請求時間，由 `on_tick` 到期時送出。
+    timeline_due: Option<Instant>,
     last_preview_len: usize,
 
     /// 在 preview 能顯示的任何就地編輯時遞增——目前是 body 取代與批次重新
@@ -195,6 +203,9 @@ impl<'a> GitHubView<'a> {
             request_generation: 0,
             pending_jump: None,
             timeline: FxHashMap::default(),
+            // 帶快取資料重開時沒有任何選取變動或 update_data 會觸發請求，
+            // 由第一個 Tick 補送初始選取項目的 timeline。
+            timeline_due: Some(Instant::now()),
             last_preview_len: 0,
             body_rev: 0,
             preview_cache: PreviewCache::default(),
@@ -402,7 +413,23 @@ impl<'a> GitHubView<'a> {
         self.pending_jump = None;
     }
 
+    /// 選取變動只排程，不立即送請求。
+    fn schedule_timeline_for_selected(&mut self, now: Instant) {
+        self.timeline_due = Some(now + TIMELINE_DEBOUNCE);
+    }
+
+    /// 由 App 的 Tick 呼叫，到期才真的送請求。`now` 由呼叫端傳入，
+    /// 測試才不必依賴真實時鐘（比照 `KeyState::register_quit_press`）。
+    pub fn on_tick(&mut self, now: Instant) {
+        if self.timeline_due.is_some_and(|due| now >= due) {
+            self.timeline_due = None;
+            self.request_timeline_for_selected();
+        }
+    }
+
     fn request_timeline_for_selected(&mut self) {
+        // 排程的請求對象永遠是到期當下的選取項目，立即送出就等於把它做完了
+        self.timeline_due = None;
         let Some((number, kind)) = self.selected_number_and_kind() else {
             return;
         };
@@ -834,6 +861,7 @@ impl<'a> GitHubView<'a> {
         self.offset = 0;
         self.preview_offset = 0;
         self.adjust_scroll();
+        self.request_timeline_for_selected();
         true
     }
 
@@ -2313,5 +2341,162 @@ mod tests {
             "got: {:?}",
             view.status_hints()
         );
+    }
+
+    // ── timeline debounce ──
+
+    fn debounce_issue(number: u64, title: &str) -> GhIssue {
+        GhIssue {
+            number,
+            title: title.to_string(),
+            state: "OPEN".to_string(),
+            labels: Vec::new(),
+            author: GhAuthor {
+                login: "alice".to_string(),
+            },
+            created_at: String::new(),
+            body: String::new(),
+            url: String::new(),
+            closed_at: None,
+            updated_at: String::new(),
+            parent: None,
+            sub_issues: Vec::new(),
+        }
+    }
+
+    /// 三個 issue（#1 alpha、#2 beta、#3 gamma），選取在第一筆。
+    fn debounce_view() -> (GitHubView<'static>, std::sync::mpsc::Receiver<AppEvent>) {
+        let (tx, rx) = Sender::channel_for_test();
+        let data = GitHubData {
+            issues: vec![
+                debounce_issue(1, "alpha"),
+                debounce_issue(2, "beta"),
+                debounce_issue(3, "gamma"),
+            ],
+            ..Default::default()
+        };
+        let view = GitHubView::new(View::Default, data, tx);
+        (view, rx)
+    }
+
+    fn timeline_requests(rx: &std::sync::mpsc::Receiver<AppEvent>) -> Vec<u64> {
+        rx.try_iter()
+            .filter_map(|e| match e {
+                AppEvent::LoadGitHubTimeline { number, .. } => Some(number),
+                _ => None,
+            })
+            .collect()
+    }
+
+    fn press(view: &mut GitHubView<'_>, event: UserEvent) {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent};
+        view.handle_event(
+            UserEventWithCount::new(event, 1),
+            KeyEvent::from(KeyCode::Null),
+        );
+    }
+
+    #[test]
+    fn on_tick_sends_timeline_request_only_at_the_debounce_boundary() {
+        let (mut view, rx) = debounce_view();
+        let t0 = Instant::now();
+        view.schedule_timeline_for_selected(t0);
+
+        view.on_tick(t0 + TIMELINE_DEBOUNCE - Duration::from_millis(1));
+        assert!(timeline_requests(&rx).is_empty());
+
+        view.on_tick(t0 + TIMELINE_DEBOUNCE);
+        assert_eq!(timeline_requests(&rx), vec![1]);
+
+        // 送出後排程已清掉，之後的 tick 不會再送
+        view.on_tick(t0 + TIMELINE_DEBOUNCE * 2);
+        assert!(timeline_requests(&rx).is_empty());
+    }
+
+    #[test]
+    fn rapid_selection_changes_send_one_request_for_the_last_item() {
+        let (mut view, rx) = debounce_view();
+        let t0 = Instant::now();
+
+        press(&mut view, UserEvent::NavigateDown);
+        press(&mut view, UserEvent::NavigateDown);
+
+        view.on_tick(t0 + Duration::from_millis(100));
+        assert!(timeline_requests(&rx).is_empty(), "debounce 期間不該送");
+
+        view.on_tick(Instant::now() + TIMELINE_DEBOUNCE);
+        assert_eq!(timeline_requests(&rx), vec![3]);
+    }
+
+    #[test]
+    fn debounced_tick_skips_items_whose_timeline_is_already_requested() {
+        let (mut view, rx) = debounce_view();
+        view.timeline
+            .entry((GhItemKind::Issue, 1))
+            .or_default()
+            .state = TimelineLoad::Loaded;
+
+        let t0 = Instant::now();
+        view.schedule_timeline_for_selected(t0);
+        view.on_tick(t0 + TIMELINE_DEBOUNCE);
+
+        assert!(timeline_requests(&rx).is_empty());
+    }
+
+    /// 搜尋打字讓選到的項目換了、index 卻仍是 0——舊的 `(tab, index)`
+    /// 比對會漏掉，preview 就卡在 loading。
+    #[test]
+    fn typing_in_search_requests_timeline_for_the_newly_selected_item() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent};
+
+        let (mut view, rx) = debounce_view();
+        view.focus = GitHubFocus::Prompt;
+
+        view.handle_event(
+            UserEventWithCount::new(UserEvent::Unknown, 1),
+            KeyEvent::from(KeyCode::Char('g')),
+        );
+        assert_eq!(
+            view.selected_number_and_kind(),
+            Some((3, GhItemKind::Issue))
+        );
+
+        view.on_tick(Instant::now() + TIMELINE_DEBOUNCE);
+        assert_eq!(timeline_requests(&rx), vec![3]);
+    }
+
+    /// 帶快取資料重開 view（`open_github` → `new`）時，初始選取項目的
+    /// timeline 要在第一個 Tick 補送，不能卡在 loading 等使用者移動選取。
+    #[test]
+    fn reopen_with_cached_data_requests_timeline_on_first_tick() {
+        let (mut view, rx) = debounce_view();
+        assert!(timeline_requests(&rx).is_empty());
+
+        view.on_tick(Instant::now());
+
+        assert_eq!(timeline_requests(&rx), vec![1]);
+    }
+
+    #[test]
+    fn jump_to_issue_requests_timeline() {
+        let (mut view, rx) = debounce_view();
+
+        assert!(view.jump_to_issue(2));
+
+        assert_eq!(timeline_requests(&rx), vec![2]);
+    }
+
+    /// `update_data` 已立即送出首頁請求，之後到期的 debounce tick 不能再送第二次。
+    #[test]
+    fn expired_tick_after_immediate_request_does_not_duplicate() {
+        let (mut view, rx) = debounce_view();
+        let t0 = Instant::now();
+        view.schedule_timeline_for_selected(t0);
+
+        view.update_data(vec![debounce_issue(9, "new")], Vec::new(), None, None);
+        assert_eq!(timeline_requests(&rx), vec![9]);
+
+        view.on_tick(t0 + TIMELINE_DEBOUNCE);
+        assert!(timeline_requests(&rx).is_empty());
     }
 }
