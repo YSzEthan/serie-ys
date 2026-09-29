@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.5.1](https://github.com/YSzEthan/serie-ys/compare/v4.5.0...v4.5.1) (2026-09-29)
+
+
+### Performance
+
+* GitHub 視圖 timeline 請求加 debounce (#137) (#139) ([11129c3](https://github.com/YSzEthan/serie-ys/commit/11129c3a47e2d921e93dad29abd7063a937d2b6a))
+
 ## [4.5.0](https://github.com/YSzEthan/serie-ys/compare/v4.4.0...v4.5.0) (2026-09-28)
 
 
