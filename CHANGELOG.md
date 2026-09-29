@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.6.0](https://github.com/YSzEthan/serie-ys/compare/v4.5.1...v4.6.0) (2026-09-29)
+
+
+### Features
+
+* PR 預覽顯示 CI check 明細，刷新時補償捲動位移 (#138, #140) (#141) ([90ec19d](https://github.com/YSzEthan/serie-ys/commit/90ec19db2ade99a9e68fbaaa731ff87a4e859d9a))
+
 ## [4.5.1](https://github.com/YSzEthan/serie-ys/compare/v4.5.0...v4.5.1) (2026-09-29)
 
 
