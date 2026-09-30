@@ -1,6 +1,7 @@
 use std::{fmt, ops::Deref};
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+use rust_i18n::t;
 use rustc_hash::FxHashMap;
 use serde::{
     de::{Deserializer, MapAccess, Visitor},
@@ -175,8 +176,9 @@ impl<'de> Deserialize<'de> for KeyBind {
                     // `assign()` 只會找到第一筆、`keys_for_event` 會漏掉
                     // 第二筆的鍵，不變式當場破功，所以在這裡直接拒絕。
                     if bindings.iter().any(|(e, _)| *e == user_event) {
-                        let msg = format!(
-                            "{user_event:?} is declared more than once in this file (check for alias action names that map to the same event)"
+                        let msg = t!(
+                            "cli.keybind.duplicate_event",
+                            event = format!("{user_event:?}")
                         );
                         return Err(serde::de::Error::custom(msg));
                     }
@@ -186,14 +188,20 @@ impl<'de> Deserialize<'de> for KeyBind {
                         let key_event = match parse_key_event(&key_event_str) {
                             Ok(e) => e,
                             Err(s) => {
-                                let msg =
-                                    format!("{key_event_str:?} is not a valid key event: {s:}");
+                                let msg = t!(
+                                    "cli.keybind.invalid_key",
+                                    key = format!("{key_event_str:?}"),
+                                    reason = s
+                                );
                                 return Err(serde::de::Error::custom(msg));
                             }
                         };
                         if let Some(conflict_user_event) = owner.insert(key_event, user_event) {
-                            let msg = format!(
-                                "{key_event:?} map to multiple events: {user_event:?}, {conflict_user_event:?}"
+                            let msg = t!(
+                                "cli.keybind.multiple_events",
+                                key = format!("{key_event:?}"),
+                                event = format!("{user_event:?}"),
+                                other = format!("{conflict_user_event:?}")
                             );
                             return Err(serde::de::Error::custom(msg));
                         }
@@ -295,7 +303,7 @@ fn parse_key_code_with_modifiers(
             }
             KeyCode::Char(c)
         }
-        _ => return Err(format!("Unable to parse {raw}")),
+        _ => return Err(t!("cli.keybind.parse_failed", raw = raw).into_owned()),
     };
     Ok(KeyEvent::new(c, modifiers))
 }

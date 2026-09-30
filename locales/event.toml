@@ -1,0 +1,196 @@
+_version = 2
+
+[event.desc.force_quit]
+zh-TW = "強制離開"
+
+[event.desc.quit]
+zh-TW = "離開（按兩下）"
+
+[event.desc.help_toggle]
+zh-TW = "開啟／關閉說明"
+
+[event.desc.cancel]
+zh-TW = "取消"
+
+[event.desc.close]
+zh-TW = "關閉"
+
+[event.desc.navigate_up]
+zh-TW = "向上移動"
+
+[event.desc.navigate_down]
+zh-TW = "向下移動"
+
+[event.desc.navigate_right]
+zh-TW = "向右移動／顯示詳情"
+
+[event.desc.navigate_left]
+zh-TW = "向左移動／關閉詳情"
+
+[event.desc.select_up]
+zh-TW = "選取範圍向上擴展"
+
+[event.desc.select_down]
+zh-TW = "選取範圍向下擴展"
+
+[event.desc.go_to_top]
+zh-TW = "跳到頂端"
+
+[event.desc.go_to_bottom]
+zh-TW = "跳到底端"
+
+[event.desc.go_to_parent]
+zh-TW = "選擇 parent commit"
+
+[event.desc.go_to_child]
+zh-TW = "選擇 child commit"
+
+[event.desc.go_to_head]
+zh-TW = "回到 HEAD"
+
+[event.desc.scroll_up]
+zh-TW = "向上捲動"
+
+[event.desc.scroll_down]
+zh-TW = "向下捲動"
+
+[event.desc.page_up]
+zh-TW = "上一頁"
+
+[event.desc.page_down]
+zh-TW = "下一頁"
+
+[event.desc.half_page_up]
+zh-TW = "上半頁"
+
+[event.desc.half_page_down]
+zh-TW = "下半頁"
+
+[event.desc.go_to_next]
+zh-TW = "下一個符合項"
+
+[event.desc.go_to_previous]
+zh-TW = "上一個符合項"
+
+[event.desc.confirm]
+zh-TW = "確認"
+
+[event.desc.ref_list]
+zh-TW = "開啟／關閉 refs 清單"
+
+[event.desc.search]
+zh-TW = "開始搜尋"
+
+[event.desc.filter]
+zh-TW = "開始過濾"
+
+[event.desc.ignore_case_toggle]
+zh-TW = "切換大小寫忽略"
+
+[event.desc.fuzzy_toggle]
+zh-TW = "切換模糊比對"
+
+[event.desc.target_toggle]
+zh-TW = "切換比對欄位"
+
+[event.desc.refresh]
+zh-TW = "重新整理"
+
+[event.desc.short_copy]
+zh-TW = "複製 commit short hash"
+
+[event.desc.full_copy]
+zh-TW = "複製 commit subject"
+
+[event.desc.branch_copy]
+zh-TW = "複製 branch 名稱（優先 local）"
+
+[event.desc.full_branch_copy]
+zh-TW = "複製 remote branch 名稱"
+
+[event.desc.tag_copy]
+zh-TW = "複製 tag 名稱"
+
+[event.desc.create_tag]
+zh-TW = "在 commit 上建立 tag"
+
+[event.desc.delete_tag]
+zh-TW = "刪除 commit 上的 tag"
+
+[event.desc.delete_ref]
+zh-TW = "刪除 commit 上的 local branch"
+
+[event.desc.remote_refs_toggle]
+zh-TW = "切換 remote refs"
+
+[event.desc.git_hub_toggle]
+zh-TW = "開啟 GitHub issues/PRs"
+
+[event.desc.shell_toggle]
+zh-TW = "開啟命令列"
+
+[event.desc.task_list_toggle]
+zh-TW = "切換 task 清單"
+
+[event.desc.detail_pane_toggle]
+zh-TW = "切換詳情區塊"
+
+[event.desc.fetch]
+zh-TW = "fetch 所有 remote"
+
+[event.desc.checkout]
+zh-TW = "checkout 選取的 commit/ref"
+
+[event.desc.merge_pr]
+zh-TW = "合併 PR"
+
+[event.desc.toggle_issue_state]
+zh-TW = "切換 issue 開關狀態"
+
+[event.desc.toggle_pr_draft]
+zh-TW = "切換 PR draft 狀態"
+
+[event.desc.toggle_commit_log]
+zh-TW = "切換 commit log 顯示"
+
+[event.desc.check_update]
+zh-TW = "檢查更新"
+
+[event.related.parent]
+zh-TW = "父項"
+
+[event.related.sub]
+zh-TW = "子項"
+
+[event.related.linked]
+zh-TW = "關聯"
+
+[event.copy_label.local]
+zh-TW = "Branch 名稱"
+
+[event.copy_label.remote]
+zh-TW = "Remote branch 名稱"
+
+[event.copy_label.tag]
+zh-TW = "Tag 名稱"
+
+[event.pick_prompt.local]
+zh-TW = "選擇 branch: "
+
+[event.pick_prompt.remote]
+zh-TW = "選擇 remote branch: "
+
+[event.pick_prompt.tag]
+zh-TW = "選擇 tag: "
+
+[event.checkout_prompt.branch]
+zh-TW = "Checkout branch: "
+
+[event.checkout_prompt.tag]
+zh-TW = "Checkout tag: "
+
+[event.err.invalid_user_command]
+zh-TW = "user_command_n 格式不正確：%{value}"
+
+[event.err.unknown_user_event]
+zh-TW = "未知的 user event：%{value}"

@@ -12,6 +12,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use rust_i18n::t;
+
 use ratatui::crossterm::{
     cursor::MoveToColumn,
     execute,
@@ -68,7 +70,11 @@ impl Drop for StartupProgress {
 
 /// 一位小數：整數秒的話第一秒會一直停在「0 秒」，看起來像卡住。
 fn render(elapsed: Duration) -> String {
-    format!("載入中… {:.1} 秒", elapsed.as_secs_f64())
+    t!(
+        "cli.startup.loading",
+        secs = format!("{:.1}", elapsed.as_secs_f64())
+    )
+    .into_owned()
 }
 
 #[cfg(test)]

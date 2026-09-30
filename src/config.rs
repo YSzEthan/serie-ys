@@ -7,6 +7,7 @@ use std::{
 };
 
 use garde::Validate;
+use rust_i18n::t;
 use rustc_hash::FxHashMap;
 use serde::Deserialize;
 use smart_default::SmartDefault;
@@ -28,10 +29,12 @@ pub fn load() -> Result<(CoreConfig, UiConfig, ColorTheme, Option<KeyBind>)> {
     let config = match config_file_path_from_env() {
         Some(user_path) => {
             if !user_path.exists() {
-                let msg = format!(
-                    "Config file specified by ${CONFIG_FILE_ENV_NAME} environment variable not found: {}",
-                    user_path.display()
-                );
+                let msg = t!(
+                    "cli.config.env_file_missing",
+                    env = CONFIG_FILE_ENV_NAME,
+                    path = user_path.display()
+                )
+                .into_owned();
                 return Err(msg.into());
             }
             read_config_from_path(&user_path)
@@ -86,12 +89,26 @@ pub fn ensure_config_file() {
         Ok(mut file) => {
             const DEFAULT_CONFIG: &str = include_str!("../assets/default-config.toml");
             if let Err(e) = file.write_all(DEFAULT_CONFIG.as_bytes()) {
-                eprintln!("寫入預設設定檔失敗（{}）：{e}", path.display());
+                eprintln!(
+                    "{}",
+                    t!(
+                        "cli.config.write_default_failed",
+                        path = path.display(),
+                        error = e
+                    )
+                );
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(e) => {
-            eprintln!("無法建立預設設定檔（{}）：{e}", path.display());
+            eprintln!(
+                "{}",
+                t!(
+                    "cli.config.create_default_failed",
+                    path = path.display(),
+                    error = e
+                )
+            );
         }
     }
 }
@@ -326,18 +343,14 @@ impl<'de> Deserialize<'de> for OptionalCoreUserCommandConfig {
                     if let Some(suffix) = key.strip_prefix("commands_") {
                         let command_key = suffix.to_string();
                         if command_key.is_empty() {
-                            return Err(V::Error::custom(
-                                "command key cannot be empty, like `commands_`",
-                            ));
+                            return Err(V::Error::custom(t!("cli.config.command_key_empty")));
                         }
                         let command_value: UserCommand = map.next_value()?;
                         commands.insert(command_key, command_value);
                     } else if key == "tab_width" {
                         tab_width = Some(map.next_value()?);
                     } else if key == "commands" {
-                        return Err(V::Error::custom(
-                            "invalid key `commands`, use `commands_n` format instead",
-                        ));
+                        return Err(V::Error::custom(t!("cli.config.commands_key_invalid")));
                     } else {
                         let _: serde::de::IgnoredAny = map.next_value()?;
                     }
@@ -379,9 +392,7 @@ fn validate_user_command_refresh(
 ) -> impl FnOnce(&bool, &()) -> garde::Result + '_ {
     move |refresh, _| {
         if matches!(command_type, UserCommandType::Inline) && *refresh {
-            return Err(garde::Error::new(
-                "refresh cannot be true for inline command",
-            ));
+            return Err(garde::Error::new(t!("cli.config.inline_refresh")));
         }
         Ok(())
     }

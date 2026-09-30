@@ -1,0 +1,310 @@
+_version = 2
+
+[wizard.value.auto]
+zh-TW = "自動"
+
+[wizard.value.on]
+zh-TW = "開啟"
+
+[wizard.value.off]
+zh-TW = "關閉"
+
+[wizard.order.chrono]
+zh-TW = "時間序"
+
+[wizard.order.topo]
+zh-TW = "拓撲序"
+
+[wizard.graph_width.double]
+zh-TW = "寬版"
+
+[wizard.graph_width.single]
+zh-TW = "窄版"
+
+[wizard.graph_style.rounded]
+zh-TW = "圓角"
+
+[wizard.graph_style.angular]
+zh-TW = "直角"
+
+[wizard.initial_selection.latest]
+zh-TW = "最新"
+
+[wizard.update_mode.check]
+zh-TW = "檢查後詢問"
+
+[wizard.update_mode.auto]
+zh-TW = "自動安裝"
+
+[wizard.fetch_prune.off]
+zh-TW = "不加（依 git 設定）"
+
+[wizard.fetch_prune.on]
+zh-TW = "加上 --prune"
+
+[wizard.cycle.help.order]
+zh-TW = "Commit 排序演算法"
+
+[wizard.cycle.help.graph_width]
+zh-TW = "Commit 圖形格子寬度"
+
+[wizard.cycle.help.compact]
+zh-TW = "緊湊模式"
+
+[wizard.cycle.help.graph_style]
+zh-TW = "Commit 圖形邊線風格"
+
+[wizard.cycle.help.initial_selection]
+zh-TW = "初始選取的 commit"
+
+[wizard.cycle.help.update_mode]
+zh-TW = "自動更新檢查模式"
+
+[wizard.cycle.help.auto_restart]
+zh-TW = "更新後自動重啟／開啟新版"
+
+[wizard.cycle.help.release_notes]
+zh-TW = "更新後跳出 release notes"
+
+[wizard.cycle.help.fetch_prune]
+zh-TW = "fetch 時加上 --prune（手動與自動共用）"
+
+[wizard.cycle.help.auto_fetch]
+zh-TW = "背景自動偵測 remote 並 fetch"
+
+[wizard.number.help.max_count]
+zh-TW = "要渲染的最大 commit 數量"
+
+[wizard.number.help.update_interval]
+zh-TW = "自動更新的檢查間隔"
+
+[wizard.number.help.auto_fetch_interval]
+zh-TW = "自動 fetch 的輪詢間隔"
+
+[wizard.number.help.list_scrolloff]
+zh-TW = "commit 清單游標上下保留的列數"
+
+[wizard.number.help.list_graph_edge_max_rows]
+zh-TW = "超寬 graph 的長線截斷列數"
+
+[wizard.number.help.list_graph_max_width_percent]
+zh-TW = "超寬 graph 最多佔清單寬度的百分比"
+
+[wizard.number.title.update_interval]
+zh-TW = "自動更新的檢查間隔（小時，1–48）"
+
+[wizard.number.title.auto_fetch_interval]
+zh-TW = "自動 fetch 的輪詢間隔（秒，30–3600）"
+
+[wizard.number.title.list_scrolloff]
+zh-TW = "游標與清單上下緣保留的列數（實際不超過清單高度一半）"
+
+[wizard.number.title.list_graph_edge_max_rows]
+zh-TW = "線長超過幾列就截斷成 ↓／↑（最小 3，只在圖寬超過 64 時啟用）"
+
+[wizard.number.title.list_graph_max_width_percent]
+zh-TW = "超寬 graph 最多佔清單寬度的百分比（10–100）"
+
+[wizard.number.unlimited]
+zh-TW = "不限制"
+
+[wizard.number.hours]
+zh-TW = "%{n} 小時"
+
+[wizard.number.seconds]
+zh-TW = "%{n} 秒"
+
+[wizard.number.rows]
+zh-TW = "%{n} 列"
+
+[wizard.dialog.help.path]
+zh-TW = "git 倉庫路徑（僅本次，不存檔）"
+
+[wizard.dialog.help.color]
+zh-TW = "介面配色（43 色）"
+
+[wizard.dialog.help.keybind]
+zh-TW = "快捷鍵綁定"
+
+[wizard.editor.untouched]
+zh-TW = "未修改"
+
+[wizard.editor.touched]
+zh-TW = "%{n} 項已改"
+
+[wizard.top.launch]
+zh-TW = "▶ 啟動 ysgit"
+
+[wizard.top.update_note]
+zh-TW = "（目前被 YSGIT_NO_UPDATE_CHECK 壓成 off）"
+
+[wizard.top.row]
+zh-TW = "%{prefix}%{flags}  %{help}（目前：%{current}）%{note}"
+
+[wizard.hint.select]
+zh-TW = "選擇"
+
+[wizard.hint.switch_option]
+zh-TW = "切換選項"
+
+[wizard.hint.open_launch]
+zh-TW = "開啟/啟動"
+
+[wizard.hint.abort]
+zh-TW = "放棄（不啟動、不存檔）"
+
+[wizard.error.write_failed]
+zh-TW = "寫入設定檔失敗：%{error}"
+
+[wizard.error.syntax]
+zh-TW = "設定檔語法錯誤，這次改動不會存檔：%{error}"
+
+[wizard.error.not_table]
+zh-TW = "設定檔的 `%{table}` 不是表格，這次改動不會存檔"
+
+[wizard.path.hint.up]
+zh-TW = "上層目錄"
+
+[wizard.path.hint.enter]
+zh-TW = "進入子目錄"
+
+[wizard.path.hint.select_current]
+zh-TW = "選取目前目錄"
+
+[wizard.path.no_subdirs]
+zh-TW = "（沒有子目錄）"
+
+[wizard.keybind.rejected]
+zh-TW = "這個按鍵無法寫進設定檔"
+
+[wizard.keybind.user_command_desc]
+zh-TW = "執行 user command：%{name}"
+
+[wizard.keybind.user_command_missing]
+zh-TW = "（設定檔裡找不到這個 user command）"
+
+[wizard.keybind.exit_warning]
+zh-TW = "quit 與 force_quit 都沒有綁定鍵，套用後將無法用快捷鍵離開程式"
+
+[wizard.keybind.unbound]
+zh-TW = "(未綁定)"
+
+[wizard.keybind.list_title]
+zh-TW = " 快捷鍵 [%{current}/%{total}] "
+
+[wizard.keybind.config_fallback]
+zh-TW = "設定檔載入失敗，以下是內建預設"
+
+[wizard.keybind.hint.replace]
+zh-TW = "取代"
+
+[wizard.keybind.hint.append]
+zh-TW = "追加"
+
+[wizard.keybind.hint.disable]
+zh-TW = "停用"
+
+[wizard.keybind.hint.reset]
+zh-TW = "還原預設"
+
+[wizard.keybind.hint.ctrl_c]
+zh-TW = "取消（因此無法在此綁定 Ctrl-C）"
+
+[wizard.keybind.mode.replace]
+zh-TW = "取代全部綁定"
+
+[wizard.keybind.mode.append]
+zh-TW = "追加一顆鍵"
+
+[wizard.keybind.current_unbound]
+zh-TW = "目前：（未綁定）"
+
+[wizard.keybind.current]
+zh-TW = "目前：%{keys}"
+
+[wizard.keybind.waiting]
+zh-TW = "請按下要綁定的鍵…"
+
+[wizard.keybind.conflict]
+zh-TW = "%{key_str} 目前綁給 %{victim_name}（%{victim_desc}）。y = 搶過來，其他鍵 = 取消"
+
+[wizard.keybind.capture_title]
+zh-TW = " 綁定 %{name} "
+
+[wizard.color.hex_need_6]
+zh-TW = "HEX 需要 6 碼，目前 %{len} 碼"
+
+[wizard.color.index_range]
+zh-TW = "索引需要 0-255 的數字"
+
+[wizard.color.list_title]
+zh-TW = " 顏色 [%{current}/%{total}] "
+
+[wizard.color.config_fallback]
+zh-TW = "設定檔載入失敗，以下是內建預設"
+
+[wizard.color.enter_to_edit]
+zh-TW = "Enter 進入編輯"
+
+[wizard.color.preview_title]
+zh-TW = " 預覽 "
+
+[wizard.color.hint.page]
+zh-TW = "翻頁"
+
+[wizard.color.hint.edit]
+zh-TW = "編輯"
+
+[wizard.color.hint.reset]
+zh-TW = "還原"
+
+[wizard.color.hint.keep_one]
+zh-TW = "至少保留 1 色"
+
+[wizard.color.hint.delete]
+zh-TW = "刪除"
+
+[wizard.color.hint.add]
+zh-TW = "新增"
+
+[wizard.color.hint.switch_mode]
+zh-TW = "切換表示法"
+
+[wizard.color.branches_row]
+zh-TW = "%{marker}[color.graph].branches  (%{count} 色)"
+
+[wizard.color.branch_hex_need]
+zh-TW = "需要 6 或 8 碼 hex，目前 %{len} 碼"
+
+[wizard.color.preview.list_header]
+zh-TW = "[Commit 列表]"
+
+[wizard.color.preview.detail_header]
+zh-TW = "[詳情]"
+
+[wizard.color.preview.status_header]
+zh-TW = "[狀態列]"
+
+[wizard.color.preview.subject_feat]
+zh-TW = "feat: 新增功能 "
+
+[wizard.color.preview.subject_fix]
+zh-TW = "fix: 修正邊界條件"
+
+[wizard.color.preview.date]
+zh-TW = "2 天前"
+
+[wizard.color.preview.author]
+zh-TW = "作者: "
+
+[wizard.color.preview.copied]
+zh-TW = "已複製 commit hash"
+
+[wizard.color.mode.named]
+zh-TW = "[色名]  256色   HEX"
+
+[wizard.color.mode.indexed]
+zh-TW = " 色名  [256色]  HEX"
+
+[wizard.color.mode.hex]
+zh-TW = " 色名   256色  [HEX]"

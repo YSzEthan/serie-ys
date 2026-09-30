@@ -38,6 +38,7 @@ use clap::{CommandFactory, Parser, ValueEnum};
 use git::FetchPrune;
 use graph::Graph;
 use reload::Reloader;
+use rust_i18n::t;
 use serde::Deserialize;
 use update::{AutoRestart, ReleaseNotes, UpdateMode};
 
@@ -533,7 +534,7 @@ pub fn run() -> Result<()> {
     if args.whats_new {
         match update::current_release_notes() {
             Some(notes) => println!("{notes}"),
-            None => println!("這個版本沒有對應的 CHANGELOG 區塊。"),
+            None => println!("{}", t!("cli.whats_new.none")),
         }
         return Ok(());
     }
@@ -659,7 +660,7 @@ pub fn run() -> Result<()> {
     // 子行程不會繼承到會造成問題的殘留狀態。
     if env::var_os(EXE_REPLACED_NOTICE_ENV).is_some() {
         ec.sender().send(event::AppEvent::ShowNoticeOverlay {
-            message: "Applied the version already on disk".to_string(),
+            message: t!("cli.notice.applied_on_disk").into_owned(),
         });
     }
     // 清掃上次啟動可能留下的自我更新殘檔——跟這次的 `mode` 無關（上次啟動
@@ -711,8 +712,7 @@ pub fn run() -> Result<()> {
         && !git::has_commit_graph(Path::new(&args.path))
     {
         ec.sender().send(event::AppEvent::NotifyInfo(
-            "No commit-graph found. Run `git commit-graph write --reachable` to speed up loading"
-                .to_string(),
+            t!("cli.notice.no_commit_graph").into_owned(),
         ));
     }
     // 排第一次 auto-fetch 輪詢。`mode = Off` 就不排；放在 `Repository::load`
@@ -911,7 +911,7 @@ fn run_self_update(args: &Args) -> Result<()> {
     let core_update = match config::load() {
         Ok((core, ..)) => core.update,
         Err(e) => {
-            eprintln!("設定檔載入失敗（{e}），本次 -U 使用預設更新設定");
+            eprintln!("{}", t!("cli.update.config_load_failed", error = e));
             config::CoreConfig::default().update
         }
     };
@@ -934,23 +934,27 @@ fn run_self_update(args: &Args) -> Result<()> {
     update::mark_checked();
 
     let Some(tag) = latest else {
-        println!("Already up to date (v{})", env!("CARGO_PKG_VERSION"));
+        println!(
+            "{}",
+            t!("cli.update.up_to_date", version = env!("CARGO_PKG_VERSION"))
+        );
         return Ok(());
     };
 
     let interactive = std::io::stdin().is_terminal() && std::io::stdout().is_terminal();
     if interactive
         && settings.mode != UpdateMode::Auto
-        && !confirm(&format!(
-            "v{} → {tag}  Update? [Y/n]",
-            env!("CARGO_PKG_VERSION")
+        && !confirm(&t!(
+            "cli.update.confirm",
+            current = env!("CARGO_PKG_VERSION"),
+            tag = tag
         ))
     {
-        println!("Update cancelled.");
+        println!("{}", t!("cli.update.cancelled"));
         return Ok(());
     }
 
-    println!("Updating to {tag}...");
+    println!("{}", t!("cli.update.updating", tag = tag));
     let exe = update::download_and_replace(&tag)?;
 
     // `git::is_inside_work_tree` 內部是 `Command::current_dir`，吃相對路徑就
@@ -960,15 +964,15 @@ fn run_self_update(args: &Args) -> Result<()> {
     // 環境（`interactive` 為 false）不會白 spawn 這個 git 子行程。
     if interactive
         && git::is_inside_work_tree(Path::new(&args.path))
-        && (settings.auto_restart || confirm("Launch ysgit now? [Y/n]"))
+        && (settings.auto_restart || confirm(&t!("cli.update.confirm_launch")))
     {
         if let Err(e) = update::exec_replacing_self(&exe, &args.to_argv()) {
-            println!("Updated to {tag}, but restart failed: {e}");
-            println!("Restart ysgit to use the new version.");
+            println!("{}", t!("cli.update.restart_failed", tag = tag, error = e));
+            println!("{}", t!("cli.update.restart_manually"));
         }
         // exec 成功時 process image 已被換掉，不會執行到這裡。
     } else {
-        println!("Updated to {tag}. Restart ysgit to use the new version.");
+        println!("{}", t!("cli.update.updated", tag = tag));
     }
     Ok(())
 }

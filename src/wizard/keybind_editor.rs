@@ -9,6 +9,7 @@ use ratatui::{
     DefaultTerminal, Frame,
 };
 
+use rust_i18n::t;
 use unicode_width::UnicodeWidthStr;
 
 use crate::{
@@ -35,7 +36,7 @@ enum CaptureState {
     Waiting,
     /// `key_event_to_config_string` 回 `None`：這顆鍵寫不進設定檔，留在
     /// 捕捉畫面顯示原因，不返回清單。
-    Rejected(&'static str),
+    Rejected(Cow<'static, str>),
     /// 捕捉到的鍵目前歸別的 action。`y` 搶過來，其他鍵取消整次捕捉。
     Conflict {
         key: KeyEvent,
@@ -93,10 +94,10 @@ fn build_actions(user_commands: &BTreeMap<usize, String>) -> Vec<UserEvent> {
 fn describe(action: UserEvent, user_commands: &BTreeMap<usize, String>) -> Cow<'static, str> {
     match action {
         UserEvent::UserCommand(n) => match user_commands.get(&n) {
-            Some(name) => Cow::Owned(format!("執行 user command：{name}")),
-            None => Cow::Borrowed("（設定檔裡找不到這個 user command）"),
+            Some(name) => t!("wizard.keybind.user_command_desc", name = name),
+            None => t!("wizard.keybind.user_command_missing"),
         },
-        _ => Cow::Borrowed(action.description().unwrap_or_default()),
+        _ => action.description().unwrap_or_default(),
     }
 }
 
@@ -244,7 +245,7 @@ impl KeyBindEditorState {
 
         if key_event_to_config_string(normalized).is_none() {
             if let Some(c) = &mut self.capture {
-                c.state = CaptureState::Rejected("這個按鍵無法寫進設定檔");
+                c.state = CaptureState::Rejected(t!("wizard.keybind.rejected"));
             }
             return Flow::Continue;
         }
@@ -343,11 +344,10 @@ impl KeyBindEditorState {
         }
     }
 
-    fn exit_warning(&self, effective: &KeyBind) -> Option<&'static str> {
+    fn exit_warning(&self, effective: &KeyBind) -> Option<Cow<'static, str>> {
         let quit_disabled = effective.key_events(UserEvent::Quit).is_empty();
         let force_quit_disabled = effective.key_events(UserEvent::ForceQuit).is_empty();
-        (quit_disabled && force_quit_disabled)
-            .then_some("quit 與 force_quit 都沒有綁定鍵，套用後將無法用快捷鍵離開程式")
+        (quit_disabled && force_quit_disabled).then(|| t!("wizard.keybind.exit_warning"))
     }
 
     pub fn render(&mut self, f: &mut Frame, area: Rect, chrome: &ColorTheme) {
@@ -372,7 +372,7 @@ impl KeyBindEditorState {
                 let config_name = action.config_name().unwrap_or_default();
                 let keys = effective.key_events(action);
                 let keys_display = if keys.is_empty() {
-                    "(未綁定)".to_string()
+                    t!("wizard.keybind.unbound").into_owned()
                 } else {
                     keys.iter()
                         .filter_map(|k| key_event_to_config_string(*k))
@@ -394,7 +394,11 @@ impl KeyBindEditorState {
 
         let list = super::styled_list(items, chrome).block(
             Block::default()
-                .title(format!(" 快捷鍵 [{}/{}] ", selected + 1, total))
+                .title(t!(
+                    "wizard.keybind.list_title",
+                    current = selected + 1,
+                    total = total
+                ))
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(chrome.divider_fg)),
         );
@@ -403,7 +407,7 @@ impl KeyBindEditorState {
         if self.config_is_fallback {
             f.render_widget(
                 Paragraph::new(
-                    Line::raw("設定檔載入失敗，以下是內建預設").fg(chrome.status_warn_fg),
+                    Line::raw(t!("wizard.keybind.config_fallback")).fg(chrome.status_warn_fg),
                 ),
                 warn_area,
             );
@@ -417,12 +421,12 @@ impl KeyBindEditorState {
         let hint = crate::widget::hint_line(
             chrome,
             &[
-                ("↑↓/kj".into(), "移動"),
-                ("Enter/l".into(), "取代"),
-                ("a".into(), "追加"),
-                ("x".into(), "停用"),
-                ("r".into(), "還原預設"),
-                ("Esc/h".into(), "返回"),
+                ("↑↓/kj".into(), &*t!("common.hint.move")),
+                ("Enter/l".into(), &*t!("wizard.keybind.hint.replace")),
+                ("a".into(), &*t!("wizard.keybind.hint.append")),
+                ("x".into(), &*t!("wizard.keybind.hint.disable")),
+                ("r".into(), &*t!("wizard.keybind.hint.reset")),
+                ("Esc/h".into(), &*t!("common.hint.back")),
             ],
             chrome.help_key_fg,
         );
@@ -444,30 +448,36 @@ fn render_capture_dialog(
 ) {
     let config_name = capture.target.config_name().unwrap_or_default();
     let mode_label = match capture.mode {
-        Mode::Replace => "取代全部綁定",
-        Mode::Append => "追加一顆鍵",
+        Mode::Replace => t!("wizard.keybind.mode.replace"),
+        Mode::Append => t!("wizard.keybind.mode.append"),
     };
     let current = effective.keys_for_event(capture.target).join(", ");
     let current_line = if current.is_empty() {
-        "目前：（未綁定）".to_string()
+        t!("wizard.keybind.current_unbound").into_owned()
     } else {
-        format!("目前：{current}")
+        t!("wizard.keybind.current", keys = current).into_owned()
     };
 
     let message = match &capture.state {
-        CaptureState::Waiting => "請按下要綁定的鍵…".to_string(),
-        CaptureState::Rejected(msg) => (*msg).to_string(),
+        CaptureState::Waiting => t!("wizard.keybind.waiting").into_owned(),
+        CaptureState::Rejected(msg) => msg.to_string(),
         CaptureState::Conflict { key, victim } => {
             let key_str = key_event_to_config_string(*key).unwrap_or_default();
             let victim_name = victim.config_name().unwrap_or_default();
             let victim_desc = describe(*victim, user_commands);
-            format!("{key_str} 目前綁給 {victim_name}（{victim_desc}）。y = 搶過來，其他鍵 = 取消")
+            t!(
+                "wizard.keybind.conflict",
+                key_str = key_str,
+                victim_name = victim_name,
+                victim_desc = victim_desc
+            )
+            .into_owned()
         }
     };
 
     let hint = crate::widget::hint_line(
         chrome,
-        &[("Ctrl-C".into(), "取消（因此無法在此綁定 Ctrl-C）")],
+        &[("Ctrl-C".into(), &*t!("wizard.keybind.hint.ctrl_c"))],
         chrome.help_key_fg,
     );
 
@@ -486,7 +496,7 @@ fn render_capture_dialog(
 
     f.render_widget(Clear, dialog_area);
     let block = Block::default()
-        .title(format!(" 綁定 {config_name} "))
+        .title(t!("wizard.keybind.capture_title", name = config_name))
         .borders(Borders::ALL)
         .border_style(Style::default().fg(chrome.divider_fg))
         .style(Style::default().bg(chrome.bg).fg(chrome.fg));

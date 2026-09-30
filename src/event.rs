@@ -1,4 +1,5 @@
 use std::{
+    borrow::Cow,
     ffi::OsStr,
     fmt::{self, Debug, Formatter},
     path::{Component, Path, PathBuf},
@@ -11,6 +12,7 @@ use std::{
 };
 
 use ratatui::crossterm::event::KeyEvent;
+use rust_i18n::t;
 use rustc_hash::FxHashSet;
 use serde::{
     de::{self, Deserializer, Visitor},
@@ -375,11 +377,11 @@ pub enum RelatedGroup {
 }
 
 impl RelatedGroup {
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> Cow<'static, str> {
         match self {
-            RelatedGroup::Parent => "Parent",
-            RelatedGroup::Sub => "Sub",
-            RelatedGroup::Linked => "Linked",
+            RelatedGroup::Parent => t!("event.related.parent"),
+            RelatedGroup::Sub => t!("event.related.sub"),
+            RelatedGroup::Linked => t!("event.related.linked"),
         }
     }
 }
@@ -399,19 +401,19 @@ pub enum RefCopyKind {
 }
 
 impl RefCopyKind {
-    pub fn copy_label(self) -> &'static str {
+    pub fn copy_label(self) -> Cow<'static, str> {
         match self {
-            RefCopyKind::Local => "Branch Name",
-            RefCopyKind::Remote => "Remote Branch Name",
-            RefCopyKind::Tag => "Tag Name",
+            RefCopyKind::Local => t!("event.copy_label.local"),
+            RefCopyKind::Remote => t!("event.copy_label.remote"),
+            RefCopyKind::Tag => t!("event.copy_label.tag"),
         }
     }
 
-    pub fn picker_prompt(self) -> &'static str {
+    pub fn picker_prompt(self) -> Cow<'static, str> {
         match self {
-            RefCopyKind::Local => "Pick branch: ",
-            RefCopyKind::Remote => "Pick remote branch: ",
-            RefCopyKind::Tag => "Pick tag: ",
+            RefCopyKind::Local => t!("event.pick_prompt.local"),
+            RefCopyKind::Remote => t!("event.pick_prompt.remote"),
+            RefCopyKind::Tag => t!("event.pick_prompt.tag"),
         }
     }
 }
@@ -423,10 +425,10 @@ pub enum CheckoutPickKind {
 }
 
 impl CheckoutPickKind {
-    pub fn picker_prompt(self) -> &'static str {
+    pub fn picker_prompt(self) -> Cow<'static, str> {
         match self {
-            CheckoutPickKind::Branch => "Checkout branch: ",
-            CheckoutPickKind::Tag => "Checkout tag: ",
+            CheckoutPickKind::Branch => t!("event.checkout_prompt.branch"),
+            CheckoutPickKind::Tag => t!("event.checkout_prompt.tag"),
         }
     }
 }
@@ -1157,61 +1159,61 @@ impl UserEvent {
     /// 是「向左移動」），這裡要的是跟畫面無關、獨立成立的單一描述。窮盡
     /// match：新增事件時這裡不編譯，就不會漏掉。`UserCommand(n)` 沒有固定
     /// 文字可寫（名稱要查設定檔），交給呼叫端另外組。
-    pub fn description(self) -> Option<&'static str> {
-        let s: &'static str = match self {
-            UserEvent::ForceQuit => "強制離開",
-            UserEvent::Quit => "離開（按兩下）",
-            UserEvent::HelpToggle => "開啟／關閉說明",
-            UserEvent::Cancel => "取消",
-            UserEvent::Close => "關閉",
-            UserEvent::NavigateUp => "向上移動",
-            UserEvent::NavigateDown => "向下移動",
-            UserEvent::NavigateRight => "向右移動／顯示詳情",
-            UserEvent::NavigateLeft => "向左移動／關閉詳情",
-            UserEvent::SelectUp => "選取範圍向上擴展",
-            UserEvent::SelectDown => "選取範圍向下擴展",
-            UserEvent::GoToTop => "跳到頂端",
-            UserEvent::GoToBottom => "跳到底端",
-            UserEvent::GoToParent => "選擇 parent commit",
-            UserEvent::GoToChild => "選擇 child commit",
-            UserEvent::GoToHead => "回到 HEAD",
-            UserEvent::ScrollUp => "向上捲動",
-            UserEvent::ScrollDown => "向下捲動",
-            UserEvent::PageUp => "上一頁",
-            UserEvent::PageDown => "下一頁",
-            UserEvent::HalfPageUp => "上半頁",
-            UserEvent::HalfPageDown => "下半頁",
-            UserEvent::GoToNext => "下一個符合項",
-            UserEvent::GoToPrevious => "上一個符合項",
-            UserEvent::Confirm => "確認",
-            UserEvent::RefList => "開啟／關閉 refs 清單",
-            UserEvent::Search => "開始搜尋",
-            UserEvent::Filter => "開始過濾",
+    pub fn description(self) -> Option<Cow<'static, str>> {
+        let s = match self {
+            UserEvent::ForceQuit => t!("event.desc.force_quit"),
+            UserEvent::Quit => t!("event.desc.quit"),
+            UserEvent::HelpToggle => t!("event.desc.help_toggle"),
+            UserEvent::Cancel => t!("event.desc.cancel"),
+            UserEvent::Close => t!("event.desc.close"),
+            UserEvent::NavigateUp => t!("event.desc.navigate_up"),
+            UserEvent::NavigateDown => t!("event.desc.navigate_down"),
+            UserEvent::NavigateRight => t!("event.desc.navigate_right"),
+            UserEvent::NavigateLeft => t!("event.desc.navigate_left"),
+            UserEvent::SelectUp => t!("event.desc.select_up"),
+            UserEvent::SelectDown => t!("event.desc.select_down"),
+            UserEvent::GoToTop => t!("event.desc.go_to_top"),
+            UserEvent::GoToBottom => t!("event.desc.go_to_bottom"),
+            UserEvent::GoToParent => t!("event.desc.go_to_parent"),
+            UserEvent::GoToChild => t!("event.desc.go_to_child"),
+            UserEvent::GoToHead => t!("event.desc.go_to_head"),
+            UserEvent::ScrollUp => t!("event.desc.scroll_up"),
+            UserEvent::ScrollDown => t!("event.desc.scroll_down"),
+            UserEvent::PageUp => t!("event.desc.page_up"),
+            UserEvent::PageDown => t!("event.desc.page_down"),
+            UserEvent::HalfPageUp => t!("event.desc.half_page_up"),
+            UserEvent::HalfPageDown => t!("event.desc.half_page_down"),
+            UserEvent::GoToNext => t!("event.desc.go_to_next"),
+            UserEvent::GoToPrevious => t!("event.desc.go_to_previous"),
+            UserEvent::Confirm => t!("event.desc.confirm"),
+            UserEvent::RefList => t!("event.desc.ref_list"),
+            UserEvent::Search => t!("event.desc.search"),
+            UserEvent::Filter => t!("event.desc.filter"),
             UserEvent::UserCommand(_) => return None,
-            UserEvent::IgnoreCaseToggle => "切換大小寫忽略",
-            UserEvent::FuzzyToggle => "切換模糊比對",
-            UserEvent::TargetToggle => "切換比對欄位",
-            UserEvent::Refresh => "重新整理",
-            UserEvent::ShortCopy => "複製 commit short hash",
-            UserEvent::FullCopy => "複製 commit subject",
-            UserEvent::BranchCopy => "複製 branch 名稱（優先 local）",
-            UserEvent::FullBranchCopy => "複製 remote branch 名稱",
-            UserEvent::TagCopy => "複製 tag 名稱",
-            UserEvent::CreateTag => "在 commit 上建立 tag",
-            UserEvent::DeleteTag => "刪除 commit 上的 tag",
-            UserEvent::DeleteRef => "刪除 commit 上的 local branch",
-            UserEvent::RemoteRefsToggle => "切換 remote refs",
-            UserEvent::GitHubToggle => "開啟 GitHub issues/PRs",
-            UserEvent::ShellToggle => "開啟命令列",
-            UserEvent::TaskListToggle => "切換 task 清單",
-            UserEvent::DetailPaneToggle => "切換詳情區塊",
-            UserEvent::Fetch => "fetch 所有 remote",
-            UserEvent::Checkout => "checkout 選取的 commit/ref",
-            UserEvent::MergePr => "合併 PR",
-            UserEvent::ToggleIssueState => "切換 issue 開關狀態",
-            UserEvent::TogglePrDraft => "切換 PR draft 狀態",
-            UserEvent::ToggleCommitLog => "切換 commit log 顯示",
-            UserEvent::CheckUpdate => "檢查更新",
+            UserEvent::IgnoreCaseToggle => t!("event.desc.ignore_case_toggle"),
+            UserEvent::FuzzyToggle => t!("event.desc.fuzzy_toggle"),
+            UserEvent::TargetToggle => t!("event.desc.target_toggle"),
+            UserEvent::Refresh => t!("event.desc.refresh"),
+            UserEvent::ShortCopy => t!("event.desc.short_copy"),
+            UserEvent::FullCopy => t!("event.desc.full_copy"),
+            UserEvent::BranchCopy => t!("event.desc.branch_copy"),
+            UserEvent::FullBranchCopy => t!("event.desc.full_branch_copy"),
+            UserEvent::TagCopy => t!("event.desc.tag_copy"),
+            UserEvent::CreateTag => t!("event.desc.create_tag"),
+            UserEvent::DeleteTag => t!("event.desc.delete_tag"),
+            UserEvent::DeleteRef => t!("event.desc.delete_ref"),
+            UserEvent::RemoteRefsToggle => t!("event.desc.remote_refs_toggle"),
+            UserEvent::GitHubToggle => t!("event.desc.git_hub_toggle"),
+            UserEvent::ShellToggle => t!("event.desc.shell_toggle"),
+            UserEvent::TaskListToggle => t!("event.desc.task_list_toggle"),
+            UserEvent::DetailPaneToggle => t!("event.desc.detail_pane_toggle"),
+            UserEvent::Fetch => t!("event.desc.fetch"),
+            UserEvent::Checkout => t!("event.desc.checkout"),
+            UserEvent::MergePr => t!("event.desc.merge_pr"),
+            UserEvent::ToggleIssueState => t!("event.desc.toggle_issue_state"),
+            UserEvent::TogglePrDraft => t!("event.desc.toggle_pr_draft"),
+            UserEvent::ToggleCommitLog => t!("event.desc.toggle_commit_log"),
+            UserEvent::CheckUpdate => t!("event.desc.check_update"),
             UserEvent::Unknown => return None,
         };
         Some(s)
@@ -1240,7 +1242,7 @@ impl<'de> Deserialize<'de> for UserEvent {
                     if let Some(num) = parse_user_command_number(value) {
                         Ok(UserEvent::UserCommand(num))
                     } else {
-                        let msg = format!("Invalid user_command_n format: {value}",);
+                        let msg = t!("event.err.invalid_user_command", value = value);
                         Err(de::Error::custom(msg))
                     }
                 } else {
@@ -1298,7 +1300,7 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "toggle_commit_log" => Ok(UserEvent::ToggleCommitLog),
                         "check_update" => Ok(UserEvent::CheckUpdate),
                         _ => {
-                            let msg = format!("Unknown user event: {value}");
+                            let msg = t!("event.err.unknown_user_event", value = value);
                             Err(de::Error::custom(msg))
                         }
                     }

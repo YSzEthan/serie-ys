@@ -8,6 +8,7 @@
 //! 與碰外界的部分（curl、檔案系統）分開，前者可以直接測。
 
 use std::{
+    borrow::Cow,
     env, fs,
     path::{Path, PathBuf},
     process::{Command, Stdio},
@@ -19,6 +20,7 @@ use std::{
 };
 
 use clap::ValueEnum;
+use rust_i18n::t;
 use semver::Version;
 use serde::Deserialize;
 
@@ -190,7 +192,7 @@ pub fn spawn_check(ec: &EventController, manual: bool, settings: UpdateSettings)
     // `mode = Off` 的早退是同一個哲學：使用者當下的明確意圖不能被吞掉。
     if exe_is_stale() {
         if manual {
-            ec.send(AppEvent::NotifyInfo(EXE_REPLACED_MSG.to_string()));
+            ec.send(AppEvent::NotifyInfo(exe_replaced_msg().into_owned()));
         }
         return;
     }
@@ -205,10 +207,9 @@ pub fn spawn_check(ec: &EventController, manual: bool, settings: UpdateSettings)
         match result {
             Ok(Some(tag)) if auto_download => tx.send(AppEvent::UpdateRequested { tag }),
             Ok(Some(tag)) => tx.send(AppEvent::OpenUpdatePrompt { tag }),
-            Ok(None) if manual => tx.send(AppEvent::NotifyInfo(format!(
-                "Already up to date (v{})",
-                env!("CARGO_PKG_VERSION")
-            ))),
+            Ok(None) if manual => tx.send(AppEvent::NotifyInfo(
+                t!("cli.update.up_to_date", version = env!("CARGO_PKG_VERSION")).into_owned(),
+            )),
             Err(e) if manual => tx.send(AppEvent::NotifyError(e)),
             // 自動檢查：已是最新或出錯一律靜默。
             _ => {}
@@ -232,16 +233,16 @@ pub fn check_for_update() -> Result<Option<String>, String> {
 /// `current_exe_checked()` 在 rename 前就算好的路徑，避開這個坑。
 pub fn download_and_replace(tag: &str) -> Result<PathBuf, String> {
     if cfg!(windows) {
-        return Err("Windows 請至 GitHub Releases 頁面手動下載更新".into());
+        return Err(t!("cli.update.err.windows").into_owned());
     }
     if cfg!(debug_assertions) {
-        return Err("開發版本（debug build）不支援自我更新".into());
+        return Err(t!("cli.update.err.debug_build").into_owned());
     }
     if exe_is_stale() {
-        return Err(EXE_REPLACED_MSG.into());
+        return Err(exe_replaced_msg().into_owned());
     }
     if UPDATE_RUNNING.swap(true, Ordering::SeqCst) {
-        return Err("已經有一個更新在進行中".into());
+        return Err(t!("cli.update.err.in_progress").into_owned());
     }
     let _guard = UpdateGuard;
 
@@ -261,8 +262,14 @@ pub fn download_and_replace(tag: &str) -> Result<PathBuf, String> {
     let tmp = target.with_file_name(tmp_name);
 
     // 可寫性檢查兼暫存檔——同目錄，之後 `rename` 才不會跨檔案系統失敗。
-    fs::File::create(&tmp)
-        .map_err(|e| format!("無法在 {} 寫入（權限不足？）: {e}", tmp.display()))?;
+    fs::File::create(&tmp).map_err(|e| {
+        t!(
+            "cli.update.err.cannot_write",
+            path = tmp.display(),
+            error = e
+        )
+        .into_owned()
+    })?;
 
     let staged = download_asset(tag, &asset, &tmp)
         .and_then(|()| copy_permissions(&target, &tmp))
@@ -276,7 +283,8 @@ pub fn download_and_replace(tag: &str) -> Result<PathBuf, String> {
     // 全新 inode，天然避開 macOS 用 `cp` 覆蓋會繼承舊檔 security metadata 的坑
     // （deploy-ysgit skill 記下的那個坑：舊檔被 Gatekeeper 標記過，新 binary
     // 繼承標記，啟動時 SIGKILL）。絕對不要用 `cp`。
-    fs::rename(&tmp, &target).map_err(|e| format!("替換執行檔失敗: {e}"))?;
+    fs::rename(&tmp, &target)
+        .map_err(|e| t!("cli.update.err.replace_failed", error = e).into_owned())?;
     UPDATE_INSTALLED.store(true, Ordering::SeqCst);
     Ok(target)
 }
@@ -303,21 +311,22 @@ pub fn exec_replacing_self(exe: &Path, argv: &[String]) -> Result<(), String> {
         use std::os::unix::process::CommandExt;
         // 成功時 exec() 不返回；回傳值本身就是失敗原因，不是 Result。
         let err = Command::new(exe).args(argv.iter().skip(1)).exec();
-        Err(format!("自動重新啟動失敗: {err}"))
+        Err(t!("cli.update.err.restart_failed", error = err).into_owned())
     }
     #[cfg(not(unix))]
     {
         let _ = (exe, argv);
-        Err("此平台不支援自動重新啟動".to_string())
+        Err(t!("cli.update.err.restart_unsupported").into_owned())
     }
 }
 
 fn no_asset_error() -> String {
-    format!(
-        "沒有 {}-{} 平台的發布版本",
-        env::consts::OS,
-        env::consts::ARCH
+    t!(
+        "cli.update.err.no_asset",
+        os = env::consts::OS,
+        arch = env::consts::ARCH
     )
+    .into_owned()
 }
 
 // ── 重入保護 ──
@@ -380,7 +389,9 @@ static STARTUP_EXE: OnceLock<Option<StartupExe>> = OnceLock::new();
 /// 措辭中性、不指名兇手：deploy 走的是 `rm` + `cp`（macOS security
 /// metadata 那個坑），那也會換 inode，手動部署測試版時說「已由其他實例
 /// 更新」是在說謊。
-const EXE_REPLACED_MSG: &str = "磁碟上的 ysgit 已被替換（自我更新或手動部署），請重新啟動後再更新";
+fn exe_replaced_msg() -> Cow<'static, str> {
+    t!("cli.update.err.exe_replaced")
+}
 
 /// 啟動早期呼叫一次，把執行檔身分釘住。
 ///
@@ -808,12 +819,14 @@ fn fetch_checksums() -> Result<String, String> {
         .map_err(|e| curl_spawn_error(&e))?;
 
     if !output.status.success() {
-        return Err(format!(
-            "抓取 release 資訊失敗（{}）",
-            exit_status_message(&output.status)
-        ));
+        return Err(t!(
+            "cli.update.err.fetch_release",
+            status = exit_status_message(&output.status)
+        )
+        .into_owned());
     }
-    String::from_utf8(output.stdout).map_err(|e| format!("回應不是合法 UTF-8: {e}"))
+    String::from_utf8(output.stdout)
+        .map_err(|e| t!("cli.update.err.invalid_utf8", error = e).into_owned())
 }
 
 fn download_asset(tag: &str, asset: &str, dest: &Path) -> Result<(), String> {
@@ -826,19 +839,21 @@ fn download_asset(tag: &str, asset: &str, dest: &Path) -> Result<(), String> {
         .map_err(|e| curl_spawn_error(&e))?;
 
     if !output.status.success() {
-        return Err(format!(
-            "下載失敗（{}）",
-            exit_status_message(&output.status)
-        ));
+        return Err(t!(
+            "cli.update.err.download_failed",
+            status = exit_status_message(&output.status)
+        )
+        .into_owned());
     }
     Ok(())
 }
 
 fn copy_permissions(from: &Path, to: &Path) -> Result<(), String> {
     let perms = fs::metadata(from)
-        .map_err(|e| format!("讀取原執行檔權限失敗: {e}"))?
+        .map_err(|e| t!("cli.update.err.read_perms", error = e).into_owned())?
         .permissions();
-    fs::set_permissions(to, perms).map_err(|e| format!("設定執行權限失敗: {e}"))
+    fs::set_permissions(to, perms)
+        .map_err(|e| t!("cli.update.err.set_perms", error = e).into_owned())
 }
 
 /// `verify_binary()` 與 `exe_runs()` 共用的那一次 `Command` 呼叫，避免
@@ -864,20 +879,24 @@ pub fn exe_runs(path: &Path) -> bool {
 /// 啟動時 SIGKILL 的情況，而那是 checksum 驗不出來的（bytes 完全正確，
 /// 照樣被殺）。順帶擋掉抓錯架構、下載不完整。
 fn verify_binary(path: &Path, expected_version: &str) -> Result<(), String> {
-    let output = spawn_version_output(path).map_err(|e| format!("無法執行下載的檔案: {e}"))?;
+    let output = spawn_version_output(path)
+        .map_err(|e| t!("cli.update.err.cannot_run", error = e).into_owned())?;
 
     if !output.status.success() {
-        return Err(format!(
-            "下載的檔案無法正常執行（{}）——可能被系統標記為不安全，或下載不完整",
-            exit_status_message(&output.status)
-        ));
+        return Err(t!(
+            "cli.update.err.run_failed",
+            status = exit_status_message(&output.status)
+        )
+        .into_owned());
     }
     let stdout = String::from_utf8_lossy(&output.stdout);
     if !stdout.contains(expected_version) {
-        return Err(format!(
-            "下載的檔案版本不符（預期含 {expected_version}，實際輸出：{}）",
-            stdout.trim()
-        ));
+        return Err(t!(
+            "cli.update.err.version_mismatch",
+            expected = expected_version,
+            actual = stdout.trim()
+        )
+        .into_owned());
     }
     Ok(())
 }
@@ -892,14 +911,16 @@ fn verify_binary(path: &Path, expected_version: &str) -> Result<(), String> {
 /// PATH 上放 symlink 時少了這步，`fs::rename` 會把 symlink 換成普通檔，
 /// 默默拆掉部署佈局。
 fn current_exe_checked() -> Result<PathBuf, String> {
-    let exe = env::current_exe().map_err(|e| format!("找不到目前執行檔路徑: {e}"))?;
+    let exe = env::current_exe()
+        .map_err(|e| t!("cli.update.err.exe_path_missing", error = e).into_owned())?;
     let raw_name = exe.file_name().and_then(|n| n.to_str()).unwrap_or("");
     if raw_name.contains("(deleted)") {
-        return Err(EXE_REPLACED_MSG.into());
+        return Err(exe_replaced_msg().into_owned());
     }
-    let exe = fs::canonicalize(&exe).map_err(|e| format!("無法解析執行檔路徑: {e}"))?;
+    let exe = fs::canonicalize(&exe)
+        .map_err(|e| t!("cli.update.err.exe_path_resolve", error = e).into_owned())?;
     if !exe.is_file() {
-        return Err(format!("{} 不是一般檔案", exe.display()));
+        return Err(t!("cli.update.err.not_a_file", path = exe.display()).into_owned());
     }
     Ok(exe)
 }
@@ -923,9 +944,9 @@ pub(crate) fn exe_dir() -> Option<&'static Path> {
 
 fn curl_spawn_error(e: &std::io::Error) -> String {
     if e.kind() == std::io::ErrorKind::NotFound {
-        "找不到 curl，請先安裝".to_string()
+        t!("cli.update.err.curl_missing").into_owned()
     } else {
-        format!("執行 curl 失敗: {e}")
+        t!("cli.update.err.curl_failed", error = e).into_owned()
     }
 }
 
@@ -937,12 +958,12 @@ fn exit_status_message(status: &std::process::ExitStatus) -> String {
     {
         use std::os::unix::process::ExitStatusExt;
         if let Some(sig) = status.signal() {
-            return format!("被 signal {sig} 中止");
+            return t!("cli.update.err.signal", sig = sig).into_owned();
         }
     }
     match status.code() {
         Some(code) => format!("exit code {code}"),
-        None => "異常終止".to_string(),
+        None => t!("cli.update.err.abnormal").into_owned(),
     }
 }
 

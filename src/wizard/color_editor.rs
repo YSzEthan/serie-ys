@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use ratatui::{
     crossterm::event::{Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers},
     layout::{Constraint, Layout, Rect},
@@ -6,6 +8,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, ListItem, ListState, Paragraph},
     DefaultTerminal, Frame,
 };
+use rust_i18n::t;
 use tui_input::backend::crossterm::EventHandler;
 
 use crate::color::{
@@ -85,15 +88,13 @@ impl ColorEdit {
 
     /// `value()` 是 `None` 時，缺什麼——Enter 被拒絕時顯示在對話框裡。
     /// `Named` 一定有值（`NAMED_COLORS` 非空），不會走到這裡。
-    fn hint(&self) -> Option<String> {
+    fn hint(&self) -> Option<Cow<'static, str>> {
         if self.value().is_some() {
             return None;
         }
         match self {
-            ColorEdit::Hex(input) => {
-                Some(format!("HEX 需要 6 碼，目前 {} 碼", input.value().len()))
-            }
-            ColorEdit::Indexed(_) => Some("索引需要 0-255 的數字".to_string()),
+            ColorEdit::Hex(input) => Some(t!("wizard.color.hex_need_6", len = input.value().len())),
+            ColorEdit::Indexed(_) => Some(t!("wizard.color.index_range")),
             ColorEdit::Named(_) => None,
         }
     }
@@ -546,7 +547,11 @@ impl ColorEditorState {
             .collect();
         let list = super::styled_list(items, chrome).block(
             Block::default()
-                .title(format!(" 顏色 [{}/{}] ", selected + 1, total))
+                .title(t!(
+                    "wizard.color.list_title",
+                    current = selected + 1,
+                    total = total
+                ))
                 .borders(Borders::ALL)
                 .border_style(Style::default().fg(chrome.divider_fg)),
         );
@@ -555,7 +560,7 @@ impl ColorEditorState {
         let mut preview_text: Vec<Line> = Vec::new();
         if self.theme_is_fallback {
             preview_text
-                .push(Line::raw("設定檔載入失敗，以下是內建預設").fg(chrome.status_warn_fg));
+                .push(Line::raw(t!("wizard.color.config_fallback")).fg(chrome.status_warn_fg));
         }
         if selected < COLOR_KEYS.len() {
             // 選中欄位若正在編輯，預覽要即時反映輸入到一半的值——
@@ -579,12 +584,12 @@ impl ColorEditorState {
                     .map(|hex| Span::styled("■ ", Style::default().fg(branch_swatch_color(hex))))
                     .collect::<Vec<_>>(),
             ));
-            preview_text.push(Line::raw("Enter 進入編輯"));
+            preview_text.push(Line::raw(t!("wizard.color.enter_to_edit")));
         }
         f.render_widget(
             Paragraph::new(preview_text).block(
                 Block::default()
-                    .title(" 預覽 ")
+                    .title(t!("wizard.color.preview_title"))
                     .borders(Borders::ALL)
                     .border_style(Style::default().fg(chrome.divider_fg)),
             ),
@@ -594,11 +599,11 @@ impl ColorEditorState {
         let hint = crate::widget::hint_line(
             chrome,
             &[
-                ("↑↓/kj".into(), "移動"),
-                ("PgUp/PgDn".into(), "翻頁"),
-                ("Enter/l".into(), "編輯"),
-                ("r".into(), "還原"),
-                ("Esc/h".into(), "返回"),
+                ("↑↓/kj".into(), &*t!("common.hint.move")),
+                ("PgUp/PgDn".into(), &*t!("wizard.color.hint.page")),
+                ("Enter/l".into(), &*t!("wizard.color.hint.edit")),
+                ("r".into(), &*t!("wizard.color.hint.reset")),
+                ("Esc/h".into(), &*t!("common.hint.back")),
             ],
             chrome.help_key_fg,
         );
@@ -613,9 +618,10 @@ impl ColorEditorState {
 fn branches_row_item(current: &[String], base: &[String]) -> ListItem<'static> {
     let touched = current != base;
     let marker = if touched { "✓ " } else { "  " };
-    ListItem::new(Line::raw(format!(
-        "{marker}[color.graph].branches  ({} 色)",
-        current.len()
+    ListItem::new(Line::raw(t!(
+        "wizard.color.branches_row",
+        marker = marker,
+        count = current.len()
     )))
 }
 
@@ -650,18 +656,18 @@ fn render_branches(f: &mut Frame, area: Rect, branches: &mut BranchesEditor, chr
 
     // 常駐約束，不是事件訊息：刪到剩最後一格時提示會自動變，不需要另外
     // 存一個「剛才被拒絕」的旗標、也不需要清除規則。
-    let delete_hint: &str = if branches.values.len() == 1 {
-        "至少保留 1 色"
+    let delete_hint = if branches.values.len() == 1 {
+        t!("wizard.color.hint.keep_one")
     } else {
-        "刪除"
+        t!("wizard.color.hint.delete")
     };
     let hint = crate::widget::hint_line(
         chrome,
         &[
-            ("Enter/l".into(), "編輯"),
-            ("a".into(), "新增"),
-            ("d".into(), delete_hint),
-            ("Esc/h".into(), "返回"),
+            ("Enter/l".into(), &*t!("wizard.color.hint.edit")),
+            ("a".into(), &*t!("wizard.color.hint.add")),
+            ("d".into(), &*delete_hint),
+            ("Esc/h".into(), &*t!("common.hint.back")),
         ],
         chrome.help_key_fg,
     );
@@ -684,12 +690,15 @@ fn render_branch_edit_dialog(
     let message = if valid_branch_hex(edit.value()).is_some() {
         String::new()
     } else {
-        format!("需要 6 或 8 碼 hex，目前 {} 碼", edit.value().len())
+        t!("wizard.color.branch_hex_need", len = edit.value().len()).into_owned()
     };
 
     let hint = crate::widget::hint_line(
         chrome,
-        &[("Enter".into(), "確認"), ("Esc".into(), "取消")],
+        &[
+            ("Enter".into(), &*t!("common.hint.confirm")),
+            ("Esc".into(), &*t!("common.hint.cancel")),
+        ],
         chrome.help_key_fg,
     );
 
@@ -730,14 +739,24 @@ fn preview_lines(colors: &FlatColors, focus: PreviewBlock) -> Vec<Line<'static>>
     let mark = |block: PreviewBlock| if block == focus { "▏" } else { " " };
 
     vec![
-        Line::raw(format!("{}[Commit list]", mark(PreviewBlock::List))),
+        Line::raw(format!(
+            "{}{}",
+            mark(PreviewBlock::List),
+            t!("wizard.color.preview.list_header")
+        )),
         Line::from(vec![
             Span::styled("● ", Style::default().fg(c("list_ref_branch_fg"))),
             Span::styled("a1b2c3d ", Style::default().fg(c("list_hash_fg"))),
             Span::styled("(main) ", Style::default().fg(c("list_ref_branch_fg"))),
-            Span::styled("feat: 新增功能 ", Style::default().fg(c("list_subject_fg"))),
+            Span::styled(
+                t!("wizard.color.preview.subject_feat"),
+                Style::default().fg(c("list_subject_fg")),
+            ),
             Span::styled("Ethan ", Style::default().fg(c("list_name_fg"))),
-            Span::styled("2 天前", Style::default().fg(c("list_date_fg"))),
+            Span::styled(
+                t!("wizard.color.preview.date"),
+                Style::default().fg(c("list_date_fg")),
+            ),
         ]),
         Line::from(vec![
             Span::styled(
@@ -748,14 +767,21 @@ fn preview_lines(colors: &FlatColors, focus: PreviewBlock) -> Vec<Line<'static>>
             ),
             Span::styled("(HEAD -> main) ", Style::default().fg(c("list_head_fg"))),
             Span::styled(
-                "fix: 修正邊界條件",
+                t!("wizard.color.preview.subject_fix"),
                 Style::default().fg(c("list_subject_fg")),
             ),
         ]),
         Line::raw(""),
-        Line::raw(format!("{}[Detail]", mark(PreviewBlock::Detail))),
+        Line::raw(format!(
+            "{}{}",
+            mark(PreviewBlock::Detail),
+            t!("wizard.color.preview.detail_header")
+        )),
         Line::from(vec![
-            Span::styled("Author: ", Style::default().fg(c("detail_label_fg"))),
+            Span::styled(
+                t!("wizard.color.preview.author"),
+                Style::default().fg(c("detail_label_fg")),
+            ),
             Span::styled("Ethan ", Style::default().fg(c("detail_name_fg"))),
             Span::styled(
                 "<it@scanoo.com.tw>",
@@ -774,12 +800,19 @@ fn preview_lines(colors: &FlatColors, focus: PreviewBlock) -> Vec<Line<'static>>
             ),
         ]),
         Line::raw(""),
-        Line::raw(format!("{}[狀態列]", mark(PreviewBlock::Status))),
+        Line::raw(format!(
+            "{}{}",
+            mark(PreviewBlock::Status),
+            t!("wizard.color.preview.status_header")
+        )),
         Line::from(vec![
             Span::styled("Enter", Style::default().fg(c("help_key_fg"))),
-            Span::styled(":確認", Style::default().fg(c("status_input_transient_fg"))),
+            Span::styled(
+                format!(":{}", t!("common.hint.confirm")),
+                Style::default().fg(c("status_input_transient_fg")),
+            ),
         ]),
-        Line::raw("已複製 commit hash").fg(c("status_success_fg")),
+        Line::raw(t!("wizard.color.preview.copied")).fg(c("status_success_fg")),
         Line::raw("──────────").fg(c("divider_fg")),
     ]
 }
@@ -800,9 +833,9 @@ fn render_edit_dialog(
     chrome: &ColorTheme,
 ) {
     let mode_label = match edit {
-        ColorEdit::Named(_) => "[色名]  256色   HEX",
-        ColorEdit::Indexed(_) => " 色名  [256色]  HEX",
-        ColorEdit::Hex(_) => " 色名   256色  [HEX]",
+        ColorEdit::Named(_) => t!("wizard.color.mode.named"),
+        ColorEdit::Indexed(_) => t!("wizard.color.mode.indexed"),
+        ColorEdit::Hex(_) => t!("wizard.color.mode.hex"),
     };
     let value_line = match edit {
         ColorEdit::Named(idx) => format!("< {} >", NAMED_COLORS[*idx].0),
@@ -814,9 +847,9 @@ fn render_edit_dialog(
     let hint = crate::widget::hint_line(
         chrome,
         &[
-            ("Tab".into(), "切換表示法"),
-            ("Enter".into(), "確認"),
-            ("Esc".into(), "取消"),
+            ("Tab".into(), &*t!("wizard.color.hint.switch_mode")),
+            ("Enter".into(), &*t!("common.hint.confirm")),
+            ("Esc".into(), &*t!("common.hint.cancel")),
         ],
         chrome.help_key_fg,
     );
