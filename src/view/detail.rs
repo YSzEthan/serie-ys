@@ -1,3 +1,4 @@
+use rust_i18n::t;
 use std::rc::Rc;
 
 use crate::{
@@ -37,44 +38,53 @@ use ratatui::{
 /// 寫成自由函式（而不是吃 `&self` 的方法）是為了可測：它只依賴 pane，
 /// 測試可以直接餵 `DetailPane` 進來檢查每個 event 都有綁鍵、也都在說明頁列出。
 pub fn status_hints_for(pane: DetailPane) -> Vec<HintSpec> {
-    let mut hints = vec![h(&[UserEvent::DetailPaneToggle], "pane")];
+    let mut hints = vec![h(&[UserEvent::DetailPaneToggle], t!("common.hint.pane"))];
     match pane {
         DetailPane::Info => {
             hints.push(h(
                 &[UserEvent::NavigateDown, UserEvent::NavigateUp],
-                "scroll",
+                t!("common.hint.scroll"),
             ));
         }
         DetailPane::Files => {
-            hints.push(h(&[UserEvent::NavigateDown, UserEvent::NavigateUp], "file"));
-            hints.push(h(&[UserEvent::SelectDown, UserEvent::SelectUp], "diff"));
-            hints.push(h(&[UserEvent::GoToNext, UserEvent::GoToPrevious], "hunk"));
+            hints.push(h(
+                &[UserEvent::NavigateDown, UserEvent::NavigateUp],
+                t!("common.hint.file"),
+            ));
+            hints.push(h(
+                &[UserEvent::SelectDown, UserEvent::SelectUp],
+                t!("common.hint.diff"),
+            ));
+            hints.push(h(
+                &[UserEvent::GoToNext, UserEvent::GoToPrevious],
+                t!("common.hint.hunk"),
+            ));
         }
     }
     hints.extend([
         h(
             &[UserEvent::NavigateLeft, UserEvent::NavigateRight],
-            "commit",
+            t!("common.hint.commit"),
         ),
         h(
             &[UserEvent::GoToParent, UserEvent::GoToChild],
-            "parent/child",
+            t!("common.hint.parent_child"),
         ),
-        h(&[UserEvent::ShortCopy], "copy"),
+        h(&[UserEvent::ShortCopy], t!("common.hint.copy")),
     ]);
     if pane == DetailPane::Files {
         hints.extend([
-            h(&[UserEvent::HalfPageDown], "half"),
-            h(&[UserEvent::PageDown], "page"),
+            h(&[UserEvent::HalfPageDown], t!("common.hint.half")),
+            h(&[UserEvent::PageDown], t!("common.hint.page")),
         ]);
     }
     hints.extend([
-        h(&[UserEvent::RefList], "refs"),
-        h(&[UserEvent::RemoteRefsToggle], "remote"),
-        h(&[UserEvent::GitHubToggle], "github"),
-        h(&[UserEvent::Refresh], "refresh"),
-        h(&[UserEvent::HelpToggle], "help"),
-        h(&[UserEvent::Cancel], "close"),
+        h(&[UserEvent::RefList], t!("common.hint.refs")),
+        h(&[UserEvent::RemoteRefsToggle], t!("common.hint.remote")),
+        h(&[UserEvent::GitHubToggle], t!("common.hint.github")),
+        h(&[UserEvent::Refresh], t!("common.hint.refresh")),
+        h(&[UserEvent::HelpToggle], t!("common.hint.help")),
+        h(&[UserEvent::Cancel], t!("common.hint.close")),
     ]);
     hints
 }

@@ -1,0 +1,196 @@
+_version = 2
+
+[app.status.update_installed]
+zh-TW = "已更新 — 重啟 ysgit 後生效"
+
+[app.status.auto_fetched]
+zh-TW = "已自動 fetch 到新的 commit"
+
+[app.status.no_related]
+zh-TW = "沒有相關的 issue"
+
+[app.status.reload_loading]
+zh-TW = "⟳ 載入中  "
+
+[app.status.reload_pending]
+zh-TW = "⟳ 更新待套用  "
+
+[app.status.more]
+zh-TW = "(還有 %{n} 項)"
+
+[app.status.more_tab_view]
+zh-TW = "(還有 %{n} 項，請用 tab 視圖)"
+
+[app.status.go_to_child]
+zh-TW = "前往 child："
+
+[app.status.delete_branch]
+zh-TW = "刪除 branch："
+
+[app.status.delete_branch_confirm]
+zh-TW = "刪除 '%{name}'？"
+
+[app.status.updated_to]
+zh-TW = "已更新至 %{tag}。"
+
+[app.status.error]
+zh-TW = "錯誤：%{msg}"
+
+[app.status.merge_pick]
+zh-TW = "Merge PR #%{number}（%{head_ref}）："
+
+[app.status.merge_ask_delete_local]
+zh-TW = "merge（%{method}）後要刪除 local branch '%{head_ref}' 嗎？"
+
+[app.status.merge_ask_delete_remote]
+zh-TW = "merge（%{method}）後要刪除 remote branch '%{head_ref}' 嗎？"
+
+[app.status.merge_local_yes]
+zh-TW = "，刪除 local branch：是"
+
+[app.status.merge_local_no]
+zh-TW = "，刪除 local branch：否"
+
+[app.status.merge_remote_yes]
+zh-TW = "，刪除 remote branch：是"
+
+[app.status.merge_remote_no]
+zh-TW = "，刪除 remote branch：否"
+
+[app.status.merge_confirm]
+zh-TW = "以 %{method} merge #%{number}%{local}%{remote}  "
+
+[app.github.issue_not_in_list]
+zh-TW = "目前清單沒有 issue #%{number}（請檢查狀態過濾）"
+
+[app.github.issues_thread_panicked]
+zh-TW = "GitHub issues 執行緒異常終止"
+
+[app.github.prs_thread_panicked]
+zh-TW = "GitHub PRs 執行緒異常終止"
+
+[app.github.issues_unavailable]
+zh-TW = "無法取得 GitHub issues：%{e}"
+
+[app.github.prs_unavailable]
+zh-TW = "無法取得 GitHub PRs：%{e}"
+
+[app.github.load_more_failed]
+zh-TW = "載入更多失敗：%{e}"
+
+[app.github.updating_checkboxes]
+zh-TW = "正在更新 checkbox…"
+
+[app.github.checkboxes_updated]
+zh-TW = "已更新 %{count} 個 checkbox"
+
+[app.github.batch_toggle_failed]
+zh-TW = "批次切換失敗：%{e}"
+
+[app.pending.continues_in_background]
+zh-TW = "操作仍在背景繼續"
+
+[app.pending.working_title]
+zh-TW = " 處理中… "
+
+[app.pending.restarted_title]
+zh-TW = " 已重啟 "
+
+[app.pending.any_key_close]
+zh-TW = "任意鍵：關閉"
+
+[app.quit.press_again]
+zh-TW = "再按一次 q 離開"
+
+[app.tag.none_on_commit]
+zh-TW = "這個 commit 上沒有 tag"
+
+[app.terminal.clear_failed]
+zh-TW = "清除終端機失敗：%{err}"
+
+[app.clipboard.copied]
+zh-TW = "已複製 %{name} 到剪貼簿"
+
+[app.open_url.opening]
+zh-TW = "正在開啟 %{url}"
+
+[app.open_url.ssh]
+zh-TW = "SSH：%{url}"
+
+[app.user_command.not_configured]
+zh-TW = "沒有設定第 %{number} 號 user command"
+
+[app.fetch.pending]
+zh-TW = "正在 fetch…"
+
+[app.fetch.done]
+zh-TW = "Fetch 完成"
+
+[app.fetch.failed]
+zh-TW = "Fetch 失敗"
+
+[app.fetch.auto_pending]
+zh-TW = "自動 fetch 中…"
+
+[app.checkout.pending]
+zh-TW = "正在 checkout '%{target}'…"
+
+[app.checkout.done]
+zh-TW = "已 checkout '%{target}'"
+
+[app.checkout.failed]
+zh-TW = "Checkout 失敗"
+
+[app.merge.pending]
+zh-TW = "正在 merge PR #%{number}…"
+
+[app.merge.merged]
+zh-TW = "PR #%{number} 已 merge（%{method}）"
+
+[app.merge.deleting_local]
+zh-TW = "正在刪除 local branch…"
+
+[app.merge.local_deleted]
+zh-TW = "，已刪除 local branch '%{name}'"
+
+[app.merge.local_not_fully_merged]
+zh-TW = "%{e}（branch 有不在這次 merge 內的 commit，若確定要刪請手動處理）"
+
+[app.merge.local_delete_failed]
+zh-TW = "，但刪除 local branch '%{name}' 失敗：%{hint}"
+
+[app.merge.deleting_remote]
+zh-TW = "正在刪除 remote branch…"
+
+[app.merge.remote_deleted]
+zh-TW = "，已刪除 remote branch '%{head_ref}'"
+
+[app.merge.remote_delete_failed]
+zh-TW = "，但刪除 remote branch '%{head_ref}' 失敗：%{e}"
+
+[app.merge.conflicts]
+zh-TW = "PR #%{number} 有衝突，請先解決再 merge"
+
+[app.update.downloading]
+zh-TW = "正在下載 %{tag}…"
+
+[app.delete_branch.pending_force]
+zh-TW = "正在強制刪除 branch '%{name}'…"
+
+[app.delete_branch.pending]
+zh-TW = "正在刪除 branch '%{name}'…"
+
+[app.delete_branch.done]
+zh-TW = "已刪除 branch '%{name}'"
+
+[app.delete_branch.not_fully_merged]
+zh-TW = "%{e}（按 d → f 強制刪除）"
+
+[app.reload.working_changes_panicked]
+zh-TW = "working changes 重載時異常終止：%{detail}"
+
+[app.reload.panicked]
+zh-TW = "重載時異常終止：%{detail}"
+
+[app.reload.unknown_panic]
+zh-TW = "未知的 panic"

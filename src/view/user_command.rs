@@ -1,3 +1,4 @@
+use rust_i18n::t;
 use std::rc::Rc;
 
 use ratatui::{
@@ -23,19 +24,22 @@ use crate::{
 /// 狀態列提示。優先序＝截斷時從尾端開始丟。
 pub fn status_hints() -> Vec<HintSpec> {
     vec![
-        h(&[UserEvent::NavigateDown, UserEvent::NavigateUp], "scroll"),
-        h(&[UserEvent::HalfPageDown], "half"),
-        h(&[UserEvent::PageDown], "page"),
-        h(&[UserEvent::GoToTop], "top"),
-        h(&[UserEvent::GoToBottom], "bottom"),
+        h(
+            &[UserEvent::NavigateDown, UserEvent::NavigateUp],
+            t!("common.hint.scroll"),
+        ),
+        h(&[UserEvent::HalfPageDown], t!("common.hint.half")),
+        h(&[UserEvent::PageDown], t!("common.hint.page")),
+        h(&[UserEvent::GoToTop], t!("common.hint.top")),
+        h(&[UserEvent::GoToBottom], t!("common.hint.bottom")),
         h(
             &[UserEvent::GoToParent, UserEvent::GoToChild],
-            "parent/child",
+            t!("common.hint.parent_child"),
         ),
-        h(&[UserEvent::Confirm], "detail"),
-        h(&[UserEvent::Refresh], "refresh"),
-        h(&[UserEvent::HelpToggle], "help"),
-        h(&[UserEvent::Cancel], "close"),
+        h(&[UserEvent::Confirm], t!("common.hint.detail")),
+        h(&[UserEvent::Refresh], t!("common.hint.refresh")),
+        h(&[UserEvent::HelpToggle], t!("common.hint.help")),
+        h(&[UserEvent::Cancel], t!("common.hint.close")),
     ]
 }
 

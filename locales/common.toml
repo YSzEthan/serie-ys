@@ -1,0 +1,169 @@
+_version = 2
+
+[common.hint.back]
+zh-TW = "返回"
+
+[common.hint.bottom]
+zh-TW = "底端"
+
+[common.hint.cancel]
+zh-TW = "取消"
+
+[common.hint.case]
+zh-TW = "大小寫"
+
+[common.hint.checkout]
+zh-TW = "checkout"
+
+[common.hint.clear_close]
+zh-TW = "清除／關閉"
+
+[common.hint.close]
+zh-TW = "關閉"
+
+[common.hint.commit]
+zh-TW = "commit"
+
+[common.hint.confirm]
+zh-TW = "確認"
+
+[common.hint.copy]
+zh-TW = "複製"
+
+[common.hint.copy_url]
+zh-TW = "複製網址"
+
+[common.hint.delete]
+zh-TW = "刪除"
+
+[common.hint.detail]
+zh-TW = "詳情"
+
+[common.hint.diff]
+zh-TW = "diff"
+
+[common.hint.done]
+zh-TW = "完成"
+
+[common.hint.file]
+zh-TW = "檔案"
+
+[common.hint.filter]
+zh-TW = "過濾"
+
+[common.hint.fuzzy]
+zh-TW = "模糊"
+
+[common.hint.github]
+zh-TW = "GitHub"
+
+[common.hint.half]
+zh-TW = "半頁"
+
+[common.hint.help]
+zh-TW = "說明"
+
+[common.hint.hide]
+zh-TW = "隱藏"
+
+[common.hint.hunk]
+zh-TW = "hunk"
+
+[common.hint.merge_pr]
+zh-TW = "merge PR"
+
+[common.hint.move]
+zh-TW = "移動"
+
+[common.hint.nav]
+zh-TW = "移動"
+
+[common.hint.num]
+zh-TW = "編號"
+
+[common.hint.open]
+zh-TW = "開啟"
+
+[common.hint.page]
+zh-TW = "整頁"
+
+[common.hint.pane]
+zh-TW = "區塊"
+
+[common.hint.parent_child]
+zh-TW = "父/子"
+
+[common.hint.preview]
+zh-TW = "預覽"
+
+[common.hint.refresh]
+zh-TW = "重新整理"
+
+[common.hint.refs]
+zh-TW = "refs"
+
+[common.hint.related]
+zh-TW = "相關"
+
+[common.hint.remote]
+zh-TW = "remote"
+
+[common.hint.retry]
+zh-TW = "重試"
+
+[common.hint.run]
+zh-TW = "執行"
+
+[common.hint.scroll]
+zh-TW = "捲動"
+
+[common.hint.search]
+zh-TW = "搜尋"
+
+[common.hint.select]
+zh-TW = "選擇"
+
+[common.hint.show_label_names]
+zh-TW = "顯示 label 名稱"
+
+[common.hint.submit]
+zh-TW = "送出"
+
+[common.hint.switch_tab]
+zh-TW = "切換分頁"
+
+[common.hint.tag]
+zh-TW = "tag"
+
+[common.hint.target]
+zh-TW = "比對欄位"
+
+[common.hint.toggle]
+zh-TW = "切換"
+
+[common.hint.top]
+zh-TW = "頂端"
+
+[common.esc_cancel]
+zh-TW = "(Esc 取消)"
+
+[common.yes]
+zh-TW = "是"
+
+[common.no]
+zh-TW = "否"
+
+[common.force]
+zh-TW = "強制"
+
+[common.failed_with]
+zh-TW = "%{prefix}：%{detail}"
+
+[common.hint.history]
+zh-TW = "歷史"
+
+[common.hint.update]
+zh-TW = "更新"
+
+[common.hint.restart]
+zh-TW = "重啟"

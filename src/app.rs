@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::rc::Rc;
 use std::time::{Duration, Instant};
@@ -9,6 +10,7 @@ use ratatui::{
     widgets::Block,
     DefaultTerminal, Frame,
 };
+use rust_i18n::t;
 use rustc_hash::FxHashMap;
 
 use crate::{
@@ -747,7 +749,7 @@ impl App<'_> {
                     // GitHub view 等 PR 被 merge 正是這個功能存在的理由。
                     if self.status_line_state.is_idle_or_notification() {
                         self.status_line_state.set_notification_success(
-                            status_line::AUTO_FETCH_SUCCESS_MSG.to_string(),
+                            status_line::auto_fetch_success_msg().into_owned(),
                         );
                     }
                     self.reloader.request_full(Instant::now());
@@ -888,9 +890,9 @@ impl App<'_> {
                 AppEvent::GitHubJumpToIssue { number } => {
                     if let View::GitHub(ref mut view) = self.view {
                         if !view.jump_to_issue(number) {
-                            self.ec.send(AppEvent::NotifyWarn(format!(
-                                "Issue #{number} not in current list (check state filter)"
-                            )));
+                            self.ec.send(AppEvent::NotifyWarn(
+                                t!("app.github.issue_not_in_list", number = number).into_owned(),
+                            ));
                         }
                     }
                 }
@@ -1041,7 +1043,7 @@ impl App<'_> {
             if let Some(UserEvent::Cancel) = self.ctx.keybind.get(&key) {
                 self.pending_message = None;
                 self.ec.send(AppEvent::NotifyInfo(
-                    "Operation continues in background".into(),
+                    t!("app.pending.continues_in_background").into_owned(),
                 ));
                 return;
             }
@@ -1084,7 +1086,7 @@ impl App<'_> {
                     return;
                 } else {
                     self.status_line_state
-                        .set_notification_info("Press q again to quit".into());
+                        .set_notification_info(t!("app.quit.press_again").into_owned());
                     self.ec
                         .sender()
                         .send_after(AppEvent::ClearStatusLine, Duration::from_millis(600));
@@ -1254,7 +1256,8 @@ impl App<'_> {
         if clear {
             if let Some(t) = terminal {
                 if let Err(err) = t.clear() {
-                    let msg = format!("Failed to clear terminal: {err:?}");
+                    let msg =
+                        t!("app.terminal.clear_failed", err = format!("{err:?}")).into_owned();
                     self.ec.send(AppEvent::NotifyError(msg));
                 }
             }
@@ -1490,8 +1493,9 @@ impl App<'_> {
             let has_tags = tags.iter().any(|r| matches!(r, Ref::Tag { .. }));
             if !has_tags {
                 self.view = View::of_list(commit_list_state, self.ctx.clone(), self.ec.sender());
-                self.ec
-                    .send(AppEvent::NotifyWarn("No tags on this commit".into()));
+                self.ec.send(AppEvent::NotifyWarn(
+                    t!("app.tag.none_on_commit").into_owned(),
+                ));
                 return;
             }
             self.view = View::of_delete_tag(
@@ -1704,11 +1708,11 @@ impl App<'_> {
                 let issues = s.spawn(|| crate::github::list_issues(&repo_path, state, None));
                 let prs = s.spawn(|| crate::github::list_pull_requests(&repo_path, state, None));
                 (
-                    issues
-                        .join()
-                        .unwrap_or_else(|_| Err("GitHub issues thread panicked".into())),
+                    issues.join().unwrap_or_else(|_| {
+                        Err(t!("app.github.issues_thread_panicked").into_owned())
+                    }),
                     prs.join()
-                        .unwrap_or_else(|_| Err("GitHub PRs thread panicked".into())),
+                        .unwrap_or_else(|_| Err(t!("app.github.prs_thread_panicked").into_owned())),
                 )
             });
 
@@ -1721,7 +1725,7 @@ impl App<'_> {
                     (page.items, page.next_cursor)
                 }
                 Err(e) => {
-                    warnings.push(format!("GitHub issues unavailable: {e}"));
+                    warnings.push(t!("app.github.issues_unavailable", e = e).into_owned());
                     (Vec::new(), None)
                 }
             };
@@ -1731,7 +1735,7 @@ impl App<'_> {
                     (page.items, page.next_cursor)
                 }
                 Err(e) => {
-                    warnings.push(format!("GitHub PRs unavailable: {e}"));
+                    warnings.push(t!("app.github.prs_unavailable", e = e).into_owned());
                     (Vec::new(), None)
                 }
             };
@@ -1778,7 +1782,7 @@ impl App<'_> {
                         generation,
                     }),
                     Err(e) => tx.send(AppEvent::GitHubFlash {
-                        message: format!("Load more failed: {e}"),
+                        message: t!("app.github.load_more_failed", e = e).into_owned(),
                         is_error: true,
                     }),
                 }
@@ -1791,7 +1795,7 @@ impl App<'_> {
                         generation,
                     }),
                     Err(e) => tx.send(AppEvent::GitHubFlash {
-                        message: format!("Load more failed: {e}"),
+                        message: t!("app.github.load_more_failed", e = e).into_owned(),
                         is_error: true,
                     }),
                 }
@@ -1835,7 +1839,7 @@ impl App<'_> {
         kind: GhItemKind,
         checkbox_indices: Vec<usize>,
     ) {
-        self.pending_message = Some("Updating checkboxes...".to_string());
+        self.pending_message = Some(t!("app.github.updating_checkboxes").into_owned());
 
         let repo_path = self.repository.path().to_path_buf();
         let tx = self.ec.sender();
@@ -1854,7 +1858,7 @@ impl App<'_> {
             match result {
                 Ok(new_body) => {
                     tx.send(AppEvent::GitHubFlash {
-                        message: format!("{count} checkbox(es) updated"),
+                        message: t!("app.github.checkboxes_updated", count = count).into_owned(),
                         is_error: false,
                     });
                     tx.send(AppEvent::CheckboxToggled {
@@ -1865,7 +1869,7 @@ impl App<'_> {
                 }
                 Err(e) => {
                     tx.send(AppEvent::GitHubFlash {
-                        message: format!("Batch toggle failed: {e}"),
+                        message: t!("app.github.batch_toggle_failed", e = e).into_owned(),
                         is_error: true,
                     });
                 }
@@ -2019,7 +2023,7 @@ impl App<'_> {
     fn copy_to_clipboard(&self, name: String, value: String) {
         match copy_to_clipboard(value, &self.ctx.core_config.external.clipboard) {
             Ok(_) => {
-                let msg = format!("Copied {name} to clipboard successfully");
+                let msg = t!("app.clipboard.copied", name = name).into_owned();
                 self.ec.send(AppEvent::NotifySuccess(msg));
             }
             Err(msg) => {
@@ -2031,7 +2035,9 @@ impl App<'_> {
     fn open_url(&mut self, url: String) {
         match crate::external::open_url(&url) {
             Ok(crate::external::OpenUrlOutcome::Spawned) => {
-                self.ec.send(AppEvent::NotifyInfo(format!("Opening {url}")));
+                self.ec.send(AppEvent::NotifyInfo(
+                    t!("app.open_url.opening", url = url).into_owned(),
+                ));
             }
             // 沒有本機瀏覽器可 spawn（SSH／mosh）。OSC 8 在這條路徑上沒有能
             // 動的版本——mosh 的終端模擬器直接吃掉整個 OSC 8 序列（沒有
@@ -2045,7 +2051,7 @@ impl App<'_> {
             // 才不會先閃一下 hint 列才出現通知。
             Ok(crate::external::OpenUrlOutcome::NotSpawned) => {
                 self.status_line_state
-                    .set_notification_info(format!("SSH: {url}"));
+                    .set_notification_info(t!("app.open_url.ssh", url = url).into_owned());
             }
             Err(msg) => {
                 self.ec.send(AppEvent::NotifyError(msg));
@@ -2103,7 +2109,7 @@ impl App<'_> {
             self.status_line_state.open_restart_prompt(tag, exe);
         } else {
             self.status_line_state
-                .set_notification_success(status_line::UPDATE_INSTALLED_HINT.to_string());
+                .set_notification_success(status_line::update_installed_hint().into_owned());
         }
     }
 
@@ -2113,9 +2119,9 @@ impl App<'_> {
             GitTask {
                 repo: self.repository.path(),
                 args: self.ctx.fetch_prune.fetch_all_args(),
-                pending_msg: "Fetching...".into(),
-                success_msg: "Fetch completed".into(),
-                error_prefix: "Fetch failed",
+                pending_msg: t!("app.fetch.pending").into_owned(),
+                success_msg: t!("app.fetch.done").into_owned(),
+                error_prefix: t!("app.fetch.failed"),
                 timeout: GIT_FETCH_TIMEOUT,
                 // 手動 fetch 成功等同「一輪 auto-fetch 已經跑過」，讓倒數與
                 // 基準指紋重新計算，見 `auto_fetch::spawn_resync`。
@@ -2130,9 +2136,9 @@ impl App<'_> {
             GitTask {
                 repo: self.repository.path(),
                 args: &["checkout", &target],
-                pending_msg: format!("Checking out '{target}'..."),
-                success_msg: format!("Checked out '{target}'"),
-                error_prefix: "Checkout failed",
+                pending_msg: t!("app.checkout.pending", target = target).into_owned(),
+                success_msg: t!("app.checkout.done", target = target).into_owned(),
+                error_prefix: t!("app.checkout.failed"),
                 timeout: GIT_CHECKOUT_TIMEOUT,
                 on_success: None,
             },
@@ -2187,7 +2193,7 @@ fn spawn_merge_pr(
     let repo_path = repo.to_path_buf();
     let tx = ec.sender();
     ec.send(AppEvent::ShowPendingOverlay {
-        message: format!("Merging PR #{number}..."),
+        message: t!("app.merge.pending", number = number).into_owned(),
     });
     std::thread::spawn(move || {
         let result = merge_pr(&repo_path, number, method.as_flag());
@@ -2196,12 +2202,17 @@ fn spawn_merge_pr(
                 // 列表不必等刪分支——先送，讓 merge 完成立刻反映在畫面上。
                 tx.send(AppEvent::RefreshGitHub { state });
 
-                let mut message = format!("PR #{number} merged ({})", method.display());
+                let mut message = t!(
+                    "app.merge.merged",
+                    number = number,
+                    method = method.display()
+                )
+                .into_owned();
                 let mut has_failure = false;
 
                 if let Some((name, force_safe)) = delete_local_branch {
                     tx.send(AppEvent::ShowPendingOverlay {
-                        message: "Deleting local branch...".to_string(),
+                        message: t!("app.merge.deleting_local").into_owned(),
                     });
                     let result = if force_safe {
                         delete_branch_force(&repo_path, &name)
@@ -2210,7 +2221,7 @@ fn spawn_merge_pr(
                     };
                     match result {
                         Ok(()) => {
-                            message.push_str(&format!(", local branch '{name}' deleted"));
+                            message.push_str(&t!("app.merge.local_deleted", name = name));
                             // 刪分支動到 refs，當 Full（比照 `spawn_git_task`）。
                             // 這個流程只會在 `View::GitHub` 開著時觸發，它的
                             // `can_swap()` 是 false——背景載入照跑，換資料延到
@@ -2226,12 +2237,14 @@ fn spawn_merge_pr(
                             // 任何分支邏輯——真正的強刪與否已經由 `force_safe`
                             // （`headRefOid` 比對）決定過了。
                             let hint = if !force_safe && e.contains("not fully merged") {
-                                format!("{e}  (branch has commits outside this merge — delete manually if intended)")
+                                t!("app.merge.local_not_fully_merged", e = e).into_owned()
                             } else {
                                 e
                             };
-                            message.push_str(&format!(
-                                ", but failed to delete local branch '{name}': {hint}"
+                            message.push_str(&t!(
+                                "app.merge.local_delete_failed",
+                                name = name,
+                                hint = hint
                             ));
                         }
                     }
@@ -2239,16 +2252,18 @@ fn spawn_merge_pr(
 
                 if let Some(head_ref) = delete_remote_branch {
                     tx.send(AppEvent::ShowPendingOverlay {
-                        message: "Deleting remote branch...".to_string(),
+                        message: t!("app.merge.deleting_remote").into_owned(),
                     });
                     match gh_delete_remote_branch(&repo_path, &head_ref) {
                         Ok(()) => {
-                            message.push_str(&format!(", remote branch '{head_ref}' deleted"))
+                            message.push_str(&t!("app.merge.remote_deleted", head_ref = head_ref))
                         }
                         Err(e) => {
                             has_failure = true;
-                            message.push_str(&format!(
-                                ", but failed to delete remote branch '{head_ref}': {e}"
+                            message.push_str(&t!(
+                                "app.merge.remote_delete_failed",
+                                head_ref = head_ref,
+                                e = e
                             ));
                         }
                     }
@@ -2264,9 +2279,9 @@ fn spawn_merge_pr(
             Err(e) => {
                 tx.send(AppEvent::HidePendingOverlay);
                 if is_merge_conflict_error(&e) {
-                    tx.send(AppEvent::NotifyWarn(format!(
-                        "PR #{number} has conflicts — resolve before merging"
-                    )));
+                    tx.send(AppEvent::NotifyWarn(
+                        t!("app.merge.conflicts", number = number).into_owned(),
+                    ));
                 } else {
                     tx.send(AppEvent::NotifyError(e));
                 }
@@ -2278,7 +2293,7 @@ fn spawn_merge_pr(
 fn spawn_update_download(ec: &EventController, tag: String) {
     let tx = ec.sender();
     ec.send(AppEvent::ShowPendingOverlay {
-        message: format!("Downloading {tag}..."),
+        message: t!("app.update.downloading", tag = tag).into_owned(),
     });
     std::thread::spawn(move || {
         let result = crate::update::download_and_replace(&tag);
@@ -2364,9 +2379,9 @@ fn spawn_delete_branch(repo: &Path, ec: &EventController, name: String, force: b
     let tx = ec.sender();
 
     let pending = if force {
-        format!("Force deleting branch '{name}'...")
+        t!("app.delete_branch.pending_force", name = name).into_owned()
     } else {
-        format!("Deleting branch '{name}'...")
+        t!("app.delete_branch.pending", name = name).into_owned()
     };
     ec.send(AppEvent::ShowPendingOverlay { message: pending });
 
@@ -2379,12 +2394,14 @@ fn spawn_delete_branch(repo: &Path, ec: &EventController, name: String, force: b
         tx.send(AppEvent::HidePendingOverlay);
         match result {
             Ok(()) => {
-                tx.send(AppEvent::NotifySuccess(format!("Branch '{name}' deleted")));
+                tx.send(AppEvent::NotifySuccess(
+                    t!("app.delete_branch.done", name = name).into_owned(),
+                ));
                 tx.send(AppEvent::Refresh);
             }
             Err(e) => {
                 let hint = if !force && e.contains("not fully merged") {
-                    format!("{e}  (press d → f to force delete)")
+                    t!("app.delete_branch.not_fully_merged", e = e).into_owned()
                 } else {
                     e
                 };
@@ -2415,7 +2432,7 @@ struct GitTask<'a> {
     args: &'a [&'a str],
     pending_msg: String,
     success_msg: String,
-    error_prefix: &'a str,
+    error_prefix: Cow<'static, str>,
     timeout: Duration,
     /// 指令成功時（除了固定的 `NotifySuccess` + `AutoRefresh`）額外要送的
     /// 一個事件；`None` 給不需要的呼叫端（例如 `checkout_commit`）用。目前
@@ -2437,7 +2454,6 @@ fn spawn_git_task(ec: &EventController, task: GitTask) {
     let repo_path = repo.to_path_buf();
     let tx = ec.sender();
     let args: Vec<String> = args.iter().map(|s| s.to_string()).collect();
-    let error_prefix = error_prefix.to_string();
 
     tx.send(AppEvent::ShowPendingOverlay {
         message: pending_msg,
@@ -2470,10 +2486,14 @@ fn spawn_git_task(ec: &EventController, task: GitTask) {
             }
             Ok(o) => {
                 let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
-                tx.send(AppEvent::NotifyError(format!("{error_prefix}: {stderr}")));
+                tx.send(AppEvent::NotifyError(
+                    t!("common.failed_with", prefix = error_prefix, detail = stderr).into_owned(),
+                ));
             }
             Err(e) => {
-                tx.send(AppEvent::NotifyError(format!("{error_prefix}: {e}")));
+                tx.send(AppEvent::NotifyError(
+                    t!("common.failed_with", prefix = error_prefix, detail = e).into_owned(),
+                ));
             }
         }
     });
@@ -2529,7 +2549,13 @@ fn extract_user_command_by_number(
         .user_command
         .commands
         .get(&user_command_number.to_string())
-        .ok_or_else(|| format!("No user command configured for number {user_command_number}",))
+        .ok_or_else(|| {
+            t!(
+                "app.user_command.not_configured",
+                number = user_command_number
+            )
+            .into_owned()
+        })
 }
 
 fn extract_user_command_refresh_by_number(user_command_number: usize, ctx: &AppContext) -> bool {

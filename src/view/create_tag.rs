@@ -1,3 +1,4 @@
+use rust_i18n::t;
 use std::{path::PathBuf, rc::Rc, thread};
 
 use ratatui::{
@@ -308,9 +309,12 @@ impl<'a> CreateTagView<'a> {
             &self.ctx.color_theme,
             &self.ctx.keybind,
             &[
-                h(&[UserEvent::Confirm], "submit"),
-                h(&[UserEvent::Cancel], "cancel"),
-                h(&[UserEvent::NavigateDown, UserEvent::NavigateUp], "nav"),
+                h(&[UserEvent::Confirm], t!("common.hint.submit")),
+                h(&[UserEvent::Cancel], t!("common.hint.cancel")),
+                h(
+                    &[UserEvent::NavigateDown, UserEvent::NavigateUp],
+                    t!("common.hint.nav"),
+                ),
             ],
         );
         f.render_widget(Paragraph::new(hints).centered(), hint_area);

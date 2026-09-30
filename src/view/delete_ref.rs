@@ -1,3 +1,4 @@
+use rust_i18n::t;
 use std::{path::PathBuf, rc::Rc, thread};
 
 use ratatui::{
@@ -290,11 +291,11 @@ impl<'a> DeleteRefView<'a> {
             &self.ctx.color_theme,
             &self.ctx.keybind,
             &[
-                h(&[UserEvent::Confirm], "delete"),
-                h(&[UserEvent::Cancel], "cancel"),
+                h(&[UserEvent::Confirm], t!("common.hint.delete")),
+                h(&[UserEvent::Cancel], t!("common.hint.cancel")),
                 h(
                     &[UserEvent::NavigateLeft, UserEvent::NavigateRight],
-                    "toggle",
+                    t!("common.hint.toggle"),
                 ),
             ],
         );

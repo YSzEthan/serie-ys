@@ -18,6 +18,8 @@ use std::{
     time::{Duration, Instant},
 };
 
+use rust_i18n::t;
+
 use crate::{
     event::{AppEvent, Sender},
     git::{self, Repository, SortCommit, WorkingChanges},
@@ -301,10 +303,13 @@ fn working_tree_worker_loop(
                 // （`NotifyError`），這裡吞掉避免跟它搶狀態列。
             }
             Err(payload) => {
-                tx.send(AppEvent::NotifyError(format!(
-                    "working changes reload panicked: {}",
-                    panic_message(payload)
-                )));
+                tx.send(AppEvent::NotifyError(
+                    t!(
+                        "app.reload.working_changes_panicked",
+                        detail = panic_message(payload)
+                    )
+                    .into_owned(),
+                ));
             }
         }
         last_cost = start.elapsed();
@@ -355,7 +360,7 @@ fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
     } else if let Some(s) = payload.downcast_ref::<String>() {
         s.clone()
     } else {
-        "unknown panic".to_string()
+        t!("app.reload.unknown_panic").into_owned()
     }
 }
 
@@ -430,10 +435,9 @@ fn full_worker_loop(
                 tx.send(AppEvent::NotifyError(e.to_string()));
             }
             Err(payload) => {
-                tx.send(AppEvent::NotifyError(format!(
-                    "reload panicked: {}",
-                    panic_message(payload)
-                )));
+                tx.send(AppEvent::NotifyError(
+                    t!("app.reload.panicked", detail = panic_message(payload)).into_owned(),
+                ));
             }
         }
         *state.lock().unwrap_or_else(PoisonError::into_inner) = next_state;

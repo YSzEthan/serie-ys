@@ -3,6 +3,7 @@ mod preview;
 mod render;
 mod timeline;
 
+use rust_i18n::t;
 use std::{
     cell::Cell,
     time::{Duration, Instant},
@@ -633,62 +634,64 @@ impl<'a> GitHubView<'a> {
         match self.focus {
             GitHubFocus::CheckboxEdit => {
                 vec![
-                    h(&[UserEvent::NavigateLeft], "toggle"),
-                    h(&[UserEvent::Confirm], "submit"),
-                    h(&[UserEvent::Cancel], "cancel"),
+                    h(&[UserEvent::NavigateLeft], t!("common.hint.toggle")),
+                    h(&[UserEvent::Confirm], t!("common.hint.submit")),
+                    h(&[UserEvent::Cancel], t!("common.hint.cancel")),
                 ]
             }
             GitHubFocus::Prompt => {
                 vec![
-                    h(&[UserEvent::Confirm], "done"),
-                    h(&[UserEvent::Cancel], "clear/close"),
+                    h(&[UserEvent::Confirm], t!("common.hint.done")),
+                    h(&[UserEvent::Cancel], t!("common.hint.clear_close")),
                 ]
             }
             GitHubFocus::Preview => {
-                let mut hints = vec![h(&[UserEvent::Cancel], "back")];
+                let mut hints = vec![h(&[UserEvent::Cancel], t!("common.hint.back"))];
                 hints.extend(self.action_hints());
                 hints.extend(self.commit_log_hint());
                 if self.selected_has_related() {
-                    hints.push(h(&[UserEvent::DetailPaneToggle], "related"));
+                    hints.push(h(&[UserEvent::DetailPaneToggle], t!("common.hint.related")));
                 }
-                hints.push(h(&[UserEvent::Refresh], "refresh"));
+                hints.push(h(&[UserEvent::Refresh], t!("common.hint.refresh")));
                 hints
             }
             GitHubFocus::List => {
                 if self.current_list_len() == 0 {
                     return match &self.load_state {
-                        LoadState::Loading => vec![h(&[UserEvent::Cancel], "close")],
+                        LoadState::Loading => {
+                            vec![h(&[UserEvent::Cancel], t!("common.hint.close"))]
+                        }
                         LoadState::Error(_) => {
                             vec![
-                                h(&[UserEvent::Refresh], "retry"),
-                                h(&[UserEvent::Cancel], "close"),
+                                h(&[UserEvent::Refresh], t!("common.hint.retry")),
+                                h(&[UserEvent::Cancel], t!("common.hint.close")),
                             ]
                         }
                         LoadState::Idle => vec![
-                            h(&[UserEvent::Refresh], "refresh"),
-                            h(&[UserEvent::Cancel], "close"),
+                            h(&[UserEvent::Refresh], t!("common.hint.refresh")),
+                            h(&[UserEvent::Cancel], t!("common.hint.close")),
                         ],
                     };
                 }
                 // contextual action 隨選取項目變動、使用者猜不到，排在靜態提示之前，
                 // 讓被終端寬度切掉的是 help 裡查得到的那些。
-                let mut hints = vec![h(&[UserEvent::RefList], "switch tab")];
+                let mut hints = vec![h(&[UserEvent::RefList], t!("common.hint.switch_tab"))];
                 hints.extend(self.action_hints());
                 hints.extend([
-                    h(&[UserEvent::Search], "search"),
-                    h(&[UserEvent::Confirm], "preview"),
-                    h(&[UserEvent::Refresh], "refresh"),
-                    h(&[UserEvent::Filter], "filter"),
-                    h(&[UserEvent::ShortCopy], "copy url"),
-                    h(&[UserEvent::FullCopy], "open"),
-                    h(&[UserEvent::TagCopy], "#num"),
+                    h(&[UserEvent::Search], t!("common.hint.search")),
+                    h(&[UserEvent::Confirm], t!("common.hint.preview")),
+                    h(&[UserEvent::Refresh], t!("common.hint.refresh")),
+                    h(&[UserEvent::Filter], t!("common.hint.filter")),
+                    h(&[UserEvent::ShortCopy], t!("common.hint.copy_url")),
+                    h(&[UserEvent::FullCopy], t!("common.hint.open")),
+                    h(&[UserEvent::TagCopy], t!("common.hint.num")),
                 ]);
                 hints.extend(self.commit_log_hint());
                 hints.extend(self.label_mode_hint());
                 if self.selected_has_related() {
-                    hints.push(h(&[UserEvent::DetailPaneToggle], "related"));
+                    hints.push(h(&[UserEvent::DetailPaneToggle], t!("common.hint.related")));
                 }
-                hints.push(h(&[UserEvent::GitHubToggle], "close"));
+                hints.push(h(&[UserEvent::GitHubToggle], t!("common.hint.close")));
                 hints
             }
         }
@@ -849,7 +852,7 @@ impl<'a> GitHubView<'a> {
             let idx = self.actual_index(self.selected_index);
             if let Some(pr) = self.pull_requests.get(idx) {
                 if !pr.is_draft {
-                    hints.push(h(&[UserEvent::MergePr], "merge PR"));
+                    hints.push(h(&[UserEvent::MergePr], t!("common.hint.merge_pr")));
                 }
                 hints.push(h(
                     &[UserEvent::TogglePrDraft],
@@ -880,7 +883,7 @@ impl<'a> GitHubView<'a> {
     /// 只在色塊模式下顯示——名稱模式是預設，不需要提示佔狀態列空間。
     fn label_mode_hint(&self) -> Option<HintSpec> {
         (self.label_mode == LabelMode::Swatches)
-            .then(|| h(&[UserEvent::CreateTag], "show label names"))
+            .then(|| h(&[UserEvent::CreateTag], t!("common.hint.show_label_names")))
     }
 
     pub fn jump_to_issue(&mut self, number: u64) -> bool {

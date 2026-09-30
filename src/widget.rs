@@ -6,6 +6,8 @@ pub mod pending_overlay;
 pub mod ref_list;
 pub(crate) mod scroll;
 
+use std::borrow::Cow;
+
 use ratatui::{
     style::{Color, Style},
     text::{Line, Span},
@@ -26,11 +28,12 @@ pub(crate) const ELLIPSIS_RESERVE: usize = 2;
 
 /// 一組提示。多個 event 共同構成一個動作時（例如 ←→ 同為 toggle），
 /// 各取其 display key 後用 `/` 串起來。
-pub type HintSpec = (&'static [UserEvent], &'static str);
+pub type HintSpec = (&'static [UserEvent], Cow<'static, str>);
 
 /// 建 `HintSpec` 的簡寫，比照 `view::help` 的 `fn b(...)`。
-pub const fn h(events: &'static [UserEvent], desc: &'static str) -> HintSpec {
-    (events, desc)
+/// `desc` 一律傳 `t!("...")`。
+pub fn h(events: &'static [UserEvent], desc: impl Into<Cow<'static, str>>) -> HintSpec {
+    (events, desc.into())
 }
 
 /// 把 `HintSpec` 解析成可渲染的 `(按鍵, 說明)`。
@@ -38,7 +41,7 @@ pub const fn h(events: &'static [UserEvent], desc: &'static str) -> HintSpec {
 /// 一組裡**全部** event 都沒綁定才整組略過；只綁到一部分就顯示綁到的那些
 /// —— 使用者解掉 `navigate_right` 之後，`h/l:commit` 會變成 `h:commit`，
 /// 而不是整組消失讓他以為連 `h` 都沒了。
-pub fn hint_pairs(keybind: &KeyBind, hints: &[HintSpec]) -> Vec<(String, &'static str)> {
+pub fn hint_pairs<'a>(keybind: &KeyBind, hints: &'a [HintSpec]) -> Vec<(String, &'a str)> {
     hints
         .iter()
         .filter_map(|(events, desc)| {
@@ -46,7 +49,7 @@ pub fn hint_pairs(keybind: &KeyBind, hints: &[HintSpec]) -> Vec<(String, &'stati
                 .iter()
                 .filter_map(|e| keybind.display_key(*e))
                 .collect();
-            (!keys.is_empty()).then(|| (keys.join("/"), *desc))
+            (!keys.is_empty()).then(|| (keys.join("/"), desc.as_ref()))
         })
         .collect()
 }

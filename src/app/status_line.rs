@@ -1,4 +1,6 @@
-use std::{path::PathBuf, rc::Rc};
+use std::{borrow::Cow, path::PathBuf, rc::Rc};
+
+use rust_i18n::t;
 
 use ratatui::{
     crossterm::event::{KeyCode, KeyEvent},
@@ -25,15 +27,21 @@ use crate::{
 
 use super::AppContext;
 
-const ESC_CANCEL: &str = "(Esc to cancel)";
+fn esc_cancel() -> Cow<'static, str> {
+    t!("common.esc_cancel")
+}
 
 /// `RestartPrompt` 取消後留下的提醒；`maybe_open_restart_prompt`（app.rs）
 /// 守衛沒過時也是同一句，兩處共用同一份字面值不會漂移。
-pub(super) const UPDATE_INSTALLED_HINT: &str = "Updated — restart ysgit to apply";
+pub(super) fn update_installed_hint() -> Cow<'static, str> {
+    t!("app.status.update_installed")
+}
 
 /// `AppEvent::AutoFetchCompleted` 顯示用的固定文案，唯一生產者是
 /// `app.rs` 的處理端；`auto_fetch` 模組不帶 payload，見該事件的文件。
-pub(super) const AUTO_FETCH_SUCCESS_MSG: &str = "Auto-fetched new commits";
+pub(super) fn auto_fetch_success_msg() -> Cow<'static, str> {
+    t!("app.status.auto_fetched")
+}
 
 fn picker_digit_index(key: KeyEvent) -> Option<usize> {
     let KeyCode::Char(c) = key.code else {
@@ -46,14 +54,16 @@ fn picker_digit_index(key: KeyEvent) -> Option<usize> {
 /// 單階段 y/n 確認的狀態列，與 [`StatusLineState::yes_no_answer`] 接受的鍵一致。
 /// `confirm_desc` 讓呼叫端換掉「confirm」這個字（例如合併 PR 用「execute」更貼切），
 /// 按鍵本身固定是 `UserEvent::Confirm`／`UserEvent::Cancel`。
-fn confirm_line(prompt: String, confirm_desc: &'static str, ctx: &AppContext) -> Line<'static> {
-    let hints = hint_pairs(
-        &ctx.keybind,
-        &[
-            h(&[UserEvent::Confirm], confirm_desc),
-            h(&[UserEvent::Cancel], "cancel"),
-        ],
-    );
+fn confirm_line(
+    prompt: String,
+    confirm_desc: Cow<'static, str>,
+    ctx: &AppContext,
+) -> Line<'static> {
+    let specs = [
+        h(&[UserEvent::Confirm], confirm_desc),
+        h(&[UserEvent::Cancel], t!("common.hint.cancel")),
+    ];
+    let hints = hint_pairs(&ctx.keybind, &specs);
     let mut spans: Vec<Span<'static>> = vec![prompt.into()];
     let hint_fg = ctx.color_theme.status_interactive_fg;
     spans.extend(hint_line(&ctx.color_theme, &hints, hint_fg).spans);
@@ -63,30 +73,36 @@ fn confirm_line(prompt: String, confirm_desc: &'static str, ctx: &AppContext) ->
 fn build_hotkey_hints(view: &View, ctx: &AppContext) -> Line<'static> {
     let hints: Vec<HintSpec> = match view {
         View::List(_) => vec![
-            h(&[UserEvent::Search], "search"),
-            h(&[UserEvent::Filter], "filter"),
-            h(&[UserEvent::IgnoreCaseToggle], "case"),
-            h(&[UserEvent::FuzzyToggle], "fuzzy"),
-            h(&[UserEvent::TargetToggle], "target"),
-            h(&[UserEvent::CreateTag], "tag"),
-            h(&[UserEvent::RefList], "refs"),
-            h(&[UserEvent::RemoteRefsToggle], "remote"),
-            h(&[UserEvent::GitHubToggle], "github"),
-            h(&[UserEvent::Refresh], "refresh"),
-            h(&[UserEvent::HelpToggle], "help"),
+            h(&[UserEvent::Search], t!("common.hint.search")),
+            h(&[UserEvent::Filter], t!("common.hint.filter")),
+            h(&[UserEvent::IgnoreCaseToggle], t!("common.hint.case")),
+            h(&[UserEvent::FuzzyToggle], t!("common.hint.fuzzy")),
+            h(&[UserEvent::TargetToggle], t!("common.hint.target")),
+            h(&[UserEvent::CreateTag], t!("common.hint.tag")),
+            h(&[UserEvent::RefList], t!("common.hint.refs")),
+            h(&[UserEvent::RemoteRefsToggle], t!("common.hint.remote")),
+            h(&[UserEvent::GitHubToggle], t!("common.hint.github")),
+            h(&[UserEvent::Refresh], t!("common.hint.refresh")),
+            h(&[UserEvent::HelpToggle], t!("common.hint.help")),
         ],
         View::Detail(ref view) => view.status_hints(),
         View::Refs(_) => vec![
-            h(&[UserEvent::NavigateDown, UserEvent::NavigateUp], "move"),
-            h(&[UserEvent::Checkout], "checkout"),
-            h(&[UserEvent::DeleteRef], "delete"),
-            h(&[UserEvent::Refresh], "refresh"),
-            h(&[UserEvent::HelpToggle], "help"),
-            h(&[UserEvent::Cancel, UserEvent::RefList], "close"),
+            h(
+                &[UserEvent::NavigateDown, UserEvent::NavigateUp],
+                t!("common.hint.move"),
+            ),
+            h(&[UserEvent::Checkout], t!("common.hint.checkout")),
+            h(&[UserEvent::DeleteRef], t!("common.hint.delete")),
+            h(&[UserEvent::Refresh], t!("common.hint.refresh")),
+            h(&[UserEvent::HelpToggle], t!("common.hint.help")),
+            h(
+                &[UserEvent::Cancel, UserEvent::RefList],
+                t!("common.hint.close"),
+            ),
         ],
         View::CreateTag(_) | View::DeleteTag(_) | View::DeleteRef(_) => vec![
-            h(&[UserEvent::Confirm], "confirm"),
-            h(&[UserEvent::Cancel], "cancel"),
+            h(&[UserEvent::Confirm], t!("common.hint.confirm")),
+            h(&[UserEvent::Cancel], t!("common.hint.cancel")),
         ],
         View::UserCommand(_) => crate::view::user_command::status_hints(),
         // Up/Down／PageUp/PageDown 不經過 `KeyBind`（見
@@ -94,29 +110,35 @@ fn build_hotkey_hints(view: &View, ctx: &AppContext) -> Line<'static> {
         // return 手動補上這兩組固定提示——其餘 view 都走尾端共用的
         // `keybind_hint_line` 入口，不必為了這一個特例把它拆開。
         View::Shell(_) => {
-            let mut pairs = hint_pairs(
-                &ctx.keybind,
-                &[
-                    h(&[UserEvent::Confirm], "run"),
-                    h(&[UserEvent::Cancel], "close"),
-                ],
-            );
+            let specs = [
+                h(&[UserEvent::Confirm], t!("common.hint.run")),
+                h(&[UserEvent::Cancel], t!("common.hint.close")),
+            ];
+            let history = t!("common.hint.history");
+            let scroll = t!("common.hint.scroll");
+            let mut pairs = hint_pairs(&ctx.keybind, &specs);
             pairs.extend([
-                ("↑↓".to_string(), "history"),
-                ("PgUp/PgDn".to_string(), "scroll"),
+                ("↑↓".to_string(), history.as_ref()),
+                ("PgUp/PgDn".to_string(), scroll.as_ref()),
             ]);
             return hint_line(&ctx.color_theme, &pairs, ctx.color_theme.help_key_fg);
         }
         View::Help(_) => vec![
-            h(&[UserEvent::NavigateDown, UserEvent::NavigateUp], "scroll"),
-            h(&[UserEvent::Close], "close"),
+            h(
+                &[UserEvent::NavigateDown, UserEvent::NavigateUp],
+                t!("common.hint.scroll"),
+            ),
+            h(&[UserEvent::Close], t!("common.hint.close")),
         ],
         View::GitHub(ref view) => view.status_hints(),
         View::ReleaseNotes(_) => vec![
-            h(&[UserEvent::NavigateDown, UserEvent::NavigateUp], "scroll"),
-            h(&[UserEvent::HalfPageDown], "half"),
-            h(&[UserEvent::PageDown], "page"),
-            h(&[UserEvent::Close], "close"),
+            h(
+                &[UserEvent::NavigateDown, UserEvent::NavigateUp],
+                t!("common.hint.scroll"),
+            ),
+            h(&[UserEvent::HalfPageDown], t!("common.hint.half")),
+            h(&[UserEvent::PageDown], t!("common.hint.page")),
+            h(&[UserEvent::Close], t!("common.hint.close")),
         ],
         // 窮舉而非 `_`：新增一個 view 時要在這裡被編譯器叫住，
         // 而不是靜默得到一條空提示列。
@@ -349,7 +371,7 @@ impl StatusLineState {
     /// 輪才變成通知，等於平白多一幀「先閃一下 hint 列才出現提示」。
     pub(super) fn open_related_picker(&mut self, items: Vec<RelatedItem>) {
         if items.is_empty() {
-            self.set_notification_info("No related issues".into());
+            self.set_notification_info(t!("app.status.no_related").into_owned());
         } else {
             self.line = StatusLine::RelatedPicker { items };
         }
@@ -500,8 +522,8 @@ impl StatusLineState {
     fn full_reload_span(&self, status: FullStatus) -> Option<Span<'static>> {
         let text = match status {
             FullStatus::Idle => return None,
-            FullStatus::Loading => "\u{27F3} loading  ",
-            FullStatus::Ready => "\u{27F3} update pending  ",
+            FullStatus::Loading => t!("app.status.reload_loading"),
+            FullStatus::Ready => t!("app.status.reload_pending"),
         };
         Some(Span::styled(
             text,
@@ -893,7 +915,7 @@ impl StatusLineState {
             // RestartPrompt 取消時更新其實已經做完了，跟其餘 prompt「取消 =
             // 什麼都沒發生」不同——靜默清空會讓使用者忘記要手動重啟，留一句話。
             if matches!(prompt, StatusLine::RestartPrompt { .. }) {
-                self.line = StatusLine::NotificationSuccess(UPDATE_INSTALLED_HINT.to_string());
+                self.line = StatusLine::NotificationSuccess(update_installed_hint().into_owned());
             }
             return;
         }
@@ -1004,21 +1026,21 @@ impl StatusLineState {
             StatusLine::RefPicker { options, kind } => self.render_picker_line(
                 kind.picker_prompt(),
                 options.iter().map(String::as_str),
-                ESC_CANCEL.into(),
+                esc_cancel().into_owned(),
             ),
             StatusLine::CheckoutPicker { options, kind } => self.render_picker_line(
                 kind.picker_prompt(),
                 options.iter().map(String::as_str),
-                ESC_CANCEL.into(),
+                esc_cancel().into_owned(),
             ),
             StatusLine::ChildPicker { options, total } => {
                 let tail = if *total > options.len() {
-                    format!("(+{} more)", total - options.len())
+                    t!("app.status.more", n = total - options.len()).into_owned()
                 } else {
-                    ESC_CANCEL.into()
+                    esc_cancel().into_owned()
                 };
                 self.render_picker_line(
-                    "Go to child: ",
+                    t!("app.status.go_to_child"),
                     options.iter().map(|o| o.label.as_str()),
                     tail,
                 )
@@ -1026,21 +1048,27 @@ impl StatusLineState {
             StatusLine::RelatedPicker { items } => self.render_related_picker_line(items),
             StatusLine::DeleteBranchPicker { options, total } => {
                 let tail = if *total > options.len() {
-                    format!("(+{} more, use tab view)", total - options.len())
+                    t!("app.status.more_tab_view", n = total - options.len()).into_owned()
                 } else {
-                    ESC_CANCEL.into()
+                    esc_cancel().into_owned()
                 };
-                self.render_picker_line("Delete branch: ", options.iter().map(String::as_str), tail)
+                self.render_picker_line(
+                    t!("app.status.delete_branch"),
+                    options.iter().map(String::as_str),
+                    tail,
+                )
             }
             StatusLine::DeleteBranchConfirm { name } => {
                 let hint_fg = self.ctx.color_theme.status_interactive_fg;
                 Line::from(vec![
-                    format!("Delete '{name}'? ").into(),
-                    "[y]es".fg(hint_fg),
+                    t!("app.status.delete_branch_confirm", name = name)
+                        .into_owned()
+                        .into(),
+                    format!("[y] {}", t!("common.yes")).fg(hint_fg),
                     " / ".into(),
-                    "[n]o".fg(hint_fg),
+                    format!("[n] {}", t!("common.no")).fg(hint_fg),
                     " / ".into(),
-                    "[f]orce".fg(hint_fg),
+                    format!("[f] {}", t!("common.force")).fg(hint_fg),
                 ])
             }
             StatusLine::MergePrPrompt {
@@ -1054,18 +1082,24 @@ impl StatusLineState {
                 kind,
                 action,
                 ..
-            } => confirm_line(action.prompt(*kind, *number), "confirm", &self.ctx),
+            } => confirm_line(
+                action.prompt(*kind, *number),
+                t!("common.hint.confirm"),
+                &self.ctx,
+            ),
             StatusLine::TogglePrDraftPrompt { number, action, .. } => {
-                confirm_line(action.prompt(*number), "confirm", &self.ctx)
+                confirm_line(action.prompt(*number), t!("common.hint.confirm"), &self.ctx)
             }
             StatusLine::UpdatePrompt { tag } => confirm_line(
                 format!("v{} → {tag}", env!("CARGO_PKG_VERSION")),
-                "update",
+                t!("common.hint.update"),
                 &self.ctx,
             ),
-            StatusLine::RestartPrompt { tag, .. } => {
-                confirm_line(format!("Updated to {tag}."), "restart", &self.ctx)
-            }
+            StatusLine::RestartPrompt { tag, .. } => confirm_line(
+                t!("app.status.updated_to", tag = tag).into_owned(),
+                t!("common.hint.restart"),
+                &self.ctx,
+            ),
             StatusLine::NotificationInfo(msg) => {
                 Line::raw(msg).fg(self.ctx.color_theme.status_info_fg)
             }
@@ -1075,9 +1109,11 @@ impl StatusLineState {
             StatusLine::NotificationWarn(msg) => Line::raw(msg)
                 .add_modifier(Modifier::BOLD)
                 .fg(self.ctx.color_theme.status_warn_fg),
-            StatusLine::NotificationError(msg) => Line::raw(format!("ERROR: {msg}"))
-                .add_modifier(Modifier::BOLD)
-                .fg(self.ctx.color_theme.status_error_fg),
+            StatusLine::NotificationError(msg) => {
+                Line::raw(t!("app.status.error", msg = msg).into_owned())
+                    .add_modifier(Modifier::BOLD)
+                    .fg(self.ctx.color_theme.status_error_fg)
+            }
         };
 
         // 插入點只有這一個，不在 match 的個別 arm 裡各插一次——要不要擴到
@@ -1148,7 +1184,11 @@ impl StatusLineState {
             spans.push(span);
         }
         spans.push("  ".into());
-        spans.push(ESC_CANCEL.fg(self.ctx.color_theme.status_interactive_fg));
+        spans.push(
+            esc_cancel()
+                .into_owned()
+                .fg(self.ctx.color_theme.status_interactive_fg),
+        );
         Line::from(spans)
     }
 
@@ -1158,11 +1198,11 @@ impl StatusLineState {
     /// `label` 欄位——不用為了統一型別多 clone 一份 `Vec<String>`。
     fn render_picker_line<'s>(
         &self,
-        prompt: &'s str,
+        prompt: impl Into<Cow<'s, str>>,
         labels: impl Iterator<Item = &'s str>,
         tail: String,
     ) -> Line<'s> {
-        let mut spans: Vec<Span<'s>> = vec![prompt.into()];
+        let mut spans: Vec<Span<'s>> = vec![Span::raw(prompt.into())];
         for (i, name) in labels.enumerate() {
             spans.push(format!("[{}]", i + 1).fg(self.ctx.color_theme.status_interactive_fg));
             spans.push(name.into());
@@ -1181,57 +1221,68 @@ impl StatusLineState {
         let hint_fg = self.ctx.color_theme.status_interactive_fg;
         match stage {
             MergePrStage::PickMethod => Line::from(vec![
-                format!("Merge PR #{number} ({head_ref}): ").into(),
-                "[m]".fg(hint_fg),
-                "erge  ".into(),
-                "[s]".fg(hint_fg),
-                "quash  ".into(),
-                "[r]".fg(hint_fg),
-                "ebase  ".into(),
-                "(Esc cancel)".fg(hint_fg),
+                t!(
+                    "app.status.merge_pick",
+                    number = number,
+                    head_ref = head_ref
+                )
+                .into_owned()
+                .into(),
+                "[m] merge  ".fg(hint_fg),
+                "[s] squash  ".fg(hint_fg),
+                "[r] rebase  ".fg(hint_fg),
+                esc_cancel().into_owned().fg(hint_fg),
             ]),
             MergePrStage::AskDeleteLocal { method } => Line::from(vec![
-                format!(
-                    "Delete local branch '{head_ref}' after {} merge? ",
-                    method.display()
+                t!(
+                    "app.status.merge_ask_delete_local",
+                    head_ref = head_ref,
+                    method = method.display()
                 )
+                .into_owned()
                 .into(),
-                "[y]es".fg(hint_fg),
+                format!("[y] {}", t!("common.yes")).fg(hint_fg),
                 " / ".into(),
-                "[n]o".fg(hint_fg),
-                "  (Esc cancel)".fg(hint_fg),
+                format!("[n] {}", t!("common.no")).fg(hint_fg),
+                format!("  {}", esc_cancel()).fg(hint_fg),
             ]),
             MergePrStage::AskDeleteRemote { method, .. } => Line::from(vec![
-                format!(
-                    "Delete remote branch '{head_ref}' after {} merge? ",
-                    method.display()
+                t!(
+                    "app.status.merge_ask_delete_remote",
+                    head_ref = head_ref,
+                    method = method.display()
                 )
+                .into_owned()
                 .into(),
-                "[y]es".fg(hint_fg),
+                format!("[y] {}", t!("common.yes")).fg(hint_fg),
                 " / ".into(),
-                "[n]o".fg(hint_fg),
-                "  (Esc cancel)".fg(hint_fg),
+                format!("[n] {}", t!("common.no")).fg(hint_fg),
+                format!("  {}", esc_cancel()).fg(hint_fg),
             ]),
             MergePrStage::Confirm {
                 method,
                 delete_local,
                 delete_remote,
             } => {
-                let local_suffix = match delete_local {
-                    BranchDelete::Confirmed => ", delete local branch: yes",
-                    BranchDelete::Declined => ", delete local branch: no",
-                    BranchDelete::NotOffered => "",
+                let local = match delete_local {
+                    BranchDelete::Confirmed => t!("app.status.merge_local_yes"),
+                    BranchDelete::Declined => t!("app.status.merge_local_no"),
+                    BranchDelete::NotOffered => Cow::Borrowed(""),
                 };
-                let remote_suffix = match delete_remote {
-                    BranchDelete::Confirmed => ", delete remote branch: yes",
-                    BranchDelete::Declined => ", delete remote branch: no",
-                    BranchDelete::NotOffered => "",
+                let remote = match delete_remote {
+                    BranchDelete::Confirmed => t!("app.status.merge_remote_yes"),
+                    BranchDelete::Declined => t!("app.status.merge_remote_no"),
+                    BranchDelete::NotOffered => Cow::Borrowed(""),
                 };
-                let prompt = format!(
-                    "Merge #{number} with {}{local_suffix}{remote_suffix}  ",
-                    method.display()
-                );
-                confirm_line(prompt, "execute", &self.ctx)
+                let prompt = t!(
+                    "app.status.merge_confirm",
+                    number = number,
+                    method = method.display(),
+                    local = local,
+                    remote = remote
+                )
+                .into_owned();
+                confirm_line(prompt, t!("common.hint.run"), &self.ctx)
             }
         }
     }
@@ -1814,7 +1865,7 @@ mod tests {
 
         assert!(matches!(
             &state.line,
-            StatusLine::NotificationSuccess(msg) if msg == UPDATE_INSTALLED_HINT
+            StatusLine::NotificationSuccess(msg) if *msg == update_installed_hint()
         ));
         assert!(rx.try_recv().is_err());
     }
