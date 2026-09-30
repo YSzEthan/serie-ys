@@ -55,7 +55,7 @@ pub(super) fn build_preview_content(
 
     let mut meta_spans = vec![
         Span::styled(
-            item.state.to_lowercase(),
+            state_label(item.state),
             Style::default().fg(state_color(item.state)),
         ),
         Span::styled(
