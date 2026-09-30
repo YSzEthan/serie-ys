@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.6.1](https://github.com/YSzEthan/serie-ys/compare/v4.6.0...v4.6.1) (2026-09-30)
+
+
+### Bug Fixes
+
+* 按 g 進 GitHub 視圖時一律重新抓取快取資料 (#142) (#143) ([e4b3d70](https://github.com/YSzEthan/serie-ys/commit/e4b3d704554c844e57204c525ea77b022b5df747))
+
 ## [4.6.0](https://github.com/YSzEthan/serie-ys/compare/v4.5.1...v4.6.0) (2026-09-29)
 
 
