@@ -313,11 +313,13 @@ impl<'a> DetailView<'a> {
                 if let Some(ref mut cls) = self.commit_list_state {
                     let show = cls.toggle_remote_refs();
                     if show {
-                        self.tx
-                            .send(AppEvent::NotifyInfo("Remote refs: shown".into()));
+                        self.tx.send(AppEvent::NotifyInfo(
+                            t!("view.list.remote_refs_shown").into_owned(),
+                        ));
                     } else {
-                        self.tx
-                            .send(AppEvent::NotifyInfo("Remote refs: hidden".into()));
+                        self.tx.send(AppEvent::NotifyInfo(
+                            t!("view.list.remote_refs_hidden").into_owned(),
+                        ));
                     }
                     self.tx
                         .send_after(AppEvent::ClearStatusLine, std::time::Duration::from_secs(3));
@@ -680,7 +682,7 @@ impl<'a> DetailView<'a> {
     fn copy_commit_short_hash(&self) {
         if let DetailContent::Commit { commit, .. } = &self.content {
             self.copy_to_clipboard(
-                "Commit SHA (short)".into(),
+                t!("view.clipboard.commit_sha_short").into_owned(),
                 commit.commit_hash.as_short_hash().into(),
             );
         }
@@ -688,7 +690,10 @@ impl<'a> DetailView<'a> {
 
     fn copy_commit_subject(&self) {
         if let DetailContent::Commit { commit, .. } = &self.content {
-            self.copy_to_clipboard("Commit Subject".into(), commit.subject.clone());
+            self.copy_to_clipboard(
+                t!("view.clipboard.commit_subject").into_owned(),
+                commit.subject.clone(),
+            );
         }
     }
 
@@ -769,20 +774,21 @@ fn diff_pane_title(
 ) -> Line<'static> {
     let mut flags = Vec::new();
     if notes.binary {
-        flags.push("binary");
+        flags.push(t!("view.detail.flag.binary"));
     }
     if let Some(label) = notes.mode.map(ModeNote::label) {
         flags.push(label);
     }
     if notes.truncated {
-        flags.push("truncated");
+        flags.push(t!("view.detail.flag.truncated"));
     }
     let head = if flags.is_empty() {
         path.to_string()
     } else {
         format!("{path}{TITLE_SEP}{}", flags.join(TITLE_SEP))
     };
-    let hunk = hunk_display.map(|(current, total)| format!("hunk {current}/{total}"));
+    let hunk = hunk_display
+        .map(|(current, total)| t!("view.detail.hunk", current = current, total = total));
 
     let width = area_width as usize;
     let head_width = display_width(&head);
@@ -861,7 +867,7 @@ mod tests {
         let line = diff_pane_title("scripts/run.sh", &notes, None, 200, &theme);
         assert_eq!(
             line.to_string(),
-            "scripts/run.sh · binary · mode → executable · truncated",
+            "scripts/run.sh · 二進位 · mode → 可執行 · 已截斷",
             "沒有 hunk（binary/純 mode 變更）就不該印出 hunk 後綴"
         );
     }

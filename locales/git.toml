@@ -1,0 +1,136 @@
+_version = 2
+
+[git.diff.mode.symlink]
+zh-TW = "symlink"
+
+[git.diff.mode.executable]
+zh-TW = "可執行"
+
+[git.diff.mode.to_executable]
+zh-TW = "mode → 可執行"
+
+[git.diff.mode.from_executable]
+zh-TW = "mode → 不可執行"
+
+[git.process.spawn_failed]
+zh-TW = "無法執行 %{program}：%{error}"
+
+[git.process.timeout]
+zh-TW = "%{program} 指令在 %{secs} 秒後逾時（網路問題？）"
+
+[git.process.wait_failed]
+zh-TW = "等待 %{program} 結束時失敗：%{error}"
+
+[git.external.osc52_write_failed]
+zh-TW = "無法寫入 OSC 52 序列：%{error}"
+
+[git.external.flush_failed]
+zh-TW = "無法 flush stdout：%{error}"
+
+[git.external.no_clipboard_command]
+zh-TW = "未指定剪貼簿指令"
+
+[git.external.run_failed]
+zh-TW = "無法執行 %{program}：%{error}"
+
+[git.external.write_failed]
+zh-TW = "無法寫入 %{program}：%{error}"
+
+[git.external.command_failed]
+zh-TW = "%{program} 失敗：%{error}"
+
+[git.external.clipboard_create_failed]
+zh-TW = "無法建立剪貼簿：%{error}"
+
+[git.external.clipboard_copy_failed]
+zh-TW = "無法複製到剪貼簿：%{error}"
+
+[git.external.non_http_url]
+zh-TW = "拒絕開啟非 http 網址：%{url}"
+
+[git.external.open_url_failed]
+zh-TW = "無法開啟網址：%{error}"
+
+[git.external.exec_failed]
+zh-TW = "無法執行指令：%{error}"
+
+[git.external.exec_nonzero_stderr]
+zh-TW = "指令以非零狀態結束：%{status}，stderr：%{stderr}"
+
+[git.external.exec_nonzero]
+zh-TW = "指令以非零狀態結束：%{status}"
+
+[git.external.no_commit_for_marker]
+zh-TW = "沒有選到 commit，無法代入 %{marker}"
+
+[git.external.windows_unsafe_value]
+zh-TW = "無法在 Windows 上安全代入含 %{chars} 的值：%{value}"
+
+[git.external.empty_shell_command]
+zh-TW = "core.shell.command 不能是空陣列"
+
+[git.external.output_truncated]
+zh-TW = "… 輸出過長，已在 %{max} bytes 截斷"
+
+[git.external.exit_status]
+zh-TW = "[指令結束：%{status}]"
+
+[git.repo.no_commits]
+zh-TW = "這個 repository 裡沒有任何 commit"
+
+[git.repo.not_a_repo]
+zh-TW = "這裡不是 git repository（上層目錄也都不是）"
+
+[git.diff.spawn_failed]
+zh-TW = "無法執行 git diff：%{error}"
+
+[git.diff.failed]
+zh-TW = "git diff 失敗：%{stderr}"
+
+[git.status.spawn_failed]
+zh-TW = "無法啟動 git status：%{error}"
+
+[git.status.stdout_failed]
+zh-TW = "無法開啟 git status 的 stdout"
+
+[git.status.wait_failed]
+zh-TW = "等待 git status 結束時失敗：%{error}"
+
+[git.status.nonzero]
+zh-TW = "git status 以非零狀態結束"
+
+[git.ref.name_empty]
+zh-TW = "Ref 名稱不可為空"
+
+[git.ref.validate_failed]
+zh-TW = "無法驗證 ref 名稱：%{error}"
+
+[git.ref.invalid_name]
+zh-TW = "無效的 ref 名稱：'%{name}'"
+
+[git.exec_failed]
+zh-TW = "無法執行 git %{subcommand}：%{error}"
+
+[git.tag.create_failed]
+zh-TW = "建立 tag 失敗"
+
+[git.tag.push_failed]
+zh-TW = "推送 tag 失敗"
+
+[git.tag.delete_failed]
+zh-TW = "刪除 tag 失敗"
+
+[git.tag.delete_remote_failed]
+zh-TW = "刪除 remote tag 失敗"
+
+[git.branch.delete_failed]
+zh-TW = "刪除 branch 失敗"
+
+[git.branch.force_delete_failed]
+zh-TW = "強制刪除 branch 失敗"
+
+[git.branch.invalid_remote_name]
+zh-TW = "remote branch 名稱格式無效：%{name}"
+
+[git.branch.delete_remote_failed]
+zh-TW = "刪除 remote branch 失敗"

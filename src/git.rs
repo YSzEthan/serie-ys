@@ -9,6 +9,7 @@ use std::{
 
 use chrono::{DateTime, FixedOffset};
 use clap::ValueEnum;
+use rust_i18n::t;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Deserialize;
 
@@ -205,7 +206,7 @@ impl Repository {
         let stashes = load_all_stashes(path);
         let commits = load_all_commits(path, sort, &head, &stashes, max_count);
         if commits.is_empty() {
-            return Err("no commits in the repository".into());
+            return Err(t!("git.repo.no_commits").into_owned().into());
         }
 
         let commits = merge_stashes_to_commits(commits, stashes);
@@ -435,13 +436,13 @@ fn run_diff(path: &Path, args: &[&str]) -> std::result::Result<(String, bool), S
         ])
         .args(args)
         .output()
-        .map_err(|e| format!("Failed to execute git diff: {e}"))?;
+        .map_err(|e| t!("git.diff.spawn_failed", error = e).into_owned())?;
 
     match output.status.code() {
         Some(0 | 1) => Ok(truncate_diff_output(&output.stdout)),
         _ => {
             let stderr = String::from_utf8_lossy(&output.stderr);
-            Err(format!("git diff failed: {stderr}"))
+            Err(t!("git.diff.failed", stderr = stderr).into_owned())
         }
     }
 }
@@ -465,8 +466,7 @@ fn truncate_diff_output(bytes: &[u8]) -> (String, bool) {
 
 fn check_git_repository(path: &Path) -> Result<()> {
     if !is_inside_work_tree(path) && !is_bare_repository(path) {
-        let msg = "not a git repository (or any of the parent directories)";
-        return Err(msg.into());
+        return Err(t!("git.repo.not_a_repo").into_owned().into());
     }
     Ok(())
 }
@@ -1221,12 +1221,12 @@ pub fn load_working_changes(path: &Path) -> Result<WorkingChanges> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|e| format!("failed to spawn git status: {e}"))?;
+        .map_err(|e| t!("git.status.spawn_failed", error = e).into_owned())?;
 
     let stdout = cmd
         .stdout
         .take()
-        .ok_or("failed to open git status stdout")?;
+        .ok_or_else(|| t!("git.status.stdout_failed").into_owned())?;
     let reader = BufReader::new(stdout);
 
     let mut staged = Vec::new();
@@ -1260,9 +1260,9 @@ pub fn load_working_changes(path: &Path) -> Result<WorkingChanges> {
 
     let status = cmd
         .wait()
-        .map_err(|e| format!("failed to wait for git status: {e}"))?;
+        .map_err(|e| t!("git.status.wait_failed", error = e).into_owned())?;
     if !status.success() {
-        return Err("git status exited with a non-zero status".into());
+        return Err(t!("git.status.nonzero").into_owned().into());
     }
 
     Ok(WorkingChanges { staged, unstaged })
@@ -1462,14 +1462,14 @@ pub fn get_initial_commit_additions(path: &Path, commit_hash: &CommitHash) -> Ve
 /// 用 `git check-ref-format` 驗證 git ref 名稱。
 fn validate_ref_name(name: &str) -> std::result::Result<(), String> {
     if name.is_empty() {
-        return Err("Ref name cannot be empty".into());
+        return Err(t!("git.ref.name_empty").into_owned());
     }
     let output = Command::new("git")
         .args(["check-ref-format", "--allow-onelevel", name])
         .output()
-        .map_err(|e| format!("Failed to validate ref name: {e}"))?;
+        .map_err(|e| t!("git.ref.validate_failed", error = e).into_owned())?;
     if !output.status.success() {
-        return Err(format!("Invalid ref name: '{name}'"));
+        return Err(t!("git.ref.invalid_name", name = name).into_owned());
     }
     Ok(())
 }
@@ -1483,10 +1483,10 @@ fn run_git_command(
         .args(args)
         .current_dir(path)
         .output()
-        .map_err(|e| format!("Failed to execute git {}: {e}", args[0]))?;
+        .map_err(|e| t!("git.exec_failed", subcommand = args[0], error = e).into_owned())?;
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("{error_prefix}: {stderr}"));
+        return Err(t!("common.failed_with", prefix = error_prefix, detail = stderr).into_owned());
     }
     Ok(())
 }
@@ -1562,28 +1562,37 @@ pub fn create_tag(
 
     let output = cmd
         .output()
-        .map_err(|e| format!("Failed to execute git tag: {e}"))?;
+        .map_err(|e| t!("git.exec_failed", subcommand = "tag", error = e).into_owned())?;
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("Failed to create tag: {stderr}"));
+        return Err(t!(
+            "common.failed_with",
+            prefix = t!("git.tag.create_failed"),
+            detail = stderr
+        )
+        .into_owned());
     }
     Ok(())
 }
 
 pub fn push_tag(path: &Path, tag_name: &str) -> std::result::Result<(), String> {
-    run_git_command(path, &["push", "origin", tag_name], "Failed to push tag")
+    run_git_command(
+        path,
+        &["push", "origin", tag_name],
+        &t!("git.tag.push_failed"),
+    )
 }
 
 pub fn delete_tag(path: &Path, tag_name: &str) -> std::result::Result<(), String> {
-    run_git_command(path, &["tag", "-d", tag_name], "Failed to delete tag")
+    run_git_command(path, &["tag", "-d", tag_name], &t!("git.tag.delete_failed"))
 }
 
 pub fn delete_remote_tag(path: &Path, tag_name: &str) -> std::result::Result<(), String> {
     run_git_command(
         path,
         &["push", "origin", "--delete", tag_name],
-        "Failed to delete remote tag",
+        &t!("git.tag.delete_remote_failed"),
     )
 }
 
@@ -1591,7 +1600,7 @@ pub fn delete_branch(path: &Path, branch_name: &str) -> std::result::Result<(), 
     run_git_command(
         path,
         &["branch", "-d", branch_name],
-        "Failed to delete branch",
+        &t!("git.branch.delete_failed"),
     )
 }
 
@@ -1599,20 +1608,20 @@ pub fn delete_branch_force(path: &Path, branch_name: &str) -> std::result::Resul
     run_git_command(
         path,
         &["branch", "-D", branch_name],
-        "Failed to force delete branch",
+        &t!("git.branch.force_delete_failed"),
     )
 }
 
 pub fn delete_remote_branch(path: &Path, branch_name: &str) -> std::result::Result<(), String> {
     let parts: Vec<&str> = branch_name.splitn(2, '/').collect();
     if parts.len() != 2 {
-        return Err(format!("Invalid remote branch name format: {branch_name}"));
+        return Err(t!("git.branch.invalid_remote_name", name = branch_name).into_owned());
     }
     let (remote, branch) = (parts[0], parts[1]);
     run_git_command(
         path,
         &["push", remote, "--delete", branch],
-        "Failed to delete remote branch",
+        &t!("git.branch.delete_remote_failed"),
     )
 }
 

@@ -19,6 +19,7 @@ pub use views::*;
 
 use ansi_to_tui::IntoText as _;
 use ratatui::text::Line;
+use rust_i18n::t;
 
 use crate::{
     event::{AppEvent, CheckoutPickKind, RefCopyKind, Sender},
@@ -49,10 +50,10 @@ pub(crate) fn dispatch_delete_branch(tx: &Sender, names: &[String], head_branch:
 
     match candidates.len() {
         0 if !names.is_empty() => tx.send(AppEvent::NotifyWarn(
-            "Cannot delete the currently checked-out branch".into(),
+            t!("view.delete_branch.checked_out").into_owned(),
         )),
         0 => tx.send(AppEvent::NotifyWarn(
-            "No local branch on this commit".into(),
+            t!("view.delete_branch.no_local").into_owned(),
         )),
         1 => tx.send(AppEvent::OpenDeleteBranchConfirm {
             name: candidates[0].to_owned(),

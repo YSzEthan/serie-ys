@@ -1,7 +1,11 @@
+use std::borrow::Cow;
+
 use ratatui::crossterm::event::{Event, KeyEvent};
+use rust_i18n::t;
 use rustc_hash::FxHashMap;
 use tui_input::backend::crossterm::EventHandler;
 use tui_input::Input;
+use unicode_width::UnicodeWidthStr;
 
 use crate::config::SearchTarget;
 use crate::fuzzy::SearchMatcher;
@@ -34,12 +38,33 @@ impl MatchOptions {
     /// 三個維度都講、永不省略——不會有「沒顯示 = 哪個狀態」的歧義。
     pub fn status_string(&self) -> String {
         let case = if self.ignore_case {
-            "ignore-case"
+            t!("view.search.opt.ignore_case")
         } else {
-            "case-sensitive"
+            t!("view.search.opt.case_sensitive")
         };
-        let matcher = if self.fuzzy { "fuzzy" } else { "substring" };
-        format!("[{case}] [{matcher}] [target: {}]", self.target.as_str())
+        let matcher = if self.fuzzy {
+            t!("view.search.opt.fuzzy")
+        } else {
+            t!("view.search.opt.substring")
+        };
+        t!(
+            "view.search.options",
+            case = case,
+            matcher = matcher,
+            target = target_label(self.target)
+        )
+        .into_owned()
+    }
+}
+
+/// 搜尋比對欄位的顯示名稱（`SearchTarget::as_str` 是 config 用的邏輯值，不翻）。
+fn target_label(target: SearchTarget) -> Cow<'static, str> {
+    match target {
+        SearchTarget::All => t!("view.search.target.all"),
+        SearchTarget::Subject => t!("view.search.target.subject"),
+        SearchTarget::Author => t!("view.search.target.author"),
+        SearchTarget::Hash => t!("view.search.target.hash"),
+        SearchTarget::Ref => t!("view.search.target.ref"),
     }
 }
 
@@ -92,11 +117,22 @@ impl TransientMessage {
     fn text(self) -> Option<String> {
         match self {
             Self::None => None,
-            Self::IgnoreCaseOn => Some("Ignore case: ON ".to_string()),
-            Self::IgnoreCaseOff => Some("Ignore case: OFF".to_string()),
-            Self::FuzzyOn => Some("Fuzzy match: ON ".to_string()),
-            Self::FuzzyOff => Some("Fuzzy match: OFF".to_string()),
-            Self::Target(target) => Some(format!("Target: {:<7}", target.as_str().to_uppercase())),
+            Self::IgnoreCaseOn => Some(t!("view.search.msg.ignore_case_on").into_owned()),
+            Self::IgnoreCaseOff => Some(t!("view.search.msg.ignore_case_off").into_owned()),
+            Self::FuzzyOn => Some(t!("view.search.msg.fuzzy_on").into_owned()),
+            Self::FuzzyOff => Some(t!("view.search.msg.fuzzy_off").into_owned()),
+            Self::Target(target) => {
+                // 補空白到固定顯示寬度，切換欄位時才蓋得掉上一則較長的訊息
+                let label = target_label(target);
+                let pad = 6usize.saturating_sub(label.width());
+                Some(
+                    t!(
+                        "view.search.msg.target",
+                        target = format!("{label}{}", " ".repeat(pad))
+                    )
+                    .into_owned(),
+                )
+            }
         }
     }
 }
@@ -560,11 +596,17 @@ impl<'a> CommitListState<'a> {
             let query = self.search_input.value();
             let options = self.search_options.status_string();
             if total_match == 0 {
-                let msg = format!("No matches found (query: \"{query}\") {options}");
+                let msg = t!("view.search.no_match", query = query, options = options).into_owned();
                 Some((msg, false))
             } else {
-                let msg =
-                    format!("Match {match_index} of {total_match} (query: \"{query}\") {options}");
+                let msg = t!(
+                    "view.search.match_of",
+                    index = match_index,
+                    total = total_match,
+                    query = query,
+                    options = options
+                )
+                .into_owned();
                 Some((msg, true))
             }
         } else {
@@ -750,15 +792,19 @@ impl<'a> CommitListState<'a> {
 
     pub fn filter_query_string(&self) -> Option<String> {
         if let FilterState::Filtering { .. } = self.filter_state {
-            Some(format!("filter: {}", self.filter_input.value()))
+            Some(format!(
+                "{}{}",
+                t!("view.filter.prefix"),
+                self.filter_input.value()
+            ))
         } else {
             None
         }
     }
 
     pub fn filter_query_cursor_position(&self) -> u16 {
-        // "filter: " 前綴佔 8 個字元
-        8 + self.filter_input.visual_cursor() as u16
+        // 前綴的顯示寬度（全形字佔 2 格）
+        t!("view.filter.prefix").width() as u16 + self.filter_input.visual_cursor() as u16
     }
 
     pub fn filter_transient_message_string(&self) -> Option<String> {
@@ -1247,19 +1293,19 @@ mod tests {
         };
         assert_eq!(
             opts(false, false).status_string(),
-            "[case-sensitive] [substring] [target: all]"
+            "[區分大小寫] [子字串] [比對欄位：全部]"
         );
         assert_eq!(
             opts(true, false).status_string(),
-            "[ignore-case] [substring] [target: all]"
+            "[忽略大小寫] [子字串] [比對欄位：全部]"
         );
         assert_eq!(
             opts(false, true).status_string(),
-            "[case-sensitive] [fuzzy] [target: all]"
+            "[區分大小寫] [模糊] [比對欄位：全部]"
         );
         assert_eq!(
             opts(true, true).status_string(),
-            "[ignore-case] [fuzzy] [target: all]"
+            "[忽略大小寫] [模糊] [比對欄位：全部]"
         );
     }
 
@@ -1271,7 +1317,7 @@ mod tests {
         };
         assert_eq!(
             opts.status_string(),
-            "[case-sensitive] [substring] [target: author]"
+            "[區分大小寫] [子字串] [比對欄位：作者]"
         );
     }
 
@@ -1309,8 +1355,10 @@ mod tests {
 
             let (msg, matched) = state.matched_query_string().unwrap();
             assert!(matched);
-            let query_pos = msg.find("(query: \"fix\")").expect("query segment present");
-            let options_pos = msg.find("[ignore-case]").expect("options segment present");
+            let query_pos = msg
+                .find("（query：\"fix\"）")
+                .expect("query segment present");
+            let options_pos = msg.find("[忽略大小寫]").expect("options segment present");
             assert!(query_pos < options_pos, "選項摘要要排在 query 之後: {msg}");
         });
     }
@@ -1459,7 +1507,7 @@ mod tests {
 
             assert_eq!(
                 state.transient_message_string(),
-                Some("Target: SUBJECT".to_string())
+                Some("比對欄位：主旨  ".to_string())
             );
         });
     }
@@ -1472,7 +1520,7 @@ mod tests {
 
             assert_eq!(
                 state.filter_transient_message_string(),
-                Some("Target: SUBJECT".to_string())
+                Some("比對欄位：主旨  ".to_string())
             );
         });
     }

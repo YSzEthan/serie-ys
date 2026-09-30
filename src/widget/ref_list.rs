@@ -6,6 +6,7 @@ use ratatui::{
     style::Style,
     widgets::{Block, Borders, Padding, StatefulWidget, Widget},
 };
+use rust_i18n::t;
 use rustc_hash::FxHashSet;
 use semver::Version;
 
@@ -15,11 +16,6 @@ const TREE_BRANCH_ROOT_IDENT: &str = "__branches__";
 const TREE_REMOTE_ROOT_IDENT: &str = "__remotes__";
 const TREE_TAG_ROOT_IDENT: &str = "__tags__";
 const TREE_STASH_ROOT_IDENT: &str = "__stashes__";
-
-const TREE_BRANCH_ROOT_TEXT: &str = "Branches";
-const TREE_REMOTE_ROOT_TEXT: &str = "Remotes";
-const TREE_TAG_ROOT_TEXT: &str = "Tags";
-const TREE_STASH_ROOT_TEXT: &str = "Stashes";
 
 /// 自己攤平渲染的 refs 樹，取代 `tui-tree-widget`。`roots` 在建構時算好、
 /// 之後不變；`visible_rows` 隨 `opened` 展開/收合而重算，是「哪些列目前
@@ -287,22 +283,22 @@ fn build_ref_tree_nodes(refs: &[&Ref]) -> Vec<RefTreeNode> {
     vec![
         RefTreeNode {
             identifier: TREE_BRANCH_ROOT_IDENT.into(),
-            name: TREE_BRANCH_ROOT_TEXT.into(),
+            name: t!("view.refs.root.branches").into_owned(),
             children: branch_nodes,
         },
         RefTreeNode {
             identifier: TREE_REMOTE_ROOT_IDENT.into(),
-            name: TREE_REMOTE_ROOT_TEXT.into(),
+            name: t!("view.refs.root.remotes").into_owned(),
             children: remote_nodes,
         },
         RefTreeNode {
             identifier: TREE_TAG_ROOT_IDENT.into(),
-            name: TREE_TAG_ROOT_TEXT.into(),
+            name: t!("view.refs.root.tags").into_owned(),
             children: tag_nodes,
         },
         RefTreeNode {
             identifier: TREE_STASH_ROOT_IDENT.into(),
-            name: TREE_STASH_ROOT_TEXT.into(),
+            name: t!("view.refs.root.stashes").into_owned(),
             children: stash_nodes,
         },
     ]

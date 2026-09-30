@@ -155,8 +155,9 @@ impl<'a> CreateTagView<'a> {
     fn submit(&mut self) {
         let tag_name = self.tag_name_input.value().trim();
         if tag_name.is_empty() {
-            self.tx
-                .send(AppEvent::NotifyError("Tag name cannot be empty".into()));
+            self.tx.send(AppEvent::NotifyError(
+                t!("view.create_tag.name_empty").into_owned(),
+            ));
             return;
         }
 
@@ -176,9 +177,9 @@ impl<'a> CreateTagView<'a> {
 
         // 顯示 pending overlay 並關閉對話框
         let pending_msg = if push_to_remote {
-            format!("Creating and pushing tag '{tag_name}'...")
+            t!("view.create_tag.pending_push", tag = tag_name).into_owned()
         } else {
-            format!("Creating tag '{tag_name}'...")
+            t!("view.create_tag.pending", tag = tag_name).into_owned()
         };
         self.tx.send(AppEvent::ShowPendingOverlay {
             message: pending_msg,
@@ -196,9 +197,9 @@ impl<'a> CreateTagView<'a> {
             if push_to_remote {
                 if let Err(e) = push_tag(&repo_path, &tag_name) {
                     tx.send(AppEvent::HidePendingOverlay);
-                    tx.send(AppEvent::NotifyError(format!(
-                        "Tag created locally, but push failed: {e}"
-                    )));
+                    tx.send(AppEvent::NotifyError(
+                        t!("view.create_tag.push_failed", detail = e).into_owned(),
+                    ));
                     // 仍然要 refresh 以顯示本機已建立的 tag
                     tx.send(AppEvent::Refresh);
                     return;
@@ -207,9 +208,9 @@ impl<'a> CreateTagView<'a> {
 
             // 成功
             let msg = if push_to_remote {
-                format!("Tag '{tag_name}' created and pushed to origin")
+                t!("view.create_tag.done_push", tag = tag_name).into_owned()
             } else {
-                format!("Tag '{tag_name}' created")
+                t!("view.create_tag.done", tag = tag_name).into_owned()
             };
             tx.send(AppEvent::NotifySuccess(msg));
             tx.send(AppEvent::HidePendingOverlay);
@@ -243,7 +244,7 @@ impl<'a> CreateTagView<'a> {
         f.render_widget(Clear, dialog_area);
 
         let block = Block::default()
-            .title(" Create Tag ")
+            .title(t!("view.create_tag.title"))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(self.ctx.color_theme.divider_fg))
             .style(
@@ -267,7 +268,7 @@ impl<'a> CreateTagView<'a> {
 
         // Commit hash 顯示
         let commit_line = Line::from(vec![
-            Span::raw("Commit: ").fg(self.ctx.color_theme.fg),
+            Span::raw(t!("view.dialog.commit_label")).fg(self.ctx.color_theme.fg),
             Span::raw(self.commit_hash.as_short_hash()).fg(self.ctx.color_theme.list_hash_fg),
         ]);
         f.render_widget(Paragraph::new(commit_line), commit_area);
@@ -276,7 +277,7 @@ impl<'a> CreateTagView<'a> {
         let tag_input_area = self.render_input_field(
             f,
             tag_name_area,
-            "Tag name:",
+            &t!("view.create_tag.tag_name_label"),
             self.tag_name_input.value(),
             FocusedField::TagName,
         );
@@ -285,7 +286,7 @@ impl<'a> CreateTagView<'a> {
         let msg_input_area = self.render_input_field(
             f,
             message_area,
-            "Message:",
+            &t!("view.create_tag.message_label"),
             self.tag_message_input.value(),
             FocusedField::Message,
         );
@@ -301,7 +302,7 @@ impl<'a> CreateTagView<'a> {
         };
         let push_line = Line::from(vec![
             Span::styled(checkbox, checkbox_style),
-            Span::raw(" Push to origin").fg(self.ctx.color_theme.fg),
+            Span::raw(t!("view.create_tag.push_to_origin")).fg(self.ctx.color_theme.fg),
         ]);
         f.render_widget(Paragraph::new(push_line), push_area);
 

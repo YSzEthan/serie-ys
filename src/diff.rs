@@ -6,12 +6,13 @@
 //! 行號無從標起。所以走 delta／tig／lazygit 的路——保留 `-`/`+` 兩行，行內只
 //! 反白真正改掉的字元。
 
-use std::{ops::Range, sync::LazyLock};
+use std::{borrow::Cow, ops::Range, sync::LazyLock};
 
 use ratatui::{
     style::{Modifier, Style},
     text::{Line, Span},
 };
+use rust_i18n::t;
 
 use crate::color::ColorTheme;
 
@@ -71,12 +72,12 @@ pub enum ModeNote {
 }
 
 impl ModeNote {
-    pub fn label(self) -> &'static str {
+    pub fn label(self) -> Cow<'static, str> {
         match self {
-            ModeNote::Symlink => "symlink",
-            ModeNote::Executable => "executable",
-            ModeNote::ModeChangedToExecutable => "mode → executable",
-            ModeNote::ModeChangedFromExecutable => "mode → not executable",
+            ModeNote::Symlink => t!("git.diff.mode.symlink"),
+            ModeNote::Executable => t!("git.diff.mode.executable"),
+            ModeNote::ModeChangedToExecutable => t!("git.diff.mode.to_executable"),
+            ModeNote::ModeChangedFromExecutable => t!("git.diff.mode.from_executable"),
         }
     }
 }

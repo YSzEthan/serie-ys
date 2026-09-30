@@ -102,9 +102,9 @@ impl<'a> DeleteTagView<'a> {
 
         // 顯示 pending overlay 並關閉對話框
         let pending_msg = if delete_from_remote {
-            format!("Deleting tag '{tag_name}' from local and remote...")
+            t!("view.delete_tag.pending_remote", tag = tag_name).into_owned()
         } else {
-            format!("Deleting tag '{tag_name}'...")
+            t!("view.delete_tag.pending", tag = tag_name).into_owned()
         };
         self.tx.send(AppEvent::ShowPendingOverlay {
             message: pending_msg,
@@ -122,9 +122,9 @@ impl<'a> DeleteTagView<'a> {
             if delete_from_remote {
                 if let Err(e) = delete_remote_tag(&repo_path, &tag_name) {
                     tx.send(AppEvent::HidePendingOverlay);
-                    tx.send(AppEvent::NotifyError(format!(
-                        "Local tag deleted, but failed to delete from remote: {e}"
-                    )));
+                    tx.send(AppEvent::NotifyError(
+                        t!("view.delete_tag.remote_failed", detail = e).into_owned(),
+                    ));
                     // 仍然要 refresh 以顯示刪除結果
                     tx.send(AppEvent::Refresh);
                     return;
@@ -133,9 +133,9 @@ impl<'a> DeleteTagView<'a> {
 
             // 成功
             let msg = if delete_from_remote {
-                format!("Tag '{tag_name}' deleted from local and remote")
+                t!("view.delete_tag.done_remote", tag = tag_name).into_owned()
             } else {
-                format!("Tag '{tag_name}' deleted locally")
+                t!("view.delete_tag.done_local", tag = tag_name).into_owned()
             };
             tx.send(AppEvent::NotifySuccess(msg));
             tx.send(AppEvent::HidePendingOverlay);
@@ -168,7 +168,7 @@ impl<'a> DeleteTagView<'a> {
         f.render_widget(Clear, dialog_area);
 
         let block = Block::default()
-            .title(" Delete Tag ")
+            .title(t!("view.delete_tag.title"))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(self.ctx.color_theme.divider_fg))
             .style(
@@ -190,7 +190,7 @@ impl<'a> DeleteTagView<'a> {
         .areas(inner_area);
 
         let commit_line = Line::from(vec![
-            Span::raw("Commit: ").fg(self.ctx.color_theme.fg),
+            Span::raw(t!("view.dialog.commit_label")).fg(self.ctx.color_theme.fg),
             Span::raw(self.commit_hash.as_short_hash()).fg(self.ctx.color_theme.list_hash_fg),
         ]);
         f.render_widget(Paragraph::new(commit_line), commit_area);
@@ -216,7 +216,7 @@ impl<'a> DeleteTagView<'a> {
         if tag_lines.is_empty() {
             f.render_widget(
                 Paragraph::new(Line::from(
-                    "No tags on this commit".fg(self.ctx.color_theme.fg),
+                    t!("view.delete_tag.no_tags").fg(self.ctx.color_theme.fg),
                 )),
                 list_area,
             );
@@ -232,7 +232,7 @@ impl<'a> DeleteTagView<'a> {
         let checkbox_style = Style::default().fg(self.ctx.color_theme.fg);
         let checkbox_line = Line::from(vec![
             Span::styled(checkbox, checkbox_style),
-            Span::raw(" Delete from origin").fg(self.ctx.color_theme.fg),
+            Span::raw(t!("view.delete_tag.from_origin")).fg(self.ctx.color_theme.fg),
         ]);
         f.render_widget(Paragraph::new(checkbox_line), checkbox_area);
 

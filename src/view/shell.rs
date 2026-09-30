@@ -14,6 +14,7 @@ use ratatui::{
     widgets::{Block, Borders, Padding, Paragraph},
     Frame,
 };
+use rust_i18n::t;
 use tui_input::{backend::crossterm::EventHandler, Input};
 
 use crate::{
@@ -344,9 +345,9 @@ impl<'a> ShellView<'a> {
                 ansi_output_to_lines(output, tab_width).unwrap_or_else(|e| vec![Line::raw(e)]);
             if lines.len() > MAX_OUTPUT_LINES {
                 lines.truncate(MAX_OUTPUT_LINES);
-                lines.push(Line::raw(format!(
-                    "… 輸出過長，已截斷在 {MAX_OUTPUT_LINES} 行"
-                )));
+                lines.push(Line::raw(
+                    t!("view.shell.truncated", max = MAX_OUTPUT_LINES).into_owned(),
+                ));
             }
             // ShellView 若已經被關掉／換掉，這裡的 rx 早就 drop 了，
             // send 會回 Err——靜靜丟棄過期結果就是正確行為。
@@ -409,7 +410,7 @@ impl<'a> ShellView<'a> {
         let mut spans = vec![Span::raw(PROMPT), Span::raw(visible)];
         if running {
             spans.push(Span::styled(
-                "  running…",
+                t!("view.shell.running"),
                 Style::default().fg(self.ctx.color_theme.status_input_transient_fg),
             ));
         }

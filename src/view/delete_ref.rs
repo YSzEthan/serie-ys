@@ -111,20 +111,20 @@ impl<'a> DeleteRefView<'a> {
         let pending_msg = match ref_type {
             RefType::Tag => {
                 if delete_from_remote {
-                    format!("Deleting tag '{ref_name}' from local and remote...")
+                    t!("view.delete_tag.pending_remote", tag = ref_name).into_owned()
                 } else {
-                    format!("Deleting tag '{ref_name}'...")
+                    t!("view.delete_tag.pending", tag = ref_name).into_owned()
                 }
             }
             RefType::Branch => {
                 if force_delete {
-                    format!("Force deleting branch '{ref_name}'...")
+                    t!("view.delete_ref.pending_branch_force", name = ref_name).into_owned()
                 } else {
-                    format!("Deleting branch '{ref_name}'...")
+                    t!("view.delete_ref.pending_branch", name = ref_name).into_owned()
                 }
             }
             RefType::RemoteBranch => {
-                format!("Deleting remote branch '{ref_name}'...")
+                t!("view.delete_ref.pending_remote_branch", name = ref_name).into_owned()
             }
         };
 
@@ -145,7 +145,7 @@ impl<'a> DeleteRefView<'a> {
                         local_deleted = true;
                         if delete_from_remote {
                             delete_remote_tag(&repo_path, &ref_name).map_err(|e| {
-                                format!("Local tag deleted, but failed to delete from remote: {e}")
+                                t!("view.delete_tag.remote_failed", detail = e).into_owned()
                             })
                         } else {
                             Ok(())
@@ -171,16 +171,16 @@ impl<'a> DeleteRefView<'a> {
                     let msg = match ref_type {
                         RefType::Tag => {
                             if delete_from_remote {
-                                format!("Tag '{ref_name}' deleted from local and remote")
+                                t!("view.delete_tag.done_remote", tag = ref_name).into_owned()
                             } else {
-                                format!("Tag '{ref_name}' deleted locally")
+                                t!("view.delete_tag.done_local", tag = ref_name).into_owned()
                             }
                         }
                         RefType::Branch => {
-                            format!("Branch '{ref_name}' deleted")
+                            t!("view.delete_ref.done_branch", name = ref_name).into_owned()
                         }
                         RefType::RemoteBranch => {
-                            format!("Remote branch '{ref_name}' deleted")
+                            t!("view.delete_ref.done_remote_branch", name = ref_name).into_owned()
                         }
                     };
                     tx.send(AppEvent::NotifySuccess(msg));
@@ -233,9 +233,9 @@ impl<'a> DeleteRefView<'a> {
         f.render_widget(Clear, dialog_area);
 
         let title = match self.ref_type {
-            RefType::Tag => " Delete Tag ",
-            RefType::Branch => " Delete Branch ",
-            RefType::RemoteBranch => " Delete Remote Branch ",
+            RefType::Tag => t!("view.delete_tag.title"),
+            RefType::Branch => t!("view.delete_ref.title_branch"),
+            RefType::RemoteBranch => t!("view.delete_ref.title_remote_branch"),
         };
 
         let block = Block::default()
@@ -273,14 +273,14 @@ impl<'a> DeleteRefView<'a> {
                 };
                 Line::from(vec![
                     Span::styled(checkbox, Style::default().fg(self.ctx.color_theme.fg)),
-                    Span::raw(" Delete from origin").fg(self.ctx.color_theme.fg),
+                    Span::raw(t!("view.delete_tag.from_origin")).fg(self.ctx.color_theme.fg),
                 ])
             }
             RefType::Branch => {
                 let checkbox = if self.force_delete { "[x]" } else { "[ ]" };
                 Line::from(vec![
                     Span::styled(checkbox, Style::default().fg(self.ctx.color_theme.fg)),
-                    Span::raw(" Force delete (-D)").fg(self.ctx.color_theme.fg),
+                    Span::raw(t!("view.delete_ref.force_delete")).fg(self.ctx.color_theme.fg),
                 ])
             }
             RefType::RemoteBranch => Line::from(vec![Span::raw("").fg(self.ctx.color_theme.fg)]),
