@@ -2,312 +2,415 @@ _version = 2
 
 [wizard.value.auto]
 zh-TW = "自動"
+en-US = "auto"
 
 [wizard.value.on]
 zh-TW = "開啟"
+en-US = "on"
 
 [wizard.value.off]
 zh-TW = "關閉"
+en-US = "off"
 
 [wizard.order.chrono]
 zh-TW = "chrono"
+en-US = "chrono"
 
 [wizard.order.topo]
 zh-TW = "topo"
+en-US = "topo"
 
 [wizard.graph_width.double]
 zh-TW = "寬版"
+en-US = "double"
 
 [wizard.graph_width.single]
 zh-TW = "窄版"
+en-US = "single"
 
 [wizard.graph_style.rounded]
 zh-TW = "圓角"
+en-US = "rounded"
 
 [wizard.graph_style.angular]
 zh-TW = "直角"
+en-US = "angular"
 
 [wizard.initial_selection.latest]
 zh-TW = "最新"
+en-US = "latest"
 
 [wizard.update_mode.check]
 zh-TW = "檢查後詢問"
+en-US = "check and ask"
 
 [wizard.update_mode.auto]
 zh-TW = "自動安裝"
+en-US = "auto-install"
 
 [wizard.fetch_prune.off]
 zh-TW = "不加（依 git 設定）"
+en-US = "not added (per git config)"
 
 [wizard.fetch_prune.on]
 zh-TW = "加上 --prune"
+en-US = "add --prune"
 
 [wizard.cycle.help.order]
 zh-TW = "Commit 排序演算法"
+en-US = "Commit ordering algorithm"
 
 [wizard.cycle.help.graph_width]
 zh-TW = "Commit graph 格子寬度"
+en-US = "Commit graph cell width"
 
 [wizard.cycle.help.compact]
 zh-TW = "緊湊模式"
+en-US = "Compact mode"
 
 [wizard.cycle.help.graph_style]
 zh-TW = "Commit graph 邊線風格"
+en-US = "Commit graph edge style"
 
 [wizard.cycle.help.initial_selection]
 zh-TW = "初始選取的 commit"
+en-US = "Commit selected on startup"
 
 [wizard.cycle.help.update_mode]
 zh-TW = "自動更新檢查模式"
+en-US = "Auto-update check mode"
 
 [wizard.cycle.help.auto_restart]
 zh-TW = "更新後自動重啟／開啟新版"
+en-US = "Auto-restart/launch the new version after an update"
 
 [wizard.cycle.help.release_notes]
 zh-TW = "更新後跳出 release notes"
+en-US = "Show release notes after an update"
 
 [wizard.cycle.help.fetch_prune]
 zh-TW = "fetch 時加上 --prune（手動與自動共用）"
+en-US = "Add --prune on fetch (shared by manual and auto fetch)"
 
 [wizard.cycle.help.auto_fetch]
 zh-TW = "背景定期偵測 git remote 並自動 fetch"
+en-US = "Periodically check the git remote in the background and fetch automatically"
 
 [wizard.number.help.max_count]
 zh-TW = "要渲染的最大 commit 數量"
+en-US = "Maximum number of commits to render"
 
 [wizard.number.help.update_interval]
 zh-TW = "自動更新的檢查間隔"
+en-US = "Auto-update check interval"
 
 [wizard.number.help.auto_fetch_interval]
 zh-TW = "自動 fetch 的輪詢間隔"
+en-US = "Auto-fetch polling interval"
 
 [wizard.number.help.list_scrolloff]
 zh-TW = "commit 清單游標上下保留的列數"
+en-US = "Rows kept above and below the cursor in the commit list"
 
 [wizard.number.help.list_graph_edge_max_rows]
 zh-TW = "超寬 graph 的長線截斷列數"
+en-US = "Rows before long edges are truncated in very wide graphs"
 
 [wizard.number.help.list_graph_max_width_percent]
 zh-TW = "超寬 graph 最多佔清單寬度的百分比"
+en-US = "Maximum percentage of the list width a very wide graph may take"
 
 [wizard.number.title.update_interval]
 zh-TW = "自動更新的檢查間隔（小時，1–48）"
+en-US = "Auto-update check interval (hours, 1–48)"
 
 [wizard.number.title.auto_fetch_interval]
 zh-TW = "自動 fetch 的輪詢間隔（秒，30–3600）"
+en-US = "Auto-fetch polling interval (seconds, 30–3600)"
 
 [wizard.number.title.list_scrolloff]
 zh-TW = "游標與清單上下緣保留的列數（實際不超過清單高度一半）"
+en-US = "Rows kept between the cursor and the top/bottom edges of the list (capped at half the list height)"
 
 [wizard.number.title.list_graph_edge_max_rows]
 zh-TW = "線長超過幾列就截斷成 ↓／↑（最小 3，只在 graph 寬度超過 64 時啟用）"
+en-US = "Truncate an edge to ↓/↑ once it is longer than this many rows (minimum 3; only applies when the graph is wider than 64)"
 
 [wizard.number.title.list_graph_max_width_percent]
 zh-TW = "超寬 graph 最多佔清單寬度的百分比（10–100）"
+en-US = "Maximum percentage of the list width a very wide graph may take (10–100)"
 
 [wizard.number.unlimited]
 zh-TW = "不限制"
+en-US = "unlimited"
 
 [wizard.number.hours]
 zh-TW = "%{n} 小時"
+en-US = "%{n} hours"
 
 [wizard.number.seconds]
 zh-TW = "%{n} 秒"
+en-US = "%{n} seconds"
 
 [wizard.number.rows]
 zh-TW = "%{n} 列"
+en-US = "%{n} rows"
 
 [wizard.dialog.help.path]
 zh-TW = "git repository 路徑（僅本次，不存檔）"
+en-US = "Path to the git repository (this run only, not saved)"
 
 [wizard.dialog.help.color]
 zh-TW = "介面配色（43 色）"
+en-US = "Interface color scheme (43 colors)"
 
 [wizard.dialog.help.keybind]
 zh-TW = "快捷鍵綁定"
+en-US = "Keybindings"
 
 [wizard.editor.untouched]
 zh-TW = "未修改"
+en-US = "unchanged"
 
 [wizard.editor.touched]
 zh-TW = "%{n} 項已改"
+en-US = "%{n} changed"
 
 [wizard.top.launch]
 zh-TW = "▶ 啟動 ysgit"
+en-US = "▶ Launch ysgit"
 
 [wizard.top.update_note]
 zh-TW = "（目前被 YSGIT_NO_UPDATE_CHECK 關閉）"
+en-US = "(disabled by YSGIT_NO_UPDATE_CHECK)"
 
 [wizard.top.row]
 zh-TW = "%{prefix}%{flags}  %{help}（目前：%{current}）%{note}"
+en-US = "%{prefix}%{flags}  %{help} (current: %{current}) %{note}"
 
 [wizard.hint.select]
 zh-TW = "選擇"
+en-US = "select"
 
 [wizard.hint.switch_option]
 zh-TW = "切換選項"
+en-US = "toggle option"
 
 [wizard.hint.open_launch]
 zh-TW = "開啟／啟動"
+en-US = "open/launch"
 
 [wizard.hint.abort]
 zh-TW = "放棄（不啟動、不存檔）"
+en-US = "abort (not launched, not saved)"
 
 [wizard.error.write_failed]
 zh-TW = "寫入設定檔失敗：%{error}"
+en-US = "Failed to write config file: %{error}"
 
 [wizard.error.syntax]
 zh-TW = "設定檔語法錯誤，這次改動不會存檔：%{error}"
+en-US = "Syntax error in config file, so these changes will not be saved: %{error}"
 
 [wizard.error.not_table]
 zh-TW = "設定檔的 `%{table}` 不是 table，這次改動不會存檔"
+en-US = "`%{table}` in the config file is not a table, so these changes will not be saved"
 
 [wizard.path.hint.up]
 zh-TW = "上層目錄"
+en-US = "parent directory"
 
 [wizard.path.hint.enter]
 zh-TW = "進入子目錄"
+en-US = "enter subdirectory"
 
 [wizard.path.hint.select_current]
 zh-TW = "選取目前目錄"
+en-US = "select current directory"
 
 [wizard.path.no_subdirs]
 zh-TW = "（沒有子目錄）"
+en-US = "(no subdirectories)"
 
 [wizard.keybind.rejected]
 zh-TW = "這個按鍵無法寫進設定檔"
+en-US = "This key cannot be written to the config file"
 
 [wizard.keybind.user_command_desc]
 zh-TW = "執行 user command：%{name}"
+en-US = "Run user command: %{name}"
 
 [wizard.keybind.user_command_missing]
 zh-TW = "（設定檔裡找不到這個 user command）"
+en-US = "(this user command was not found in the config file)"
 
 [wizard.keybind.exit_warning]
 zh-TW = "quit 與 force_quit 都沒有綁定按鍵，套用後將無法用快捷鍵離開程式"
+en-US = "Neither quit nor force_quit has a key bound, so after applying you will not be able to quit with a keybinding"
 
 [wizard.keybind.unbound]
 zh-TW = "（未綁定）"
+en-US = "(unbound)"
 
 [wizard.keybind.list_title]
 zh-TW = " 快捷鍵 [%{current}/%{total}] "
+en-US = " Keybindings [%{current}/%{total}] "
 
 [wizard.keybind.config_fallback]
 zh-TW = "設定檔載入失敗，以下是內建預設"
+en-US = "Failed to load config file, showing built-in defaults"
 
 [wizard.keybind.hint.replace]
 zh-TW = "取代"
+en-US = "replace"
 
 [wizard.keybind.hint.append]
 zh-TW = "追加"
+en-US = "append"
 
 [wizard.keybind.hint.disable]
 zh-TW = "停用"
+en-US = "disable"
 
 [wizard.keybind.hint.reset]
 zh-TW = "還原預設"
+en-US = "reset to default"
 
 [wizard.keybind.hint.ctrl_c]
 zh-TW = "取消（因此無法在此綁定 Ctrl-C）"
+en-US = "cancel (so Ctrl-C cannot be bound here)"
 
 [wizard.keybind.mode.replace]
 zh-TW = "取代全部綁定"
+en-US = "Replace all bindings"
 
 [wizard.keybind.mode.append]
 zh-TW = "追加一個按鍵"
+en-US = "Append a key"
 
 [wizard.keybind.current_unbound]
 zh-TW = "目前：（未綁定）"
+en-US = "Current: (unbound)"
 
 [wizard.keybind.current]
 zh-TW = "目前：%{keys}"
+en-US = "Current: %{keys}"
 
 [wizard.keybind.waiting]
 zh-TW = "請按下要綁定的按鍵…"
+en-US = "Press the key to bind…"
 
 [wizard.keybind.conflict]
 zh-TW = "%{key_str} 目前綁給 %{victim_name}（%{victim_desc}）。y = 搶過來，其他按鍵 = 取消"
+en-US = "%{key_str} is currently bound to %{victim_name} (%{victim_desc}). y = take it, any other key = cancel"
 
 [wizard.keybind.capture_title]
 zh-TW = " 綁定 %{name} "
+en-US = " Bind %{name} "
 
 [wizard.color.hex_need_6]
 zh-TW = "HEX 需要 6 碼，目前 %{len} 碼"
+en-US = "HEX needs 6 digits, currently %{len}"
 
 [wizard.color.index_range]
 zh-TW = "索引需要 0-255 的數字"
+en-US = "Index must be a number from 0 to 255"
 
 [wizard.color.list_title]
 zh-TW = " 顏色 [%{current}/%{total}] "
+en-US = " Colors [%{current}/%{total}] "
 
 [wizard.color.config_fallback]
 zh-TW = "設定檔載入失敗，以下是內建預設"
+en-US = "Failed to load config file, showing built-in defaults"
 
 [wizard.color.enter_to_edit]
 zh-TW = "Enter 進入編輯"
+en-US = "Enter to edit"
 
 [wizard.color.preview_title]
 zh-TW = " 預覽 "
+en-US = " Preview "
 
 [wizard.color.hint.page]
 zh-TW = "翻頁"
+en-US = "page"
 
 [wizard.color.hint.edit]
 zh-TW = "編輯"
+en-US = "edit"
 
 [wizard.color.hint.reset]
 zh-TW = "還原"
+en-US = "reset"
 
 [wizard.color.hint.keep_one]
 zh-TW = "至少保留 1 色"
+en-US = "keep at least 1 color"
 
 [wizard.color.hint.delete]
 zh-TW = "刪除"
+en-US = "delete"
 
 [wizard.color.hint.add]
 zh-TW = "新增"
+en-US = "add"
 
 [wizard.color.hint.switch_mode]
 zh-TW = "切換表示法"
+en-US = "switch mode"
 
 [wizard.color.branches_row]
 zh-TW = "%{marker}[color.graph].branches  （%{count} 色）"
+en-US = "%{marker}[color.graph].branches  (%{count} colors)"
 
 [wizard.color.branch_hex_need]
 zh-TW = "需要 6 或 8 碼 HEX，目前 %{len} 碼"
+en-US = "HEX needs 6 or 8 digits, currently %{len}"
 
 [wizard.color.preview.list_header]
 zh-TW = "[Commit 清單]"
+en-US = "[Commit list]"
 
 [wizard.color.preview.detail_header]
 zh-TW = "[詳情]"
+en-US = "[Details]"
 
 [wizard.color.preview.status_header]
 zh-TW = "[狀態列]"
+en-US = "[Status line]"
 
 [wizard.color.preview.subject_feat]
 zh-TW = "feat: 新增功能 "
+en-US = "feat: add feature "
 
 [wizard.color.preview.subject_fix]
 zh-TW = "fix: 修正邊界條件"
+en-US = "fix: handle edge cases"
 
 [wizard.color.preview.date]
 zh-TW = "2 天前"
+en-US = "2 days ago"
 
 [wizard.color.preview.author]
 zh-TW = "Author："
+en-US = "Author:"
 
 [wizard.color.preview.copied]
 zh-TW = "已複製 commit hash"
+en-US = "Copied commit hash"
 
 [wizard.color.mode.named]
 zh-TW = "[色名]  256 色   HEX"
+en-US = "[Name]  256 colors   HEX"
 
 [wizard.color.mode.indexed]
 zh-TW = " 色名  [256 色]  HEX"
+en-US = " Name  [256 colors]  HEX"
 
 [wizard.color.mode.hex]
 zh-TW = " 色名   256 色  [HEX]"
+en-US = " Name   256 colors  [HEX]"
 
 [wizard.cycle.help.locale]
 zh-TW = "介面語言（畫面提示、說明頁、--help 文字）"
