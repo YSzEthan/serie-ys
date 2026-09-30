@@ -1629,17 +1629,16 @@ impl App<'_> {
         }
     }
 
+    /// 有快取也一律重抓一次：先顯示快取，新資料落地後由 `update_data`
+    /// 就地更新（資料沒變不重置捲動）。`GitHubView::new` 一律從 Loading
+    /// 起跳，就是依賴這裡必定送出 refresh。
     fn open_github(&mut self) {
-        let data = match self.github_data.take() {
-            Some(data) => data,
-            None => {
-                self.refresh_github(StateFilter::Open);
-                crate::github::GitHubData::default()
-            }
-        };
+        let data = self.github_data.take().unwrap_or_default();
+        let filter = data.state_filter;
 
         let before_view = std::mem::take(&mut self.view);
         self.view = View::of_github(before_view, data, self.github_label_mode, self.ec.sender());
+        self.refresh_github(filter);
     }
 
     fn on_github_data_loaded(&mut self, data: crate::github::GitHubData, warnings: Vec<String>) {
