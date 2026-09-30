@@ -290,7 +290,7 @@ en-US = "(no body)"
 
 [github.preview.parent]
 zh-TW = "Parent："
-en-US = "Parent:"
+en-US = "Parent: "
 
 [github.preview.sub_issues]
 zh-TW = "Sub-issues（%{n}）："

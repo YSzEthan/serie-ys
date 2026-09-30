@@ -394,7 +394,7 @@ en-US = "2 days ago"
 
 [wizard.color.preview.author]
 zh-TW = "Author："
-en-US = "Author:"
+en-US = "Author: "
 
 [wizard.color.preview.copied]
 zh-TW = "已複製 commit hash"

@@ -5,7 +5,12 @@
 //! - `t!` 的第一個參數只能是字面字串（否則掃不到、也無從檢查）
 //! - 程式碼裡用到的每個 key 都要有 zh-TW 翻譯
 //! - `locales/` 裡的每個 key 都要被程式碼用到（抓死 key）
-//! - 翻譯值裡的 `%{name}` 佔位符要與呼叫處給的參數同名
+//! - 每個 key 在 [`crate::Locale`] 的每個語系都要有翻譯
+//! - 每個語系的 `%{name}` 佔位符要與呼叫處給的參數同名
+//! - 英文翻譯不得含 CJK 字元（抓漏翻與殘留的全形標點）
+//!
+//! 「每個語系都有翻譯」必須直接解析 TOML 檢查，不能用 `_rust_i18n_try_translate`：
+//! `i18n!` 設了 `fallback = "zh-TW"`，缺英文時它會靜默退回中文、永遠回 `Some`。
 
 use std::{
     collections::{BTreeMap, BTreeSet},
@@ -13,7 +18,22 @@ use std::{
     path::{Path, PathBuf},
 };
 
+use clap::ValueEnum;
+
+use crate::Locale;
+
 const LOCALE: &str = "zh-TW";
+
+/// 所有語系的 rust-i18n tag，來源是 [`Locale`]——新增語系時這裡自動跟著走。
+fn locale_tags() -> Vec<&'static str> {
+    Locale::value_variants().iter().map(|l| l.code()).collect()
+}
+
+/// CJK 字元與全形標點：`U+3000–303F`（CJK 標點）、`U+4E00–9FFF`（漢字）、
+/// `U+FF00–FFEF`（全形／半形形式，如 `：，（）／`）。
+fn is_cjk(c: char) -> bool {
+    matches!(c, '\u{3000}'..='\u{303F}' | '\u{4E00}'..='\u{9FFF}' | '\u{FF00}'..='\u{FFEF}')
+}
 
 fn collect_rs(dir: &Path, out: &mut Vec<PathBuf>) {
     for entry in fs::read_dir(dir).unwrap() {
@@ -171,9 +191,17 @@ fn named_args(body: &str) -> BTreeSet<String> {
     out
 }
 
-/// 把 `locales/*.toml` 攤平成 key → zh-TW 值。
-fn locale_entries() -> BTreeMap<String, String> {
-    fn walk(prefix: &str, table: &toml::Table, out: &mut BTreeMap<String, String>) {
+/// 把 `locales/*.toml` 攤平成 key → (語系 tag → 翻譯值)。
+///
+/// 葉節點 = 值全是字串的表；它的鍵必須全是已知的語系 tag，否則直接 panic——
+/// 抓 `en = "…"`、`zh-tw = "…"` 這類打錯的 tag（打錯的話那個語系會整個靜默缺漏）。
+fn locale_entries() -> BTreeMap<String, BTreeMap<String, String>> {
+    fn walk(
+        prefix: &str,
+        table: &toml::Table,
+        tags: &[&str],
+        out: &mut BTreeMap<String, BTreeMap<String, String>>,
+    ) {
         for (k, v) in table {
             let toml::Value::Table(t) = v else { continue };
             let key = if prefix.is_empty() {
@@ -181,21 +209,30 @@ fn locale_entries() -> BTreeMap<String, String> {
             } else {
                 format!("{prefix}.{k}")
             };
-            if let Some(toml::Value::String(s)) = t.get(LOCALE) {
-                out.insert(key, s.clone());
+            if t.values().all(|v| v.is_str()) {
+                let mut values = BTreeMap::new();
+                for (tag, v) in t {
+                    assert!(
+                        tags.contains(&tag.as_str()),
+                        "{key}: 未知的語系 tag {tag:?}（已知：{tags:?}）"
+                    );
+                    values.insert(tag.clone(), v.as_str().unwrap().to_string());
+                }
+                out.insert(key, values);
             } else {
-                walk(&key, t, out);
+                walk(&key, t, tags, out);
             }
         }
     }
 
+    let tags = locale_tags();
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("locales");
     let mut out = BTreeMap::new();
     for entry in fs::read_dir(dir).unwrap() {
         let path = entry.unwrap().path();
         if path.extension().is_some_and(|e| e == "toml") {
             let table: toml::Table = fs::read_to_string(&path).unwrap().parse().unwrap();
-            walk("", &table, &mut out);
+            walk("", &table, &tags, &mut out);
         }
     }
     out
@@ -238,18 +275,80 @@ fn every_locale_key_is_used() {
 }
 
 #[test]
-fn placeholders_match_call_arguments() {
+fn every_key_is_translated_in_every_locale() {
+    let tags = locale_tags();
+    let mut missing = Vec::new();
+    for (key, values) in locale_entries() {
+        for tag in &tags {
+            if !values.contains_key(*tag) {
+                missing.push(format!("{key}（缺 {tag}）"));
+            }
+        }
+    }
+    assert!(missing.is_empty(), "缺少翻譯：{missing:#?}");
+}
+
+#[test]
+fn placeholders_match_call_arguments_in_every_locale() {
     let entries = locale_entries();
     for call in collect_calls() {
-        let Some(value) = entries.get(&call.key) else {
+        let Some(values) = entries.get(&call.key) else {
             continue;
         };
-        assert_eq!(
-            placeholders(value),
-            call.args,
-            "{}: {} 的佔位符與呼叫參數不一致",
-            call.at,
-            call.key
-        );
+        for (tag, value) in values {
+            assert_eq!(
+                placeholders(value),
+                call.args,
+                "{}: {} 的 {tag} 佔位符與呼叫參數不一致",
+                call.at,
+                call.key
+            );
+        }
     }
+}
+
+#[test]
+fn english_values_contain_no_cjk() {
+    let en = Locale::En.code();
+    let mut bad = Vec::new();
+    for (key, values) in locale_entries() {
+        if let Some(v) = values.get(en) {
+            if v.chars().any(is_cjk) {
+                bad.push(format!("{key}: {v:?}"));
+            }
+        }
+    }
+    assert!(bad.is_empty(), "英文翻譯含 CJK 字元或全形標點：{bad:#?}");
+}
+
+/// 各語系之間的前後空白要一致：標題的前後空格、子句樣板的前導分隔符，版面與組句
+/// 都靠它。唯一的例外是「全形冒號／問號後面的空格」：中文的 `：`、`？` 自帶字距，
+/// 後面可以直接接內容；英文的 `:`、`?` 沒有，所以英文值可以（且通常必須）多一個尾端
+/// 空格，例如 `選擇 branch：` ↔ `Select branch: `。
+#[test]
+fn surrounding_whitespace_is_consistent_across_locales() {
+    let lead = |s: &str| s.len() - s.trim_start().len();
+    let trail = |s: &str| s.len() - s.trim_end().len();
+    let zh_tag = Locale::ZhTw.code();
+    let mut bad = Vec::new();
+    for (key, values) in locale_entries() {
+        let Some(zh) = values.get(zh_tag) else {
+            continue;
+        };
+        let zh_ends_fullwidth = zh.trim_end().ends_with(['：', '？']);
+        for (tag, v) in &values {
+            if tag == zh_tag {
+                continue;
+            }
+            let trailing_ok = trail(v) == trail(zh)
+                || (zh_ends_fullwidth
+                    && trail(zh) == 0
+                    && trail(v) == 1
+                    && v.trim_end().ends_with([':', '?']));
+            if lead(v) != lead(zh) || !trailing_ok {
+                bad.push(format!("{key}: {zh_tag}={zh:?} {tag}={v:?}"));
+            }
+        }
+    }
+    assert!(bad.is_empty(), "各語系前後空白不一致：{bad:#?}");
 }

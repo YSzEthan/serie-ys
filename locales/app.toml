@@ -30,15 +30,15 @@ en-US = "(+%{n} more, use tab view)"
 
 [app.status.go_to_child]
 zh-TW = "前往 child commit："
-en-US = "Go to child commit:"
+en-US = "Go to child commit: "
 
 [app.status.delete_branch]
 zh-TW = "刪除 branch："
-en-US = "Delete branch:"
+en-US = "Delete branch: "
 
 [app.status.delete_branch_confirm]
 zh-TW = "刪除 '%{name}'？"
-en-US = "Delete '%{name}'?"
+en-US = "Delete '%{name}'? "
 
 [app.status.updated_to]
 zh-TW = "已更新到 %{tag}。"
@@ -50,15 +50,15 @@ en-US = "Error: %{msg}"
 
 [app.status.merge_pick]
 zh-TW = "Merge PR #%{number}（%{head_ref}）："
-en-US = "Merge PR #%{number} (%{head_ref}):"
+en-US = "Merge PR #%{number} (%{head_ref}): "
 
 [app.status.merge_ask_delete_local]
 zh-TW = "merge（%{method}）後要刪除 local branch '%{head_ref}' 嗎？"
-en-US = "Delete local branch '%{head_ref}' after merge (%{method})?"
+en-US = "Delete local branch '%{head_ref}' after merge (%{method})? "
 
 [app.status.merge_ask_delete_remote]
 zh-TW = "merge（%{method}）後要刪除 remote branch '%{head_ref}' 嗎？"
-en-US = "Delete remote branch '%{head_ref}' after merge (%{method})?"
+en-US = "Delete remote branch '%{head_ref}' after merge (%{method})? "
 
 [app.status.merge_local_yes]
 zh-TW = "，刪除 local branch：是"
