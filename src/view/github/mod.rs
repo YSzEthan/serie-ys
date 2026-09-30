@@ -5,6 +5,7 @@ mod timeline;
 
 use rust_i18n::t;
 use std::{
+    borrow::Cow,
     cell::Cell,
     time::{Duration, Instant},
 };
@@ -56,19 +57,19 @@ impl Section {
         }
     }
 
-    fn label(self) -> &'static str {
+    fn label(self) -> Cow<'static, str> {
         match self {
-            Section::Body => "Body",
-            Section::Comment => "Comment",
-            Section::Commit => "Commits",
-            Section::Ci => "CI",
-            Section::Review => "Review",
+            Section::Body => t!("github.section.body"),
+            Section::Comment => t!("github.section.comment"),
+            Section::Commit => t!("github.section.commit"),
+            Section::Ci => t!("github.section.ci"),
+            Section::Review => t!("github.section.review"),
         }
     }
 
     /// `self` 是分隔線上方的區段，`next` 是下方的。
     fn divider(self, next: Section, width: usize) -> Line<'static> {
-        super::markdown::labeled_rule(width, next.label(), self.color(), next.color())
+        super::markdown::labeled_rule(width, &next.label(), self.color(), next.color())
     }
 }
 
@@ -419,17 +420,24 @@ impl<'a> GitHubView<'a> {
             return;
         }
 
-        let tab = match self.active_tab {
-            GitHubTab::Issues => "issues",
-            GitHubTab::PullRequests => "PRs",
+        let filter = self.state_filter.label();
+        let msg = match self.active_tab {
+            GitHubTab::Issues => {
+                t!(
+                    "github.jump.not_found_issues",
+                    number = number,
+                    filter = filter
+                )
+            }
+            GitHubTab::PullRequests => {
+                t!(
+                    "github.jump.not_found_prs",
+                    number = number,
+                    filter = filter
+                )
+            }
         };
-        self.set_flash(
-            format!(
-                "No #{number} in {tab} (filter: {})",
-                self.state_filter.as_str()
-            ),
-            true,
-        );
+        self.set_flash(msg.into_owned(), true);
         self.pending_jump = None;
     }
 
@@ -873,9 +881,9 @@ impl<'a> GitHubView<'a> {
             return None;
         }
         let label = if self.expand_commits {
-            "collapse commits"
+            t!("github.hint.collapse_commits")
         } else {
-            "expand commits"
+            t!("github.hint.expand_commits")
         };
         Some(h(&[UserEvent::ToggleCommitLog], label))
     }
@@ -1308,7 +1316,7 @@ mod tests {
 
         view.toggle_commit_log();
         let screen = render_to_string(&mut view);
-        assert!(screen.contains("▸ 2 checks ▮▮"), "got:\n{screen}");
+        assert!(screen.contains("▸ 2 個 check ▮▮"), "got:\n{screen}");
         assert!(!screen.contains("✗ lint"), "got:\n{screen}");
     }
 
@@ -1653,7 +1661,7 @@ mod tests {
         // body 短一點，讓留言區段不用捲動就在畫面上。
         let mut view = view_with_body("short".to_string());
         let screen = render_to_string(&mut view);
-        assert!(screen.contains("loading comments"), "got:\n{screen}");
+        assert!(screen.contains("載入留言中"), "got:\n{screen}");
 
         // 零則留言，但*已載入*——項目數量仍是 0，所以只有 stage 能區分
         // 這跟 pending 狀態的差別。
@@ -1666,10 +1674,10 @@ mod tests {
         let screen = render_to_string(&mut view);
 
         assert!(
-            !screen.contains("loading comments"),
+            !screen.contains("載入留言中"),
             "preview must leave the loading state, got:\n{screen}"
         );
-        assert!(screen.contains("no comments"), "got:\n{screen}");
+        assert!(screen.contains("沒有留言"), "got:\n{screen}");
     }
 
     fn timeline_comment(login: &str, body: &str) -> GhTimelineItem {
@@ -1764,7 +1772,7 @@ mod tests {
 
         let screen = render_to_string(&mut view);
         assert!(screen.contains("aaaaaaa"), "got:\n{screen}");
-        assert!(!screen.contains("loading comments"), "got:\n{screen}");
+        assert!(!screen.contains("載入留言中"), "got:\n{screen}");
     }
 
     #[test]
@@ -2015,7 +2023,7 @@ mod tests {
 
         let screen = render_to_string(&mut view);
         assert!(screen.contains("aaaaaaa"), "got:\n{screen}");
-        assert!(!screen.contains("comments failed"), "got:\n{screen}");
+        assert!(!screen.contains("留言載入失敗"), "got:\n{screen}");
     }
 
     /// 首次載入（還沒有任何內容）失敗時，沒有東西可保留，必須整頁報錯。
@@ -2026,7 +2034,7 @@ mod tests {
         view.set_timeline_error(1, GhItemKind::PullRequest, "boom".to_string());
 
         let screen = render_to_string(&mut view);
-        assert!(screen.contains("comments failed"), "got:\n{screen}");
+        assert!(screen.contains("留言載入失敗"), "got:\n{screen}");
     }
 
     /// `set_timeline_error` 這個修正的迴歸測試：漏了重置 `refreshing`，
@@ -2172,7 +2180,7 @@ mod tests {
                     .to_string()
             })
             .collect();
-        assert_eq!(labels, ["Body", "Commits", "CI", "Comment", "Review"]);
+        assert_eq!(labels, ["內文", "Commits", "CI", "留言", "Review"]);
     }
 
     /// 分隔線顏色來自它*之前*那個 block 的 section，所以 `Section::Review`
@@ -2271,7 +2279,7 @@ mod tests {
         let screen = render_to_string(&mut view);
         assert!(screen.contains('✓'), "got:\n{screen}");
         assert!(screen.contains("@reviewer"), "got:\n{screen}");
-        assert!(screen.contains("approved"), "got:\n{screen}");
+        assert!(screen.contains("已核准"), "got:\n{screen}");
         assert!(screen.contains("looks good"), "got:\n{screen}");
     }
 
@@ -2330,7 +2338,7 @@ mod tests {
             !screen.contains("draft, not submitted yet"),
             "PENDING review draft must not render, got:\n{screen}"
         );
-        assert!(screen.contains("no comments"), "got:\n{screen}");
+        assert!(screen.contains("沒有留言"), "got:\n{screen}");
     }
 
     #[test]
@@ -2356,8 +2364,8 @@ mod tests {
         );
 
         let screen = render_to_string(&mut view);
-        assert!(screen.contains("(resolved)"), "got:\n{screen}");
-        assert!(screen.contains("(outdated)"), "got:\n{screen}");
+        assert!(screen.contains("(已解決)"), "got:\n{screen}");
+        assert!(screen.contains("(已過時)"), "got:\n{screen}");
     }
 
     #[test]
@@ -2382,7 +2390,7 @@ mod tests {
         );
 
         let screen = render_to_string(&mut view);
-        assert!(screen.contains("(+3 more comments)"), "got:\n{screen}");
+        assert!(screen.contains("(還有 3 則留言)"), "got:\n{screen}");
     }
 
     /// commit 集中成一個區塊：即使 API 回傳的時間序是 commit/comment 交錯，
@@ -2448,7 +2456,7 @@ mod tests {
         );
 
         let screen = render_to_string(&mut view);
-        assert!(!screen.contains("no comments"), "got:\n{screen}");
+        assert!(!screen.contains("沒有留言"), "got:\n{screen}");
     }
 
     #[test]
@@ -2466,7 +2474,7 @@ mod tests {
         );
         let screen = render_to_string(&mut view);
         // 只取片段比對：在這個寬度下，完整的 footer 文字會折行。
-        assert!(screen.contains("more comments"), "got:\n{screen}");
+        assert!(screen.contains("還有更多留言"), "got:\n{screen}");
 
         // 抓取下一頁只會改變 `loading_more`——項目數量沒變、stage 也沒變——
         // 所以 footer 只有在 key 有追蹤這個欄位時才會更新。
@@ -2475,7 +2483,7 @@ mod tests {
         let screen = render_to_string(&mut view);
 
         assert!(
-            screen.contains("loading more"),
+            screen.contains("載入更多中"),
             "footer must follow loading_more, got:\n{screen}"
         );
     }
@@ -2562,7 +2570,7 @@ mod tests {
         );
 
         let screen = render_to_string(&mut view);
-        assert!(screen.contains("no comments"), "got:\n{screen}");
+        assert!(screen.contains("沒有留言"), "got:\n{screen}");
 
         let (lines, _, _) = build_preview_content(&view.preview_input(40));
         let has_body_divider = lines.iter().any(|l| {
@@ -2580,7 +2588,7 @@ mod tests {
         lines.iter().find_map(|l| {
             l.spans
                 .iter()
-                .find(|s| s.content.contains("(mergeable)") || s.content.contains("(conflicts)"))
+                .find(|s| s.content.contains("可 merge") || s.content.contains("有衝突"))
                 .map(|s| (s.content.to_string(), s.style.fg))
         })
     }
@@ -2599,7 +2607,7 @@ mod tests {
         );
         assert_eq!(
             rendered_mergeable_marker(&view),
-            Some(("  (conflicts)".to_string(), Some(Color::Red)))
+            Some(("  (有衝突)".to_string(), Some(Color::Red)))
         );
     }
 
@@ -2650,7 +2658,7 @@ mod tests {
 
         assert!(!screen.contains("aaaaaaa"), "got:\n{screen}");
         assert!(!screen.contains("bbbbbbb"), "got:\n{screen}");
-        assert!(screen.contains("2 commits"), "got:\n{screen}");
+        assert!(screen.contains("2 個 commit"), "got:\n{screen}");
         // 中間夾的留言必須在收合後存活——只有 commit 會被折疊。
         assert!(screen.contains("one"), "got:\n{screen}");
     }
@@ -2723,7 +2731,7 @@ mod tests {
         let list_row = |screen: &str| -> String {
             screen
                 .lines()
-                .find(|l| l.contains("#1") && l.contains("open"))
+                .find(|l| l.contains("#1") && l.contains("開啟"))
                 .unwrap()
                 .split('│')
                 .next()

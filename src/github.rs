@@ -1,8 +1,10 @@
+use std::borrow::Cow;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::{LazyLock, Mutex, MutexGuard};
 use std::time::Duration;
 
+use rust_i18n::t;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::{Deserialize, Deserializer};
 
@@ -39,23 +41,6 @@ impl GhItemKind {
             GhItemKind::PullRequest => "pr",
         }
     }
-
-    pub fn display_name(self) -> &'static str {
-        match self {
-            GhItemKind::Issue => "Issue",
-            GhItemKind::PullRequest => "Pull Request",
-        }
-    }
-
-    /// 句中名詞，例如 "Close PR #12?"。與 [`Self::as_str`]（gh argv）和
-    /// [`Self::display_name`]（標題式標籤）是三條各自獨立的輸出通道 ——
-    /// 合併任兩條就會讓文案的改動洩漏到 argv 上。
-    pub fn noun(self) -> &'static str {
-        match self {
-            GhItemKind::Issue => "issue",
-            GhItemKind::PullRequest => "PR",
-        }
-    }
 }
 
 // ── 查詢狀態篩選 ──
@@ -82,6 +67,15 @@ impl StateFilter {
             StateFilter::Open => "open",
             StateFilter::Closed => "closed",
             StateFilter::All => "all",
+        }
+    }
+
+    /// 顯示用文字。`as_str` 是 gh argv 的邏輯值，不能拿來顯示。
+    pub fn label(self) -> Cow<'static, str> {
+        match self {
+            StateFilter::Open => t!("github.state.open"),
+            StateFilter::Closed => t!("github.state.closed"),
+            StateFilter::All => t!("github.state.all"),
         }
     }
 }
@@ -193,10 +187,11 @@ fn run_gh(path: &Path, args: &[&str]) -> Result<String, String> {
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("gh command failed: {stderr}"));
+        return Err(t!("github.error.gh_failed", detail = stderr).into_owned());
     }
 
-    String::from_utf8(output.stdout).map_err(|e| format!("Invalid UTF-8: {e}"))
+    String::from_utf8(output.stdout)
+        .map_err(|e| t!("github.error.invalid_utf8", detail = e).into_owned())
 }
 
 pub fn list_issues(
@@ -284,7 +279,7 @@ fn fetch_repo_name_with_owner(path: &Path) -> Result<(String, String), String> {
     let s = out.trim();
     let (owner, name) = s
         .split_once('/')
-        .ok_or_else(|| format!("Unexpected nameWithOwner: {s}"))?;
+        .ok_or_else(|| t!("github.error.unexpected_repo", value = s).into_owned())?;
     let entry = (owner.to_string(), name.to_string());
 
     repo_name_cache().insert(path.to_path_buf(), entry.clone());
@@ -292,8 +287,8 @@ fn fetch_repo_name_with_owner(path: &Path) -> Result<(String, String), String> {
 }
 
 fn parse_issues_graphql(json: &str) -> Result<GhPage<GhIssue>, String> {
-    let resp: GqlIssuesResp =
-        serde_json::from_str(json).map_err(|e| format!("JSON parse error: {e}"))?;
+    let resp: GqlIssuesResp = serde_json::from_str(json)
+        .map_err(|e| t!("github.error.json_parse", detail = e).into_owned())?;
     let list = resp.data.repository.issues;
     let next_cursor = list.page_info.next_cursor();
     Ok(GhPage {
@@ -443,8 +438,8 @@ pub fn list_pull_requests(
 }
 
 fn parse_prs_graphql(json: &str) -> Result<GhPage<GhPullRequest>, String> {
-    let resp: GqlPrsResp =
-        serde_json::from_str(json).map_err(|e| format!("JSON parse error: {e}"))?;
+    let resp: GqlPrsResp = serde_json::from_str(json)
+        .map_err(|e| t!("github.error.json_parse", detail = e).into_owned())?;
     let repo = resp.data.repository;
     let default_branch = repo.default_branch_ref.map(|r| r.name);
     let list = repo.pull_requests;
@@ -873,8 +868,8 @@ fn parse_timeline_graphql(
     kind: GhItemKind,
     mut fetch_more: impl FnMut(Target<'_>, &str) -> Result<String, String>,
 ) -> Result<GhTimelinePage, String> {
-    let resp: GqlTimelineResp =
-        serde_json::from_str(json).map_err(|e| format!("JSON parse error: {e}"))?;
+    let resp: GqlTimelineResp = serde_json::from_str(json)
+        .map_err(|e| t!("github.error.json_parse", detail = e).into_owned())?;
     let container = match kind {
         GhItemKind::Issue => resp.data.repository.issue,
         GhItemKind::PullRequest => resp.data.repository.pull_request,
@@ -998,16 +993,21 @@ fn collect_review_threads(
         }
         !pending.is_empty()
     };
-    collect_pages("Review threads", threads, need_more, |after| {
-        let json = fetch_more(Target::ReviewThreads, after)?;
-        let resp: GqlRepoResp<GqlThreadsRepo> =
-            serde_json::from_str(&json).map_err(|e| format!("JSON parse error: {e}"))?;
-        resp.data
-            .repository
-            .pull_request
-            .map(|pr| pr.review_threads)
-            .ok_or_else(|| "pull request not found".to_string())
-    })
+    collect_pages(
+        &t!("github.what.review_threads"),
+        threads,
+        need_more,
+        |after| {
+            let json = fetch_more(Target::ReviewThreads, after)?;
+            let resp: GqlRepoResp<GqlThreadsRepo> = serde_json::from_str(&json)
+                .map_err(|e| t!("github.error.json_parse", detail = e).into_owned())?;
+            resp.data
+                .repository
+                .pull_request
+                .map(|pr| pr.review_threads)
+                .ok_or_else(|| t!("github.error.pr_not_found").into_owned())
+        },
+    )
 }
 
 /// 依序抓完一個分頁 connection：`first` 是首頁，`fetch(after)` 抓下一頁，
@@ -1027,7 +1027,15 @@ fn collect_pages<T>(
     let mut all = first.nodes;
     for page in 2..=1 + MAX_EXTRA_PAGES {
         let Some(after) = next.take() else { break };
-        let conn = fetch(&after).map_err(|e| format!("{what} page {page}: {e}"))?;
+        let conn = fetch(&after).map_err(|e| {
+            t!(
+                "github.error.page_failed",
+                what = what,
+                page = page,
+                detail = e
+            )
+            .into_owned()
+        })?;
         next = conn
             .page_info
             .next_cursor()
@@ -1095,19 +1103,19 @@ fn collect_head_contexts(
         return Ok(Vec::new());
     };
     collect_pages(
-        "CI checks",
+        &t!("github.what.ci_checks"),
         rollup.contexts,
         |_| true,
         |after| {
             let json = fetch_more(Target::Contexts { oid: &oid }, after)?;
-            let resp: GqlRepoResp<GqlContextsRepo> =
-                serde_json::from_str(&json).map_err(|e| format!("JSON parse error: {e}"))?;
+            let resp: GqlRepoResp<GqlContextsRepo> = serde_json::from_str(&json)
+                .map_err(|e| t!("github.error.json_parse", detail = e).into_owned())?;
             resp.data
                 .repository
                 .object
                 .and_then(|o| o.status_check_rollup)
                 .map(|r| r.contexts)
-                .ok_or_else(|| format!("commit {oid} not found"))
+                .ok_or_else(|| t!("github.error.commit_not_found", oid = oid).into_owned())
         },
     )
 }
@@ -1349,7 +1357,7 @@ pub fn update_body(path: &Path, number: u64, kind: GhItemKind, body: &str) -> Re
 
     if !output.status.success() {
         let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("gh edit failed: {stderr}"));
+        return Err(t!("github.error.edit_failed", detail = stderr).into_owned());
     }
     Ok(())
 }
@@ -1389,35 +1397,69 @@ impl StateAction {
     }
 
     pub fn prompt(self, kind: GhItemKind, number: u64) -> String {
-        let verb = match self {
-            StateAction::Close => "Close",
-            StateAction::Reopen => "Reopen",
-        };
-        format!("{verb} {} #{number}? ", kind.noun())
+        match (self, kind) {
+            (StateAction::Close, GhItemKind::Issue) => {
+                t!("github.state_action.close_issue.prompt", number = number)
+            }
+            (StateAction::Reopen, GhItemKind::Issue) => {
+                t!("github.state_action.reopen_issue.prompt", number = number)
+            }
+            (StateAction::Close, GhItemKind::PullRequest) => {
+                t!("github.state_action.close_pr.prompt", number = number)
+            }
+            (StateAction::Reopen, GhItemKind::PullRequest) => {
+                t!("github.state_action.reopen_pr.prompt", number = number)
+            }
+        }
+        .into_owned()
     }
 
     pub fn pending(self, kind: GhItemKind, number: u64) -> String {
-        let verb = match self {
-            StateAction::Close => "Closing",
-            StateAction::Reopen => "Reopening",
-        };
-        format!("{verb} {} #{number}...", kind.noun())
+        match (self, kind) {
+            (StateAction::Close, GhItemKind::Issue) => {
+                t!("github.state_action.close_issue.pending", number = number)
+            }
+            (StateAction::Reopen, GhItemKind::Issue) => {
+                t!("github.state_action.reopen_issue.pending", number = number)
+            }
+            (StateAction::Close, GhItemKind::PullRequest) => {
+                t!("github.state_action.close_pr.pending", number = number)
+            }
+            (StateAction::Reopen, GhItemKind::PullRequest) => {
+                t!("github.state_action.reopen_pr.pending", number = number)
+            }
+        }
+        .into_owned()
     }
 
     pub fn success(self, kind: GhItemKind, number: u64) -> String {
-        let verb = match self {
-            StateAction::Close => "Closed",
-            StateAction::Reopen => "Reopened",
-        };
-        format!("{verb} {} #{number}", kind.noun())
+        match (self, kind) {
+            (StateAction::Close, GhItemKind::Issue) => {
+                t!("github.state_action.close_issue.success", number = number)
+            }
+            (StateAction::Reopen, GhItemKind::Issue) => {
+                t!("github.state_action.reopen_issue.success", number = number)
+            }
+            (StateAction::Close, GhItemKind::PullRequest) => {
+                t!("github.state_action.close_pr.success", number = number)
+            }
+            (StateAction::Reopen, GhItemKind::PullRequest) => {
+                t!("github.state_action.reopen_pr.success", number = number)
+            }
+        }
+        .into_owned()
     }
 
-    pub fn hint_label(self, kind: GhItemKind) -> &'static str {
+    pub fn hint_label(self, kind: GhItemKind) -> Cow<'static, str> {
         match (self, kind) {
-            (StateAction::Close, GhItemKind::Issue) => "close issue",
-            (StateAction::Reopen, GhItemKind::Issue) => "reopen issue",
-            (StateAction::Close, GhItemKind::PullRequest) => "close PR",
-            (StateAction::Reopen, GhItemKind::PullRequest) => "reopen PR",
+            (StateAction::Close, GhItemKind::Issue) => t!("github.state_action.close_issue.hint"),
+            (StateAction::Reopen, GhItemKind::Issue) => t!("github.state_action.reopen_issue.hint"),
+            (StateAction::Close, GhItemKind::PullRequest) => {
+                t!("github.state_action.close_pr.hint")
+            }
+            (StateAction::Reopen, GhItemKind::PullRequest) => {
+                t!("github.state_action.reopen_pr.hint")
+            }
         }
     }
 }
@@ -1522,29 +1564,32 @@ impl PrDraftAction {
 
     pub fn prompt(self, number: u64) -> String {
         match self {
-            PrDraftAction::MarkReady => format!("Mark PR #{number} ready for review? "),
-            PrDraftAction::ConvertToDraft => format!("Convert PR #{number} back to draft? "),
+            PrDraftAction::MarkReady => t!("github.draft.mark_ready.prompt", number = number),
+            PrDraftAction::ConvertToDraft => t!("github.draft.to_draft.prompt", number = number),
         }
+        .into_owned()
     }
 
     pub fn pending(self, number: u64) -> String {
         match self {
-            PrDraftAction::MarkReady => format!("Marking PR #{number} ready..."),
-            PrDraftAction::ConvertToDraft => format!("Converting PR #{number} to draft..."),
+            PrDraftAction::MarkReady => t!("github.draft.mark_ready.pending", number = number),
+            PrDraftAction::ConvertToDraft => t!("github.draft.to_draft.pending", number = number),
         }
+        .into_owned()
     }
 
     pub fn success(self, number: u64) -> String {
         match self {
-            PrDraftAction::MarkReady => format!("PR #{number} is ready for review"),
-            PrDraftAction::ConvertToDraft => format!("PR #{number} converted to draft"),
+            PrDraftAction::MarkReady => t!("github.draft.mark_ready.success", number = number),
+            PrDraftAction::ConvertToDraft => t!("github.draft.to_draft.success", number = number),
         }
+        .into_owned()
     }
 
-    pub fn hint_label(self) -> &'static str {
+    pub fn hint_label(self) -> Cow<'static, str> {
         match self {
-            PrDraftAction::MarkReady => "ready for review",
-            PrDraftAction::ConvertToDraft => "back to draft",
+            PrDraftAction::MarkReady => t!("github.draft.mark_ready.hint"),
+            PrDraftAction::ConvertToDraft => t!("github.draft.to_draft.hint"),
         }
     }
 
@@ -1594,38 +1639,23 @@ mod tests {
         assert_eq!(StateAction::Reopen.verb(), "reopen");
     }
 
-    /// 三條輸出通道各自獨立：argv 用小寫 `pr`，句中名詞用 `PR`，標籤用完整名稱。
-    #[test]
-    fn item_kind_has_three_distinct_channels() {
-        let pr = GhItemKind::PullRequest;
-        assert_eq!(
-            (pr.as_str(), pr.noun(), pr.display_name()),
-            ("pr", "PR", "Pull Request")
-        );
-        let issue = GhItemKind::Issue;
-        assert_eq!(
-            (issue.as_str(), issue.noun(), issue.display_name()),
-            ("issue", "issue", "Issue")
-        );
-    }
-
     #[test]
     fn state_action_messages_name_the_right_kind() {
         assert_eq!(
             StateAction::Close.prompt(GhItemKind::PullRequest, 12),
-            "Close PR #12? "
+            "關閉 PR #12？ "
         );
         assert_eq!(
             StateAction::Close.prompt(GhItemKind::Issue, 12),
-            "Close issue #12? "
+            "關閉 issue #12？ "
         );
         assert_eq!(
             StateAction::Reopen.success(GhItemKind::PullRequest, 12),
-            "Reopened PR #12"
+            "已重新開啟 PR #12"
         );
         assert_eq!(
             StateAction::Close.pending(GhItemKind::Issue, 12),
-            "Closing issue #12..."
+            "正在關閉 issue #12…"
         );
     }
 
@@ -2606,15 +2636,15 @@ mod tests {
         };
 
         let e = fail(|_, _| Err("boom".to_string()));
-        assert!(e.contains("CI checks page 2") && e.contains("boom"), "{e}");
+        assert!(e.contains("CI check 第 2 頁") && e.contains("boom"), "{e}");
 
         let e = fail(|_, _| Ok("not json".to_string()));
-        assert!(e.contains("CI checks page 2: JSON parse error"), "{e}");
+        assert!(e.contains("CI check 第 2 頁：JSON 解析失敗"), "{e}");
 
         // oid 不存在（或不是 Commit）
         let e = fail(|_, _| Ok(r#"{"data":{"repository":{"object":null}}}"#.to_string()));
         assert!(
-            e.contains("CI checks page 2") && e.contains("not found"),
+            e.contains("CI check 第 2 頁") && e.contains("找不到"),
             "{e}"
         );
     }
@@ -2801,16 +2831,16 @@ mod tests {
 
         let e = fail(|_, _| Err("boom".to_string()));
         assert!(
-            e.contains("Review threads page 2") && e.contains("boom"),
+            e.contains("Review thread 第 2 頁") && e.contains("boom"),
             "{e}"
         );
 
         let e = fail(|_, _| Ok("not json".to_string()));
-        assert!(e.contains("Review threads page 2: JSON parse error"), "{e}");
+        assert!(e.contains("Review thread 第 2 頁：JSON 解析失敗"), "{e}");
 
         let e = fail(|_, _| Ok(r#"{"data":{"repository":{"pullRequest":null}}}"#.to_string()));
         assert!(
-            e.contains("Review threads page 2") && e.contains("not found"),
+            e.contains("Review thread 第 2 頁") && e.contains("找不到"),
             "{e}"
         );
     }
