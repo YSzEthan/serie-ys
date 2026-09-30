@@ -867,7 +867,7 @@ mod tests {
         let line = diff_pane_title("scripts/run.sh", &notes, None, 200, &theme);
         assert_eq!(
             line.to_string(),
-            "scripts/run.sh · 二進位 · mode → 可執行 · 已截斷",
+            "scripts/run.sh · binary · mode → 可執行 · 已截斷",
             "沒有 hunk（binary/純 mode 變更）就不該印出 hunk 後綴"
         );
     }

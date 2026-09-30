@@ -1305,7 +1305,7 @@ mod tests {
 
             assert_eq!(
                 full_row(&buf, 0),
-                " Graph   主 旨                                         日 期         作 者    Commit  ",
+                " Graph   Subject                                     日 期         Author Commit  ",
                 "header row"
             );
             assert_eq!(

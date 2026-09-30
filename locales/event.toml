@@ -4,7 +4,7 @@ _version = 2
 zh-TW = "強制離開"
 
 [event.desc.quit]
-zh-TW = "離開（按兩下）"
+zh-TW = "離開（按兩次）"
 
 [event.desc.help_toggle]
 zh-TW = "開啟／關閉說明"
@@ -55,16 +55,16 @@ zh-TW = "向上捲動"
 zh-TW = "向下捲動"
 
 [event.desc.page_up]
-zh-TW = "上一頁"
+zh-TW = "向上一頁"
 
 [event.desc.page_down]
-zh-TW = "下一頁"
+zh-TW = "向下一頁"
 
 [event.desc.half_page_up]
-zh-TW = "上半頁"
+zh-TW = "向上半頁"
 
 [event.desc.half_page_down]
-zh-TW = "下半頁"
+zh-TW = "向下半頁"
 
 [event.desc.go_to_next]
 zh-TW = "下一個符合項"
@@ -85,7 +85,7 @@ zh-TW = "開始搜尋"
 zh-TW = "開始過濾"
 
 [event.desc.ignore_case_toggle]
-zh-TW = "切換大小寫忽略"
+zh-TW = "切換忽略大小寫"
 
 [event.desc.fuzzy_toggle]
 zh-TW = "切換模糊比對"
@@ -127,13 +127,13 @@ zh-TW = "切換 remote refs"
 zh-TW = "開啟 GitHub issues/PRs"
 
 [event.desc.shell_toggle]
-zh-TW = "開啟命令列"
+zh-TW = "開啟 Shell"
 
 [event.desc.task_list_toggle]
 zh-TW = "切換 task 清單"
 
 [event.desc.detail_pane_toggle]
-zh-TW = "切換詳情區塊"
+zh-TW = "切換詳情 pane"
 
 [event.desc.fetch]
 zh-TW = "fetch 所有 remote"
@@ -142,28 +142,28 @@ zh-TW = "fetch 所有 remote"
 zh-TW = "checkout 選取的 commit/ref"
 
 [event.desc.merge_pr]
-zh-TW = "合併 PR"
+zh-TW = "merge PR"
 
 [event.desc.toggle_issue_state]
-zh-TW = "切換 issue 開關狀態"
+zh-TW = "切換 issue 開啟／關閉狀態"
 
 [event.desc.toggle_pr_draft]
 zh-TW = "切換 PR draft 狀態"
 
 [event.desc.toggle_commit_log]
-zh-TW = "切換 commit log 顯示"
+zh-TW = "展開／收合 commit log"
 
 [event.desc.check_update]
 zh-TW = "檢查更新"
 
 [event.related.parent]
-zh-TW = "父項"
+zh-TW = "Parent"
 
 [event.related.sub]
-zh-TW = "子項"
+zh-TW = "Sub-issue"
 
 [event.related.linked]
-zh-TW = "關聯"
+zh-TW = "Linked"
 
 [event.copy_label.local]
 zh-TW = "Branch 名稱"
@@ -175,19 +175,19 @@ zh-TW = "Remote branch 名稱"
 zh-TW = "Tag 名稱"
 
 [event.pick_prompt.local]
-zh-TW = "選擇 branch: "
+zh-TW = "選擇 branch："
 
 [event.pick_prompt.remote]
-zh-TW = "選擇 remote branch: "
+zh-TW = "選擇 remote branch："
 
 [event.pick_prompt.tag]
-zh-TW = "選擇 tag: "
+zh-TW = "選擇 tag："
 
 [event.checkout_prompt.branch]
-zh-TW = "Checkout branch: "
+zh-TW = "Checkout branch："
 
 [event.checkout_prompt.tag]
-zh-TW = "Checkout tag: "
+zh-TW = "Checkout tag："
 
 [event.err.invalid_user_command]
 zh-TW = "user_command_n 格式不正確：%{value}"

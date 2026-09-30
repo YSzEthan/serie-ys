@@ -43,10 +43,10 @@ zh-TW = "無法建立剪貼簿：%{error}"
 zh-TW = "無法複製到剪貼簿：%{error}"
 
 [git.external.non_http_url]
-zh-TW = "拒絕開啟非 http 網址：%{url}"
+zh-TW = "拒絕開啟非 http URL：%{url}"
 
 [git.external.open_url_failed]
-zh-TW = "無法開啟網址：%{error}"
+zh-TW = "無法開啟 URL：%{error}"
 
 [git.external.exec_failed]
 zh-TW = "無法執行指令：%{error}"
@@ -112,7 +112,7 @@ zh-TW = "無法執行 git %{subcommand}：%{error}"
 zh-TW = "建立 tag 失敗"
 
 [git.tag.push_failed]
-zh-TW = "推送 tag 失敗"
+zh-TW = "push tag 失敗"
 
 [git.tag.delete_failed]
 zh-TW = "刪除 tag 失敗"

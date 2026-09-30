@@ -2279,7 +2279,7 @@ mod tests {
         let screen = render_to_string(&mut view);
         assert!(screen.contains('✓'), "got:\n{screen}");
         assert!(screen.contains("@reviewer"), "got:\n{screen}");
-        assert!(screen.contains("已核准"), "got:\n{screen}");
+        assert!(screen.contains("Approved"), "got:\n{screen}");
         assert!(screen.contains("looks good"), "got:\n{screen}");
     }
 
@@ -2364,8 +2364,8 @@ mod tests {
         );
 
         let screen = render_to_string(&mut view);
-        assert!(screen.contains("(已解決)"), "got:\n{screen}");
-        assert!(screen.contains("(已過時)"), "got:\n{screen}");
+        assert!(screen.contains("（已解決）"), "got:\n{screen}");
+        assert!(screen.contains("（已過時）"), "got:\n{screen}");
     }
 
     #[test]
@@ -2390,7 +2390,7 @@ mod tests {
         );
 
         let screen = render_to_string(&mut view);
-        assert!(screen.contains("(還有 3 則留言)"), "got:\n{screen}");
+        assert!(screen.contains("（還有 3 則留言）"), "got:\n{screen}");
     }
 
     /// commit 集中成一個區塊：即使 API 回傳的時間序是 commit/comment 交錯，
@@ -2607,7 +2607,7 @@ mod tests {
         );
         assert_eq!(
             rendered_mergeable_marker(&view),
-            Some(("  (有衝突)".to_string(), Some(Color::Red)))
+            Some(("  （有衝突）".to_string(), Some(Color::Red)))
         );
     }
 

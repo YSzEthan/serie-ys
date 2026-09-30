@@ -19,10 +19,10 @@ zh-TW = "[%{case}] [%{matcher}] [比對欄位：%{target}]"
 zh-TW = "全部"
 
 [view.search.target.subject]
-zh-TW = "主旨"
+zh-TW = "subject"
 
 [view.search.target.author]
-zh-TW = "作者"
+zh-TW = "author"
 
 [view.search.target.hash]
 zh-TW = "hash"
@@ -31,22 +31,22 @@ zh-TW = "hash"
 zh-TW = "ref"
 
 [view.search.msg.ignore_case_on]
-zh-TW = "忽略大小寫：開"
+zh-TW = "忽略大小寫：開啟"
 
 [view.search.msg.ignore_case_off]
-zh-TW = "忽略大小寫：關"
+zh-TW = "忽略大小寫：關閉"
 
 [view.search.msg.fuzzy_on]
-zh-TW = "模糊比對：開"
+zh-TW = "模糊比對：開啟"
 
 [view.search.msg.fuzzy_off]
-zh-TW = "模糊比對：關"
+zh-TW = "模糊比對：關閉"
 
 [view.search.msg.target]
 zh-TW = "比對欄位：%{target}"
 
 [view.search.no_match]
-zh-TW = "找不到符合項目（query：\"%{query}\"）%{options}"
+zh-TW = "找不到符合項（query：\"%{query}\"）%{options}"
 
 [view.search.match_of]
 zh-TW = "第 %{index} 筆，共 %{total} 筆（query：\"%{query}\"）%{options}"
@@ -64,10 +64,10 @@ zh-TW = "這個 commit 上沒有 local branch"
 zh-TW = "Graph"
 
 [view.list.col.subject]
-zh-TW = "主旨"
+zh-TW = "Subject"
 
 [view.list.col.author]
-zh-TW = "作者"
+zh-TW = "Author"
 
 [view.list.col.hash]
 zh-TW = "Commit"
@@ -100,10 +100,10 @@ zh-TW = "Remote refs：隱藏"
 zh-TW = "搜尋：%{options}"
 
 [view.clipboard.commit_sha_short]
-zh-TW = "Commit SHA（短）"
+zh-TW = "Commit short hash"
 
 [view.clipboard.commit_subject]
-zh-TW = "Commit 主旨"
+zh-TW = "Commit subject"
 
 [view.refs.select_checkout]
 zh-TW = "請先選擇要 checkout 的 branch"
@@ -118,16 +118,16 @@ zh-TW = "Commit："
 zh-TW = "Tag 名稱不可為空"
 
 [view.create_tag.pending_push]
-zh-TW = "正在建立 tag '%{tag}' 並推送…"
+zh-TW = "正在建立 tag '%{tag}' 並 push…"
 
 [view.create_tag.pending]
 zh-TW = "正在建立 tag '%{tag}'…"
 
 [view.create_tag.push_failed]
-zh-TW = "Tag 已在本機建立，但推送失敗：%{detail}"
+zh-TW = "Tag 已在 local 建立，但 push 失敗：%{detail}"
 
 [view.create_tag.done_push]
-zh-TW = "已建立 tag '%{tag}' 並推送到 origin"
+zh-TW = "已建立 tag '%{tag}' 並 push 到 origin"
 
 [view.create_tag.done]
 zh-TW = "已建立 tag '%{tag}'"
@@ -142,7 +142,7 @@ zh-TW = "Tag 名稱："
 zh-TW = "訊息："
 
 [view.create_tag.push_to_origin]
-zh-TW = " 推送到 origin"
+zh-TW = " Push 到 origin"
 
 [view.delete_tag.pending_remote]
 zh-TW = "正在從 local 與 remote 刪除 tag '%{tag}'…"
@@ -157,7 +157,7 @@ zh-TW = "Local tag 已刪除，但從 remote 刪除失敗：%{detail}"
 zh-TW = "已從 local 與 remote 刪除 tag '%{tag}'"
 
 [view.delete_tag.done_local]
-zh-TW = "已在本機刪除 tag '%{tag}'"
+zh-TW = "已在 local 刪除 tag '%{tag}'"
 
 [view.delete_tag.title]
 zh-TW = " 刪除 Tag"
@@ -184,16 +184,16 @@ zh-TW = " 刪除 Remote Branch"
 zh-TW = " 強制刪除（-D）"
 
 [view.shell.truncated]
-zh-TW = "… 輸出過長，已截斷在 %{max} 行"
+zh-TW = "… 輸出過長，已在 %{max} 行截斷"
 
 [view.shell.running]
 zh-TW = "  執行中…"
 
 [view.release_notes.title]
-zh-TW = " 版本說明"
+zh-TW = " Release Notes"
 
 [view.detail.flag.binary]
-zh-TW = "二進位"
+zh-TW = "binary"
 
 [view.detail.flag.truncated]
 zh-TW = "已截斷"
@@ -202,7 +202,7 @@ zh-TW = "已截斷"
 zh-TW = "hunk %{current}/%{total}"
 
 [view.detail.author]
-zh-TW = "作者："
+zh-TW = "Author："
 
 [view.detail.committer]
 zh-TW = "Committer："
@@ -211,7 +211,7 @@ zh-TW = "Committer："
 zh-TW = "Commit："
 
 [view.detail.parents]
-zh-TW = "父 commit："
+zh-TW = "Parent："
 
 [view.detail.refs]
 zh-TW = "Refs："

@@ -122,9 +122,10 @@ impl TransientMessage {
             Self::FuzzyOn => t!("view.search.msg.fuzzy_on"),
             Self::FuzzyOff => t!("view.search.msg.fuzzy_off"),
             Self::Target(target) => {
-                // 補空白到固定顯示寬度，切換欄位時才蓋得掉上一則較長的訊息
+                // 補空白到固定顯示寬度（最長的標籤 `subject` = 7），切換欄位時
+                // 才蓋得掉上一則較長的訊息
                 let label = target_label(target);
-                let padded = console::pad_str(&label, 6, console::Alignment::Left, None);
+                let padded = console::pad_str(&label, 7, console::Alignment::Left, None);
                 t!("view.search.msg.target", target = padded)
             }
         };
@@ -1312,7 +1313,7 @@ mod tests {
         };
         assert_eq!(
             opts.status_string(),
-            "[區分大小寫] [子字串] [比對欄位：作者]"
+            "[區分大小寫] [子字串] [比對欄位：author]"
         );
     }
 
@@ -1502,7 +1503,7 @@ mod tests {
 
             assert_eq!(
                 state.transient_message_string(),
-                Some("比對欄位：主旨  ".to_string())
+                Some("比對欄位：subject".to_string())
             );
         });
     }
@@ -1515,7 +1516,7 @@ mod tests {
 
             assert_eq!(
                 state.filter_transient_message_string(),
-                Some("比對欄位：主旨  ".to_string())
+                Some("比對欄位：subject".to_string())
             );
         });
     }

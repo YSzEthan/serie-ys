@@ -528,9 +528,9 @@ pub(super) fn state_label(state: &str) -> Cow<'static, str> {
     }
 }
 
-/// 列表列的狀態欄固定 6 格寬。中文字佔 2 格，所以要用顯示寬度補空白，
-/// 不能用 `{:<6}`（那是照字元數補）。
-const STATE_COL_WIDTH: usize = 6;
+/// 列表列的狀態欄固定 8 格寬（最寬的標籤是「已 merge」）。中文字佔 2 格，
+/// 所以要用顯示寬度補空白，不能用 `{:<8}`（那是照字元數補）。
+const STATE_COL_WIDTH: usize = 8;
 
 fn pad_state_cell(label: &str) -> String {
     console::pad_str(label, STATE_COL_WIDTH, console::Alignment::Left, None).into_owned()

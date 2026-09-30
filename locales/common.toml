@@ -31,7 +31,7 @@ zh-TW = "確認"
 zh-TW = "複製"
 
 [common.hint.copy_url]
-zh-TW = "複製網址"
+zh-TW = "複製 URL"
 
 [common.hint.delete]
 zh-TW = "刪除"
@@ -88,10 +88,10 @@ zh-TW = "開啟"
 zh-TW = "整頁"
 
 [common.hint.pane]
-zh-TW = "區塊"
+zh-TW = "pane"
 
 [common.hint.parent_child]
-zh-TW = "父/子"
+zh-TW = "parent/child"
 
 [common.hint.preview]
 zh-TW = "預覽"
@@ -145,7 +145,7 @@ zh-TW = "切換"
 zh-TW = "頂端"
 
 [common.esc_cancel]
-zh-TW = "(Esc 取消)"
+zh-TW = "（Esc 取消）"
 
 [common.yes]
 zh-TW = "是"

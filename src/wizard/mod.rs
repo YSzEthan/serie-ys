@@ -1465,7 +1465,7 @@ mod tests {
 
         let row = ROWS[idx];
         assert!(
-            top_row_label(row, &s.draft, &s.defaults).contains("拓撲序"),
+            top_row_label(row, &s.draft, &s.defaults).contains("< topo >"),
             "切換完不用離開這一列就看得到新值"
         );
     }
@@ -1476,7 +1476,7 @@ mod tests {
         let idx = row_of_field(CycleField::Order);
         let label = top_row_label(ROWS[idx], &s.draft, &s.defaults);
         assert!(
-            label.contains("< 時間序 >"),
+            label.contains("< chrono >"),
             "循環選擇欄位要用 < > 標示可切換：{label}"
         );
     }
@@ -1765,7 +1765,7 @@ mod tests {
         let s = test_state();
         let order_idx = row_of_field(CycleField::Order);
         assert!(
-            top_row_label(ROWS[order_idx], &s.draft, &s.defaults).contains("時間序"),
+            top_row_label(ROWS[order_idx], &s.draft, &s.defaults).contains("< chrono >"),
             "chrono 是真正的目前值"
         );
         let max_count_idx = row_of_number(NumberField::MaxCount);
@@ -1782,8 +1782,8 @@ mod tests {
 
         let idx = row_of_field(CycleField::Order);
         assert!(
-            top_row_label(ROWS[idx], &s.draft, &s.defaults).contains("拓撲序"),
-            "設定檔寫的是 topo，精靈顯示的目前值要跟著是拓撲序，不是硬預設的時間序"
+            top_row_label(ROWS[idx], &s.draft, &s.defaults).contains("< topo >"),
+            "設定檔寫的是 topo，精靈顯示的目前值要跟著是 topo，不是硬預設的 chrono"
         );
 
         move_to_row(&mut s, idx);

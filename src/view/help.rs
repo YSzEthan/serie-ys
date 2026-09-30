@@ -698,14 +698,14 @@ mod tests {
 
 | 按鍵 | 出現位置 | 動作 |
 | --- | ----- | ------ |
-| <kbd>1</kbd>–<kbd>9</kbd> | Ref／checkout／關聯／branch 選擇器 | 選第 n 項 |
-| <kbd>m</kbd> <kbd>s</kbd> <kbd>r</kbd> | Merge PR 提示（第 1 步） | merge／squash／rebase |
+| <kbd>1</kbd>–<kbd>9</kbd> | Ref／checkout／相關／branch 選擇器 | 選第 n 項 |
+| <kbd>m</kbd> <kbd>s</kbd> <kbd>r</kbd> | Merge PR 提示（第 1 步） | merge/squash/rebase |
 | <kbd>y</kbd> <kbd>n</kbd> | Merge PR 提示（第 2 步） | merge 後是否刪除該 branch |
 | <kbd>f</kbd> | 刪除 branch 確認 | 強制刪除 |
-| <kbd>Tab</kbd> <kbd>Shift-Tab</kbd> | Create tag 對話框 | 在欄位間移動 |
-| <kbd>Space</kbd> | Create tag 對話框（核取方塊） | 切換核取狀態 |
-| <kbd>↑</kbd> <kbd>↓</kbd> | Shell 命令列 | 瀏覽指令歷史 |
-| <kbd>PageUp</kbd> <kbd>PageDown</kbd> | Shell 命令列 | 捲動輸出面板 |
+| <kbd>Tab</kbd> <kbd>Shift-Tab</kbd> | 建立 Tag 對話框 | 在欄位間移動 |
+| <kbd>Space</kbd> | 建立 Tag 對話框（checkbox） | 切換勾選狀態 |
+| <kbd>↑</kbd> <kbd>↓</kbd> | Shell | 瀏覽指令歷史 |
+| <kbd>PageUp</kbd> <kbd>PageDown</kbd> | Shell | 捲動輸出 pane |
 ";
 
     fn render_doc(keybind: &KeyBind, core_config: &CoreConfig) -> String {

@@ -1,6 +1,6 @@
 _version = 2
 
-# ── 狀態（GitHub API 值 OPEN／CLOSED／MERGED 與篩選）──
+# ── 狀態（GitHub API 值 OPEN/CLOSED/MERGED 與過濾）──
 
 [github.state.open]
 zh-TW = "開啟"
@@ -9,15 +9,15 @@ zh-TW = "開啟"
 zh-TW = "已關閉"
 
 [github.state.merged]
-zh-TW = "已合併"
+zh-TW = "已 merge"
 
 [github.state.draft]
-zh-TW = "草稿"
+zh-TW = "draft"
 
 [github.state.all]
 zh-TW = "全部"
 
-# ── 錯誤訊息（夾帶 gh／git 的原文用 detail 帶入，不翻）──
+# ── 錯誤訊息（夾帶 gh/git 的原文用 detail 帶入，不翻）──
 
 [github.error.gh_failed]
 zh-TW = "gh 指令失敗：%{detail}"
@@ -32,7 +32,7 @@ zh-TW = "無法解析 nameWithOwner：%{value}"
 zh-TW = "JSON 解析失敗：%{detail}"
 
 [github.error.pr_not_found]
-zh-TW = "找不到 pull request"
+zh-TW = "找不到 PR"
 
 [github.error.commit_not_found]
 zh-TW = "找不到 commit %{oid}"
@@ -49,7 +49,7 @@ zh-TW = "Review thread"
 [github.what.ci_checks]
 zh-TW = "CI check"
 
-# ── Issue／PR 狀態切換 ──
+# ── Issue/PR 狀態切換 ──
 
 [github.state_action.close_issue.prompt]
 zh-TW = "關閉 issue #%{number}？ "
@@ -125,7 +125,7 @@ zh-TW = "PR #%{number} 已轉為 draft"
 [github.draft.to_draft.hint]
 zh-TW = "轉回 draft"
 
-# ── 視圖 ──
+# ── GitHub view ──
 
 [github.section.body]
 zh-TW = "內文"
@@ -143,10 +143,10 @@ zh-TW = "CI"
 zh-TW = "Review"
 
 [github.jump.not_found_issues]
-zh-TW = "issues 裡沒有 #%{number}（篩選：%{filter}）"
+zh-TW = "issues 裡沒有 #%{number}（過濾：%{filter}）"
 
 [github.jump.not_found_prs]
-zh-TW = "PRs 裡沒有 #%{number}（篩選：%{filter}）"
+zh-TW = "PRs 裡沒有 #%{number}（過濾：%{filter}）"
 
 [github.hint.collapse_commits]
 zh-TW = "收合 commits"
@@ -155,16 +155,16 @@ zh-TW = "收合 commits"
 zh-TW = "展開 commits"
 
 [github.copy.url_issue]
-zh-TW = "Issue 網址"
+zh-TW = "Issue URL"
 
 [github.copy.url_pr]
-zh-TW = "Pull Request 網址"
+zh-TW = "PR URL"
 
 [github.copy.number_issue]
 zh-TW = "Issue 編號"
 
 [github.copy.number_pr]
-zh-TW = "Pull Request 編號"
+zh-TW = "PR 編號"
 
 [github.flash.pr_is_draft]
 zh-TW = "PR #%{number} 是 draft"
@@ -179,7 +179,7 @@ zh-TW = "Issue #%{number} 的狀態為%{state}"
 zh-TW = "找不到 task"
 
 [github.flash.no_url]
-zh-TW = "此項目沒有網址"
+zh-TW = "此項目沒有 URL"
 
 [github.render.loading]
 zh-TW = "載入 GitHub 資料中…"
@@ -208,40 +208,40 @@ zh-TW = " 編輯 task 清單 "
 [github.render.tasks_footer]
 zh-TW = " h/l:切換  Enter:送出  Esc:取消"
 
-# ── Preview／timeline ──
+# ── Preview/timeline ──
 
 [github.preview.no_item]
-zh-TW = "(沒有選取項目)"
+zh-TW = "（沒有選取項目）"
 
 [github.preview.related]
 zh-TW = "相關"
 
 [github.preview.no_body]
-zh-TW = "(沒有內文)"
+zh-TW = "（沒有內文）"
 
 [github.preview.parent]
 zh-TW = "Parent："
 
 [github.preview.sub_issues]
-zh-TW = "Sub-issues (%{n})："
+zh-TW = "Sub-issues（%{n}）："
 
 [github.timeline.more_review_comments]
-zh-TW = "(還有 %{n} 則留言)"
+zh-TW = "（還有 %{n} 則留言）"
 
 [github.timeline.loading]
-zh-TW = "(載入留言中…)"
+zh-TW = "（載入留言中…）"
 
 [github.timeline.failed]
-zh-TW = "(留言載入失敗：%{detail})"
+zh-TW = "（留言載入失敗：%{detail}）"
 
 [github.timeline.empty]
-zh-TW = "(沒有留言)"
+zh-TW = "（沒有留言）"
 
 [github.timeline.loading_more]
-zh-TW = "(載入更多中…)"
+zh-TW = "（載入更多中…）"
 
 [github.timeline.more]
-zh-TW = "(還有更多留言 — 往下捲動載入)"
+zh-TW = "（還有更多留言——往下捲動載入）"
 
 [github.timeline.collapsed_commits]
 zh-TW = "▸ %{n} 個 commit"
@@ -250,25 +250,25 @@ zh-TW = "▸ %{n} 個 commit"
 zh-TW = "▸ %{n} 個 check "
 
 [github.timeline.outdated]
-zh-TW = "  (已過時)"
+zh-TW = "  （已過時）"
 
 [github.timeline.resolved]
-zh-TW = "  (已解決)"
+zh-TW = "  （已解決）"
 
 [github.timeline.mergeable]
-zh-TW = "  (可 merge)"
+zh-TW = "  （可 merge）"
 
 [github.timeline.conflicting]
-zh-TW = "  (有衝突)"
+zh-TW = "  （有衝突）"
 
 [github.review.approved]
-zh-TW = "已核准"
+zh-TW = "Approved"
 
 [github.review.changes_requested]
-zh-TW = "要求修改"
+zh-TW = "Changes requested"
 
 [github.review.commented]
-zh-TW = "留言"
+zh-TW = "Commented"
 
 [github.review.dismissed]
-zh-TW = "已駁回"
+zh-TW = "Dismissed"

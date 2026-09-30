@@ -93,22 +93,22 @@ ysgit - Git Graph in Terminal
 Usage: ysgit [OPTIONS] [PATH]
 
 Arguments:
-  [PATH]  git 倉庫路徑 [default: current directory]
+  [PATH]  git repository 路徑 [default: current directory]
 
 Options:
   -p, --path-browser              以互動式目錄瀏覽器選擇 [PATH]（類似 ranger；可搭配上面的路徑引數指定起始目錄）
   -n, --max-count <NUMBER>        要渲染的最大 commit 數量
   -o, --order <TYPE>              Commit 排序演算法 [default: chrono] [possible values: chrono, topo]
-  -g, --graph-width <TYPE>        Commit 圖形格子寬度 [default: auto] [possible values: auto, double, single]
+  -g, --graph-width <TYPE>        Commit graph 格子寬度 [default: auto] [possible values: auto, double, single]
   -c, --compact <TYPE>            緊湊模式：commit 文字貼齊該列 graph 實際畫到的最右邊，不保留固定留白 [default: auto] [possible values: auto, on, off]
-  -s, --graph-style <TYPE>        Commit 圖形邊線風格 [default: rounded] [possible values: rounded, angular, ascii]
+  -s, --graph-style <TYPE>        Commit graph 邊線風格 [default: rounded] [possible values: rounded, angular, ascii]
   -i, --initial-selection <TYPE>  初始選取的 commit [default: latest] [possible values: latest, head]
       --update-mode <MODE>        自動更新檢查模式 [default: check] [possible values: off, check, auto]
       --update-interval <HOURS>   自動更新的檢查間隔，單位小時 [default: 6]
       --auto-restart <TYPE>       更新完成後自動重啟（TUI）／開啟新版（CLI），不再詢問；開啟時也會偵測執行檔是否被別的實例或手動部署換掉並在閒置時自動接上新版 [default: off] [possible values: off, on]
   -h, --help                      顯示說明
   -V, --version                   顯示版本
-  -U, --update                    檢查 GitHub Release 並更新執行檔本身
+  -U, --update                    檢查 GitHub Releases 並更新執行檔本身
 ```
 
 > **`-h` 上面寫的「顯示說明」只是非 TTY（管線、CI）下的行為。** 在真人終端機直接執行

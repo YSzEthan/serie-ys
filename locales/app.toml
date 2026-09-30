@@ -1,7 +1,7 @@
 _version = 2
 
 [app.status.update_installed]
-zh-TW = "已更新 — 重啟 ysgit 後生效"
+zh-TW = "已更新——重啟 ysgit 後生效"
 
 [app.status.auto_fetched]
 zh-TW = "已自動 fetch 到新的 commit"
@@ -16,13 +16,13 @@ zh-TW = "⟳ 載入中  "
 zh-TW = "⟳ 更新待套用  "
 
 [app.status.more]
-zh-TW = "(還有 %{n} 項)"
+zh-TW = "（還有 %{n} 項）"
 
 [app.status.more_tab_view]
-zh-TW = "(還有 %{n} 項，請用 tab 視圖)"
+zh-TW = "（還有 %{n} 項，請用分頁）"
 
 [app.status.go_to_child]
-zh-TW = "前往 child："
+zh-TW = "前往 child commit："
 
 [app.status.delete_branch]
 zh-TW = "刪除 branch："
@@ -31,7 +31,7 @@ zh-TW = "刪除 branch："
 zh-TW = "刪除 '%{name}'？"
 
 [app.status.updated_to]
-zh-TW = "已更新至 %{tag}。"
+zh-TW = "已更新到 %{tag}。"
 
 [app.status.error]
 zh-TW = "錯誤：%{msg}"
@@ -64,10 +64,10 @@ zh-TW = "以 %{method} merge #%{number}%{local}%{remote}  "
 zh-TW = "目前清單沒有 issue #%{number}（請檢查狀態過濾）"
 
 [app.github.issues_thread_panicked]
-zh-TW = "GitHub issues 執行緒異常終止"
+zh-TW = "GitHub issues thread 異常終止"
 
 [app.github.prs_thread_panicked]
-zh-TW = "GitHub PRs 執行緒異常終止"
+zh-TW = "GitHub PRs thread 異常終止"
 
 [app.github.issues_unavailable]
 zh-TW = "無法取得 GitHub issues：%{e}"
@@ -97,7 +97,7 @@ zh-TW = " 處理中… "
 zh-TW = " 已重啟 "
 
 [app.pending.any_key_close]
-zh-TW = "任意鍵：關閉"
+zh-TW = "任意按鍵：關閉"
 
 [app.quit.press_again]
 zh-TW = "再按一次 q 離開"
@@ -154,7 +154,7 @@ zh-TW = "正在刪除 local branch…"
 zh-TW = "，已刪除 local branch '%{name}'"
 
 [app.merge.local_not_fully_merged]
-zh-TW = "%{e}（branch 有不在這次 merge 內的 commit，若確定要刪請手動處理）"
+zh-TW = "%{e}（branch 有不在這次 merge 內的 commit，若確定要刪除，請手動處理）"
 
 [app.merge.local_delete_failed]
 zh-TW = "，但刪除 local branch '%{name}' 失敗：%{hint}"

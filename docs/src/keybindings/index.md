@@ -14,7 +14,7 @@
 | 按鍵 | 說明 | 設定鍵名 |
 | --- | --- | --- |
 | <kbd>Ctrl-c</kbd> | 強制離開 | `force_quit` |
-| <kbd>q</kbd> | 離開（按兩下） | `quit` |
+| <kbd>q</kbd> | 離開（按兩次） | `quit` |
 | <kbd>F1</kbd> <kbd>?</kbd> | 開啟說明 | `help_toggle` |
 | <kbd>U</kbd> | 檢查更新 | `check_update` |
 
@@ -47,7 +47,7 @@
 | <kbd>]</kbd> | 下一個符合項 | `go_to_next` |
 | <kbd>[</kbd> | 上一個符合項 | `go_to_previous` |
 | <kbd>x</kbd> | 切換模糊比對 | `fuzzy_toggle` |
-| <kbd>Alt-c</kbd> | 切換大小寫忽略 | `ignore_case_toggle` |
+| <kbd>Alt-c</kbd> | 切換忽略大小寫 | `ignore_case_toggle` |
 | <kbd>Alt-t</kbd> | 切換比對欄位 | `target_toggle` |
 | <kbd>c</kbd> | 複製 commit short hash | `short_copy` |
 | <kbd>C</kbd> | 複製 commit subject | `full_copy` |
@@ -62,24 +62,24 @@
 | <kbd>f</kbd> | fetch 所有 remote | `fetch` |
 | <kbd>Space</kbd> | checkout 選取的 commit/ref | `checkout` |
 | <kbd>r</kbd> | 重新整理 | `refresh` |
-| <kbd>/</kbd> | 開啟命令列 | `shell_toggle` |
+| <kbd>/</kbd> | 開啟 Shell | `shell_toggle` |
 
 ### Commit 詳情
 
 | 按鍵 | 說明 | 設定鍵名 |
 | --- | --- | --- |
 | <kbd>n</kbd> <kbd>Esc</kbd> <kbd>Backspace</kbd> <kbd>Enter</kbd> <kbd>y</kbd> | 關閉 commit 詳情 | `cancel` `close` `confirm` |
-| <kbd>u</kbd> | 切換詳情區塊 | `detail_pane_toggle` |
-| <kbd>Down</kbd> <kbd>j</kbd> | 向下捲動／Files 區塊移動檔案游標 | `navigate_down` |
-| <kbd>Up</kbd> <kbd>k</kbd> | 向上捲動／Files 區塊移動檔案游標 | `navigate_up` |
-| <kbd>J</kbd> | Files 區塊：diff 逐行下捲 | `select_down` |
-| <kbd>K</kbd> | Files 區塊：diff 逐行上捲 | `select_up` |
-| <kbd>Ctrl-d</kbd> | Files 區塊：diff 半頁下捲 | `half_page_down` |
-| <kbd>Ctrl-u</kbd> | Files 區塊：diff 半頁上捲 | `half_page_up` |
-| <kbd>]</kbd> | Files 區塊：跳到下一個 hunk | `go_to_next` |
-| <kbd>[</kbd> | Files 區塊：跳到上一個 hunk | `go_to_previous` |
-| <kbd>PageDown</kbd> <kbd>Ctrl-f</kbd> | Files 區塊：diff 整頁下捲 | `page_down` |
-| <kbd>PageUp</kbd> <kbd>Ctrl-b</kbd> | Files 區塊：diff 整頁上捲 | `page_up` |
+| <kbd>u</kbd> | 切換詳情 pane | `detail_pane_toggle` |
+| <kbd>Down</kbd> <kbd>j</kbd> | 向下捲動／Files pane 移動檔案游標 | `navigate_down` |
+| <kbd>Up</kbd> <kbd>k</kbd> | 向上捲動／Files pane 移動檔案游標 | `navigate_up` |
+| <kbd>J</kbd> | Files pane：diff 逐行下捲 | `select_down` |
+| <kbd>K</kbd> | Files pane：diff 逐行上捲 | `select_up` |
+| <kbd>Ctrl-d</kbd> | Files pane：diff 半頁下捲 | `half_page_down` |
+| <kbd>Ctrl-u</kbd> | Files pane：diff 半頁上捲 | `half_page_up` |
+| <kbd>]</kbd> | Files pane：跳到下一個 hunk | `go_to_next` |
+| <kbd>[</kbd> | Files pane：跳到上一個 hunk | `go_to_previous` |
+| <kbd>PageDown</kbd> <kbd>Ctrl-f</kbd> | Files pane：diff 整頁下捲 | `page_down` |
+| <kbd>PageUp</kbd> <kbd>Ctrl-b</kbd> | Files pane：diff 整頁上捲 | `page_up` |
 | <kbd>Right</kbd> <kbd>l</kbd> | 選擇較舊 commit | `navigate_right` |
 | <kbd>Left</kbd> <kbd>h</kbd> | 選擇較新 commit | `navigate_left` |
 | <kbd>m</kbd> | 選擇 parent commit | `go_to_parent` |
@@ -94,7 +94,7 @@
 | <kbd>g</kbd> | 開啟 GitHub issues/PRs | `github_toggle` |
 | <kbd>F1</kbd> <kbd>?</kbd> | 開啟說明 | `help_toggle` |
 | <kbd>r</kbd> | 重新整理 | `refresh` |
-| <kbd>/</kbd> | 開啟命令列 | `shell_toggle` |
+| <kbd>/</kbd> | 開啟 Shell | `shell_toggle` |
 
 ### Refs 清單
 
@@ -109,12 +109,12 @@
 | <kbd>d</kbd> <kbd>Ctrl-t</kbd> | 刪除 ref | `delete_ref` `delete_tag` |
 | <kbd>r</kbd> | 重新整理 | `refresh` |
 
-### GitHub View
+### GitHub view
 
 | 按鍵 | 說明 | 設定鍵名 |
 | --- | --- | --- |
 | <kbd>g</kbd> <kbd>n</kbd> <kbd>Esc</kbd> <kbd>Backspace</kbd> | 關閉 GitHub view | `github_toggle` `cancel` `close` |
-| <kbd>Tab</kbd> | 切換 Issue／PR 分頁 | `ref_list` |
+| <kbd>Tab</kbd> | 切換 issue/PR 分頁 | `ref_list` |
 | <kbd>Down</kbd> <kbd>j</kbd> <kbd>J</kbd> | 向下移動 | `navigate_down` `select_down` |
 | <kbd>Up</kbd> <kbd>k</kbd> <kbd>K</kbd> | 向上移動 | `navigate_up` `select_up` |
 | <kbd>PageDown</kbd> <kbd>Ctrl-f</kbd> | 向下一頁 | `page_down` |
@@ -129,43 +129,43 @@
 | <kbd>'</kbd> | 過濾 | `filter` |
 | <kbd>c</kbd> | 複製 issue/PR URL | `short_copy` |
 | <kbd>C</kbd> | 在瀏覽器開啟 issue/PR | `full_copy` |
-| <kbd>v</kbd> | 複製 issue/PR 編號 (#N) | `tag_copy` |
+| <kbd>v</kbd> | 複製 issue/PR 編號（#N） | `tag_copy` |
 | <kbd>u</kbd> | 開啟相關 issue/PR 選單 | `detail_pane_toggle` |
 | <kbd>r</kbd> | 重新整理 | `refresh` |
-| <kbd>p</kbd> | 三階段 merge PR：選 method、刪 branch、確認 | `merge_pr` |
-| <kbd>X</kbd> | 關閉／重開 issue 或 PR | `toggle_issue_state` |
-| <kbd>P</kbd> | PR 定案／打回草稿 | `toggle_pr_draft` |
-| <kbd>z</kbd> | 展開／摺疊 commit 記錄 | `toggle_commit_log` |
-| <kbd>t</kbd> | label 顯示名稱／色塊 | `create_tag` |
+| <kbd>p</kbd> | 三階段 merge PR：選擇方式、刪除 branch、確認 | `merge_pr` |
+| <kbd>X</kbd> | 關閉／重新開啟 issue 或 PR | `toggle_issue_state` |
+| <kbd>P</kbd> | PR 標為可供 review／轉回 draft | `toggle_pr_draft` |
+| <kbd>z</kbd> | 展開／收合 commit log | `toggle_commit_log` |
+| <kbd>t</kbd> | 切換 label 顯示名稱／色塊 | `create_tag` |
 
-### Create Tag
+### 建立 Tag
 
 | 按鍵 | 說明 | 設定鍵名 |
 | --- | --- | --- |
-| <kbd>Enter</kbd> <kbd>y</kbd> | 確定建立 | `confirm` |
+| <kbd>Enter</kbd> <kbd>y</kbd> | 確認建立 | `confirm` |
 | <kbd>n</kbd> <kbd>Esc</kbd> | 取消並關閉 | `cancel` |
 | <kbd>Down</kbd> <kbd>j</kbd> <kbd>Up</kbd> <kbd>k</kbd> | 切換輸入欄位 | `navigate_down` `navigate_up` |
 | <kbd>Right</kbd> <kbd>l</kbd> <kbd>Left</kbd> <kbd>h</kbd> | 切換 push 選項 | `navigate_right` `navigate_left` |
 
-### Delete Tag
+### 刪除 Tag
 
 | 按鍵 | 說明 | 設定鍵名 |
 | --- | --- | --- |
-| <kbd>Enter</kbd> <kbd>y</kbd> | 確定刪除 | `confirm` |
+| <kbd>Enter</kbd> <kbd>y</kbd> | 確認刪除 | `confirm` |
 | <kbd>n</kbd> <kbd>Esc</kbd> | 取消並關閉 | `cancel` |
 | <kbd>Down</kbd> <kbd>j</kbd> <kbd>J</kbd> | 選擇下一個 tag | `navigate_down` `select_down` |
 | <kbd>Up</kbd> <kbd>k</kbd> <kbd>K</kbd> | 選擇上一個 tag | `navigate_up` `select_up` |
 | <kbd>Right</kbd> <kbd>l</kbd> <kbd>Left</kbd> <kbd>h</kbd> | 切換「從 remote 刪除」 | `navigate_right` `navigate_left` |
 
-### Delete Ref
+### 刪除 Ref
 
 | 按鍵 | 說明 | 設定鍵名 |
 | --- | --- | --- |
-| <kbd>Enter</kbd> <kbd>y</kbd> | 確定刪除 ref | `confirm` |
+| <kbd>Enter</kbd> <kbd>y</kbd> | 確認刪除 ref | `confirm` |
 | <kbd>n</kbd> <kbd>Esc</kbd> | 取消 | `cancel` |
-| <kbd>Right</kbd> <kbd>l</kbd> <kbd>Left</kbd> <kbd>h</kbd> <kbd>Down</kbd> <kbd>j</kbd> | 切換 yes／no | `navigate_right` `navigate_left` `navigate_down` |
+| <kbd>Right</kbd> <kbd>l</kbd> <kbd>Left</kbd> <kbd>h</kbd> <kbd>Down</kbd> <kbd>j</kbd> | 切換是／否 | `navigate_right` `navigate_left` `navigate_down` |
 
-### User Command
+### User command
 
 | 按鍵 | 說明 | 設定鍵名 |
 | --- | --- | --- |
@@ -184,18 +184,18 @@
 | <kbd>Enter</kbd> <kbd>y</kbd> | 顯示 commit 詳情 | `confirm` |
 | <kbd>F1</kbd> <kbd>?</kbd> | 開啟說明 | `help_toggle` |
 
-### Shell 命令列
+### Shell
 
 | 按鍵 | 說明 | 設定鍵名 |
 | --- | --- | --- |
 | <kbd>Enter</kbd> <kbd>y</kbd> | 執行指令 | `confirm` |
-| <kbd>n</kbd> <kbd>Esc</kbd> | 關閉命令列 | `cancel` |
+| <kbd>n</kbd> <kbd>Esc</kbd> | 關閉 Shell | `cancel` |
 
 ### Release Notes
 
 | 按鍵 | 說明 | 設定鍵名 |
 | --- | --- | --- |
-| <kbd>q</kbd> | 離開（按兩下） | `quit` |
+| <kbd>q</kbd> | 離開（按兩次） | `quit` |
 | <kbd>n</kbd> <kbd>Esc</kbd> <kbd>Backspace</kbd> <kbd>Left</kbd> <kbd>h</kbd> | 關閉 release notes | `cancel` `close` `navigate_left` |
 | <kbd>Down</kbd> <kbd>j</kbd> <kbd>J</kbd> | 向下捲動 | `navigate_down` `select_down` |
 | <kbd>Up</kbd> <kbd>k</kbd> <kbd>K</kbd> | 向上捲動 | `navigate_up` `select_up` |
@@ -210,11 +210,11 @@
 
 | 按鍵 | 出現位置 | 動作 |
 | --- | ----- | ------ |
-| <kbd>1</kbd>–<kbd>9</kbd> | Ref／checkout／關聯／branch 選擇器 | 選第 n 項 |
-| <kbd>m</kbd> <kbd>s</kbd> <kbd>r</kbd> | Merge PR 提示（第 1 步） | merge／squash／rebase |
+| <kbd>1</kbd>–<kbd>9</kbd> | Ref／checkout／相關／branch 選擇器 | 選第 n 項 |
+| <kbd>m</kbd> <kbd>s</kbd> <kbd>r</kbd> | Merge PR 提示（第 1 步） | merge/squash/rebase |
 | <kbd>y</kbd> <kbd>n</kbd> | Merge PR 提示（第 2 步） | merge 後是否刪除該 branch |
 | <kbd>f</kbd> | 刪除 branch 確認 | 強制刪除 |
-| <kbd>Tab</kbd> <kbd>Shift-Tab</kbd> | Create tag 對話框 | 在欄位間移動 |
-| <kbd>Space</kbd> | Create tag 對話框（核取方塊） | 切換核取狀態 |
-| <kbd>↑</kbd> <kbd>↓</kbd> | Shell 命令列 | 瀏覽指令歷史 |
-| <kbd>PageUp</kbd> <kbd>PageDown</kbd> | Shell 命令列 | 捲動輸出面板 |
+| <kbd>Tab</kbd> <kbd>Shift-Tab</kbd> | 建立 Tag 對話框 | 在欄位間移動 |
+| <kbd>Space</kbd> | 建立 Tag 對話框（checkbox） | 切換勾選狀態 |
+| <kbd>↑</kbd> <kbd>↓</kbd> | Shell | 瀏覽指令歷史 |
+| <kbd>PageUp</kbd> <kbd>PageDown</kbd> | Shell | 捲動輸出 pane |
