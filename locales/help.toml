@@ -2,444 +2,592 @@ _version = 2
 
 [help.block.common]
 zh-TW = "共通"
+en-US = "Common"
 
 [help.block.help]
 zh-TW = "說明頁"
+en-US = "Help"
 
 [help.block.list]
 zh-TW = "Commit 清單"
+en-US = "Commit list"
 
 [help.block.detail]
 zh-TW = "Commit 詳情"
+en-US = "Commit details"
 
 [help.block.refs]
 zh-TW = "Refs 清單"
+en-US = "Refs list"
 
 [help.block.github]
 zh-TW = "GitHub view"
+en-US = "GitHub view"
 
 [help.block.create_tag]
 zh-TW = "建立 Tag"
+en-US = "Create Tag"
 
 [help.block.delete_tag]
 zh-TW = "刪除 Tag"
+en-US = "Delete Tag"
 
 [help.block.delete_ref]
 zh-TW = "刪除 Ref"
+en-US = "Delete Ref"
 
 [help.block.user_command]
 zh-TW = "User command"
+en-US = "User command"
 
 [help.block.shell]
 zh-TW = "Shell"
+en-US = "Shell"
 
 [help.block.release_notes]
 zh-TW = "Release Notes"
+en-US = "Release Notes"
 
 [help.common.force_quit]
 zh-TW = "強制離開"
+en-US = "Force quit"
 
 [help.common.quit_press_twice]
 zh-TW = "離開（按兩次）"
+en-US = "Quit (press twice)"
 
 [help.common.open_help]
 zh-TW = "開啟說明"
+en-US = "Open help"
 
 [help.common.check_for_update]
 zh-TW = "檢查更新"
+en-US = "Check for update"
 
 [help.help.close_help]
 zh-TW = "關閉說明"
+en-US = "Close help"
 
 [help.help.scroll_down]
 zh-TW = "向下捲動"
+en-US = "Scroll down"
 
 [help.help.scroll_up]
 zh-TW = "向上捲動"
+en-US = "Scroll up"
 
 [help.list.move_down]
 zh-TW = "向下移動"
+en-US = "Move down"
 
 [help.list.move_up]
 zh-TW = "向上移動"
+en-US = "Move up"
 
 [help.list.go_to_top]
 zh-TW = "跳到頂端"
+en-US = "Go to top"
 
 [help.list.go_to_bottom]
 zh-TW = "跳到底端"
+en-US = "Go to bottom"
 
 [help.list.go_to_head]
 zh-TW = "回到 HEAD"
+en-US = "Go to HEAD"
 
 [help.list.scroll_down]
 zh-TW = "graph 向下捲動"
+en-US = "Scroll graph down"
 
 [help.list.scroll_up]
 zh-TW = "graph 向上捲動"
+en-US = "Scroll graph up"
 
 [help.list.select_parent_commit]
 zh-TW = "選擇 parent commit"
+en-US = "Select parent commit"
 
 [help.list.select_child_commit]
 zh-TW = "選擇 child commit"
+en-US = "Select child commit"
 
 [help.list.show_commit_details]
 zh-TW = "顯示 commit 詳情"
+en-US = "Show commit details"
 
 [help.list.open_refs_list]
 zh-TW = "開啟 refs 清單"
+en-US = "Open refs list"
 
 [help.list.start_search]
 zh-TW = "開始搜尋"
+en-US = "Start search"
 
 [help.list.start_filter]
 zh-TW = "開始過濾"
+en-US = "Start filter"
 
 [help.list.cancel_search_filter]
 zh-TW = "取消搜尋／過濾"
+en-US = "Cancel search/filter"
 
 [help.list.go_to_next_search_match]
 zh-TW = "下一個符合項"
+en-US = "Go to next search match"
 
 [help.list.go_to_previous_search_match]
 zh-TW = "上一個符合項"
+en-US = "Go to previous search match"
 
 [help.list.toggle_fuzzy_match]
 zh-TW = "切換模糊比對"
+en-US = "Toggle fuzzy match"
 
 [help.list.toggle_ignore_case]
 zh-TW = "切換忽略大小寫"
+en-US = "Toggle ignore case"
 
 [help.list.toggle_match_target_field]
 zh-TW = "切換比對欄位"
+en-US = "Toggle match target field"
 
 [help.list.copy_commit_short_hash]
 zh-TW = "複製 commit short hash"
+en-US = "Copy commit short hash"
 
 [help.list.copy_commit_subject]
 zh-TW = "複製 commit subject"
+en-US = "Copy commit subject"
 
 [help.list.copy_branch_name_prefer_local]
 zh-TW = "複製 branch 名稱（優先 local）"
+en-US = "Copy branch name (prefer local)"
 
 [help.list.copy_remote_branch_name]
 zh-TW = "複製 remote branch 名稱"
+en-US = "Copy remote branch name"
 
 [help.list.copy_tag_name]
 zh-TW = "複製 tag 名稱"
+en-US = "Copy tag name"
 
 [help.list.create_tag_on_commit]
 zh-TW = "在 commit 上建立 tag"
+en-US = "Create tag on commit"
 
 [help.list.delete_tag_from_commit]
 zh-TW = "刪除 commit 上的 tag"
+en-US = "Delete tag from commit"
 
 [help.list.delete_local_branch_from_commit]
 zh-TW = "刪除 commit 上的 local branch"
+en-US = "Delete local branch from commit"
 
 [help.list.toggle_remote_refs]
 zh-TW = "切換 remote refs"
+en-US = "Toggle remote refs"
 
 [help.list.open_github_issues_prs]
 zh-TW = "開啟 GitHub issues/PRs"
+en-US = "Open GitHub issues/PRs"
 
 [help.list.fetch_all_remotes]
 zh-TW = "fetch 所有 remote"
+en-US = "Fetch all remotes"
 
 [help.list.checkout_selected_commit_ref]
 zh-TW = "checkout 選取的 commit/ref"
+en-US = "Checkout selected commit/ref"
 
 [help.list.refresh]
 zh-TW = "重新整理"
+en-US = "Refresh"
 
 [help.list.open_shell]
 zh-TW = "開啟 Shell"
+en-US = "Open Shell"
 
 [help.detail.close_commit_details]
 zh-TW = "關閉 commit 詳情"
+en-US = "Close commit details"
 
 [help.detail.toggle_detail_pane]
 zh-TW = "切換詳情 pane"
+en-US = "Toggle detail pane"
 
 [help.detail.scroll_down_move_file_cursor_in_files_pane]
 zh-TW = "向下捲動／Files pane 移動檔案游標"
+en-US = "Scroll down / move file cursor in Files pane"
 
 [help.detail.scroll_up_move_file_cursor_in_files_pane]
 zh-TW = "向上捲動／Files pane 移動檔案游標"
+en-US = "Scroll up / move file cursor in Files pane"
 
 [help.detail.files_pane_scroll_diff_down]
 zh-TW = "Files pane：diff 逐行下捲"
+en-US = "Files pane: scroll diff down"
 
 [help.detail.files_pane_scroll_diff_up]
 zh-TW = "Files pane：diff 逐行上捲"
+en-US = "Files pane: scroll diff up"
 
 [help.detail.files_pane_scroll_diff_down_half_a_page]
 zh-TW = "Files pane：diff 半頁下捲"
+en-US = "Files pane: scroll diff down half a page"
 
 [help.detail.files_pane_scroll_diff_up_half_a_page]
 zh-TW = "Files pane：diff 半頁上捲"
+en-US = "Files pane: scroll diff up half a page"
 
 [help.detail.files_pane_go_to_next_hunk]
 zh-TW = "Files pane：跳到下一個 hunk"
+en-US = "Files pane: go to next hunk"
 
 [help.detail.files_pane_go_to_previous_hunk]
 zh-TW = "Files pane：跳到上一個 hunk"
+en-US = "Files pane: go to previous hunk"
 
 [help.detail.files_pane_scroll_diff_down_a_page]
 zh-TW = "Files pane：diff 整頁下捲"
+en-US = "Files pane: scroll diff down a page"
 
 [help.detail.files_pane_scroll_diff_up_a_page]
 zh-TW = "Files pane：diff 整頁上捲"
+en-US = "Files pane: scroll diff up a page"
 
 [help.detail.select_older_commit]
 zh-TW = "選擇較舊 commit"
+en-US = "Select older commit"
 
 [help.detail.select_newer_commit]
 zh-TW = "選擇較新 commit"
+en-US = "Select newer commit"
 
 [help.detail.select_parent_commit]
 zh-TW = "選擇 parent commit"
+en-US = "Select parent commit"
 
 [help.detail.select_child_commit]
 zh-TW = "選擇 child commit"
+en-US = "Select child commit"
 
 [help.detail.copy_commit_short_hash]
 zh-TW = "複製 commit short hash"
+en-US = "Copy commit short hash"
 
 [help.detail.copy_commit_subject]
 zh-TW = "複製 commit subject"
+en-US = "Copy commit subject"
 
 [help.detail.copy_branch_name_prefer_local]
 zh-TW = "複製 branch 名稱（優先 local）"
+en-US = "Copy branch name (prefer local)"
 
 [help.detail.copy_remote_branch_name]
 zh-TW = "複製 remote branch 名稱"
+en-US = "Copy remote branch name"
 
 [help.detail.copy_tag_name]
 zh-TW = "複製 tag 名稱"
+en-US = "Copy tag name"
 
 [help.detail.toggle_remote_refs]
 zh-TW = "切換 remote refs"
+en-US = "Toggle remote refs"
 
 [help.detail.open_refs_list]
 zh-TW = "開啟 refs 清單"
+en-US = "Open refs list"
 
 [help.detail.open_github_issues_prs]
 zh-TW = "開啟 GitHub issues/PRs"
+en-US = "Open GitHub issues/PRs"
 
 [help.detail.open_help]
 zh-TW = "開啟說明"
+en-US = "Open help"
 
 [help.detail.refresh]
 zh-TW = "重新整理"
+en-US = "Refresh"
 
 [help.detail.open_shell]
 zh-TW = "開啟 Shell"
+en-US = "Open Shell"
 
 [help.refs.close_refs_list]
 zh-TW = "關閉 refs 清單"
+en-US = "Close refs list"
 
 [help.refs.move_down]
 zh-TW = "向下移動"
+en-US = "Move down"
 
 [help.refs.move_up]
 zh-TW = "向上移動"
+en-US = "Move up"
 
 [help.refs.open_node]
 zh-TW = "展開節點"
+en-US = "Expand node"
 
 [help.refs.close_node_close_refs]
 zh-TW = "收合節點／關閉"
+en-US = "Collapse node / close refs"
 
 [help.refs.checkout_selected_branch]
 zh-TW = "checkout 選取的 branch"
+en-US = "Checkout selected branch"
 
 [help.refs.delete_ref]
 zh-TW = "刪除 ref"
+en-US = "Delete ref"
 
 [help.refs.refresh]
 zh-TW = "重新整理"
+en-US = "Refresh"
 
 [help.github.close_github_view]
 zh-TW = "關閉 GitHub view"
+en-US = "Close GitHub view"
 
 [help.github.switch_issue_pr_tab]
 zh-TW = "切換 issue/PR 分頁"
+en-US = "Switch issue/PR tab"
 
 [help.github.move_down]
 zh-TW = "向下移動"
+en-US = "Move down"
 
 [help.github.move_up]
 zh-TW = "向上移動"
+en-US = "Move up"
 
 [help.github.page_down]
 zh-TW = "向下一頁"
+en-US = "Page down"
 
 [help.github.page_up]
 zh-TW = "向上一頁"
+en-US = "Page up"
 
 [help.github.half_page_down]
 zh-TW = "向下半頁"
+en-US = "Half page down"
 
 [help.github.half_page_up]
 zh-TW = "向上半頁"
+en-US = "Half page up"
 
 [help.github.go_to_top]
 zh-TW = "跳到頂端"
+en-US = "Go to top"
 
 [help.github.go_to_bottom]
 zh-TW = "跳到底端"
+en-US = "Go to bottom"
 
 [help.github.preview_toggle_checkbox]
 zh-TW = "預覽內容／切換 checkbox"
+en-US = "Preview / toggle checkbox"
 
 [help.github.back_cancel]
 zh-TW = "返回／取消"
+en-US = "Back / cancel"
 
 [help.github.search_type_number_to_jump_to_n]
 zh-TW = "搜尋／輸入純數字跳到 #N"
+en-US = "Search / type number to jump to #N"
 
 [help.github.filter]
 zh-TW = "過濾"
+en-US = "Filter"
 
 [help.github.copy_issue_pr_url]
 zh-TW = "複製 issue/PR URL"
+en-US = "Copy issue/PR URL"
 
 [help.github.open_issue_pr_in_browser]
 zh-TW = "在瀏覽器開啟 issue/PR"
+en-US = "Open issue/PR in browser"
 
 [help.github.copy_issue_pr_number_n]
 zh-TW = "複製 issue/PR 編號（#N）"
+en-US = "Copy issue/PR number (#N)"
 
 [help.github.open_related_issue_pr_picker]
 zh-TW = "開啟相關 issue/PR 選單"
+en-US = "Open related issue/PR picker"
 
 [help.github.refresh]
 zh-TW = "重新整理"
+en-US = "Refresh"
 
 [help.github.3_stage_merge_pr_pick_method_delete_branch_confirm]
 zh-TW = "三階段 merge PR：選擇方式、刪除 branch、確認"
+en-US = "Merge PR in 3 stages: select method, delete branch, confirm"
 
 [help.github.close_reopen_issue_or_pr]
 zh-TW = "關閉／重新開啟 issue 或 PR"
+en-US = "Close/reopen issue or PR"
 
 [help.github.mark_pr_ready_back_to_draft]
 zh-TW = "PR 標為可供 review／轉回 draft"
+en-US = "Mark PR ready for review / back to draft"
 
 [help.github.expand_collapse_commit_log]
 zh-TW = "展開／收合 commit log"
+en-US = "Expand/collapse commit log"
 
 [help.github.toggle_label_names_color_swatches]
 zh-TW = "切換 label 顯示名稱／色塊"
+en-US = "Toggle label names / color swatches"
 
 [help.create_tag.confirm_create]
 zh-TW = "確認建立"
+en-US = "Confirm create"
 
 [help.create_tag.cancel_and_close]
 zh-TW = "取消並關閉"
+en-US = "Cancel and close"
 
 [help.create_tag.switch_input_field]
 zh-TW = "切換輸入欄位"
+en-US = "Switch input field"
 
 [help.create_tag.toggle_push_option]
 zh-TW = "切換 push 選項"
+en-US = "Toggle push option"
 
 [help.delete_tag.confirm_delete]
 zh-TW = "確認刪除"
+en-US = "Confirm delete"
 
 [help.delete_tag.cancel_and_close]
 zh-TW = "取消並關閉"
+en-US = "Cancel and close"
 
 [help.delete_tag.select_next_tag]
 zh-TW = "選擇下一個 tag"
+en-US = "Select next tag"
 
 [help.delete_tag.select_previous_tag]
 zh-TW = "選擇上一個 tag"
+en-US = "Select previous tag"
 
 [help.delete_tag.toggle_delete_from_remote]
 zh-TW = "切換「從 remote 刪除」"
+en-US = "Toggle \"delete from remote\""
 
 [help.delete_ref.confirm_delete_ref]
 zh-TW = "確認刪除 ref"
+en-US = "Confirm delete ref"
 
 [help.delete_ref.cancel]
 zh-TW = "取消"
+en-US = "Cancel"
 
 [help.delete_ref.toggle_yes_no]
 zh-TW = "切換是／否"
+en-US = "Toggle yes/no"
 
 [help.user_command.close_user_command]
 zh-TW = "關閉 user command"
+en-US = "Close user command"
 
 [help.user_command.scroll_down]
 zh-TW = "向下捲動"
+en-US = "Scroll down"
 
 [help.user_command.scroll_up]
 zh-TW = "向上捲動"
+en-US = "Scroll up"
 
 [help.user_command.scroll_page_down]
 zh-TW = "向下一頁"
+en-US = "Scroll page down"
 
 [help.user_command.scroll_page_up]
 zh-TW = "向上一頁"
+en-US = "Scroll page up"
 
 [help.user_command.scroll_half_page_down]
 zh-TW = "向下半頁"
+en-US = "Scroll half page down"
 
 [help.user_command.scroll_half_page_up]
 zh-TW = "向上半頁"
+en-US = "Scroll half page up"
 
 [help.user_command.go_to_top]
 zh-TW = "跳到頂端"
+en-US = "Go to top"
 
 [help.user_command.go_to_bottom]
 zh-TW = "跳到底端"
+en-US = "Go to bottom"
 
 [help.user_command.select_parent_commit]
 zh-TW = "選擇 parent commit"
+en-US = "Select parent commit"
 
 [help.user_command.select_child_commit]
 zh-TW = "選擇 child commit"
+en-US = "Select child commit"
 
 [help.user_command.refresh]
 zh-TW = "重新整理"
+en-US = "Refresh"
 
 [help.user_command.show_commit_details]
 zh-TW = "顯示 commit 詳情"
+en-US = "Show commit details"
 
 [help.user_command.open_help]
 zh-TW = "開啟說明"
+en-US = "Open help"
 
 [help.shell.run_command]
 zh-TW = "執行指令"
+en-US = "Run command"
 
 [help.shell.close_shell]
 zh-TW = "關閉 Shell"
+en-US = "Close Shell"
 
 [help.release_notes.quit_press_twice]
 zh-TW = "離開（按兩次）"
+en-US = "Quit (press twice)"
 
 [help.release_notes.close_release_notes]
 zh-TW = "關閉 release notes"
+en-US = "Close release notes"
 
 [help.release_notes.scroll_down]
 zh-TW = "向下捲動"
+en-US = "Scroll down"
 
 [help.release_notes.scroll_up]
 zh-TW = "向上捲動"
+en-US = "Scroll up"
 
 [help.release_notes.scroll_page_down]
 zh-TW = "向下一頁"
+en-US = "Scroll page down"
 
 [help.release_notes.scroll_page_up]
 zh-TW = "向上一頁"
+en-US = "Scroll page up"
 
 [help.release_notes.scroll_half_page_down]
 zh-TW = "向下半頁"
+en-US = "Scroll half page down"
 
 [help.release_notes.scroll_half_page_up]
 zh-TW = "向上半頁"
+en-US = "Scroll half page up"
 
 [help.common.user_command_execute]
 zh-TW = "執行 user command %{n} - %{name}"
+en-US = "Run user command %{n} - %{name}"
