@@ -359,3 +359,7 @@ en-US = "Commented"
 [github.review.dismissed]
 zh-TW = "Dismissed"
 en-US = "Dismissed"
+
+[github.render.refetching]
+zh-TW = "  ⟳ 重新抓取中…"
+en-US = "  ⟳ Refetching…"

@@ -1166,7 +1166,7 @@ impl StatusLineState {
                 spans.push(format!("{} - ", item.group.label()).into());
                 last_group = Some(item.group);
             } else {
-                spans.push("、".into());
+                spans.push(t!("app.status.list_separator").into());
             }
             spans.push(format!("{}", i + 1).fg(self.ctx.color_theme.status_interactive_fg));
             let num = format!(":#{}", item.number);

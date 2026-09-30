@@ -784,7 +784,7 @@ fn flatten_tree_to_lines(
             ];
 
             if let Some((add, del)) = change.stats() {
-                spans.push("  （".into());
+                spans.push("  (".into());
                 spans.push(Span::styled(
                     format!("+{add}"),
                     Style::default().fg(color_theme.detail_file_change_add_fg),
@@ -794,7 +794,7 @@ fn flatten_tree_to_lines(
                     format!("-{del}"),
                     Style::default().fg(color_theme.detail_file_change_delete_fg),
                 ));
-                spans.push("）".into());
+                spans.push(")".into());
             }
 
             rows.push(TreeRow {

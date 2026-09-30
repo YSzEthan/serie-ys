@@ -112,7 +112,10 @@ impl<'a> GitHubView<'a> {
                 Span::raw("")
             },
             if matches!(self.load_state, LoadState::Loading) {
-                Span::styled("  ⟳ 重新抓取中…", Style::default().fg(Color::Yellow))
+                Span::styled(
+                    t!("github.render.refetching"),
+                    Style::default().fg(Color::Yellow),
+                )
             } else {
                 Span::raw("")
             },

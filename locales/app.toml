@@ -259,3 +259,7 @@ en-US = "Reload panicked: %{detail}"
 [app.reload.unknown_panic]
 zh-TW = "未知的 panic"
 en-US = "Unknown panic"
+
+[app.status.list_separator]
+zh-TW = "、"
+en-US = ", "

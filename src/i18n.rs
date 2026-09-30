@@ -322,9 +322,9 @@ fn english_values_contain_no_cjk() {
 }
 
 /// 各語系之間的前後空白要一致：標題的前後空格、子句樣板的前導分隔符，版面與組句
-/// 都靠它。唯一的例外是「全形冒號／問號後面的空格」：中文的 `：`、`？` 自帶字距，
+/// 都靠它。唯一的例外是「全形標點後面的空格」：中文的 `：`、`？`、`、`、`，` 自帶字距，
 /// 後面可以直接接內容；英文的 `:`、`?` 沒有，所以英文值可以（且通常必須）多一個尾端
-/// 空格，例如 `選擇 branch：` ↔ `Select branch: `。
+/// 空格，例如 `選擇 branch：` ↔ `Select branch: `、`、` ↔ `, `。
 #[test]
 fn surrounding_whitespace_is_consistent_across_locales() {
     let lead = |s: &str| s.len() - s.trim_start().len();
@@ -335,7 +335,7 @@ fn surrounding_whitespace_is_consistent_across_locales() {
         let Some(zh) = values.get(zh_tag) else {
             continue;
         };
-        let zh_ends_fullwidth = zh.trim_end().ends_with(['：', '？']);
+        let zh_ends_fullwidth = zh.trim_end().ends_with(['：', '？', '、', '，']);
         for (tag, v) in &values {
             if tag == zh_tag {
                 continue;
@@ -344,7 +344,7 @@ fn surrounding_whitespace_is_consistent_across_locales() {
                 || (zh_ends_fullwidth
                     && trail(zh) == 0
                     && trail(v) == 1
-                    && v.trim_end().ends_with([':', '?']));
+                    && v.trim_end().ends_with([':', '?', ',']));
             if lead(v) != lead(zh) || !trailing_ok {
                 bad.push(format!("{key}: {zh_tag}={zh:?} {tag}={v:?}"));
             }
