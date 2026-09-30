@@ -1,3 +1,5 @@
+rust_i18n::i18n!("locales", fallback = "zh-TW");
+
 pub mod color;
 pub mod config;
 pub mod git;
@@ -11,6 +13,8 @@ mod emoji;
 mod event;
 mod external;
 mod fuzzy;
+#[cfg(test)]
+mod i18n;
 mod keybind;
 mod process;
 mod reload;
@@ -454,6 +458,7 @@ const COMMIT_GRAPH_HINT_THRESHOLD: usize = 100_000;
 pub(crate) const QUIET_PANIC_THREAD_PREFIX: &str = "ysgit-quiet-panic";
 
 pub fn run() -> Result<()> {
+    rust_i18n::set_locale("zh-TW");
     // ratatui::init() 裝的 panic hook 只還原 alt screen + raw mode，
     // 不會清 mouse capture — 先補一層 DisableMouseCapture。這一層永遠
     // 生效，不受下面的過濾 hook 影響——它裝在 `ratatui::init()` 之前，
