@@ -140,3 +140,83 @@ zh-TW = "%{key} 對應到多個 event：%{event}、%{other}"
 
 [cli.keybind.parse_failed]
 zh-TW = "無法解析 %{raw}"
+
+[cli.help.path]
+zh-TW = "git 倉庫路徑 [default: current directory]"
+en-US = "Path to the git repository [default: current directory]"
+
+[cli.help.path_browser]
+zh-TW = "以互動式目錄瀏覽器選擇 [PATH]（類似 ranger；可搭配上面的路徑引數指定起始目錄）"
+en-US = "Pick [PATH] with an interactive directory browser (ranger-like; the path argument above sets the starting directory)"
+
+[cli.help.max_count]
+zh-TW = "要渲染的最大 commit 數量"
+en-US = "Maximum number of commits to render"
+
+[cli.help.order]
+zh-TW = "Commit 排序演算法 [default: chrono]"
+en-US = "Commit ordering algorithm [default: chrono]"
+
+[cli.help.graph_width]
+zh-TW = "Commit 圖形格子寬度 [default: auto]"
+en-US = "Width of each commit graph cell [default: auto]"
+
+[cli.help.compact]
+zh-TW = "緊湊模式：commit 文字貼齊該列 graph 實際畫到的最右邊，不保留固定留白 [default: auto]"
+en-US = "Compact mode: align commit text to the rightmost column the graph actually draws, with no fixed padding [default: auto]"
+
+[cli.help.graph_style]
+zh-TW = "Commit 圖形邊線風格 [default: rounded]"
+en-US = "Commit graph edge style [default: rounded]"
+
+[cli.help.initial_selection]
+zh-TW = "初始選取的 commit [default: latest]"
+en-US = "Commit selected on startup [default: latest]"
+
+[cli.help.update_mode]
+zh-TW = "自動更新檢查模式 [default: check]"
+en-US = "Auto-update check mode [default: check]"
+
+[cli.help.update_interval]
+zh-TW = "自動更新的檢查間隔，單位小時 [default: 6]"
+en-US = "Auto-update check interval in hours [default: 6]"
+
+[cli.help.auto_restart]
+zh-TW = "更新完成後自動重啟（TUI）／開啟新版（CLI），不再詢問；開啟時也會偵測磁碟上的執行檔是否被別的 ysgit 實例或手動部署換掉，換掉且確認可執行就在使用者閒置時自動接上新版 [default: off]"
+en-US = "Restart automatically after an update (TUI) / launch the new version (CLI) without asking. When on, also detects that the executable on disk was replaced by another ysgit instance or a manual deployment and, once it is confirmed runnable, switches to it while you are idle [default: off]"
+
+[cli.help.release_notes]
+zh-TW = "版本變了、第一次啟動時是否自動跳出該版的 release notes [default: on]"
+en-US = "Whether to show the release notes automatically on the first launch after the version changes [default: on]"
+
+[cli.help.auto_fetch]
+zh-TW = "背景定期偵測 git remote 是否有新內容，有就自動 fetch（只更新 remote-tracking refs，本地 branch 不動）[default: off]"
+en-US = "Periodically check in the background whether the git remote has new content and fetch automatically (only remote-tracking refs are updated; local branches are untouched) [default: off]"
+
+[cli.help.auto_fetch_interval]
+zh-TW = "自動 fetch 的輪詢間隔，單位秒 [default: 600]"
+en-US = "Auto-fetch polling interval in seconds [default: 600]"
+
+[cli.help.fetch_prune]
+zh-TW = "fetch 時是否加上 --prune（手動 f 與 auto-fetch 共用）；關閉時不加任何 prune 相關旗標，是否 prune 交由 git 自己的 fetch.prune 設定決定 [default: off]"
+en-US = "Whether to add --prune on fetch (shared by manual f and auto-fetch); when off, no prune flag is passed and git's own fetch.prune setting decides [default: off]"
+
+[cli.help.locale]
+zh-TW = "介面語言 [default: zh-tw]"
+en-US = "Interface language [default: zh-tw]"
+
+[cli.help.help]
+zh-TW = "顯示說明"
+en-US = "Show help"
+
+[cli.help.version]
+zh-TW = "顯示版本"
+en-US = "Show version"
+
+[cli.help.update]
+zh-TW = "檢查 GitHub Release 並更新執行檔本身"
+en-US = "Check GitHub Releases and update the executable itself"
+
+[cli.help.whats_new]
+zh-TW = "顯示目前這一版的 release notes 並離開，不進 TUI"
+en-US = "Show the release notes for the current version and exit without starting the TUI"

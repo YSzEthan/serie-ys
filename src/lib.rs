@@ -26,6 +26,7 @@ mod wizard;
 
 use std::{
     env,
+    ffi::OsString,
     io::{IsTerminal, Write},
     path::Path,
     rc::Rc,
@@ -53,99 +54,118 @@ use update::{AutoRestart, ReleaseNotes, UpdateMode};
     disable_version_flag = true
 )]
 struct Args {
-    /// git 倉庫路徑 [default: current directory]
-    // `hide_default_value`：上面的 doc comment 已經用文字寫出預設值了，
+    // 各欄位的說明文字走 `help = t!(..)`（執行期才求值），不用 `///`：
+    // doc comment 是編譯期固定的，無法跟著介面語言切換；而且多段 doc
+    // 會讓 derive 產生 `long_help`，`-h` 與 `--help` 就不再逐字相同。
+    //
+    // `hide_default_value`：說明文字已經用文字寫出預設值了，
     // 若讓 clap 再自動附加 `[default: .]` 就會重複顯示兩次。
-    #[arg(default_value = ".", hide_default_value = true)]
+    #[arg(
+        default_value = ".",
+        hide_default_value = true,
+        help = t!("cli.help.path").into_owned()
+    )]
     path: String,
 
-    /// 以互動式目錄瀏覽器選擇 [PATH]（類似 ranger；可搭配上面的路徑引數指定起始目錄）
-    #[arg(short = 'p', long)]
+    #[arg(short = 'p', long, help = t!("cli.help.path_browser").into_owned())]
     path_browser: bool,
 
-    /// 要渲染的最大 commit 數量
-    #[arg(short = 'n', long, value_name = "NUMBER")]
+    #[arg(
+        short = 'n',
+        long,
+        value_name = "NUMBER",
+        help = t!("cli.help.max_count").into_owned()
+    )]
     max_count: Option<usize>,
 
-    /// Commit 排序演算法 [default: chrono]
-    #[arg(short, long, value_name = "TYPE")]
+    #[arg(short, long, value_name = "TYPE", help = t!("cli.help.order").into_owned())]
     order: Option<CommitOrderType>,
 
-    /// Commit 圖形格子寬度 [default: auto]
-    #[arg(short, long, value_name = "TYPE")]
+    #[arg(short, long, value_name = "TYPE", help = t!("cli.help.graph_width").into_owned())]
     graph_width: Option<GraphWidthType>,
 
-    /// 緊湊模式：commit 文字貼齊該列 graph 實際畫到的最右邊，不保留固定留白 [default: auto]
-    #[arg(short = 'c', long, value_name = "TYPE")]
+    #[arg(
+        short = 'c',
+        long,
+        value_name = "TYPE",
+        help = t!("cli.help.compact").into_owned()
+    )]
     compact: Option<CompactType>,
 
-    /// Commit 圖形邊線風格 [default: rounded]
-    #[arg(short = 's', long, value_name = "TYPE")]
+    #[arg(
+        short = 's',
+        long,
+        value_name = "TYPE",
+        help = t!("cli.help.graph_style").into_owned()
+    )]
     graph_style: Option<GraphStyle>,
 
-    /// 初始選取的 commit [default: latest]
-    #[arg(short, long, value_name = "TYPE")]
+    #[arg(
+        short,
+        long,
+        value_name = "TYPE",
+        help = t!("cli.help.initial_selection").into_owned()
+    )]
     initial_selection: Option<InitialSelection>,
 
-    /// 自動更新檢查模式 [default: check]
-    #[arg(long, value_name = "MODE")]
+    #[arg(long, value_name = "MODE", help = t!("cli.help.update_mode").into_owned())]
     update_mode: Option<UpdateMode>,
 
-    /// 自動更新的檢查間隔，單位小時 [default: 6]
     #[arg(
         long,
         value_name = "HOURS",
         value_parser = clap::value_parser!(u64).range(
             update::MIN_INTERVAL_HOURS..=update::MAX_INTERVAL_HOURS
-        )
+        ),
+        help = t!("cli.help.update_interval").into_owned()
     )]
     update_interval: Option<u64>,
 
-    /// 更新完成後自動重啟（TUI）／開啟新版（CLI），不再詢問；開啟時也會
-    /// 偵測磁碟上的執行檔是否被別的 ysgit 實例或手動部署換掉，換掉且確認
-    /// 可執行就在使用者閒置時自動接上新版 [default: off]
-    #[arg(long, value_name = "TYPE")]
+    #[arg(long, value_name = "TYPE", help = t!("cli.help.auto_restart").into_owned())]
     auto_restart: Option<AutoRestart>,
 
-    /// 版本變了、第一次啟動時是否自動跳出該版的 release notes [default: on]
-    #[arg(long, value_name = "TYPE")]
+    #[arg(long, value_name = "TYPE", help = t!("cli.help.release_notes").into_owned())]
     release_notes: Option<ReleaseNotes>,
 
-    /// 背景定期偵測 git remote 是否有新內容，有就自動 fetch（只更新
-    /// remote-tracking refs，本地 branch 不動）[default: off]
-    #[arg(long, value_name = "TYPE")]
+    #[arg(long, value_name = "TYPE", help = t!("cli.help.auto_fetch").into_owned())]
     auto_fetch: Option<AutoFetch>,
 
-    /// 自動 fetch 的輪詢間隔，單位秒 [default: 600]
     #[arg(
         long,
         value_name = "SECONDS",
         value_parser = clap::value_parser!(u64).range(
             auto_fetch::MIN_INTERVAL_SECS..=auto_fetch::MAX_INTERVAL_SECS
-        )
+        ),
+        help = t!("cli.help.auto_fetch_interval").into_owned()
     )]
     auto_fetch_interval: Option<u64>,
 
-    /// fetch 時是否加上 --prune（手動 f 與 auto-fetch 共用）；關閉時不加任何
-    /// prune 相關旗標，是否 prune 交由 git 自己的 fetch.prune 設定決定
-    /// [default: off]
-    #[arg(long, value_name = "TYPE")]
+    #[arg(long, value_name = "TYPE", help = t!("cli.help.fetch_prune").into_owned())]
     fetch_prune: Option<FetchPrune>,
 
-    /// 顯示說明
-    #[arg(short = 'h', long, action = clap::ArgAction::Help)]
+    #[arg(long, value_name = "TYPE", help = t!("cli.help.locale").into_owned())]
+    locale: Option<Locale>,
+
+    #[arg(
+        short = 'h',
+        long,
+        action = clap::ArgAction::Help,
+        help = t!("cli.help.help").into_owned()
+    )]
     help: Option<bool>,
 
-    /// 顯示版本
-    #[arg(short = 'V', long, action = clap::ArgAction::Version)]
+    #[arg(
+        short = 'V',
+        long,
+        action = clap::ArgAction::Version,
+        help = t!("cli.help.version").into_owned()
+    )]
     version: Option<bool>,
 
-    /// 檢查 GitHub Release 並更新執行檔本身
-    #[arg(short = 'U', long)]
+    #[arg(short = 'U', long, help = t!("cli.help.update").into_owned())]
     update: bool,
 
-    /// 顯示目前這一版的 release notes 並離開，不進 TUI
-    #[arg(long)]
+    #[arg(long, help = t!("cli.help.whats_new").into_owned())]
     whats_new: bool,
 }
 
@@ -180,6 +200,7 @@ impl Args {
             auto_fetch,
             auto_fetch_interval,
             fetch_prune,
+            locale,
             help: _,
             version: _,
             update: _,
@@ -221,6 +242,7 @@ impl Args {
                 "--fetch-prune",
                 fetch_prune.as_ref().map(wizard::variant_name),
             ),
+            ("--locale", locale.as_ref().map(wizard::variant_name)),
         ] {
             if let Some(value) = value {
                 argv.push(flag.to_string());
@@ -288,6 +310,48 @@ impl From<Option<InitialSelection>> for app::InitialSelection {
             None => app::InitialSelection::Latest,
         }
     }
+}
+
+/// 介面語言。宣告順序就是精靈裡的循環順序；`Default` 維持繁體中文，既有使用者升級後畫面不變。
+///
+/// 設定檔與命令列只接受小寫的 clap 預設名稱（`zh-tw`、`en`），與其他 enum 一致。
+// 變體不用 `///`：見 `update.rs` 對 `ValueEnum` 變體 doc comment 的說明。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum Locale {
+    // 繁體中文
+    #[default]
+    ZhTw,
+    // English
+    En,
+}
+
+impl Locale {
+    /// 對應到 rust-i18n 的 locale tag——全專案只有這一處做這個對應。
+    ///
+    /// 英文故意用 `en-US` 而不是 `en`：rust-i18n 的初始 locale 是 `"en"`，而
+    /// 專案裡沒有 `en` 這個 tag，查不到就會退回 `fallback = "zh-TW"`。所以
+    /// 沒呼叫過 [`apply_locale`] 的執行緒（例如單元測試）自然落在繁體中文，
+    /// 不需要任何測試專用的啟動碼。
+    pub fn code(self) -> &'static str {
+        match self {
+            Locale::ZhTw => "zh-TW",
+            Locale::En => "en-US",
+        }
+    }
+
+    /// 這個語言用自己的語言寫的名稱（不經 `t!`，兩個語系下都看得懂）。
+    pub fn label(self) -> &'static str {
+        match self {
+            Locale::ZhTw => "繁體中文",
+            Locale::En => "English",
+        }
+    }
+}
+
+/// 把全域介面語言切成 `locale`。只該在 `run()` 與精靈迴圈呼叫。
+pub(crate) fn apply_locale(locale: Locale) {
+    rust_i18n::set_locale(locale.code());
 }
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
@@ -458,8 +522,54 @@ const COMMIT_GRAPH_HINT_THRESHOLD: usize = 100_000;
 /// 它的 panic 由 `event.rs` 的 `start_watchdog` 處理。
 pub(crate) const QUIET_PANIC_THREAD_PREFIX: &str = "ysgit-quiet-panic";
 
+/// 不經 clap、先從命令列撈出 `--locale`：介面語言得在 `Args::try_parse()` 之前
+/// 就定下來——`--help` 的說明文字是 clap 建 `Command` 時才求值的。
+///
+/// 值用 clap 同一個 `ValueEnum::from_str` 解析，接受的字串與 clap 完全一致；
+/// 無效值回 `None`，交給稍後的 clap 報錯。`--` 之後的都是位置引數，不看。
+fn locale_from_argv<I, S>(args: I) -> Option<Locale>
+where
+    I: IntoIterator<Item = S>,
+    S: Into<OsString>,
+{
+    let mut args = args.into_iter().map(Into::into).skip(1);
+    let mut found = None;
+    while let Some(arg) = args.next() {
+        let arg: OsString = arg;
+        if arg == "--" {
+            break;
+        }
+        let value = if arg == "--locale" {
+            args.next()
+        } else if let Some(v) = arg.to_str().and_then(|a| a.strip_prefix("--locale=")) {
+            Some(OsString::from(v))
+        } else {
+            continue;
+        };
+        found = value
+            .as_deref()
+            .and_then(|v| v.to_str())
+            .and_then(|v| Locale::from_str(v, false).ok());
+    }
+    found
+}
+
+/// 設定檔裡的 `core.option.locale`。重用 `config::load()`（同一套 migrate 與 serde），
+/// 不另寫 toml 解析；設定檔壞掉就當沒設，不在這裡報錯（稍後 `run()` 自己會報）。
+fn peek_config_locale() -> Option<Locale> {
+    config::load()
+        .ok()
+        .and_then(|(core, ..)| core.option.locale)
+}
+
 pub fn run() -> Result<()> {
-    rust_i18n::set_locale("zh-TW");
+    // 最早的套用點：命令列 > 設定檔 > 預設。之後 `-V`、`-U`、`--whats-new`、
+    // `--help`、精靈全都已經在正確語系；`config::load()` 之後會再套一次權威值。
+    apply_locale(
+        locale_from_argv(env::args_os())
+            .or_else(peek_config_locale)
+            .unwrap_or_default(),
+    );
     // ratatui::init() 裝的 panic hook 只還原 alt screen + raw mode，
     // 不會清 mouse capture — 先補一層 DisableMouseCapture。這一層永遠
     // 生效，不受下面的過濾 hook 影響——它裝在 `ratatui::init()` 之前，
@@ -540,6 +650,11 @@ pub fn run() -> Result<()> {
     }
 
     let (core_config, ui_config, color_theme, keybind_patch) = config::load()?;
+    apply_locale(
+        args.locale
+            .or(core_config.option.locale)
+            .unwrap_or_default(),
+    );
     let trunc = graph::Truncation::new(ui_config.list.graph_edge_max_rows);
     let keybind = keybind::KeyBind::new(keybind_patch);
 
@@ -1027,6 +1142,8 @@ mod tests {
             "45",
             "--fetch-prune",
             "on",
+            "--locale",
+            "en",
             "/some/repo",
         ])
         .unwrap();
@@ -1047,7 +1164,69 @@ mod tests {
         assert_eq!(reparsed.auto_fetch, args.auto_fetch);
         assert_eq!(reparsed.auto_fetch_interval, args.auto_fetch_interval);
         assert_eq!(reparsed.fetch_prune, args.fetch_prune);
+        assert_eq!(reparsed.locale, Some(Locale::En));
+        assert_eq!(reparsed.locale, args.locale);
         assert_eq!(reparsed.path, args.path);
+    }
+
+    /// `locale_from_argv` 是 clap 解析之前的手掃：凡是 clap 認得的寫法，兩邊的結果
+    /// 必須一致，否則 `--help` 的語言會跟實際解析出的 `args.locale` 對不上。
+    #[test]
+    fn locale_from_argv_agrees_with_clap() {
+        let samples: &[&[&str]] = &[
+            &["ysgit"],
+            &["ysgit", "--locale", "en"],
+            &["ysgit", "--locale", "zh-tw"],
+            &["ysgit", "--locale=en"],
+            &["ysgit", "--locale=zh-tw", "-n", "5"],
+            &["ysgit", "-n", "5", "--locale", "en", "--auto-fetch", "on"],
+            &["ysgit", "--", "--locale"],
+            &["ysgit", "--locale", "en", "--", "/some/repo"],
+        ];
+        for argv in samples {
+            let parsed = Args::try_parse_from(*argv).unwrap();
+            assert_eq!(locale_from_argv(*argv), parsed.locale, "argv = {argv:?}");
+        }
+    }
+
+    #[test]
+    fn locale_from_argv_ignores_what_clap_would_reject() {
+        assert_eq!(locale_from_argv(["ysgit", "--locale", "xx"]), None);
+        assert_eq!(locale_from_argv(["ysgit", "--locale", "zh-TW"]), None);
+        assert_eq!(locale_from_argv(["ysgit", "--locale"]), None);
+        // argv[0] 不是旗標，不能被當成 `--locale`
+        assert_eq!(locale_from_argv(["--locale", "en"]), None);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn locale_from_argv_does_not_panic_on_non_utf8_arguments() {
+        use std::os::unix::ffi::OsStringExt;
+        let bad = OsString::from_vec(vec![0x66, 0x6f, 0x80]);
+        assert_eq!(
+            locale_from_argv([OsString::from("ysgit"), bad, "--locale=en".into()]),
+            Some(Locale::En)
+        );
+    }
+
+    /// `Locale::code()` 打錯字時 rust-i18n 只會靜默退回預設語系，畫面看起來完全
+    /// 正常、只是永遠是繁體中文——所以要檢查每個 code 真的有對應的翻譯表。
+    #[test]
+    fn every_locale_code_is_a_known_rust_i18n_tag() {
+        let available = crate::_rust_i18n_available_locales();
+        for locale in Locale::value_variants() {
+            assert!(
+                available.iter().any(|a| a == locale.code()),
+                "{locale:?} 的 code {:?} 不在 {available:?} 裡",
+                locale.code()
+            );
+        }
+    }
+
+    #[test]
+    fn locale_defaults_to_traditional_chinese() {
+        assert_eq!(Locale::default(), Locale::ZhTw);
+        assert_eq!(Locale::default().code(), "zh-TW");
     }
 
     #[test]

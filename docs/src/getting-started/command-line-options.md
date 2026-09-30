@@ -250,6 +250,21 @@ _可選值：_ `off`、`on`
 
 設定檔對應鍵是 `core.fetch.prune`，命令列參數指定的值優先。
 
+## --locale \<TYPE\>
+
+介面語言，影響畫面提示、說明頁與本頁這類 `--help` 說明文字。
+
+_可選值：_ `zh-tw`、`en`
+
+預設 `zh-tw`（繁體中文）。設定檔對應鍵是 `core.option.locale`，命令列參數指定的值優先。
+`-h` 在真人終端機下會進互動精靈，精靈沒有吃命令列旗標，會以設定檔的值顯示，並可在
+精靈內直接切換語言。
+
+```sh
+ysgit --locale en
+ysgit --locale en --help
+```
+
 ## --whats-new
 
 顯示目前這一版的 release notes 並離開，不進 TUI，不受 `--release-notes` 開關

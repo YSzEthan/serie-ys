@@ -19,7 +19,7 @@ use crate::{
     git::FetchPrune,
     keybind::KeyBind,
     update::{AutoRestart, ReleaseNotes, UpdateMode, MAX_INTERVAL_HOURS, MIN_INTERVAL_HOURS},
-    CommitOrderType, CompactType, GraphStyle, GraphWidthType, InitialSelection, Result,
+    CommitOrderType, CompactType, GraphStyle, GraphWidthType, InitialSelection, Locale, Result,
 };
 
 const CONFIG_FILE_NAME: &str = ".ysgit.toml";
@@ -210,6 +210,7 @@ pub struct CoreOptionConfig {
     pub graph_style: Option<GraphStyle>,
     pub initial_selection: Option<InitialSelection>,
     pub max_count: Option<usize>,
+    pub locale: Option<Locale>,
 }
 
 /// 自動更新設定，四個欄位對應 `-U`／背景檢查／重啟提示／更新後跳
@@ -828,6 +829,7 @@ mod tests {
                     graph_style: None,
                     initial_selection: None,
                     max_count: None,
+                    locale: None,
                 },
                 update: CoreUpdateConfig {
                     mode: None,
@@ -941,6 +943,7 @@ mod tests {
                     graph_style: Some(GraphStyle::Angular),
                     initial_selection: Some(InitialSelection::Head),
                     max_count: None,
+                    locale: None,
                 },
                 update: CoreUpdateConfig {
                     mode: None,
@@ -1327,6 +1330,24 @@ mod tests {
     #[test]
     fn auto_fetch_mode_schema_enum_matches_every_accepted_cli_value() {
         assert_schema_enum_matches_every_accepted_cli_value::<AutoFetch>(&["auto_fetch", "mode"]);
+    }
+
+    #[test]
+    fn locale_schema_enum_matches_every_accepted_cli_value() {
+        assert_schema_enum_matches_every_accepted_cli_value::<Locale>(&["option", "locale"]);
+    }
+
+    #[test]
+    fn locale_parses_from_config_and_rejects_unknown_values() {
+        let parse = |v: &str| {
+            toml::from_str::<OptionalConfig>(&format!("[core.option]\nlocale = \"{v}\"\n"))
+        };
+        let cfg: Config = parse("en").unwrap().into();
+        assert_eq!(cfg.core.option.locale, Some(Locale::En));
+        let cfg: Config = parse("zh-tw").unwrap().into();
+        assert_eq!(cfg.core.option.locale, Some(Locale::ZhTw));
+        assert!(parse("zh-TW").is_err(), "只接受小寫，與其他 enum 一致");
+        assert!(parse("fr").is_err());
     }
 
     #[test]

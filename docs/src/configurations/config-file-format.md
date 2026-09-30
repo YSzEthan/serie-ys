@@ -9,6 +9,7 @@ graph_width = "auto"
 compact = "auto"
 graph_style = "rounded"
 initial_selection = "latest"
+locale = "zh-tw"
 
 [core.update]
 mode = "check"
@@ -208,6 +209,22 @@ Commit 圖形的邊線風格。
   - `head`
 
 命令列參數指定的值優先。
+
+### `core.option.locale`
+
+介面語言。`-h` 互動精靈的「介面語言」列會寫入這個鍵。
+
+- 型別：`string`（enum）
+- 預設值：`zh-tw`
+- 可選值：
+  - `zh-tw`（繁體中文）
+  - `en`（English）
+
+命令列參數指定的值優先。
+
+以下內容**不會**跟著切換語言：`--whats-new` 與 release notes 的 CHANGELOG 內容、
+設定檔內的註解、git／gh／作業系統回傳的錯誤原文、GitHub 上的 issue／PR 內容，
+以及 clap 自帶的文字（`Usage:`、`Options:`、`[possible values: …]`、參數解析錯誤訊息）。
 
 ### `core.option.max_count`
 

@@ -17,13 +17,14 @@ use rust_i18n::t;
 use tui_input::backend::crossterm::EventHandler;
 
 use crate::{
+    apply_locale,
     auto_fetch::{self, AutoFetch},
     color::ColorTheme,
     config,
     git::FetchPrune,
     keybind,
     update::{self, AutoRestart, ReleaseNotes, UpdateMode},
-    Args, CommitOrderType, CompactType, GraphStyle, GraphWidthType, InitialSelection,
+    Args, CommitOrderType, CompactType, GraphStyle, GraphWidthType, InitialSelection, Locale,
 };
 
 /// -h 在 TTY 下的入口。回傳 `None` = 使用者放棄（等同原本 `--help` 印完離開，
@@ -49,7 +50,21 @@ fn wizard_loop(
     mut state: WizardState,
     theme: &ColorTheme,
 ) -> crate::Result<Option<Args>> {
+    // 精靈整頁用的介面語言。`None` = 還沒套用過：第一輪一定要套一次，因為
+    // `run()` 最前面套的可能是命令列給的值，而精靈不吃命令列旗標、以設定檔為準。
+    let mut applied: Option<Locale> = None;
     loop {
+        let wanted = state.locale();
+        if applied != Some(wanted) {
+            // 只在真的變了才套用：`set_locale` 會讓全域版本號加一，每輪都呼叫
+            // 等於每輪都讓所有執行緒的翻譯快取失效。
+            apply_locale(wanted);
+            applied = Some(wanted);
+            // 上一輪寫檔失敗留下的訊息是舊語言的字串，不會跟著換，直接清掉；
+            // 整個畫面也清一次，避免寬字元／窄字元互換後殘留的半格。
+            state.write_error = None;
+            terminal.clear()?;
+        }
         terminal.draw(|f| state.render(f, f.area(), theme))?;
         let Event::Key(key) = ratatui::crossterm::event::read()? else {
             continue;
@@ -106,6 +121,12 @@ pub(crate) fn variant_name<T: ValueEnum>(v: &T) -> String {
         .expect("wizard 用到的 ValueEnum 沒有任何變體用 #[value(skip)]")
         .get_name()
         .to_string()
+}
+
+/// 語言值用各自的語言自稱（不經 `t!`）：整頁已切成另一個語言時，使用者仍要認得出
+/// 哪個選項是自己的語言。
+fn locale_desc(v: Locale) -> Cow<'static, str> {
+    Cow::Borrowed(v.label())
 }
 
 fn order_desc(v: CommitOrderType) -> Cow<'static, str> {
@@ -210,6 +231,7 @@ struct ResolvedDefaults {
     auto_fetch: AutoFetch,
     auto_fetch_interval: u64,
     fetch_prune: FetchPrune,
+    locale: Locale,
     /// 顏色編輯器的預覽基準（使用者實際設定，不是 `wizard::run()` 固定用
     /// 的畫面 chrome）。
     theme: ColorTheme,
@@ -282,6 +304,7 @@ impl ResolvedDefaults {
                 .interval_secs
                 .unwrap_or(auto_fetch::DEFAULT_INTERVAL_SECS),
             fetch_prune: core.fetch.prune.unwrap_or_default(),
+            locale: core.option.locale.unwrap_or_default(),
             theme,
             keybind_patch: keybind_patch.unwrap_or_default(),
             user_commands,
@@ -387,6 +410,7 @@ enum CycleField {
     ReleaseNotes,
     FetchPrune,
     AutoFetch,
+    Locale,
 }
 
 impl CycleField {
@@ -404,6 +428,7 @@ impl CycleField {
             CycleField::ReleaseNotes => (CORE_UPDATE, "release_notes"),
             CycleField::FetchPrune => (CORE_FETCH, "prune"),
             CycleField::AutoFetch => (CORE_AUTO_FETCH, "mode"),
+            CycleField::Locale => (CORE_OPTION, "locale"),
         };
         ConfigKey {
             table,
@@ -423,6 +448,7 @@ impl CycleField {
             CycleField::ReleaseNotes => "--release-notes",
             CycleField::FetchPrune => "--fetch-prune",
             CycleField::AutoFetch => "--auto-fetch",
+            CycleField::Locale => "--locale",
         }
     }
 
@@ -438,6 +464,7 @@ impl CycleField {
             CycleField::ReleaseNotes => t!("wizard.cycle.help.release_notes"),
             CycleField::FetchPrune => t!("wizard.cycle.help.fetch_prune"),
             CycleField::AutoFetch => t!("wizard.cycle.help.auto_fetch"),
+            CycleField::Locale => t!("wizard.cycle.help.locale"),
         }
     }
 
@@ -473,6 +500,7 @@ impl CycleField {
                 cycle_value(&mut args.fetch_prune, defaults.fetch_prune, delta)
             }
             CycleField::AutoFetch => cycle_value(&mut args.auto_fetch, defaults.auto_fetch, delta),
+            CycleField::Locale => cycle_value(&mut args.locale, defaults.locale, delta),
         };
         draft.edits.insert(self.config_key(), Some(name.into()));
     }
@@ -508,6 +536,7 @@ impl CycleField {
             CycleField::AutoFetch => {
                 auto_fetch_desc(args.auto_fetch.unwrap_or(defaults.auto_fetch))
             }
+            CycleField::Locale => locale_desc(args.locale.unwrap_or(defaults.locale)),
         }
     }
 }
@@ -797,6 +826,7 @@ enum RowAction {
 /// `help`／存檔路徑都掛在 `Editor` 上往下委派，不用再手抄一次。
 const ROWS: &[RowAction] = &[
     RowAction::Edit(Editor::Dialog(Dialog::Path)),
+    RowAction::Edit(Editor::Cycle(CycleField::Locale)),
     RowAction::Edit(Editor::Dialog(Dialog::Number(NumberField::MaxCount))),
     RowAction::Edit(Editor::Cycle(CycleField::Order)),
     RowAction::Edit(Editor::Cycle(CycleField::GraphWidth)),
@@ -899,6 +929,11 @@ struct WizardState {
 impl WizardState {
     fn new() -> Self {
         Self::with_defaults(ResolvedDefaults::load())
+    }
+
+    /// 精靈現在該用的介面語言：這次 session 選過就用選的，否則用設定檔的值。
+    fn locale(&self) -> Locale {
+        self.draft.args.locale.unwrap_or(self.defaults.locale)
     }
 
     fn with_defaults(defaults: ResolvedDefaults) -> Self {
@@ -1595,6 +1630,40 @@ mod tests {
     }
 
     #[test]
+    fn locale_row_switches_the_wizard_language_and_writes_the_config_key() {
+        let mut s = test_state();
+        assert_eq!(s.locale(), Locale::ZhTw, "沒設定時預設繁體中文");
+
+        move_to_row(&mut s, row_of_field(CycleField::Locale));
+        assert_eq!(s.draft.args.locale, None);
+
+        s.on_key(key(KeyCode::Right));
+        assert_eq!(
+            s.draft.args.locale,
+            Some(Locale::En),
+            "zh-tw 是目前值，第一次按 → 跳過它，切到 en"
+        );
+        assert_eq!(s.locale(), Locale::En, "精靈整頁跟著這個值換語言");
+
+        let updated = apply_touched_settings(&s.draft, "").unwrap();
+        assert!(
+            updated.contains("[core.option]") && updated.contains("locale = \"en\""),
+            "{updated}"
+        );
+        assert_eq!(
+            config::parse_core(&updated).unwrap().option.locale,
+            Some(Locale::En)
+        );
+    }
+
+    #[test]
+    fn locale_row_labels_use_each_languages_own_name() {
+        // 整頁已切成另一個語言時，使用者仍要認得出哪個選項是自己的語言。
+        assert_eq!(locale_desc(Locale::ZhTw), "繁體中文");
+        assert_eq!(locale_desc(Locale::En), "English");
+    }
+
+    #[test]
     fn fetch_prune_row_toggles() {
         let mut s = test_state();
         let idx = row_of_field(CycleField::FetchPrune);
@@ -1996,6 +2065,7 @@ mod tests {
             CycleField::ReleaseNotes,
             CycleField::FetchPrune,
             CycleField::AutoFetch,
+            CycleField::Locale,
         ] {
             field.cycle(&mut s.draft, &s.defaults, 1);
         }
@@ -2027,6 +2097,7 @@ mod tests {
             s.draft.args.auto_fetch_interval
         );
         assert_eq!(core.fetch.prune, s.draft.args.fetch_prune);
+        assert_eq!(core.option.locale, s.draft.args.locale);
         assert_eq!(
             ui.list.scrolloff, 7,
             "ListScrolloff 沒有 draft.args 可比對，直接比寫回的值"

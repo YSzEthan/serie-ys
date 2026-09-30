@@ -308,3 +308,7 @@ zh-TW = " 色名  [256色]  HEX"
 
 [wizard.color.mode.hex]
 zh-TW = " 色名   256色  [HEX]"
+
+[wizard.cycle.help.locale]
+zh-TW = "介面語言（畫面提示、說明頁、--help 文字）"
+en-US = "Interface language (screen text, help page, --help output)"
