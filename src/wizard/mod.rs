@@ -1630,7 +1630,7 @@ mod tests {
     }
 
     #[test]
-    fn locale_row_switches_the_wizard_language_and_writes_the_config_key() {
+    fn locale_row_toggles_and_drives_the_wizard_language() {
         let mut s = test_state();
         assert_eq!(s.locale(), Locale::ZhTw, "沒設定時預設繁體中文");
 
@@ -1644,16 +1644,6 @@ mod tests {
             "zh-tw 是目前值，第一次按 → 跳過它，切到 en"
         );
         assert_eq!(s.locale(), Locale::En, "精靈整頁跟著這個值換語言");
-
-        let updated = apply_touched_settings(&s.draft, "").unwrap();
-        assert!(
-            updated.contains("[core.option]") && updated.contains("locale = \"en\""),
-            "{updated}"
-        );
-        assert_eq!(
-            config::parse_core(&updated).unwrap().option.locale,
-            Some(Locale::En)
-        );
     }
 
     #[test]

@@ -1503,7 +1503,15 @@ mod tests {
 
             assert_eq!(
                 state.transient_message_string(),
-                Some("比對欄位：subject".to_string())
+                Some("比對欄位：subject".to_string()),
+                "最寬的標籤剛好填滿 7 格，不補白"
+            );
+
+            state.toggle_target(); // Subject -> Author
+            assert_eq!(
+                state.transient_message_string(),
+                Some("比對欄位：author ".to_string()),
+                "較短的標籤補白到 7 格，切換時才蓋得掉上一則較長的訊息"
             );
         });
     }
@@ -1517,6 +1525,12 @@ mod tests {
             assert_eq!(
                 state.filter_transient_message_string(),
                 Some("比對欄位：subject".to_string())
+            );
+
+            state.toggle_filter_target(); // Subject -> Author
+            assert_eq!(
+                state.filter_transient_message_string(),
+                Some("比對欄位：author ".to_string())
             );
         });
     }

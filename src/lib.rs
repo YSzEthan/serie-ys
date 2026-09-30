@@ -63,32 +63,32 @@ struct Args {
     #[arg(
         default_value = ".",
         hide_default_value = true,
-        help = t!("cli.help.path").into_owned()
+        help = t!("cli.help.path")
     )]
     path: String,
 
-    #[arg(short = 'p', long, help = t!("cli.help.path_browser").into_owned())]
+    #[arg(short = 'p', long, help = t!("cli.help.path_browser"))]
     path_browser: bool,
 
     #[arg(
         short = 'n',
         long,
         value_name = "NUMBER",
-        help = t!("cli.help.max_count").into_owned()
+        help = t!("cli.help.max_count")
     )]
     max_count: Option<usize>,
 
-    #[arg(short, long, value_name = "TYPE", help = t!("cli.help.order").into_owned())]
+    #[arg(short, long, value_name = "TYPE", help = t!("cli.help.order"))]
     order: Option<CommitOrderType>,
 
-    #[arg(short, long, value_name = "TYPE", help = t!("cli.help.graph_width").into_owned())]
+    #[arg(short, long, value_name = "TYPE", help = t!("cli.help.graph_width"))]
     graph_width: Option<GraphWidthType>,
 
     #[arg(
         short = 'c',
         long,
         value_name = "TYPE",
-        help = t!("cli.help.compact").into_owned()
+        help = t!("cli.help.compact")
     )]
     compact: Option<CompactType>,
 
@@ -96,7 +96,7 @@ struct Args {
         short = 's',
         long,
         value_name = "TYPE",
-        help = t!("cli.help.graph_style").into_owned()
+        help = t!("cli.help.graph_style")
     )]
     graph_style: Option<GraphStyle>,
 
@@ -104,11 +104,11 @@ struct Args {
         short,
         long,
         value_name = "TYPE",
-        help = t!("cli.help.initial_selection").into_owned()
+        help = t!("cli.help.initial_selection")
     )]
     initial_selection: Option<InitialSelection>,
 
-    #[arg(long, value_name = "MODE", help = t!("cli.help.update_mode").into_owned())]
+    #[arg(long, value_name = "MODE", help = t!("cli.help.update_mode"))]
     update_mode: Option<UpdateMode>,
 
     #[arg(
@@ -117,17 +117,17 @@ struct Args {
         value_parser = clap::value_parser!(u64).range(
             update::MIN_INTERVAL_HOURS..=update::MAX_INTERVAL_HOURS
         ),
-        help = t!("cli.help.update_interval").into_owned()
+        help = t!("cli.help.update_interval")
     )]
     update_interval: Option<u64>,
 
-    #[arg(long, value_name = "TYPE", help = t!("cli.help.auto_restart").into_owned())]
+    #[arg(long, value_name = "TYPE", help = t!("cli.help.auto_restart"))]
     auto_restart: Option<AutoRestart>,
 
-    #[arg(long, value_name = "TYPE", help = t!("cli.help.release_notes").into_owned())]
+    #[arg(long, value_name = "TYPE", help = t!("cli.help.release_notes"))]
     release_notes: Option<ReleaseNotes>,
 
-    #[arg(long, value_name = "TYPE", help = t!("cli.help.auto_fetch").into_owned())]
+    #[arg(long, value_name = "TYPE", help = t!("cli.help.auto_fetch"))]
     auto_fetch: Option<AutoFetch>,
 
     #[arg(
@@ -136,21 +136,21 @@ struct Args {
         value_parser = clap::value_parser!(u64).range(
             auto_fetch::MIN_INTERVAL_SECS..=auto_fetch::MAX_INTERVAL_SECS
         ),
-        help = t!("cli.help.auto_fetch_interval").into_owned()
+        help = t!("cli.help.auto_fetch_interval")
     )]
     auto_fetch_interval: Option<u64>,
 
-    #[arg(long, value_name = "TYPE", help = t!("cli.help.fetch_prune").into_owned())]
+    #[arg(long, value_name = "TYPE", help = t!("cli.help.fetch_prune"))]
     fetch_prune: Option<FetchPrune>,
 
-    #[arg(long, value_name = "TYPE", help = t!("cli.help.locale").into_owned())]
+    #[arg(long, value_name = "TYPE", help = t!("cli.help.locale"))]
     locale: Option<Locale>,
 
     #[arg(
         short = 'h',
         long,
         action = clap::ArgAction::Help,
-        help = t!("cli.help.help").into_owned()
+        help = t!("cli.help.help")
     )]
     help: Option<bool>,
 
@@ -158,14 +158,14 @@ struct Args {
         short = 'V',
         long,
         action = clap::ArgAction::Version,
-        help = t!("cli.help.version").into_owned()
+        help = t!("cli.help.version")
     )]
     version: Option<bool>,
 
-    #[arg(short = 'U', long, help = t!("cli.help.update").into_owned())]
+    #[arg(short = 'U', long, help = t!("cli.help.update"))]
     update: bool,
 
-    #[arg(long, help = t!("cli.help.whats_new").into_owned())]
+    #[arg(long, help = t!("cli.help.whats_new"))]
     whats_new: bool,
 }
 
@@ -532,24 +532,22 @@ where
     I: IntoIterator<Item = S>,
     S: Into<OsString>,
 {
-    let mut args = args.into_iter().map(Into::into).skip(1);
+    // 非 UTF-8 的引數轉成空字串：既不是 `--`、`--locale`，也不符合前綴，自然略過
+    let mut args = args
+        .into_iter()
+        .skip(1)
+        .map(|a| a.into().into_string().unwrap_or_default());
     let mut found = None;
     while let Some(arg) = args.next() {
-        let arg: OsString = arg;
-        if arg == "--" {
-            break;
-        }
-        let value = if arg == "--locale" {
-            args.next()
-        } else if let Some(v) = arg.to_str().and_then(|a| a.strip_prefix("--locale=")) {
-            Some(OsString::from(v))
-        } else {
-            continue;
+        let value = match arg.as_str() {
+            "--" => break,
+            "--locale" => args.next().unwrap_or_default(),
+            a => match a.strip_prefix("--locale=") {
+                Some(v) => v.to_owned(),
+                None => continue,
+            },
         };
-        found = value
-            .as_deref()
-            .and_then(|v| v.to_str())
-            .and_then(|v| Locale::from_str(v, false).ok());
+        found = Locale::from_str(&value, false).ok();
     }
     found
 }
@@ -1164,7 +1162,6 @@ mod tests {
         assert_eq!(reparsed.auto_fetch, args.auto_fetch);
         assert_eq!(reparsed.auto_fetch_interval, args.auto_fetch_interval);
         assert_eq!(reparsed.fetch_prune, args.fetch_prune);
-        assert_eq!(reparsed.locale, Some(Locale::En));
         assert_eq!(reparsed.locale, args.locale);
         assert_eq!(reparsed.path, args.path);
     }

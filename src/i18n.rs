@@ -24,11 +24,6 @@ use crate::Locale;
 
 const LOCALE: &str = "zh-TW";
 
-/// 所有語系的 rust-i18n tag，來源是 [`Locale`]——新增語系時這裡自動跟著走。
-fn locale_tags() -> Vec<&'static str> {
-    Locale::value_variants().iter().map(|l| l.code()).collect()
-}
-
 /// CJK 字元與全形標點：`U+3000–303F`（CJK 標點）、`U+4E00–9FFF`（漢字）、
 /// `U+FF00–FFEF`（全形／半形形式，如 `：，（）／`）。
 fn is_cjk(c: char) -> bool {
@@ -193,13 +188,12 @@ fn named_args(body: &str) -> BTreeSet<String> {
 
 /// 把 `locales/*.toml` 攤平成 key → (語系 tag → 翻譯值)。
 ///
-/// 葉節點 = 值全是字串的表；它的鍵必須全是已知的語系 tag，否則直接 panic——
-/// 抓 `en = "…"`、`zh-tw = "…"` 這類打錯的 tag（打錯的話那個語系會整個靜默缺漏）。
+/// 葉節點 = 值全是字串的表；鍵是語系 tag（是否都是已知 tag 由
+/// `every_key_is_translated_in_every_locale` 檢查）。
 fn locale_entries() -> BTreeMap<String, BTreeMap<String, String>> {
     fn walk(
         prefix: &str,
         table: &toml::Table,
-        tags: &[&str],
         out: &mut BTreeMap<String, BTreeMap<String, String>>,
     ) {
         for (k, v) in table {
@@ -210,29 +204,24 @@ fn locale_entries() -> BTreeMap<String, BTreeMap<String, String>> {
                 format!("{prefix}.{k}")
             };
             if t.values().all(|v| v.is_str()) {
-                let mut values = BTreeMap::new();
-                for (tag, v) in t {
-                    assert!(
-                        tags.contains(&tag.as_str()),
-                        "{key}: 未知的語系 tag {tag:?}（已知：{tags:?}）"
-                    );
-                    values.insert(tag.clone(), v.as_str().unwrap().to_string());
-                }
+                let values = t
+                    .iter()
+                    .map(|(tag, v)| (tag.clone(), v.as_str().unwrap().to_owned()))
+                    .collect();
                 out.insert(key, values);
             } else {
-                walk(&key, t, tags, out);
+                walk(&key, t, out);
             }
         }
     }
 
-    let tags = locale_tags();
     let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("locales");
     let mut out = BTreeMap::new();
     for entry in fs::read_dir(dir).unwrap() {
         let path = entry.unwrap().path();
         if path.extension().is_some_and(|e| e == "toml") {
             let table: toml::Table = fs::read_to_string(&path).unwrap().parse().unwrap();
-            walk("", &table, &tags, &mut out);
+            walk("", &table, &mut out);
         }
     }
     out
@@ -276,16 +265,18 @@ fn every_locale_key_is_used() {
 
 #[test]
 fn every_key_is_translated_in_every_locale() {
-    let tags = locale_tags();
-    let mut missing = Vec::new();
+    let tags: BTreeSet<&str> = Locale::value_variants().iter().map(|l| l.code()).collect();
+    let mut bad = Vec::new();
     for (key, values) in locale_entries() {
-        for tag in &tags {
-            if !values.contains_key(*tag) {
-                missing.push(format!("{key}（缺 {tag}）"));
-            }
+        let got: BTreeSet<&str> = values.keys().map(String::as_str).collect();
+        if got != tags {
+            bad.push(format!("{key}: {got:?}"));
         }
     }
-    assert!(missing.is_empty(), "缺少翻譯：{missing:#?}");
+    assert!(
+        bad.is_empty(),
+        "語系 tag 缺漏或打錯（每個 key 應恰好有 {tags:?}）：{bad:#?}"
+    );
 }
 
 #[test]
@@ -312,10 +303,8 @@ fn english_values_contain_no_cjk() {
     let en = Locale::En.code();
     let mut bad = Vec::new();
     for (key, values) in locale_entries() {
-        if let Some(v) = values.get(en) {
-            if v.chars().any(is_cjk) {
-                bad.push(format!("{key}: {v:?}"));
-            }
+        if let Some(v) = values.get(en).filter(|v| v.chars().any(is_cjk)) {
+            bad.push(format!("{key}: {v:?}"));
         }
     }
     assert!(bad.is_empty(), "英文翻譯含 CJK 字元或全形標點：{bad:#?}");
@@ -329,22 +318,19 @@ fn english_values_contain_no_cjk() {
 fn surrounding_whitespace_is_consistent_across_locales() {
     let lead = |s: &str| s.len() - s.trim_start().len();
     let trail = |s: &str| s.len() - s.trim_end().len();
-    let zh_tag = Locale::ZhTw.code();
+    let zh_tag = LOCALE;
     let mut bad = Vec::new();
     for (key, values) in locale_entries() {
         let Some(zh) = values.get(zh_tag) else {
             continue;
         };
-        let zh_ends_fullwidth = zh.trim_end().ends_with(['：', '？', '、', '，']);
+        let zh_ends_fullwidth = zh.ends_with(['：', '？', '、', '，']);
         for (tag, v) in &values {
             if tag == zh_tag {
                 continue;
             }
             let trailing_ok = trail(v) == trail(zh)
-                || (zh_ends_fullwidth
-                    && trail(zh) == 0
-                    && trail(v) == 1
-                    && v.trim_end().ends_with([':', '?', ',']));
+                || (zh_ends_fullwidth && trail(v) == 1 && v.trim_end().ends_with([':', '?', ',']));
             if lead(v) != lead(zh) || !trailing_ok {
                 bad.push(format!("{key}: {zh_tag}={zh:?} {tag}={v:?}"));
             }
