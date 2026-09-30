@@ -187,12 +187,9 @@ pub struct GitHubView<'a> {
 }
 
 impl<'a> GitHubView<'a> {
+    /// 一律從 Loading 起跳：唯一呼叫者 `App::open_github` 開 view 時必定
+    /// 送出 refresh，帶快取重開也一樣。
     pub fn new(before: View<'a>, data: GitHubData, tx: Sender) -> GitHubView<'a> {
-        let load_state = if data.issues.is_empty() && data.pull_requests.is_empty() {
-            LoadState::Loading
-        } else {
-            LoadState::Idle
-        };
         GitHubView {
             before,
             focus: GitHubFocus::List,
@@ -208,7 +205,7 @@ impl<'a> GitHubView<'a> {
             filtered_pr_indices: Vec::new(),
             state_filter: data.state_filter,
             task_panel: None,
-            load_state,
+            load_state: LoadState::Loading,
             flash_message: None,
             selected_row_overflows: Cell::new(false),
             issues_next_cursor: data.issues_next_cursor,
@@ -294,9 +291,17 @@ impl<'a> GitHubView<'a> {
         self.flash_message = Some((msg, is_error));
     }
 
+    /// 列表有內容時置中錯誤訊息不會畫出來（見 render.rs），改用 flash 告知
+    /// 這次重抓失敗、畫面上是舊資料。
     pub fn set_error(&mut self, msg: String) {
-        if matches!(self.load_state, LoadState::Loading) {
+        if !matches!(self.load_state, LoadState::Loading) {
+            return;
+        }
+        if self.current_list_len() == 0 {
             self.load_state = LoadState::Error(msg);
+        } else {
+            self.load_state = LoadState::Idle;
+            self.set_flash(msg, true);
         }
     }
 
@@ -1087,6 +1092,38 @@ mod tests {
             view.next_cursor(GhItemKind::Issue).as_deref(),
             Some("cursor-b")
         );
+    }
+
+    /// 帶快取重開也在重抓中（#142）：header 要顯示「重新抓取中」。
+    #[test]
+    fn new_with_cached_data_starts_loading() {
+        let view = view_with_body("body".to_string());
+
+        assert!(matches!(view.load_state, LoadState::Loading));
+    }
+
+    /// 帶快取重抓失敗：列表保留、錯誤走 flash，不能因置中錯誤訊息只在
+    /// 列表空時才畫而被靜默吞掉。
+    #[test]
+    fn set_error_with_cached_list_keeps_list_and_flashes() {
+        let mut view = view_with_body("body".to_string());
+
+        view.set_error("boom".to_string());
+
+        assert!(matches!(view.load_state, LoadState::Idle));
+        assert_eq!(view.flash_message, Some(("boom".to_string(), true)));
+        assert!(render_to_string(&mut view).contains("boom"));
+    }
+
+    #[test]
+    fn set_error_with_empty_list_shows_error_state() {
+        let (tx, _rx) = Sender::channel_for_test();
+        let mut view = GitHubView::new(View::Default, GitHubData::default(), tx);
+
+        view.set_error("boom".to_string());
+
+        assert!(matches!(view.load_state, LoadState::Error(ref m) if m == "boom"));
+        assert!(view.flash_message.is_none());
     }
 
     /// 每一行原始內容在 preview 寬度下都會折行好幾次的長 body——這正是
