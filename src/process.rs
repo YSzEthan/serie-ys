@@ -46,7 +46,7 @@ pub fn run_with_timeout(
 
     let mut child = cmd
         .spawn()
-        .map_err(|e| t!("git.process.spawn_failed", program = program, error = e).into_owned())?;
+        .map_err(|e| t!("git.external.run_failed", program = program, error = e).into_owned())?;
 
     if let Some(data) = stdin_data {
         // 射後不理：唯一的副作用是寫完 drop 掉 `stdin`，讓子行程收到

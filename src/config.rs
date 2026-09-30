@@ -29,13 +29,12 @@ pub fn load() -> Result<(CoreConfig, UiConfig, ColorTheme, Option<KeyBind>)> {
     let config = match config_file_path_from_env() {
         Some(user_path) => {
             if !user_path.exists() {
-                let msg = t!(
+                return Err(t!(
                     "cli.config.env_file_missing",
                     env = CONFIG_FILE_ENV_NAME,
                     path = user_path.display()
                 )
-                .into_owned();
-                return Err(msg.into());
+                .into());
             }
             read_config_from_path(&user_path)
         }

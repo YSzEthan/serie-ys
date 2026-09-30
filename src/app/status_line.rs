@@ -1026,18 +1026,18 @@ impl StatusLineState {
             StatusLine::RefPicker { options, kind } => self.render_picker_line(
                 kind.picker_prompt(),
                 options.iter().map(String::as_str),
-                esc_cancel().into_owned(),
+                esc_cancel(),
             ),
             StatusLine::CheckoutPicker { options, kind } => self.render_picker_line(
                 kind.picker_prompt(),
                 options.iter().map(String::as_str),
-                esc_cancel().into_owned(),
+                esc_cancel(),
             ),
             StatusLine::ChildPicker { options, total } => {
                 let tail = if *total > options.len() {
-                    t!("app.status.more", n = total - options.len()).into_owned()
+                    t!("app.status.more", n = total - options.len())
                 } else {
-                    esc_cancel().into_owned()
+                    esc_cancel()
                 };
                 self.render_picker_line(
                     t!("app.status.go_to_child"),
@@ -1048,9 +1048,9 @@ impl StatusLineState {
             StatusLine::RelatedPicker { items } => self.render_related_picker_line(items),
             StatusLine::DeleteBranchPicker { options, total } => {
                 let tail = if *total > options.len() {
-                    t!("app.status.more_tab_view", n = total - options.len()).into_owned()
+                    t!("app.status.more_tab_view", n = total - options.len())
                 } else {
-                    esc_cancel().into_owned()
+                    esc_cancel()
                 };
                 self.render_picker_line(
                     t!("app.status.delete_branch"),
@@ -1061,9 +1061,7 @@ impl StatusLineState {
             StatusLine::DeleteBranchConfirm { name } => {
                 let hint_fg = self.ctx.color_theme.status_interactive_fg;
                 Line::from(vec![
-                    t!("app.status.delete_branch_confirm", name = name)
-                        .into_owned()
-                        .into(),
+                    t!("app.status.delete_branch_confirm", name = name).into(),
                     format!("[y] {}", t!("common.yes")).fg(hint_fg),
                     " / ".into(),
                     format!("[n] {}", t!("common.no")).fg(hint_fg),
@@ -1109,11 +1107,9 @@ impl StatusLineState {
             StatusLine::NotificationWarn(msg) => Line::raw(msg)
                 .add_modifier(Modifier::BOLD)
                 .fg(self.ctx.color_theme.status_warn_fg),
-            StatusLine::NotificationError(msg) => {
-                Line::raw(t!("app.status.error", msg = msg).into_owned())
-                    .add_modifier(Modifier::BOLD)
-                    .fg(self.ctx.color_theme.status_error_fg)
-            }
+            StatusLine::NotificationError(msg) => Line::raw(t!("app.status.error", msg = msg))
+                .add_modifier(Modifier::BOLD)
+                .fg(self.ctx.color_theme.status_error_fg),
         };
 
         // 插入點只有這一個，不在 match 的個別 arm 裡各插一次——要不要擴到
@@ -1184,11 +1180,7 @@ impl StatusLineState {
             spans.push(span);
         }
         spans.push("  ".into());
-        spans.push(
-            esc_cancel()
-                .into_owned()
-                .fg(self.ctx.color_theme.status_interactive_fg),
-        );
+        spans.push(esc_cancel().fg(self.ctx.color_theme.status_interactive_fg));
         Line::from(spans)
     }
 
@@ -1198,11 +1190,11 @@ impl StatusLineState {
     /// `label` 欄位——不用為了統一型別多 clone 一份 `Vec<String>`。
     fn render_picker_line<'s>(
         &self,
-        prompt: impl Into<Cow<'s, str>>,
+        prompt: Cow<'s, str>,
         labels: impl Iterator<Item = &'s str>,
-        tail: String,
+        tail: Cow<'s, str>,
     ) -> Line<'s> {
-        let mut spans: Vec<Span<'s>> = vec![Span::raw(prompt.into())];
+        let mut spans: Vec<Span<'s>> = vec![Span::raw(prompt)];
         for (i, name) in labels.enumerate() {
             spans.push(format!("[{}]", i + 1).fg(self.ctx.color_theme.status_interactive_fg));
             spans.push(name.into());
@@ -1226,12 +1218,11 @@ impl StatusLineState {
                     number = number,
                     head_ref = head_ref
                 )
-                .into_owned()
                 .into(),
                 "[m] merge  ".fg(hint_fg),
                 "[s] squash  ".fg(hint_fg),
                 "[r] rebase  ".fg(hint_fg),
-                esc_cancel().into_owned().fg(hint_fg),
+                esc_cancel().fg(hint_fg),
             ]),
             MergePrStage::AskDeleteLocal { method } => Line::from(vec![
                 t!(
@@ -1239,7 +1230,6 @@ impl StatusLineState {
                     head_ref = head_ref,
                     method = method.display()
                 )
-                .into_owned()
                 .into(),
                 format!("[y] {}", t!("common.yes")).fg(hint_fg),
                 " / ".into(),
@@ -1252,7 +1242,6 @@ impl StatusLineState {
                     head_ref = head_ref,
                     method = method.display()
                 )
-                .into_owned()
                 .into(),
                 format!("[y] {}", t!("common.yes")).fg(hint_fg),
                 " / ".into(),

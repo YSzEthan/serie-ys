@@ -168,17 +168,8 @@ zh-TW = "這個 commit 上沒有 tag"
 [view.delete_tag.from_origin]
 zh-TW = " 一併從 origin 刪除"
 
-[view.delete_ref.pending_branch_force]
-zh-TW = "正在強制刪除 branch '%{name}'…"
-
-[view.delete_ref.pending_branch]
-zh-TW = "正在刪除 branch '%{name}'…"
-
 [view.delete_ref.pending_remote_branch]
 zh-TW = "正在刪除 remote branch '%{name}'…"
-
-[view.delete_ref.done_branch]
-zh-TW = "已刪除 branch '%{name}'"
 
 [view.delete_ref.done_remote_branch]
 zh-TW = "已刪除 remote branch '%{name}'"

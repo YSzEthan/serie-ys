@@ -109,24 +109,17 @@ impl<'a> DeleteRefView<'a> {
         let tx = self.tx.clone();
 
         let pending_msg = match ref_type {
-            RefType::Tag => {
-                if delete_from_remote {
-                    t!("view.delete_tag.pending_remote", tag = ref_name).into_owned()
-                } else {
-                    t!("view.delete_tag.pending", tag = ref_name).into_owned()
-                }
+            RefType::Tag if delete_from_remote => {
+                t!("view.delete_tag.pending_remote", tag = ref_name)
             }
-            RefType::Branch => {
-                if force_delete {
-                    t!("view.delete_ref.pending_branch_force", name = ref_name).into_owned()
-                } else {
-                    t!("view.delete_ref.pending_branch", name = ref_name).into_owned()
-                }
+            RefType::Tag => t!("view.delete_tag.pending", tag = ref_name),
+            RefType::Branch if force_delete => {
+                t!("app.delete_branch.pending_force", name = ref_name)
             }
-            RefType::RemoteBranch => {
-                t!("view.delete_ref.pending_remote_branch", name = ref_name).into_owned()
-            }
-        };
+            RefType::Branch => t!("app.delete_branch.pending", name = ref_name),
+            RefType::RemoteBranch => t!("view.delete_ref.pending_remote_branch", name = ref_name),
+        }
+        .into_owned();
 
         self.tx.send(AppEvent::ShowPendingOverlay {
             message: pending_msg,
@@ -169,20 +162,16 @@ impl<'a> DeleteRefView<'a> {
             match result {
                 Ok(()) => {
                     let msg = match ref_type {
-                        RefType::Tag => {
-                            if delete_from_remote {
-                                t!("view.delete_tag.done_remote", tag = ref_name).into_owned()
-                            } else {
-                                t!("view.delete_tag.done_local", tag = ref_name).into_owned()
-                            }
+                        RefType::Tag if delete_from_remote => {
+                            t!("view.delete_tag.done_remote", tag = ref_name)
                         }
-                        RefType::Branch => {
-                            t!("view.delete_ref.done_branch", name = ref_name).into_owned()
-                        }
+                        RefType::Tag => t!("view.delete_tag.done_local", tag = ref_name),
+                        RefType::Branch => t!("app.delete_branch.done", name = ref_name),
                         RefType::RemoteBranch => {
-                            t!("view.delete_ref.done_remote_branch", name = ref_name).into_owned()
+                            t!("view.delete_ref.done_remote_branch", name = ref_name)
                         }
-                    };
+                    }
+                    .into_owned();
                     tx.send(AppEvent::NotifySuccess(msg));
                     tx.send(AppEvent::HidePendingOverlay);
                     tx.send(AppEvent::Refresh);

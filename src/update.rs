@@ -460,7 +460,7 @@ fn stale(installed: bool, startup: Option<u64>, current: Option<u64>) -> bool {
 /// 舊 inode，unlink 之後也不會被釋放重用。
 ///
 /// 已知的理論風險：某些 FUSE／網路掛載對同一個檔案回不穩定的 inode，那種
-/// 環境會永久判定被替換、再也自我更新不了。訊息（`EXE_REPLACED_MSG`）是
+/// 環境會永久判定被替換、再也自我更新不了。訊息（`exe_replaced_msg()`）是
 /// 中性的，使用者看得懂發生什麼事。
 pub fn exe_is_stale() -> bool {
     let snapshot = startup_exe();

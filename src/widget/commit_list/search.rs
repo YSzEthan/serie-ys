@@ -115,25 +115,20 @@ impl TransientMessage {
     /// search／filter 兩邊的訊息文字完全相同，只有外層 state（`Searching`／
     /// `Filtering`）不同——這個 match 只該存在一份。
     fn text(self) -> Option<String> {
-        match self {
-            Self::None => None,
-            Self::IgnoreCaseOn => Some(t!("view.search.msg.ignore_case_on").into_owned()),
-            Self::IgnoreCaseOff => Some(t!("view.search.msg.ignore_case_off").into_owned()),
-            Self::FuzzyOn => Some(t!("view.search.msg.fuzzy_on").into_owned()),
-            Self::FuzzyOff => Some(t!("view.search.msg.fuzzy_off").into_owned()),
+        let text = match self {
+            Self::None => return None,
+            Self::IgnoreCaseOn => t!("view.search.msg.ignore_case_on"),
+            Self::IgnoreCaseOff => t!("view.search.msg.ignore_case_off"),
+            Self::FuzzyOn => t!("view.search.msg.fuzzy_on"),
+            Self::FuzzyOff => t!("view.search.msg.fuzzy_off"),
             Self::Target(target) => {
                 // 補空白到固定顯示寬度，切換欄位時才蓋得掉上一則較長的訊息
                 let label = target_label(target);
-                let pad = 6usize.saturating_sub(label.width());
-                Some(
-                    t!(
-                        "view.search.msg.target",
-                        target = format!("{label}{}", " ".repeat(pad))
-                    )
-                    .into_owned(),
-                )
+                let padded = console::pad_str(&label, 6, console::Alignment::Left, None);
+                t!("view.search.msg.target", target = padded)
             }
-        }
+        };
+        Some(text.into_owned())
     }
 }
 

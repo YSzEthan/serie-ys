@@ -26,36 +26,20 @@ fn collect_rs(dir: &Path, out: &mut Vec<PathBuf>) {
     }
 }
 
-/// 去掉 `//` 註解（字串字面值內的 `//` 不算，例如 URL）。
-fn strip_line_comments(src: &str) -> String {
-    let mut out = String::with_capacity(src.len());
-    let mut in_str = false;
-    let mut chars = src.chars().peekable();
-    while let Some(c) = chars.next() {
-        if in_str {
-            out.push(c);
-            if c == '\\' {
-                if let Some(n) = chars.next() {
-                    out.push(n);
-                }
-            } else if c == '"' {
-                in_str = false;
+/// 去掉整行 `//` 註解，行號照樣保留。行尾註解不處理：字串裡的 `//`（例如 URL）
+/// 與 `'"'` 這類 char literal 會讓「是否在字串內」的判斷不可靠，而目前 `src/`
+/// 沒有行尾註解含 `t!(`。
+fn strip_comment_lines(src: &str) -> String {
+    src.lines()
+        .map(|l| {
+            if l.trim_start().starts_with("//") {
+                ""
+            } else {
+                l
             }
-        } else if c == '"' {
-            in_str = true;
-            out.push(c);
-        } else if c == '/' && chars.peek() == Some(&'/') {
-            for n in chars.by_ref() {
-                if n == '\n' {
-                    out.push('\n');
-                    break;
-                }
-            }
-        } else {
-            out.push(c);
-        }
-    }
-    out
+        })
+        .collect::<Vec<_>>()
+        .join("\n")
 }
 
 /// 一次 `t!(...)` 呼叫：key 與具名參數。
@@ -78,7 +62,7 @@ fn collect_calls() -> Vec<Call> {
             continue;
         }
         let rel = file.strip_prefix(&root).unwrap().display().to_string();
-        let src = strip_line_comments(&fs::read_to_string(&file).unwrap());
+        let src = strip_comment_lines(&fs::read_to_string(&file).unwrap());
         let bytes = src.as_bytes();
         let mut from = 0;
         while let Some(i) = src[from..].find("t!(") {
@@ -92,24 +76,14 @@ fn collect_calls() -> Vec<Call> {
             let at = format!("{rel}:{line}");
             let rest = src[from..].trim_start();
             assert!(rest.starts_with('"'), "{at}: t! 的第一個參數必須是字面字串");
-            let lit = &rest[1..];
-            let mut end = None;
-            let mut escaped = false;
-            for (j, c) in lit.char_indices() {
-                if escaped {
-                    escaped = false;
-                } else if c == '\\' {
-                    escaped = true;
-                } else if c == '"' {
-                    end = Some(j);
-                    break;
-                }
-            }
-            let end = end.unwrap_or_else(|| panic!("{at}: 字串沒有結尾"));
-            let key = lit[..end].to_string();
+            // key 是 `a.b.c` 形式的識別字，不會含跳脫字元，找下一個 `"` 即可
+            let (key, after_key) = rest[1..]
+                .split_once('"')
+                .unwrap_or_else(|| panic!("{at}: 字串沒有結尾"));
+            let key = key.to_string();
 
-            // 具名參數：到這個 t!( 的對應右括號為止，找 `ident =`（排除 `==`、`=>`）
-            let args_src = matching_paren_body(&lit[end + 1..]);
+            // 具名參數：到這個 t!( 的對應右括號為止，找 `ident =`（排除 `==`；`name => v` 也是合法寫法，由 rust-i18n 接受）
+            let args_src = matching_paren_body(after_key);
             calls.push(Call {
                 key,
                 args: named_args(args_src),

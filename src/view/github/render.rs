@@ -533,8 +533,7 @@ pub(super) fn state_label(state: &str) -> Cow<'static, str> {
 const STATE_COL_WIDTH: usize = 6;
 
 fn pad_state_cell(label: &str) -> String {
-    let pad = STATE_COL_WIDTH.saturating_sub(console::measure_text_width(label));
-    format!("{label}{}", " ".repeat(pad))
+    console::pad_str(label, STATE_COL_WIDTH, console::Alignment::Left, None).into_owned()
 }
 
 pub(super) fn state_color(state: &str) -> Color {
@@ -647,8 +646,8 @@ fn render_issue_line(
     spans.extend(label_cell(&issue.labels, label_mode, labels_pad_width));
 
     let tail = format!("{}  @{}", issue.title, issue.author.login);
-    // 2 (indicator) + 7 (#N 區塊 `#XXXXX `) + 6 (state `{:<6}`) + labels_pad + 1 (空格)
-    let prefix_width = 2 + 7 + 6 + labels_pad_width + 1;
+    // 2 (indicator) + 7 (#N 區塊 `#XXXXX `) + 狀態欄 + labels_pad + 1 (空格)
+    let prefix_width = 2 + 7 + STATE_COL_WIDTH + labels_pad_width + 1;
     let (tail_spans, scrolled) = tail_spans(
         &tail,
         content_width.saturating_sub(prefix_width),
@@ -724,7 +723,7 @@ fn render_pr_line(
     spans.extend(label_cell(&pr.labels, label_mode, labels_pad_width));
 
     let tail = format!("{}  ← {}  @{}", pr.title, pr.head_ref_name, pr.author.login);
-    let prefix_width = 2 + 7 + 6 + labels_pad_width + 1;
+    let prefix_width = 2 + 7 + STATE_COL_WIDTH + labels_pad_width + 1;
     let (tail_spans, scrolled) = tail_spans(
         &tail,
         content_width.saturating_sub(prefix_width),

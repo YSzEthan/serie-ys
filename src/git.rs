@@ -206,7 +206,7 @@ impl Repository {
         let stashes = load_all_stashes(path);
         let commits = load_all_commits(path, sort, &head, &stashes, max_count);
         if commits.is_empty() {
-            return Err(t!("git.repo.no_commits").into_owned().into());
+            return Err(t!("git.repo.no_commits").into());
         }
 
         let commits = merge_stashes_to_commits(commits, stashes);
@@ -466,7 +466,7 @@ fn truncate_diff_output(bytes: &[u8]) -> (String, bool) {
 
 fn check_git_repository(path: &Path) -> Result<()> {
     if !is_inside_work_tree(path) && !is_bare_repository(path) {
-        return Err(t!("git.repo.not_a_repo").into_owned().into());
+        return Err(t!("git.repo.not_a_repo").into());
     }
     Ok(())
 }
@@ -1221,12 +1221,12 @@ pub fn load_working_changes(path: &Path) -> Result<WorkingChanges> {
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
-        .map_err(|e| t!("git.status.spawn_failed", error = e).into_owned())?;
+        .map_err(|e| t!("git.status.spawn_failed", error = e))?;
 
     let stdout = cmd
         .stdout
         .take()
-        .ok_or_else(|| t!("git.status.stdout_failed").into_owned())?;
+        .ok_or_else(|| t!("git.status.stdout_failed"))?;
     let reader = BufReader::new(stdout);
 
     let mut staged = Vec::new();
@@ -1260,9 +1260,9 @@ pub fn load_working_changes(path: &Path) -> Result<WorkingChanges> {
 
     let status = cmd
         .wait()
-        .map_err(|e| t!("git.status.wait_failed", error = e).into_owned())?;
+        .map_err(|e| t!("git.status.wait_failed", error = e))?;
     if !status.success() {
-        return Err(t!("git.status.nonzero").into_owned().into());
+        return Err(t!("git.status.nonzero").into());
     }
 
     Ok(WorkingChanges { staged, unstaged })

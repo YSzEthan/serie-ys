@@ -286,9 +286,13 @@ fn fetch_repo_name_with_owner(path: &Path) -> Result<(String, String), String> {
     Ok(entry)
 }
 
+/// 解析 gh GraphQL 回傳的 JSON；失敗統一包成 `github.error.json_parse`。
+fn parse_json<T: serde::de::DeserializeOwned>(json: &str) -> Result<T, String> {
+    serde_json::from_str(json).map_err(|e| t!("github.error.json_parse", detail = e).into_owned())
+}
+
 fn parse_issues_graphql(json: &str) -> Result<GhPage<GhIssue>, String> {
-    let resp: GqlIssuesResp = serde_json::from_str(json)
-        .map_err(|e| t!("github.error.json_parse", detail = e).into_owned())?;
+    let resp: GqlIssuesResp = parse_json(json)?;
     let list = resp.data.repository.issues;
     let next_cursor = list.page_info.next_cursor();
     Ok(GhPage {
@@ -438,8 +442,7 @@ pub fn list_pull_requests(
 }
 
 fn parse_prs_graphql(json: &str) -> Result<GhPage<GhPullRequest>, String> {
-    let resp: GqlPrsResp = serde_json::from_str(json)
-        .map_err(|e| t!("github.error.json_parse", detail = e).into_owned())?;
+    let resp: GqlPrsResp = parse_json(json)?;
     let repo = resp.data.repository;
     let default_branch = repo.default_branch_ref.map(|r| r.name);
     let list = repo.pull_requests;
@@ -868,8 +871,7 @@ fn parse_timeline_graphql(
     kind: GhItemKind,
     mut fetch_more: impl FnMut(Target<'_>, &str) -> Result<String, String>,
 ) -> Result<GhTimelinePage, String> {
-    let resp: GqlTimelineResp = serde_json::from_str(json)
-        .map_err(|e| t!("github.error.json_parse", detail = e).into_owned())?;
+    let resp: GqlTimelineResp = parse_json(json)?;
     let container = match kind {
         GhItemKind::Issue => resp.data.repository.issue,
         GhItemKind::PullRequest => resp.data.repository.pull_request,
@@ -999,8 +1001,7 @@ fn collect_review_threads(
         need_more,
         |after| {
             let json = fetch_more(Target::ReviewThreads, after)?;
-            let resp: GqlRepoResp<GqlThreadsRepo> = serde_json::from_str(&json)
-                .map_err(|e| t!("github.error.json_parse", detail = e).into_owned())?;
+            let resp: GqlRepoResp<GqlThreadsRepo> = parse_json(&json)?;
             resp.data
                 .repository
                 .pull_request
@@ -1108,8 +1109,7 @@ fn collect_head_contexts(
         |_| true,
         |after| {
             let json = fetch_more(Target::Contexts { oid: &oid }, after)?;
-            let resp: GqlRepoResp<GqlContextsRepo> = serde_json::from_str(&json)
-                .map_err(|e| t!("github.error.json_parse", detail = e).into_owned())?;
+            let resp: GqlRepoResp<GqlContextsRepo> = parse_json(&json)?;
             resp.data
                 .repository
                 .object

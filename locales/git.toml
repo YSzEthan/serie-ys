@@ -12,9 +12,6 @@ zh-TW = "mode → 可執行"
 [git.diff.mode.from_executable]
 zh-TW = "mode → 不可執行"
 
-[git.process.spawn_failed]
-zh-TW = "無法執行 %{program}：%{error}"
-
 [git.process.timeout]
 zh-TW = "%{program} 指令在 %{secs} 秒後逾時（網路問題？）"
 

@@ -36,7 +36,7 @@ enum CaptureState {
     Waiting,
     /// `key_event_to_config_string` 回 `None`：這顆鍵寫不進設定檔，留在
     /// 捕捉畫面顯示原因，不返回清單。
-    Rejected(Cow<'static, str>),
+    Rejected,
     /// 捕捉到的鍵目前歸別的 action。`y` 搶過來，其他鍵取消整次捕捉。
     Conflict {
         key: KeyEvent,
@@ -245,7 +245,7 @@ impl KeyBindEditorState {
 
         if key_event_to_config_string(normalized).is_none() {
             if let Some(c) = &mut self.capture {
-                c.state = CaptureState::Rejected(t!("wizard.keybind.rejected"));
+                c.state = CaptureState::Rejected;
             }
             return Flow::Continue;
         }
@@ -453,14 +453,14 @@ fn render_capture_dialog(
     };
     let current = effective.keys_for_event(capture.target).join(", ");
     let current_line = if current.is_empty() {
-        t!("wizard.keybind.current_unbound").into_owned()
+        t!("wizard.keybind.current_unbound")
     } else {
-        t!("wizard.keybind.current", keys = current).into_owned()
+        t!("wizard.keybind.current", keys = current)
     };
 
     let message = match &capture.state {
-        CaptureState::Waiting => t!("wizard.keybind.waiting").into_owned(),
-        CaptureState::Rejected(msg) => msg.to_string(),
+        CaptureState::Waiting => t!("wizard.keybind.waiting"),
+        CaptureState::Rejected => t!("wizard.keybind.rejected"),
         CaptureState::Conflict { key, victim } => {
             let key_str = key_event_to_config_string(*key).unwrap_or_default();
             let victim_name = victim.config_name().unwrap_or_default();
@@ -471,7 +471,6 @@ fn render_capture_dialog(
                 victim_name = victim_name,
                 victim_desc = victim_desc
             )
-            .into_owned()
         }
     };
 
@@ -897,7 +896,7 @@ mod tests {
 
         assert!(matches!(
             state.capture.as_ref().map(|c| &c.state),
-            Some(CaptureState::Rejected(_))
+            Some(CaptureState::Rejected)
         ));
     }
 }
