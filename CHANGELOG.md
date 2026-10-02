@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.7.0](https://github.com/YSzEthan/serie-ys/compare/v4.6.1...v4.7.0) (2026-10-02)
+
+
+### Features
+
+* 所有提示走 rust-i18n，支援 English／繁體中文並可在 -h 精靈切換 (#144, #145) (#146) ([406d32f](https://github.com/YSzEthan/serie-ys/commit/406d32f6453dc5c859a2e3a3d172523786bfbaff))
+
 ## [4.6.1](https://github.com/YSzEthan/serie-ys/compare/v4.6.0...v4.6.1) (2026-09-30)
 
 
