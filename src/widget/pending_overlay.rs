@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use ratatui::{
     buffer::Buffer,
     layout::Rect,
@@ -5,6 +7,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Clear, Padding, Paragraph, Widget},
 };
+use rust_i18n::t;
 
 use crate::{
     color::ColorTheme,
@@ -14,7 +17,7 @@ use crate::{
 };
 
 pub struct PendingOverlay<'a> {
-    title: &'static str,
+    title: Cow<'static, str>,
     message: &'a str,
     color_theme: &'a ColorTheme,
     /// 底下那行鍵位提示，建構時就算好——兩個建構子手上都已經有
@@ -25,12 +28,16 @@ pub struct PendingOverlay<'a> {
 impl<'a> PendingOverlay<'a> {
     pub fn working(message: &'a str, color_theme: &'a ColorTheme, keybind: &KeyBind) -> Self {
         Self {
-            title: " Working... ",
+            title: t!("app.pending.working_title"),
             message,
             color_theme,
             // 關掉它的是 `UserEvent::Cancel`（見 `App::handle_key`），不是
             // 寫死的 Esc。
-            hint: keybind_hint_line(color_theme, keybind, &[h(&[UserEvent::Cancel], "hide")]),
+            hint: keybind_hint_line(
+                color_theme,
+                keybind,
+                &[h(&[UserEvent::Cancel], t!("common.hint.hide"))],
+            ),
         }
     }
 
@@ -40,11 +47,11 @@ impl<'a> PendingOverlay<'a> {
     /// `keybind_hint_line`。
     pub fn notice(message: &'a str, color_theme: &'a ColorTheme) -> Self {
         Self {
-            title: " Restarted ",
+            title: t!("app.pending.restarted_title"),
             message,
             color_theme,
             hint: Line::styled(
-                "any key: close",
+                t!("app.pending.any_key_close").into_owned(),
                 Style::default().fg(color_theme.help_key_fg),
             ),
         }
@@ -77,7 +84,7 @@ impl Widget for PendingOverlay<'_> {
         Clear.render(dialog_area, buf);
 
         let block = Block::default()
-            .title(self.title)
+            .title(self.title.as_ref())
             .borders(Borders::ALL)
             .border_style(Style::default().fg(self.color_theme.divider_fg))
             .style(

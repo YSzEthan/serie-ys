@@ -5,11 +5,26 @@
 
 use std::process::{Command, Output};
 
-fn run(args: &[&str]) -> Output {
+/// 一律指定 `SERIE_CONFIG_FILE`：設定檔預設跟著執行檔放在 `target/debug/.ysgit.toml`，
+/// 開發者用 debug 版精靈選過 English 之後，「預設輸出是繁體中文」這類斷言就會失敗。
+fn run_with_config(args: &[&str], config: &str) -> Output {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("config.toml");
+    std::fs::write(&path, config).unwrap();
     Command::new(env!("CARGO_BIN_EXE_ysgit"))
         .args(args)
+        .env("SERIE_CONFIG_FILE", &path)
         .output()
         .expect("failed to execute ysgit")
+}
+
+fn run(args: &[&str]) -> Output {
+    run_with_config(args, "")
+}
+
+fn stdout_of(out: Output) -> String {
+    assert!(out.status.success(), "應該 exit 0：{out:?}");
+    String::from_utf8(out.stdout).unwrap()
 }
 
 #[test]
@@ -46,6 +61,7 @@ fn help_output_lists_every_flag_including_the_new_path_browser() {
         "--auto-fetch",
         "--auto-fetch-interval",
         "--fetch-prune",
+        "--locale",
         "--whats-new",
         "-h, --help",
         "-V, --version",
@@ -95,4 +111,51 @@ fn version_flag_is_untouched() {
     assert!(out.status.success());
     let stdout = String::from_utf8(out.stdout).unwrap();
     assert!(stdout.starts_with("ysgit "));
+}
+
+#[test]
+fn help_is_traditional_chinese_by_default() {
+    let stdout = stdout_of(run(&["--help"]));
+    assert!(stdout.contains("顯示說明"), "{stdout}");
+    assert!(!stdout.contains("Show help"), "{stdout}");
+}
+
+#[test]
+fn locale_flag_switches_the_help_text() {
+    let en = stdout_of(run(&["--locale", "en", "--help"]));
+    assert!(en.contains("Show help"), "{en}");
+    assert!(en.contains("Interface language"), "{en}");
+    assert!(!en.contains("顯示說明"), "{en}");
+
+    let zh = stdout_of(run(&["--locale", "zh-tw", "--help"]));
+    assert!(zh.contains("顯示說明"), "{zh}");
+
+    // `--locale=en` 寫法與旗標出現在 `--help` 之後也要生效
+    let en2 = stdout_of(run(&["--help", "--locale=en"]));
+    assert_eq!(en, en2);
+}
+
+#[test]
+fn config_locale_switches_help_and_the_flag_overrides_it() {
+    let config = "[core.option]\nlocale = \"en\"\n";
+    let from_config = stdout_of(run_with_config(&["--help"], config));
+    assert!(from_config.contains("Show help"), "{from_config}");
+
+    let overridden = stdout_of(run_with_config(&["--locale", "zh-tw", "--help"], config));
+    assert!(overridden.contains("顯示說明"), "{overridden}");
+}
+
+#[test]
+fn short_and_long_help_stay_identical_in_english() {
+    let short = run(&["--locale", "en", "-h"]);
+    let long = run(&["--locale", "en", "--help"]);
+    assert_eq!(short.stdout, long.stdout);
+}
+
+#[test]
+fn unknown_locale_is_a_clap_error() {
+    let out = run(&["--locale", "xx"]);
+    assert!(!out.status.success());
+    let stderr = String::from_utf8(out.stderr).unwrap();
+    assert!(stderr.contains("invalid value"), "{stderr}");
 }

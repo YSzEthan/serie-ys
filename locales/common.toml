@@ -1,0 +1,225 @@
+_version = 2
+
+[common.hint.back]
+zh-TW = "返回"
+en-US = "back"
+
+[common.hint.bottom]
+zh-TW = "底端"
+en-US = "bottom"
+
+[common.hint.cancel]
+zh-TW = "取消"
+en-US = "cancel"
+
+[common.hint.case]
+zh-TW = "大小寫"
+en-US = "case"
+
+[common.hint.checkout]
+zh-TW = "checkout"
+en-US = "checkout"
+
+[common.hint.clear_close]
+zh-TW = "清除／關閉"
+en-US = "clear/close"
+
+[common.hint.close]
+zh-TW = "關閉"
+en-US = "close"
+
+[common.hint.commit]
+zh-TW = "commit"
+en-US = "commit"
+
+[common.hint.confirm]
+zh-TW = "確認"
+en-US = "confirm"
+
+[common.hint.copy]
+zh-TW = "複製"
+en-US = "copy"
+
+[common.hint.copy_url]
+zh-TW = "複製 URL"
+en-US = "copy URL"
+
+[common.hint.delete]
+zh-TW = "刪除"
+en-US = "delete"
+
+[common.hint.detail]
+zh-TW = "詳情"
+en-US = "details"
+
+[common.hint.diff]
+zh-TW = "diff"
+en-US = "diff"
+
+[common.hint.done]
+zh-TW = "完成"
+en-US = "done"
+
+[common.hint.file]
+zh-TW = "檔案"
+en-US = "file"
+
+[common.hint.filter]
+zh-TW = "過濾"
+en-US = "filter"
+
+[common.hint.fuzzy]
+zh-TW = "模糊"
+en-US = "fuzzy"
+
+[common.hint.github]
+zh-TW = "GitHub"
+en-US = "GitHub"
+
+[common.hint.half]
+zh-TW = "半頁"
+en-US = "half"
+
+[common.hint.help]
+zh-TW = "說明"
+en-US = "help"
+
+[common.hint.hide]
+zh-TW = "隱藏"
+en-US = "hide"
+
+[common.hint.hunk]
+zh-TW = "hunk"
+en-US = "hunk"
+
+[common.hint.merge_pr]
+zh-TW = "merge PR"
+en-US = "merge PR"
+
+[common.hint.move]
+zh-TW = "移動"
+en-US = "move"
+
+[common.hint.nav]
+zh-TW = "移動"
+en-US = "nav"
+
+[common.hint.num]
+zh-TW = "編號"
+en-US = "number"
+
+[common.hint.open]
+zh-TW = "開啟"
+en-US = "open"
+
+[common.hint.page]
+zh-TW = "整頁"
+en-US = "page"
+
+[common.hint.pane]
+zh-TW = "pane"
+en-US = "pane"
+
+[common.hint.parent_child]
+zh-TW = "parent/child"
+en-US = "parent/child"
+
+[common.hint.preview]
+zh-TW = "預覽"
+en-US = "preview"
+
+[common.hint.refresh]
+zh-TW = "重新整理"
+en-US = "refresh"
+
+[common.hint.refs]
+zh-TW = "refs"
+en-US = "refs"
+
+[common.hint.related]
+zh-TW = "相關"
+en-US = "related"
+
+[common.hint.remote]
+zh-TW = "remote"
+en-US = "remote"
+
+[common.hint.retry]
+zh-TW = "重試"
+en-US = "retry"
+
+[common.hint.run]
+zh-TW = "執行"
+en-US = "run"
+
+[common.hint.scroll]
+zh-TW = "捲動"
+en-US = "scroll"
+
+[common.hint.search]
+zh-TW = "搜尋"
+en-US = "search"
+
+[common.hint.select]
+zh-TW = "選擇"
+en-US = "select"
+
+[common.hint.show_label_names]
+zh-TW = "顯示 label 名稱"
+en-US = "show label names"
+
+[common.hint.submit]
+zh-TW = "送出"
+en-US = "submit"
+
+[common.hint.switch_tab]
+zh-TW = "切換分頁"
+en-US = "switch tab"
+
+[common.hint.tag]
+zh-TW = "tag"
+en-US = "tag"
+
+[common.hint.target]
+zh-TW = "比對欄位"
+en-US = "target"
+
+[common.hint.toggle]
+zh-TW = "切換"
+en-US = "toggle"
+
+[common.hint.top]
+zh-TW = "頂端"
+en-US = "top"
+
+[common.esc_cancel]
+zh-TW = "（Esc 取消）"
+en-US = "(Esc to cancel)"
+
+[common.yes]
+zh-TW = "是"
+en-US = "Yes"
+
+[common.no]
+zh-TW = "否"
+en-US = "No"
+
+[common.force]
+zh-TW = "強制"
+en-US = "Force"
+
+[common.failed_with]
+zh-TW = "%{prefix}：%{detail}"
+en-US = "%{prefix}: %{detail}"
+
+[common.hint.history]
+zh-TW = "歷史"
+en-US = "history"
+
+[common.hint.update]
+zh-TW = "更新"
+en-US = "update"
+
+[common.hint.restart]
+zh-TW = "重啟"
+en-US = "restart"

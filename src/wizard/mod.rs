@@ -13,16 +13,18 @@ use ratatui::{
     widgets::{Block, Borders, Clear, List, ListItem, ListState, Paragraph},
     DefaultTerminal, Frame,
 };
+use rust_i18n::t;
 use tui_input::backend::crossterm::EventHandler;
 
 use crate::{
+    apply_locale,
     auto_fetch::{self, AutoFetch},
     color::ColorTheme,
     config,
     git::FetchPrune,
     keybind,
     update::{self, AutoRestart, ReleaseNotes, UpdateMode},
-    Args, CommitOrderType, CompactType, GraphStyle, GraphWidthType, InitialSelection,
+    Args, CommitOrderType, CompactType, GraphStyle, GraphWidthType, InitialSelection, Locale,
 };
 
 /// -h 在 TTY 下的入口。回傳 `None` = 使用者放棄（等同原本 `--help` 印完離開，
@@ -48,7 +50,21 @@ fn wizard_loop(
     mut state: WizardState,
     theme: &ColorTheme,
 ) -> crate::Result<Option<Args>> {
+    // 精靈整頁用的介面語言。`None` = 還沒套用過：第一輪一定要套一次，因為
+    // `run()` 最前面套的可能是命令列給的值，而精靈不吃命令列旗標、以設定檔為準。
+    let mut applied: Option<Locale> = None;
     loop {
+        let wanted = state.locale();
+        if applied != Some(wanted) {
+            // 只在真的變了才套用：`set_locale` 會讓全域版本號加一，每輪都呼叫
+            // 等於每輪都讓所有執行緒的翻譯快取失效。
+            apply_locale(wanted);
+            applied = Some(wanted);
+            // 上一輪寫檔失敗留下的訊息是舊語言的字串，不會跟著換，直接清掉；
+            // 整個畫面也清一次，避免寬字元／窄字元互換後殘留的半格。
+            state.write_error = None;
+            terminal.clear()?;
+        }
         terminal.draw(|f| state.render(f, f.area(), theme))?;
         let Event::Key(key) = ratatui::crossterm::event::read()? else {
             continue;
@@ -77,7 +93,7 @@ fn wizard_loop(
                 let spec = field.spec();
                 let current = field.current(&state.draft, &state.defaults);
                 if let NumberFlow::Committed(v) =
-                    run_number_input(terminal, current, theme, spec.title, spec.min, spec.max)?
+                    run_number_input(terminal, current, theme, &spec.title, spec.min, spec.max)?
                 {
                     field.commit(&mut state.draft, v);
                 }
@@ -107,70 +123,76 @@ pub(crate) fn variant_name<T: ValueEnum>(v: &T) -> String {
         .to_string()
 }
 
-fn order_desc(v: CommitOrderType) -> &'static str {
+/// 語言值用各自的語言自稱（不經 `t!`）：整頁已切成另一個語言時，使用者仍要認得出
+/// 哪個選項是自己的語言。
+fn locale_desc(v: Locale) -> Cow<'static, str> {
+    Cow::Borrowed(v.label())
+}
+
+fn order_desc(v: CommitOrderType) -> Cow<'static, str> {
     match v {
-        CommitOrderType::Chrono => "時間序",
-        CommitOrderType::Topo => "拓撲序",
+        CommitOrderType::Chrono => t!("wizard.order.chrono"),
+        CommitOrderType::Topo => t!("wizard.order.topo"),
     }
 }
 
-fn graph_width_desc(v: GraphWidthType) -> &'static str {
+fn graph_width_desc(v: GraphWidthType) -> Cow<'static, str> {
     match v {
-        GraphWidthType::Auto => "自動",
-        GraphWidthType::Double => "寬版",
-        GraphWidthType::Single => "窄版",
+        GraphWidthType::Auto => t!("wizard.value.auto"),
+        GraphWidthType::Double => t!("wizard.graph_width.double"),
+        GraphWidthType::Single => t!("wizard.graph_width.single"),
     }
 }
 
-fn compact_desc(v: CompactType) -> &'static str {
+fn compact_desc(v: CompactType) -> Cow<'static, str> {
     match v {
-        CompactType::Auto => "自動",
-        CompactType::On => "開啟",
-        CompactType::Off => "關閉",
+        CompactType::Auto => t!("wizard.value.auto"),
+        CompactType::On => t!("wizard.value.on"),
+        CompactType::Off => t!("wizard.value.off"),
     }
 }
 
-fn graph_style_desc(v: GraphStyle) -> &'static str {
+fn graph_style_desc(v: GraphStyle) -> Cow<'static, str> {
     match v {
-        GraphStyle::Rounded => "圓角",
-        GraphStyle::Angular => "直角",
-        GraphStyle::Ascii => "ASCII",
+        GraphStyle::Rounded => t!("wizard.graph_style.rounded"),
+        GraphStyle::Angular => t!("wizard.graph_style.angular"),
+        GraphStyle::Ascii => Cow::Borrowed("ASCII"),
     }
 }
 
-fn initial_selection_desc(v: InitialSelection) -> &'static str {
+fn initial_selection_desc(v: InitialSelection) -> Cow<'static, str> {
     match v {
-        InitialSelection::Latest => "最新",
-        InitialSelection::Head => "HEAD",
+        InitialSelection::Latest => t!("wizard.initial_selection.latest"),
+        InitialSelection::Head => Cow::Borrowed("HEAD"),
     }
 }
 
-fn update_mode_desc(v: UpdateMode) -> &'static str {
+fn update_mode_desc(v: UpdateMode) -> Cow<'static, str> {
     match v {
-        UpdateMode::Off => "關閉",
-        UpdateMode::Check => "檢查後詢問",
-        UpdateMode::Auto => "自動安裝",
+        UpdateMode::Off => t!("wizard.value.off"),
+        UpdateMode::Check => t!("wizard.update_mode.check"),
+        UpdateMode::Auto => t!("wizard.update_mode.auto"),
     }
 }
 
-fn auto_restart_desc(v: AutoRestart) -> &'static str {
+fn auto_restart_desc(v: AutoRestart) -> Cow<'static, str> {
     match v {
-        AutoRestart::Off => "關閉",
-        AutoRestart::On => "開啟",
+        AutoRestart::Off => t!("wizard.value.off"),
+        AutoRestart::On => t!("wizard.value.on"),
     }
 }
 
-fn release_notes_desc(v: ReleaseNotes) -> &'static str {
+fn release_notes_desc(v: ReleaseNotes) -> Cow<'static, str> {
     match v {
-        ReleaseNotes::Off => "關閉",
-        ReleaseNotes::On => "開啟",
+        ReleaseNotes::Off => t!("wizard.value.off"),
+        ReleaseNotes::On => t!("wizard.value.on"),
     }
 }
 
-fn auto_fetch_desc(v: AutoFetch) -> &'static str {
+fn auto_fetch_desc(v: AutoFetch) -> Cow<'static, str> {
     match v {
-        AutoFetch::Off => "關閉",
-        AutoFetch::On => "開啟",
+        AutoFetch::Off => t!("wizard.value.off"),
+        AutoFetch::On => t!("wizard.value.on"),
     }
 }
 
@@ -178,10 +200,10 @@ fn auto_fetch_desc(v: AutoFetch) -> &'static str {
 /// 旗標，交給使用者自己的 git `fetch.prune` 設定決定，見
 /// `git::FetchPrune` 的 doc comment。畫面文字要如實反映這件事，不能讓人
 /// 誤以為選了 `Off` 就保證不會 prune。
-fn fetch_prune_desc(v: FetchPrune) -> &'static str {
+fn fetch_prune_desc(v: FetchPrune) -> Cow<'static, str> {
     match v {
-        FetchPrune::Off => "不加（依 git 設定）",
-        FetchPrune::On => "加上 --prune",
+        FetchPrune::Off => t!("wizard.fetch_prune.off"),
+        FetchPrune::On => t!("wizard.fetch_prune.on"),
     }
 }
 
@@ -209,6 +231,7 @@ struct ResolvedDefaults {
     auto_fetch: AutoFetch,
     auto_fetch_interval: u64,
     fetch_prune: FetchPrune,
+    locale: Locale,
     /// 顏色編輯器的預覽基準（使用者實際設定，不是 `wizard::run()` 固定用
     /// 的畫面 chrome）。
     theme: ColorTheme,
@@ -281,6 +304,7 @@ impl ResolvedDefaults {
                 .interval_secs
                 .unwrap_or(auto_fetch::DEFAULT_INTERVAL_SECS),
             fetch_prune: core.fetch.prune.unwrap_or_default(),
+            locale: core.option.locale.unwrap_or_default(),
             theme,
             keybind_patch: keybind_patch.unwrap_or_default(),
             user_commands,
@@ -386,6 +410,7 @@ enum CycleField {
     ReleaseNotes,
     FetchPrune,
     AutoFetch,
+    Locale,
 }
 
 impl CycleField {
@@ -403,6 +428,7 @@ impl CycleField {
             CycleField::ReleaseNotes => (CORE_UPDATE, "release_notes"),
             CycleField::FetchPrune => (CORE_FETCH, "prune"),
             CycleField::AutoFetch => (CORE_AUTO_FETCH, "mode"),
+            CycleField::Locale => (CORE_OPTION, "locale"),
         };
         ConfigKey {
             table,
@@ -422,21 +448,23 @@ impl CycleField {
             CycleField::ReleaseNotes => "--release-notes",
             CycleField::FetchPrune => "--fetch-prune",
             CycleField::AutoFetch => "--auto-fetch",
+            CycleField::Locale => "--locale",
         }
     }
 
-    fn help(self) -> &'static str {
+    fn help(self) -> Cow<'static, str> {
         match self {
-            CycleField::Order => "Commit 排序演算法",
-            CycleField::GraphWidth => "Commit 圖形格子寬度",
-            CycleField::Compact => "緊湊模式",
-            CycleField::GraphStyle => "Commit 圖形邊線風格",
-            CycleField::InitialSelection => "初始選取的 commit",
-            CycleField::UpdateMode => "自動更新檢查模式",
-            CycleField::AutoRestart => "更新後自動重啟／開啟新版",
-            CycleField::ReleaseNotes => "更新後跳出 release notes",
-            CycleField::FetchPrune => "fetch 時加上 --prune（手動與自動共用）",
-            CycleField::AutoFetch => "背景自動偵測 remote 並 fetch",
+            CycleField::Order => t!("wizard.cycle.help.order"),
+            CycleField::GraphWidth => t!("wizard.cycle.help.graph_width"),
+            CycleField::Compact => t!("wizard.cycle.help.compact"),
+            CycleField::GraphStyle => t!("wizard.cycle.help.graph_style"),
+            CycleField::InitialSelection => t!("wizard.cycle.help.initial_selection"),
+            CycleField::UpdateMode => t!("wizard.cycle.help.update_mode"),
+            CycleField::AutoRestart => t!("wizard.cycle.help.auto_restart"),
+            CycleField::ReleaseNotes => t!("wizard.cycle.help.release_notes"),
+            CycleField::FetchPrune => t!("wizard.cycle.help.fetch_prune"),
+            CycleField::AutoFetch => t!("wizard.cycle.help.auto_fetch"),
+            CycleField::Locale => t!("wizard.cycle.help.locale"),
         }
     }
 
@@ -472,13 +500,14 @@ impl CycleField {
                 cycle_value(&mut args.fetch_prune, defaults.fetch_prune, delta)
             }
             CycleField::AutoFetch => cycle_value(&mut args.auto_fetch, defaults.auto_fetch, delta),
+            CycleField::Locale => cycle_value(&mut args.locale, defaults.locale, delta),
         };
         draft.edits.insert(self.config_key(), Some(name.into()));
     }
 
     /// 目前有效值的中文說明。未設定時顯示的是這個欄位真正的目前值
     /// （`ResolvedDefaults`，讀自設定檔），不是「使用預設值」這種空話。
-    fn current_desc(self, draft: &Draft, defaults: &ResolvedDefaults) -> &'static str {
+    fn current_desc(self, draft: &Draft, defaults: &ResolvedDefaults) -> Cow<'static, str> {
         let args = &draft.args;
         match self {
             CycleField::Order => order_desc(args.order.unwrap_or(defaults.order)),
@@ -507,13 +536,14 @@ impl CycleField {
             CycleField::AutoFetch => {
                 auto_fetch_desc(args.auto_fetch.unwrap_or(defaults.auto_fetch))
             }
+            CycleField::Locale => locale_desc(args.locale.unwrap_or(defaults.locale)),
         }
     }
 }
 
 /// 數字輸入彈窗的參數，跟著欄位走而不是寫死在 `wizard_loop` 裡。
 struct NumberSpec {
-    title: &'static str,
+    title: Cow<'static, str>,
     min: usize,
     max: usize,
 }
@@ -574,46 +604,48 @@ impl NumberField {
         }
     }
 
-    fn help(self) -> &'static str {
+    fn help(self) -> Cow<'static, str> {
         match self {
-            NumberField::MaxCount => "要渲染的最大 commit 數量",
-            NumberField::UpdateInterval => "自動更新的檢查間隔",
-            NumberField::AutoFetchInterval => "自動 fetch 的輪詢間隔",
-            NumberField::ListScrolloff => "commit 清單游標上下保留的列數",
-            NumberField::ListGraphEdgeMaxRows => "超寬 graph 的長線截斷列數",
-            NumberField::ListGraphMaxWidthPercent => "超寬 graph 最多佔清單寬度的百分比",
+            NumberField::MaxCount => t!("wizard.number.help.max_count"),
+            NumberField::UpdateInterval => t!("wizard.number.help.update_interval"),
+            NumberField::AutoFetchInterval => t!("wizard.number.help.auto_fetch_interval"),
+            NumberField::ListScrolloff => t!("wizard.number.help.list_scrolloff"),
+            NumberField::ListGraphEdgeMaxRows => t!("wizard.number.help.list_graph_edge_max_rows"),
+            NumberField::ListGraphMaxWidthPercent => {
+                t!("wizard.number.help.list_graph_max_width_percent")
+            }
         }
     }
 
     fn spec(self) -> NumberSpec {
         match self {
             NumberField::MaxCount => NumberSpec {
-                title: "要渲染的最大 commit 數量",
+                title: t!("wizard.number.help.max_count"),
                 min: 0,
                 max: usize::MAX,
             },
             NumberField::UpdateInterval => NumberSpec {
-                title: "自動更新的檢查間隔（小時，1–48）",
+                title: t!("wizard.number.title.update_interval"),
                 min: update::MIN_INTERVAL_HOURS as usize,
                 max: update::MAX_INTERVAL_HOURS as usize,
             },
             NumberField::AutoFetchInterval => NumberSpec {
-                title: "自動 fetch 的輪詢間隔（秒，30–3600）",
+                title: t!("wizard.number.title.auto_fetch_interval"),
                 min: auto_fetch::MIN_INTERVAL_SECS as usize,
                 max: auto_fetch::MAX_INTERVAL_SECS as usize,
             },
             NumberField::ListScrolloff => NumberSpec {
-                title: "游標與清單上下緣保留的列數（實際不超過清單高度一半）",
+                title: t!("wizard.number.title.list_scrolloff"),
                 min: 0,
                 max: u16::MAX as usize,
             },
             NumberField::ListGraphEdgeMaxRows => NumberSpec {
-                title: "線長超過幾列就截斷成 ↓／↑（最小 3，只在圖寬超過 64 時啟用）",
+                title: t!("wizard.number.title.list_graph_edge_max_rows"),
                 min: 3,
                 max: u32::MAX as usize,
             },
             NumberField::ListGraphMaxWidthPercent => NumberSpec {
-                title: "超寬 graph 最多佔清單寬度的百分比（10–100）",
+                title: t!("wizard.number.title.list_graph_max_width_percent"),
                 min: 10,
                 max: 100,
             },
@@ -668,13 +700,15 @@ impl NumberField {
 
     fn current_label(self, draft: &Draft, defaults: &ResolvedDefaults) -> String {
         let Some(n) = self.current(draft, defaults) else {
-            return "不限制".to_string();
+            return t!("wizard.number.unlimited").into_owned();
         };
         match self {
             NumberField::MaxCount => n.to_string(),
-            NumberField::UpdateInterval => format!("{n} 小時"),
-            NumberField::AutoFetchInterval => format!("{n} 秒"),
-            NumberField::ListScrolloff | NumberField::ListGraphEdgeMaxRows => format!("{n} 列"),
+            NumberField::UpdateInterval => t!("wizard.number.hours", n = n).into_owned(),
+            NumberField::AutoFetchInterval => t!("wizard.number.seconds", n = n).into_owned(),
+            NumberField::ListScrolloff | NumberField::ListGraphEdgeMaxRows => {
+                t!("wizard.number.rows", n = n).into_owned()
+            }
             NumberField::ListGraphMaxWidthPercent => format!("{n}%"),
         }
     }
@@ -726,13 +760,13 @@ impl Editor {
         }
     }
 
-    fn help(self) -> &'static str {
+    fn help(self) -> Cow<'static, str> {
         match self {
             Editor::Cycle(f) => f.help(),
-            Editor::Dialog(Dialog::Path) => "git 倉庫路徑（僅本次，不存檔）",
+            Editor::Dialog(Dialog::Path) => t!("wizard.dialog.help.path"),
             Editor::Dialog(Dialog::Number(f)) => f.help(),
-            Editor::Dialog(Dialog::ColorMenu) => "介面配色（43 色）",
-            Editor::Dialog(Dialog::KeyBindMenu) => "快捷鍵綁定",
+            Editor::Dialog(Dialog::ColorMenu) => t!("wizard.dialog.help.color"),
+            Editor::Dialog(Dialog::KeyBindMenu) => t!("wizard.dialog.help.keybind"),
         }
     }
 
@@ -774,8 +808,8 @@ impl Editor {
             Editor::Dialog(Dialog::Number(f)) => f.current_label(draft, defaults),
             Editor::Dialog(Dialog::ColorMenu | Dialog::KeyBindMenu) => {
                 match self.touched_count(draft) {
-                    0 => "未修改".to_string(),
-                    n => format!("{n} 項已改"),
+                    0 => t!("wizard.editor.untouched").into_owned(),
+                    n => t!("wizard.editor.touched", n = n).into_owned(),
                 }
             }
         }
@@ -792,6 +826,7 @@ enum RowAction {
 /// `help`／存檔路徑都掛在 `Editor` 上往下委派，不用再手抄一次。
 const ROWS: &[RowAction] = &[
     RowAction::Edit(Editor::Dialog(Dialog::Path)),
+    RowAction::Edit(Editor::Cycle(CycleField::Locale)),
     RowAction::Edit(Editor::Dialog(Dialog::Number(NumberField::MaxCount))),
     RowAction::Edit(Editor::Cycle(CycleField::Order)),
     RowAction::Edit(Editor::Cycle(CycleField::GraphWidth)),
@@ -824,28 +859,31 @@ const ROWS: &[RowAction] = &[
 /// 設定檔）。
 fn top_row_label(row: RowAction, draft: &Draft, defaults: &ResolvedDefaults) -> String {
     let RowAction::Edit(editor) = row else {
-        return "▶ 啟動 ysgit".to_string();
+        return t!("wizard.top.launch").into_owned();
     };
     // YSGIT_NO_UPDATE_CHECK 會在 `update::resolve()` 把 mode 壓成 Off——這裡
     // 只是提醒使用者，不是這一列本身的邏輯改變。
     let note = if matches!(editor, Editor::Cycle(CycleField::UpdateMode))
         && std::env::var_os("YSGIT_NO_UPDATE_CHECK").is_some()
     {
-        "（目前被 YSGIT_NO_UPDATE_CHECK 壓成 off）"
+        t!("wizard.top.update_note")
     } else {
-        ""
+        Cow::Borrowed("")
     };
     let prefix = if draft.is_touched(editor) {
         "✓ "
     } else {
         "  "
     };
-    format!(
-        "{prefix}{}  {}（目前：{}）{note}",
-        editor.flags(),
-        editor.help(),
-        editor.current_label(draft, defaults)
+    t!(
+        "wizard.top.row",
+        prefix = prefix,
+        flags = editor.flags(),
+        help = editor.help(),
+        current = editor.current_label(draft, defaults),
+        note = note
     )
+    .into_owned()
 }
 
 enum Flow {
@@ -891,6 +929,11 @@ struct WizardState {
 impl WizardState {
     fn new() -> Self {
         Self::with_defaults(ResolvedDefaults::load())
+    }
+
+    /// 精靈現在該用的介面語言：這次 session 選過就用選的，否則用設定檔的值。
+    fn locale(&self) -> Locale {
+        self.draft.args.locale.unwrap_or(self.defaults.locale)
     }
 
     fn with_defaults(defaults: ResolvedDefaults) -> Self {
@@ -995,10 +1038,10 @@ impl WizardState {
         let hint = crate::widget::hint_line(
             theme,
             &[
-                ("↑↓/kj".into(), "選擇"),
-                ("←→/hl".into(), "切換選項"),
-                ("Enter".into(), "開啟/啟動"),
-                ("Esc/Ctrl-C".into(), "放棄（不啟動、不存檔）"),
+                ("↑↓/kj".into(), &*t!("wizard.hint.select")),
+                ("←→/hl".into(), &*t!("wizard.hint.switch_option")),
+                ("Enter".into(), &*t!("wizard.hint.open_launch")),
+                ("Esc/Ctrl-C".into(), &*t!("wizard.hint.abort")),
             ],
             theme.help_key_fg,
         );
@@ -1138,8 +1181,8 @@ fn render_number_input(
         &[
             ("←↓/hj".into(), "-1"),
             ("→↑/lk".into(), "+1"),
-            ("Enter".into(), "確認"),
-            ("Esc".into(), "取消"), // Esc 只是放棄這次編輯，不會清空已有的值
+            ("Enter".into(), &*t!("common.hint.confirm")),
+            ("Esc".into(), &*t!("common.hint.cancel")), // Esc 只是放棄這次編輯，不會清空已有的值
         ],
         theme.help_key_fg,
     );
@@ -1195,7 +1238,8 @@ fn write_touched_settings(draft: &Draft) -> Result<(), String> {
     };
     let existing = std::fs::read_to_string(&path).unwrap_or_default();
     let updated = migrate_and_apply_touched_settings(draft, &existing)?;
-    std::fs::write(&path, updated).map_err(|e| format!("寫入設定檔失敗：{e}"))
+    std::fs::write(&path, updated)
+        .map_err(|e| t!("wizard.error.write_failed", error = e).into_owned())
 }
 
 /// 純函式：`migrate_legacy_toml` + `apply_touched_settings` 的組合，抽出來
@@ -1222,15 +1266,11 @@ fn migrate_and_apply_touched_settings(draft: &Draft, existing: &str) -> Result<S
 fn apply_touched_settings(draft: &Draft, existing: &str) -> Result<String, String> {
     let mut doc = existing
         .parse::<toml_edit::DocumentMut>()
-        .map_err(|e| format!("設定檔語法錯誤，這次改動不會存檔：{e}"))?;
+        .map_err(|e| t!("wizard.error.syntax", error = e).into_owned())?;
 
     for (ck, value) in &draft.edits {
-        let table = config::ensure_table(doc.as_table_mut(), ck.table).ok_or_else(|| {
-            format!(
-                "設定檔的 `{}` 不是表格，這次改動不會存檔",
-                ck.table.join(".")
-            )
-        })?;
+        let table = config::ensure_table(doc.as_table_mut(), ck.table)
+            .ok_or_else(|| t!("wizard.error.not_table", table = ck.table.join(".")).into_owned())?;
         match value {
             Some(v) => set_preserving_decor(table, &ck.key, v.clone()),
             None => {
@@ -1425,7 +1465,7 @@ mod tests {
 
         let row = ROWS[idx];
         assert!(
-            top_row_label(row, &s.draft, &s.defaults).contains("拓撲序"),
+            top_row_label(row, &s.draft, &s.defaults).contains("< topo >"),
             "切換完不用離開這一列就看得到新值"
         );
     }
@@ -1436,7 +1476,7 @@ mod tests {
         let idx = row_of_field(CycleField::Order);
         let label = top_row_label(ROWS[idx], &s.draft, &s.defaults);
         assert!(
-            label.contains("< 時間序 >"),
+            label.contains("< chrono >"),
             "循環選擇欄位要用 < > 標示可切換：{label}"
         );
     }
@@ -1590,6 +1630,30 @@ mod tests {
     }
 
     #[test]
+    fn locale_row_toggles_and_drives_the_wizard_language() {
+        let mut s = test_state();
+        assert_eq!(s.locale(), Locale::ZhTw, "沒設定時預設繁體中文");
+
+        move_to_row(&mut s, row_of_field(CycleField::Locale));
+        assert_eq!(s.draft.args.locale, None);
+
+        s.on_key(key(KeyCode::Right));
+        assert_eq!(
+            s.draft.args.locale,
+            Some(Locale::En),
+            "zh-tw 是目前值，第一次按 → 跳過它，切到 en"
+        );
+        assert_eq!(s.locale(), Locale::En, "精靈整頁跟著這個值換語言");
+    }
+
+    #[test]
+    fn locale_row_labels_use_each_languages_own_name() {
+        // 整頁已切成另一個語言時，使用者仍要認得出哪個選項是自己的語言。
+        assert_eq!(locale_desc(Locale::ZhTw), "繁體中文");
+        assert_eq!(locale_desc(Locale::En), "English");
+    }
+
+    #[test]
     fn fetch_prune_row_toggles() {
         let mut s = test_state();
         let idx = row_of_field(CycleField::FetchPrune);
@@ -1691,7 +1755,7 @@ mod tests {
         let s = test_state();
         let order_idx = row_of_field(CycleField::Order);
         assert!(
-            top_row_label(ROWS[order_idx], &s.draft, &s.defaults).contains("時間序"),
+            top_row_label(ROWS[order_idx], &s.draft, &s.defaults).contains("< chrono >"),
             "chrono 是真正的目前值"
         );
         let max_count_idx = row_of_number(NumberField::MaxCount);
@@ -1708,8 +1772,8 @@ mod tests {
 
         let idx = row_of_field(CycleField::Order);
         assert!(
-            top_row_label(ROWS[idx], &s.draft, &s.defaults).contains("拓撲序"),
-            "設定檔寫的是 topo，精靈顯示的目前值要跟著是拓撲序，不是硬預設的時間序"
+            top_row_label(ROWS[idx], &s.draft, &s.defaults).contains("< topo >"),
+            "設定檔寫的是 topo，精靈顯示的目前值要跟著是 topo，不是硬預設的 chrono"
         );
 
         move_to_row(&mut s, idx);
@@ -1991,6 +2055,7 @@ mod tests {
             CycleField::ReleaseNotes,
             CycleField::FetchPrune,
             CycleField::AutoFetch,
+            CycleField::Locale,
         ] {
             field.cycle(&mut s.draft, &s.defaults, 1);
         }
@@ -2022,6 +2087,7 @@ mod tests {
             s.draft.args.auto_fetch_interval
         );
         assert_eq!(core.fetch.prune, s.draft.args.fetch_prune);
+        assert_eq!(core.option.locale, s.draft.args.locale);
         assert_eq!(
             ui.list.scrolloff, 7,
             "ListScrolloff 沒有 draft.args 可比對，直接比寫回的值"

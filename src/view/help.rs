@@ -1,4 +1,6 @@
-use std::rc::Rc;
+use std::{borrow::Cow, rc::Rc};
+
+use rust_i18n::t;
 
 use ratatui::{
     crossterm::event::KeyEvent,
@@ -20,24 +22,18 @@ use crate::{
 
 #[derive(Debug, Default)]
 struct HelpRow {
-    cn: Line<'static>,
     keys: Line<'static>,
-    en: Line<'static>,
+    desc: Line<'static>,
 }
 
 #[derive(Clone)]
 struct BindingSpec {
     events: Vec<UserEvent>,
-    cn: String,
-    en: String,
+    desc: Cow<'static, str>,
 }
 
-fn b(events: Vec<UserEvent>, cn: &str, en: &str) -> BindingSpec {
-    BindingSpec {
-        events,
-        cn: cn.to_string(),
-        en: en.to_string(),
-    }
+fn b(events: Vec<UserEvent>, desc: Cow<'static, str>) -> BindingSpec {
+    BindingSpec { events, desc }
 }
 
 /// 說明頁的分區。用 enum 而非字串當 key，是為了讓「新增一個分區」在
@@ -60,20 +56,20 @@ enum HelpBlock {
 }
 
 impl HelpBlock {
-    fn title(self) -> &'static str {
+    fn title(self) -> Cow<'static, str> {
         match self {
-            HelpBlock::Common => "共通",
-            HelpBlock::Help => "說明頁",
-            HelpBlock::List => "Commit 清單",
-            HelpBlock::Detail => "Commit 詳情",
-            HelpBlock::Refs => "Refs 清單",
-            HelpBlock::GitHub => "GitHub View",
-            HelpBlock::CreateTag => "Create Tag",
-            HelpBlock::DeleteTag => "Delete Tag",
-            HelpBlock::DeleteRef => "Delete Ref",
-            HelpBlock::UserCommand => "User Command",
-            HelpBlock::Shell => "Shell 命令列",
-            HelpBlock::ReleaseNotes => "Release Notes",
+            HelpBlock::Common => t!("help.block.common"),
+            HelpBlock::Help => t!("help.block.help"),
+            HelpBlock::List => t!("help.block.list"),
+            HelpBlock::Detail => t!("help.block.detail"),
+            HelpBlock::Refs => t!("help.block.refs"),
+            HelpBlock::GitHub => t!("help.block.github"),
+            HelpBlock::CreateTag => t!("help.block.create_tag"),
+            HelpBlock::DeleteTag => t!("help.block.delete_tag"),
+            HelpBlock::DeleteRef => t!("help.block.delete_ref"),
+            HelpBlock::UserCommand => t!("help.block.user_command"),
+            HelpBlock::Shell => t!("help.block.shell"),
+            HelpBlock::ReleaseNotes => t!("help.block.release_notes"),
         }
     }
 
@@ -166,13 +162,9 @@ impl HelpView<'_> {
     pub fn render(&mut self, f: &mut Frame, area: Rect) {
         self.update_state(area);
 
-        let key_col = self.key_col_width + 2;
-        let [cn_area, keys_area, en_area] = Layout::horizontal([
-            Constraint::Min(10),
-            Constraint::Length(key_col),
-            Constraint::Min(10),
-        ])
-        .areas(area);
+        let key_col = self.key_col_width + 4;
+        let [keys_area, desc_area] =
+            Layout::horizontal([Constraint::Length(key_col), Constraint::Min(10)]).areas(area);
 
         let visible = self
             .rows
@@ -180,28 +172,22 @@ impl HelpView<'_> {
             .skip(self.offset)
             .take(area.height as usize);
         let n = visible.clone().count();
-        let mut cn_lines = Vec::with_capacity(n);
         let mut keys_lines = Vec::with_capacity(n);
-        let mut en_lines = Vec::with_capacity(n);
+        let mut desc_lines = Vec::with_capacity(n);
         for r in visible {
-            cn_lines.push(r.cn.clone());
             keys_lines.push(r.keys.clone());
-            en_lines.push(r.en.clone());
+            desc_lines.push(r.desc.clone());
         }
 
-        let cn_paragraph = Paragraph::new(cn_lines)
-            .block(Block::default().padding(Padding::new(3, 1, 0, 0)))
-            .right_aligned();
         let keys_paragraph = Paragraph::new(keys_lines)
-            .block(Block::default().padding(Padding::new(1, 1, 0, 0)))
+            .block(Block::default().padding(Padding::new(3, 1, 0, 0)))
             .centered();
-        let en_paragraph = Paragraph::new(en_lines)
+        let desc_paragraph = Paragraph::new(desc_lines)
             .block(Block::default().padding(Padding::new(1, 3, 0, 0)))
             .left_aligned();
 
-        f.render_widget(cn_paragraph, cn_area);
         f.render_widget(keys_paragraph, keys_area);
-        f.render_widget(en_paragraph, en_area);
+        f.render_widget(desc_paragraph, desc_area);
     }
 }
 
@@ -239,7 +225,7 @@ fn build_rows(
     let mut rows: Vec<HelpRow> = Vec::new();
     let n = blocks.len();
     for (i, (block, specs)) in blocks.into_iter().enumerate() {
-        push_block(&mut rows, block.title(), specs, color_theme, keybind);
+        push_block(&mut rows, &block.title(), specs, color_theme, keybind);
         if i + 1 < n {
             rows.push(HelpRow::default());
         }
@@ -263,188 +249,184 @@ fn help_blocks(
                 .get(&n.to_string())
                 .map(|c| BindingSpec {
                     events: vec![UserEvent::UserCommand(n)],
-                    cn: format!("執行 user command {} - {}", n, c.name),
-                    en: format!("Execute user command {} - {}", n, c.name),
+                    desc: t!("help.common.user_command_execute", n = n, name = c.name),
                 })
         })
         .collect();
 
     let common = vec![
-        b(vec![UserEvent::ForceQuit],   "強制離開",      "Force quit"),
-        b(vec![UserEvent::Quit],        "離開（按兩下）", "Quit (press twice)"),
-        b(vec![UserEvent::HelpToggle],  "開啟說明",      "Open help"),
-        b(vec![UserEvent::CheckUpdate], "檢查更新",      "Check for update"),
+        b(vec![UserEvent::ForceQuit], t!("help.common.force_quit")),
+        b(vec![UserEvent::Quit], t!("help.common.quit_press_twice")),
+        b(vec![UserEvent::HelpToggle], t!("help.common.open_help")),
+        b(vec![UserEvent::CheckUpdate], t!("help.common.check_for_update")),
     ];
 
     let help = vec![
-        b(vec![UserEvent::HelpToggle, UserEvent::Cancel, UserEvent::Close, UserEvent::NavigateLeft],
-            "關閉說明", "Close help"),
-        b(vec![UserEvent::NavigateDown, UserEvent::SelectDown], "向下捲動", "Scroll down"),
-        b(vec![UserEvent::NavigateUp,   UserEvent::SelectUp],   "向上捲動", "Scroll up"),
+        b(vec![UserEvent::HelpToggle, UserEvent::Cancel, UserEvent::Close, UserEvent::NavigateLeft], t!("help.help.close_help")),
+        b(vec![UserEvent::NavigateDown, UserEvent::SelectDown], t!("help.help.scroll_down")),
+        b(vec![UserEvent::NavigateUp, UserEvent::SelectUp], t!("help.help.scroll_up")),
     ];
 
     let mut list = vec![
-        b(vec![UserEvent::NavigateDown],                          "向下移動",            "Move down"),
-        b(vec![UserEvent::NavigateUp],                            "向上移動",            "Move up"),
-        b(vec![UserEvent::GoToTop],                               "跳到頂端",            "Go to top"),
-        b(vec![UserEvent::GoToBottom],                             "跳到底端",            "Go to bottom"),
-        b(vec![UserEvent::GoToHead],                              "回到 HEAD",           "Go to HEAD"),
-        b(vec![UserEvent::SelectDown],                            "graph 向下捲動",      "Scroll down"),
-        b(vec![UserEvent::SelectUp],                              "graph 向上捲動",      "Scroll up"),
-        b(vec![UserEvent::GoToParent],                            "選擇 parent commit",  "Select parent commit"),
-        b(vec![UserEvent::GoToChild],                             "選擇 child commit",   "Select child commit"),
-        b(vec![UserEvent::Confirm, UserEvent::NavigateRight],     "顯示 commit 詳情",    "Show commit details"),
-        b(vec![UserEvent::RefList],                               "開啟 refs 清單",      "Open refs list"),
-        b(vec![UserEvent::Search],                                "開始搜尋",            "Start search"),
-        b(vec![UserEvent::Filter],                                "開始過濾",            "Start filter"),
-        b(vec![UserEvent::Cancel],                                "取消搜尋／過濾",      "Cancel search/filter"),
-        b(vec![UserEvent::GoToNext],                              "下一個符合項",        "Go to next search match"),
-        b(vec![UserEvent::GoToPrevious],                          "上一個符合項",        "Go to previous search match"),
-        b(vec![UserEvent::FuzzyToggle],                           "切換模糊比對",        "Toggle fuzzy match"),
-        b(vec![UserEvent::IgnoreCaseToggle],                      "切換大小寫忽略",      "Toggle ignore case"),
-        b(vec![UserEvent::TargetToggle],                          "切換比對欄位",        "Toggle match target field"),
-        b(vec![UserEvent::ShortCopy],                             "複製 commit short hash", "Copy commit short hash"),
-        b(vec![UserEvent::FullCopy],                              "複製 commit subject", "Copy commit subject"),
-        b(vec![UserEvent::BranchCopy],                            "複製 branch 名稱（優先 local）", "Copy branch name (prefer local)"),
-        b(vec![UserEvent::FullBranchCopy],                        "複製 remote branch 名稱", "Copy remote branch name"),
-        b(vec![UserEvent::TagCopy],                               "複製 tag 名稱",       "Copy tag name"),
-        b(vec![UserEvent::CreateTag],                             "在 commit 上建立 tag", "Create tag on commit"),
-        b(vec![UserEvent::DeleteTag],                             "刪除 commit 上的 tag", "Delete tag from commit"),
-        b(vec![UserEvent::DeleteRef],                             "刪除 commit 上的 local branch", "Delete local branch from commit"),
-        b(vec![UserEvent::RemoteRefsToggle],                      "切換 remote refs",    "Toggle remote refs"),
-        b(vec![UserEvent::GitHubToggle],                          "開啟 GitHub issues/PRs", "Open GitHub issues/PRs"),
-        b(vec![UserEvent::Fetch],                                 "fetch 所有 remote",   "Fetch all remotes"),
-        b(vec![UserEvent::Checkout],                              "checkout 選取的 commit/ref", "Checkout selected commit/ref"),
-        b(vec![UserEvent::Refresh],                               "重新整理",            "Refresh"),
-        b(vec![UserEvent::ShellToggle],                           "開啟命令列",          "Open shell"),
+        b(vec![UserEvent::NavigateDown], t!("help.list.move_down")),
+        b(vec![UserEvent::NavigateUp], t!("help.list.move_up")),
+        b(vec![UserEvent::GoToTop], t!("help.list.go_to_top")),
+        b(vec![UserEvent::GoToBottom], t!("help.list.go_to_bottom")),
+        b(vec![UserEvent::GoToHead], t!("help.list.go_to_head")),
+        b(vec![UserEvent::SelectDown], t!("help.list.scroll_down")),
+        b(vec![UserEvent::SelectUp], t!("help.list.scroll_up")),
+        b(vec![UserEvent::GoToParent], t!("help.list.select_parent_commit")),
+        b(vec![UserEvent::GoToChild], t!("help.list.select_child_commit")),
+        b(vec![UserEvent::Confirm, UserEvent::NavigateRight], t!("help.list.show_commit_details")),
+        b(vec![UserEvent::RefList], t!("help.list.open_refs_list")),
+        b(vec![UserEvent::Search], t!("help.list.start_search")),
+        b(vec![UserEvent::Filter], t!("help.list.start_filter")),
+        b(vec![UserEvent::Cancel], t!("help.list.cancel_search_filter")),
+        b(vec![UserEvent::GoToNext], t!("help.list.go_to_next_search_match")),
+        b(vec![UserEvent::GoToPrevious], t!("help.list.go_to_previous_search_match")),
+        b(vec![UserEvent::FuzzyToggle], t!("help.list.toggle_fuzzy_match")),
+        b(vec![UserEvent::IgnoreCaseToggle], t!("help.list.toggle_ignore_case")),
+        b(vec![UserEvent::TargetToggle], t!("help.list.toggle_match_target_field")),
+        b(vec![UserEvent::ShortCopy], t!("help.list.copy_commit_short_hash")),
+        b(vec![UserEvent::FullCopy], t!("help.list.copy_commit_subject")),
+        b(vec![UserEvent::BranchCopy], t!("help.list.copy_branch_name_prefer_local")),
+        b(vec![UserEvent::FullBranchCopy], t!("help.list.copy_remote_branch_name")),
+        b(vec![UserEvent::TagCopy], t!("help.list.copy_tag_name")),
+        b(vec![UserEvent::CreateTag], t!("help.list.create_tag_on_commit")),
+        b(vec![UserEvent::DeleteTag], t!("help.list.delete_tag_from_commit")),
+        b(vec![UserEvent::DeleteRef], t!("help.list.delete_local_branch_from_commit")),
+        b(vec![UserEvent::RemoteRefsToggle], t!("help.list.toggle_remote_refs")),
+        b(vec![UserEvent::GitHubToggle], t!("help.list.open_github_issues_prs")),
+        b(vec![UserEvent::Fetch], t!("help.list.fetch_all_remotes")),
+        b(vec![UserEvent::Checkout], t!("help.list.checkout_selected_commit_ref")),
+        b(vec![UserEvent::Refresh], t!("help.list.refresh")),
+        b(vec![UserEvent::ShellToggle], t!("help.list.open_shell")),
     ];
 
     let detail = vec![
-        b(vec![UserEvent::Cancel, UserEvent::Close, UserEvent::Confirm], "關閉 commit 詳情", "Close commit details"),
-        b(vec![UserEvent::DetailPaneToggle],                             "切換詳情區塊",     "Toggle detail pane"),
-        b(vec![UserEvent::NavigateDown],                                 "向下捲動／Files 區塊移動檔案游標", "Scroll down / move file cursor in Files pane"),
-        b(vec![UserEvent::NavigateUp],                                   "向上捲動／Files 區塊移動檔案游標", "Scroll up / move file cursor in Files pane"),
-        b(vec![UserEvent::SelectDown],                                   "Files 區塊：diff 逐行下捲", "Files pane: scroll diff down"),
-        b(vec![UserEvent::SelectUp],                                     "Files 區塊：diff 逐行上捲", "Files pane: scroll diff up"),
-        b(vec![UserEvent::HalfPageDown],                                 "Files 區塊：diff 半頁下捲", "Files pane: scroll diff down half a page"),
-        b(vec![UserEvent::HalfPageUp],                                   "Files 區塊：diff 半頁上捲", "Files pane: scroll diff up half a page"),
-        b(vec![UserEvent::GoToNext],                                     "Files 區塊：跳到下一個 hunk", "Files pane: go to next hunk"),
-        b(vec![UserEvent::GoToPrevious],                                 "Files 區塊：跳到上一個 hunk", "Files pane: go to previous hunk"),
-        b(vec![UserEvent::PageDown],                                     "Files 區塊：diff 整頁下捲", "Files pane: scroll diff down a page"),
-        b(vec![UserEvent::PageUp],                                       "Files 區塊：diff 整頁上捲", "Files pane: scroll diff up a page"),
-        b(vec![UserEvent::NavigateRight],                                "選擇較舊 commit",  "Select older commit"),
-        b(vec![UserEvent::NavigateLeft],                                 "選擇較新 commit",  "Select newer commit"),
-        b(vec![UserEvent::GoToParent],                                   "選擇 parent commit", "Select parent commit"),
-        b(vec![UserEvent::GoToChild],                                    "選擇 child commit", "Select child commit"),
-        b(vec![UserEvent::ShortCopy],                                    "複製 commit short hash", "Copy commit short hash"),
-        b(vec![UserEvent::FullCopy],                                     "複製 commit subject", "Copy commit subject"),
-        b(vec![UserEvent::BranchCopy],                                   "複製 branch 名稱（優先 local）", "Copy branch name (prefer local)"),
-        b(vec![UserEvent::FullBranchCopy],                               "複製 remote branch 名稱", "Copy remote branch name"),
-        b(vec![UserEvent::TagCopy],                                      "複製 tag 名稱",     "Copy tag name"),
-        b(vec![UserEvent::RemoteRefsToggle],                             "切換 remote refs",  "Toggle remote refs"),
-        b(vec![UserEvent::RefList],                                      "開啟 refs 清單",    "Open refs list"),
+        b(vec![UserEvent::Cancel, UserEvent::Close, UserEvent::Confirm], t!("help.detail.close_commit_details")),
+        b(vec![UserEvent::DetailPaneToggle], t!("help.detail.toggle_detail_pane")),
+        b(vec![UserEvent::NavigateDown], t!("help.detail.scroll_down_move_file_cursor_in_files_pane")),
+        b(vec![UserEvent::NavigateUp], t!("help.detail.scroll_up_move_file_cursor_in_files_pane")),
+        b(vec![UserEvent::SelectDown], t!("help.detail.files_pane_scroll_diff_down")),
+        b(vec![UserEvent::SelectUp], t!("help.detail.files_pane_scroll_diff_up")),
+        b(vec![UserEvent::HalfPageDown], t!("help.detail.files_pane_scroll_diff_down_half_a_page")),
+        b(vec![UserEvent::HalfPageUp], t!("help.detail.files_pane_scroll_diff_up_half_a_page")),
+        b(vec![UserEvent::GoToNext], t!("help.detail.files_pane_go_to_next_hunk")),
+        b(vec![UserEvent::GoToPrevious], t!("help.detail.files_pane_go_to_previous_hunk")),
+        b(vec![UserEvent::PageDown], t!("help.detail.files_pane_scroll_diff_down_a_page")),
+        b(vec![UserEvent::PageUp], t!("help.detail.files_pane_scroll_diff_up_a_page")),
+        b(vec![UserEvent::NavigateRight], t!("help.detail.select_older_commit")),
+        b(vec![UserEvent::NavigateLeft], t!("help.detail.select_newer_commit")),
+        b(vec![UserEvent::GoToParent], t!("help.detail.select_parent_commit")),
+        b(vec![UserEvent::GoToChild], t!("help.detail.select_child_commit")),
+        b(vec![UserEvent::ShortCopy], t!("help.detail.copy_commit_short_hash")),
+        b(vec![UserEvent::FullCopy], t!("help.detail.copy_commit_subject")),
+        b(vec![UserEvent::BranchCopy], t!("help.detail.copy_branch_name_prefer_local")),
+        b(vec![UserEvent::FullBranchCopy], t!("help.detail.copy_remote_branch_name")),
+        b(vec![UserEvent::TagCopy], t!("help.detail.copy_tag_name")),
+        b(vec![UserEvent::RemoteRefsToggle], t!("help.detail.toggle_remote_refs")),
+        b(vec![UserEvent::RefList], t!("help.detail.open_refs_list")),
         // 這個一直都能用（`is_browsing_view()` 含 Detail，事件由 `global_app_event`
         // 在 App 層攔下），只是說明頁從來沒列出來。
-        b(vec![UserEvent::GitHubToggle],                                 "開啟 GitHub issues/PRs", "Open GitHub issues/PRs"),
-        b(vec![UserEvent::HelpToggle],                                   "開啟說明",          "Open help"),
-        b(vec![UserEvent::Refresh],                                      "重新整理",          "Refresh"),
-        b(vec![UserEvent::ShellToggle],                                  "開啟命令列",        "Open shell"),
+        b(vec![UserEvent::GitHubToggle], t!("help.detail.open_github_issues_prs")),
+        b(vec![UserEvent::HelpToggle], t!("help.detail.open_help")),
+        b(vec![UserEvent::Refresh], t!("help.detail.refresh")),
+        b(vec![UserEvent::ShellToggle], t!("help.detail.open_shell")),
     ];
 
     let refs = vec![
-        b(vec![UserEvent::Cancel, UserEvent::RefList], "關閉 refs 清單",        "Close refs list"),
-        b(vec![UserEvent::NavigateDown, UserEvent::SelectDown], "向下移動",     "Move down"),
-        b(vec![UserEvent::NavigateUp,   UserEvent::SelectUp],   "向上移動",     "Move up"),
-        b(vec![UserEvent::NavigateRight],             "展開節點",               "Open node"),
-        b(vec![UserEvent::NavigateLeft],              "收合節點／關閉",         "Close node / Close refs"),
-        b(vec![UserEvent::Checkout],                  "checkout 選取的 branch", "Checkout selected branch"),
-        b(vec![UserEvent::DeleteRef, UserEvent::DeleteTag], "刪除 ref",         "Delete ref"),
-        b(vec![UserEvent::Refresh],                   "重新整理",               "Refresh"),
+        b(vec![UserEvent::Cancel, UserEvent::RefList], t!("help.refs.close_refs_list")),
+        b(vec![UserEvent::NavigateDown, UserEvent::SelectDown], t!("help.refs.move_down")),
+        b(vec![UserEvent::NavigateUp, UserEvent::SelectUp], t!("help.refs.move_up")),
+        b(vec![UserEvent::NavigateRight], t!("help.refs.open_node")),
+        b(vec![UserEvent::NavigateLeft], t!("help.refs.close_node_close_refs")),
+        b(vec![UserEvent::Checkout], t!("help.refs.checkout_selected_branch")),
+        b(vec![UserEvent::DeleteRef, UserEvent::DeleteTag], t!("help.refs.delete_ref")),
+        b(vec![UserEvent::Refresh], t!("help.refs.refresh")),
     ];
 
     let github = vec![
-        b(vec![UserEvent::GitHubToggle, UserEvent::Cancel, UserEvent::Close], "關閉 GitHub view", "Close GitHub view"),
-        b(vec![UserEvent::RefList],                  "切換 Issue／PR 分頁",     "Switch issue/PR tab"),
-        b(vec![UserEvent::NavigateDown, UserEvent::SelectDown], "向下移動",     "Move down"),
-        b(vec![UserEvent::NavigateUp,   UserEvent::SelectUp],   "向上移動",     "Move up"),
-        b(vec![UserEvent::PageDown],                  "向下一頁",               "Page down"),
-        b(vec![UserEvent::PageUp],                    "向上一頁",               "Page up"),
-        b(vec![UserEvent::HalfPageDown],              "向下半頁",               "Half page down"),
-        b(vec![UserEvent::HalfPageUp],                "向上半頁",               "Half page up"),
-        b(vec![UserEvent::GoToTop],                   "跳到頂端",               "Go to top"),
-        b(vec![UserEvent::GoToBottom],                "跳到底端",               "Go to bottom"),
-        b(vec![UserEvent::Confirm, UserEvent::NavigateRight], "預覽內容／切換 checkbox", "Preview / toggle checkbox"),
-        b(vec![UserEvent::NavigateLeft],              "返回／取消",             "Back / cancel"),
-        b(vec![UserEvent::Search],                    "搜尋／輸入純數字跳到 #N", "Search / type number to jump to #N"),
-        b(vec![UserEvent::Filter],                    "過濾",                   "Filter"),
-        b(vec![UserEvent::ShortCopy],                 "複製 issue/PR URL",      "Copy issue/PR URL"),
-        b(vec![UserEvent::FullCopy],                  "在瀏覽器開啟 issue/PR",  "Open issue/PR in browser"),
-        b(vec![UserEvent::TagCopy],                   "複製 issue/PR 編號 (#N)", "Copy issue/PR number (#N)"),
-        b(vec![UserEvent::DetailPaneToggle],          "開啟相關 issue/PR 選單",  "Open related issue/PR picker"),
-        b(vec![UserEvent::Refresh],                   "重新整理",               "Refresh"),
-        b(vec![UserEvent::MergePr],                   "三階段 merge PR：選 method、刪 branch、確認", "3-stage merge PR: pick method, delete branch, confirm"),
-        b(vec![UserEvent::ToggleIssueState],          "關閉／重開 issue 或 PR",  "Close/reopen issue or PR"),
-        b(vec![UserEvent::TogglePrDraft],             "PR 定案／打回草稿",       "Mark PR ready / back to draft"),
-        b(vec![UserEvent::ToggleCommitLog],           "展開／摺疊 commit 記錄",  "Expand/collapse commit log"),
-        b(vec![UserEvent::CreateTag],                 "label 顯示名稱／色塊",    "Toggle label names / color swatches"),
+        b(vec![UserEvent::GitHubToggle, UserEvent::Cancel, UserEvent::Close], t!("help.github.close_github_view")),
+        b(vec![UserEvent::RefList], t!("help.github.switch_issue_pr_tab")),
+        b(vec![UserEvent::NavigateDown, UserEvent::SelectDown], t!("help.github.move_down")),
+        b(vec![UserEvent::NavigateUp, UserEvent::SelectUp], t!("help.github.move_up")),
+        b(vec![UserEvent::PageDown], t!("help.github.page_down")),
+        b(vec![UserEvent::PageUp], t!("help.github.page_up")),
+        b(vec![UserEvent::HalfPageDown], t!("help.github.half_page_down")),
+        b(vec![UserEvent::HalfPageUp], t!("help.github.half_page_up")),
+        b(vec![UserEvent::GoToTop], t!("help.github.go_to_top")),
+        b(vec![UserEvent::GoToBottom], t!("help.github.go_to_bottom")),
+        b(vec![UserEvent::Confirm, UserEvent::NavigateRight], t!("help.github.preview_toggle_checkbox")),
+        b(vec![UserEvent::NavigateLeft], t!("help.github.back_cancel")),
+        b(vec![UserEvent::Search], t!("help.github.search_type_number_to_jump_to_n")),
+        b(vec![UserEvent::Filter], t!("help.github.filter")),
+        b(vec![UserEvent::ShortCopy], t!("help.github.copy_issue_pr_url")),
+        b(vec![UserEvent::FullCopy], t!("help.github.open_issue_pr_in_browser")),
+        b(vec![UserEvent::TagCopy], t!("help.github.copy_issue_pr_number_n")),
+        b(vec![UserEvent::DetailPaneToggle], t!("help.github.open_related_issue_pr_picker")),
+        b(vec![UserEvent::Refresh], t!("help.github.refresh")),
+        b(vec![UserEvent::MergePr], t!("help.github.3_stage_merge_pr_pick_method_delete_branch_confirm")),
+        b(vec![UserEvent::ToggleIssueState], t!("help.github.close_reopen_issue_or_pr")),
+        b(vec![UserEvent::TogglePrDraft], t!("help.github.mark_pr_ready_back_to_draft")),
+        b(vec![UserEvent::ToggleCommitLog], t!("help.github.expand_collapse_commit_log")),
+        b(vec![UserEvent::CreateTag], t!("help.github.toggle_label_names_color_swatches")),
     ];
 
     let create_tag = vec![
-        b(vec![UserEvent::Confirm],                   "確定建立",                "Confirm create"),
-        b(vec![UserEvent::Cancel],                    "取消並關閉",              "Cancel and close"),
-        b(vec![UserEvent::NavigateDown, UserEvent::NavigateUp], "切換輸入欄位",  "Switch input field"),
-        b(vec![UserEvent::NavigateRight, UserEvent::NavigateLeft], "切換 push 選項", "Toggle push option"),
+        b(vec![UserEvent::Confirm], t!("help.create_tag.confirm_create")),
+        b(vec![UserEvent::Cancel], t!("help.create_tag.cancel_and_close")),
+        b(vec![UserEvent::NavigateDown, UserEvent::NavigateUp], t!("help.create_tag.switch_input_field")),
+        b(vec![UserEvent::NavigateRight, UserEvent::NavigateLeft], t!("help.create_tag.toggle_push_option")),
     ];
 
     let delete_tag = vec![
-        b(vec![UserEvent::Confirm],                   "確定刪除",                "Confirm delete"),
-        b(vec![UserEvent::Cancel],                    "取消並關閉",              "Cancel and close"),
-        b(vec![UserEvent::NavigateDown, UserEvent::SelectDown], "選擇下一個 tag", "Select next tag"),
-        b(vec![UserEvent::NavigateUp,   UserEvent::SelectUp],   "選擇上一個 tag", "Select previous tag"),
-        b(vec![UserEvent::NavigateRight, UserEvent::NavigateLeft], "切換「從 remote 刪除」", "Toggle delete from remote"),
+        b(vec![UserEvent::Confirm], t!("help.delete_tag.confirm_delete")),
+        b(vec![UserEvent::Cancel], t!("help.delete_tag.cancel_and_close")),
+        b(vec![UserEvent::NavigateDown, UserEvent::SelectDown], t!("help.delete_tag.select_next_tag")),
+        b(vec![UserEvent::NavigateUp, UserEvent::SelectUp], t!("help.delete_tag.select_previous_tag")),
+        b(vec![UserEvent::NavigateRight, UserEvent::NavigateLeft], t!("help.delete_tag.toggle_delete_from_remote")),
     ];
 
     let delete_ref = vec![
-        b(vec![UserEvent::Confirm],                                    "確定刪除 ref",     "Confirm delete ref"),
-        b(vec![UserEvent::Cancel],                                     "取消",             "Cancel"),
-        b(vec![UserEvent::NavigateRight, UserEvent::NavigateLeft, UserEvent::NavigateDown],
-                                                                       "切換 yes／no",      "Toggle yes/no"),
+        b(vec![UserEvent::Confirm], t!("help.delete_ref.confirm_delete_ref")),
+        b(vec![UserEvent::Cancel], t!("help.delete_ref.cancel")),
+        b(vec![UserEvent::NavigateRight, UserEvent::NavigateLeft, UserEvent::NavigateDown], t!("help.delete_ref.toggle_yes_no")),
     ];
 
     let mut user_command = vec![
-        b(vec![UserEvent::Cancel, UserEvent::Close], "關閉 user command",  "Close user command"),
-        b(vec![UserEvent::NavigateDown, UserEvent::SelectDown],   "向下捲動",            "Scroll down"),
-        b(vec![UserEvent::NavigateUp,   UserEvent::SelectUp],     "向上捲動",            "Scroll up"),
-        b(vec![UserEvent::PageDown],                  "向下一頁",           "Scroll page down"),
-        b(vec![UserEvent::PageUp],                    "向上一頁",           "Scroll page up"),
-        b(vec![UserEvent::HalfPageDown],              "向下半頁",           "Scroll half page down"),
-        b(vec![UserEvent::HalfPageUp],                "向上半頁",           "Scroll half page up"),
-        b(vec![UserEvent::GoToTop],                   "跳到頂端",           "Go to top"),
-        b(vec![UserEvent::GoToBottom],                "跳到底端",           "Go to bottom"),
-        b(vec![UserEvent::GoToParent],                "選擇 parent commit", "Select parent commit"),
-        b(vec![UserEvent::GoToChild],                 "選擇 child commit", "Select child commit"),
-        b(vec![UserEvent::Refresh],                   "重新整理",           "Refresh"),
-        b(vec![UserEvent::Confirm],                   "顯示 commit 詳情",   "Show commit details"),
-        b(vec![UserEvent::HelpToggle],                "開啟說明",           "Open help"),
+        b(vec![UserEvent::Cancel, UserEvent::Close], t!("help.user_command.close_user_command")),
+        b(vec![UserEvent::NavigateDown, UserEvent::SelectDown], t!("help.user_command.scroll_down")),
+        b(vec![UserEvent::NavigateUp, UserEvent::SelectUp], t!("help.user_command.scroll_up")),
+        b(vec![UserEvent::PageDown], t!("help.user_command.scroll_page_down")),
+        b(vec![UserEvent::PageUp], t!("help.user_command.scroll_page_up")),
+        b(vec![UserEvent::HalfPageDown], t!("help.user_command.scroll_half_page_down")),
+        b(vec![UserEvent::HalfPageUp], t!("help.user_command.scroll_half_page_up")),
+        b(vec![UserEvent::GoToTop], t!("help.user_command.go_to_top")),
+        b(vec![UserEvent::GoToBottom], t!("help.user_command.go_to_bottom")),
+        b(vec![UserEvent::GoToParent], t!("help.user_command.select_parent_commit")),
+        b(vec![UserEvent::GoToChild], t!("help.user_command.select_child_commit")),
+        b(vec![UserEvent::Refresh], t!("help.user_command.refresh")),
+        b(vec![UserEvent::Confirm], t!("help.user_command.show_commit_details")),
+        b(vec![UserEvent::HelpToggle], t!("help.user_command.open_help")),
     ];
     list.extend(user_command_items.iter().cloned());
     user_command.extend(user_command_items);
 
     let shell = vec![
-        b(vec![UserEvent::Confirm], "執行指令",   "Run command"),
-        b(vec![UserEvent::Cancel],  "關閉命令列", "Close shell"),
+        b(vec![UserEvent::Confirm], t!("help.shell.run_command")),
+        b(vec![UserEvent::Cancel], t!("help.shell.close_shell")),
     ];
 
     let release_notes = vec![
-        b(vec![UserEvent::Quit], "離開（按兩下）", "Quit (press twice)"),
-        b(vec![UserEvent::Cancel, UserEvent::Close, UserEvent::NavigateLeft],
-            "關閉 release notes", "Close release notes"),
-        b(vec![UserEvent::NavigateDown, UserEvent::SelectDown], "向下捲動", "Scroll down"),
-        b(vec![UserEvent::NavigateUp,   UserEvent::SelectUp],   "向上捲動", "Scroll up"),
-        b(vec![UserEvent::PageDown],     "向下一頁", "Scroll page down"),
-        b(vec![UserEvent::PageUp],       "向上一頁", "Scroll page up"),
-        b(vec![UserEvent::HalfPageDown], "向下半頁", "Scroll half page down"),
-        b(vec![UserEvent::HalfPageUp],   "向上半頁", "Scroll half page up"),
+        b(vec![UserEvent::Quit], t!("help.release_notes.quit_press_twice")),
+        b(vec![UserEvent::Cancel, UserEvent::Close, UserEvent::NavigateLeft], t!("help.release_notes.close_release_notes")),
+        b(vec![UserEvent::NavigateDown, UserEvent::SelectDown], t!("help.release_notes.scroll_down")),
+        b(vec![UserEvent::NavigateUp, UserEvent::SelectUp], t!("help.release_notes.scroll_up")),
+        b(vec![UserEvent::PageDown], t!("help.release_notes.scroll_page_down")),
+        b(vec![UserEvent::PageUp], t!("help.release_notes.scroll_page_up")),
+        b(vec![UserEvent::HalfPageDown], t!("help.release_notes.scroll_half_page_down")),
+        b(vec![UserEvent::HalfPageUp], t!("help.release_notes.scroll_half_page_up")),
     ];
 
     vec![
@@ -471,11 +453,10 @@ fn push_block(
     keybind: &KeyBind,
 ) {
     rows.push(HelpRow {
-        cn: Line::default(),
         keys: Line::from(format!("── {title} ──"))
             .fg(color_theme.help_block_title_fg)
             .add_modifier(Modifier::BOLD),
-        en: Line::default(),
+        desc: Line::default(),
     });
     for spec in specs {
         let keys = join_span_groups_with_space(
@@ -486,9 +467,8 @@ fn push_block(
                 .collect(),
         );
         rows.push(HelpRow {
-            cn: Line::raw(spec.cn),
             keys,
-            en: Line::raw(spec.en),
+            desc: Line::raw(spec.desc),
         });
     }
 }
@@ -567,7 +547,7 @@ mod tests {
                         unbound.push(format!(
                             "「{}」的『{}』列出 {:?}，但沒有任何按鍵綁定",
                             block.title(),
-                            spec.cn,
+                            spec.desc,
                             event
                         ));
                     }
@@ -718,14 +698,14 @@ mod tests {
 
 | 按鍵 | 出現位置 | 動作 |
 | --- | ----- | ------ |
-| <kbd>1</kbd>–<kbd>9</kbd> | Ref／checkout／關聯／branch 選擇器 | 選第 n 項 |
-| <kbd>m</kbd> <kbd>s</kbd> <kbd>r</kbd> | Merge PR 提示（第 1 步） | merge／squash／rebase |
+| <kbd>1</kbd>–<kbd>9</kbd> | Ref／checkout／相關／branch 選擇器 | 選第 n 項 |
+| <kbd>m</kbd> <kbd>s</kbd> <kbd>r</kbd> | Merge PR 提示（第 1 步） | merge/squash/rebase |
 | <kbd>y</kbd> <kbd>n</kbd> | Merge PR 提示（第 2 步） | merge 後是否刪除該 branch |
 | <kbd>f</kbd> | 刪除 branch 確認 | 強制刪除 |
-| <kbd>Tab</kbd> <kbd>Shift-Tab</kbd> | Create tag 對話框 | 在欄位間移動 |
-| <kbd>Space</kbd> | Create tag 對話框（核取方塊） | 切換核取狀態 |
-| <kbd>↑</kbd> <kbd>↓</kbd> | Shell 命令列 | 瀏覽指令歷史 |
-| <kbd>PageUp</kbd> <kbd>PageDown</kbd> | Shell 命令列 | 捲動輸出面板 |
+| <kbd>Tab</kbd> <kbd>Shift-Tab</kbd> | 建立 Tag 對話框 | 在欄位間移動 |
+| <kbd>Space</kbd> | 建立 Tag 對話框（checkbox） | 切換勾選狀態 |
+| <kbd>↑</kbd> <kbd>↓</kbd> | Shell | 瀏覽指令歷史 |
+| <kbd>PageUp</kbd> <kbd>PageDown</kbd> | Shell | 捲動輸出 pane |
 ";
 
     fn render_doc(keybind: &KeyBind, core_config: &CoreConfig) -> String {
@@ -758,7 +738,7 @@ mod tests {
                 out.push_str(&format!(
                     "| {} | {} | {} |\n",
                     keys.join(" "),
-                    spec.cn,
+                    spec.desc,
                     names.join(" ")
                 ));
             }

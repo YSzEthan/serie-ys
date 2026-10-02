@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::{borrow::Cow, rc::Rc};
 
 use chrono::{DateTime, FixedOffset};
 use ratatui::{
@@ -9,7 +9,8 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Block, Borders, Padding, Paragraph, StatefulWidget, Widget},
 };
-use unicode_width::UnicodeWidthChar;
+use rust_i18n::t;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 use crate::{
     app::AppContext,
@@ -276,12 +277,14 @@ impl CommitDetail<'_> {
         };
         let mut lines: Vec<Line> = Vec::new();
 
-        // 作者
+        // 作者。日期列用空白對齊到標籤之後，縮排寬度跟著標籤的顯示寬度走
+        let author_label = t!("view.detail.author");
+        let author_indent = " ".repeat(author_label.width());
         push_wrapped(
             &mut lines,
             Line::from(vec![
                 Span::styled(
-                    "Author: ",
+                    author_label,
                     Style::default().fg(self.ctx.color_theme.detail_label_fg),
                 ),
                 self.commit
@@ -300,7 +303,7 @@ impl CommitDetail<'_> {
         push_wrapped(
             &mut lines,
             Line::from(vec![
-                Span::raw("        "),
+                Span::raw(author_indent),
                 Span::styled(
                     self.format_date(&self.commit.author_date),
                     Style::default().fg(self.ctx.color_theme.detail_date_fg),
@@ -310,11 +313,13 @@ impl CommitDetail<'_> {
         );
 
         if is_author_committer_different(self.commit, self.extra) {
+            let committer_label = t!("view.detail.committer");
+            let committer_indent = " ".repeat(committer_label.width());
             push_wrapped(
                 &mut lines,
                 Line::from(vec![
                     Span::styled(
-                        "Committer: ",
+                        committer_label,
                         Style::default().fg(self.ctx.color_theme.detail_label_fg),
                     ),
                     self.extra
@@ -333,7 +338,7 @@ impl CommitDetail<'_> {
             push_wrapped(
                 &mut lines,
                 Line::from(vec![
-                    Span::raw("           "),
+                    Span::raw(committer_indent),
                     Span::styled(
                         self.format_date(&self.extra.committer_date),
                         Style::default().fg(self.ctx.color_theme.detail_date_fg),
@@ -348,7 +353,7 @@ impl CommitDetail<'_> {
             &mut lines,
             Line::from(vec![
                 Span::styled(
-                    "Commit: ",
+                    t!("view.detail.commit"),
                     Style::default().fg(self.ctx.color_theme.detail_label_fg),
                 ),
                 self.commit
@@ -362,7 +367,7 @@ impl CommitDetail<'_> {
         // 父提交
         if has_parent(self.commit) {
             let mut spans: Vec<Span> = vec![Span::styled(
-                "Parents: ",
+                t!("view.detail.parents"),
                 Style::default().fg(self.ctx.color_theme.detail_label_fg),
             )];
             let parents = &self.commit.parent_commit_hashes;
@@ -381,7 +386,7 @@ impl CommitDetail<'_> {
                 &mut lines,
                 Line::from(vec![
                     Span::styled(
-                        "Refs: ",
+                        t!("view.detail.refs"),
                         Style::default().fg(self.ctx.color_theme.detail_label_fg),
                     ),
                     self.refs_span(),
@@ -648,22 +653,25 @@ impl WorkingChangesDetail<'_> {
         let mut lines: Vec<Line> = Vec::new();
 
         lines.push(
-            Line::from("Uncommitted Changes")
+            Line::from(t!("view.detail.uncommitted"))
                 .style(Style::default().fg(self.ctx.color_theme.fg).bold()),
         );
         lines.push(Line::raw(""));
 
         if self.staged_count > 0 {
             lines.push(
-                Line::from(format!("Staged Changes ({})", self.staged_count))
+                Line::from(t!("view.detail.staged_changes", count = self.staged_count))
                     .style(Style::default().fg(self.ctx.color_theme.fg).bold()),
             );
         }
 
         if self.unstaged_count > 0 {
             lines.push(
-                Line::from(format!("Unstaged Changes ({})", self.unstaged_count))
-                    .style(Style::default().fg(self.ctx.color_theme.fg).bold()),
+                Line::from(t!(
+                    "view.detail.unstaged_changes",
+                    count = self.unstaged_count
+                ))
+                .style(Style::default().fg(self.ctx.color_theme.fg).bold()),
             );
         }
 
@@ -776,7 +784,7 @@ fn flatten_tree_to_lines(
             ];
 
             if let Some((add, del)) = change.stats() {
-                spans.push("  （".into());
+                spans.push("  (".into());
                 spans.push(Span::styled(
                     format!("+{add}"),
                     Style::default().fg(color_theme.detail_file_change_add_fg),
@@ -786,7 +794,7 @@ fn flatten_tree_to_lines(
                     format!("-{del}"),
                     Style::default().fg(color_theme.detail_file_change_delete_fg),
                 ));
-                spans.push("）".into());
+                spans.push(")".into());
             }
 
             rows.push(TreeRow {
@@ -848,7 +856,10 @@ pub fn build_working_changes_tree_rows(
     let mut rows = Vec::new();
 
     if !working_changes.staged.is_empty() {
-        rows.push(section_header_row("Staged:", color_theme));
+        rows.push(section_header_row(
+            t!("view.detail.staged_header"),
+            color_theme,
+        ));
         rows.extend(build_tree_lines(
             &working_changes.staged,
             color_theme,
@@ -863,7 +874,10 @@ pub fn build_working_changes_tree_rows(
     }
 
     if !working_changes.unstaged.is_empty() {
-        rows.push(section_header_row("Unstaged:", color_theme));
+        rows.push(section_header_row(
+            t!("view.detail.unstaged_header"),
+            color_theme,
+        ));
         rows.extend(build_tree_lines(
             &working_changes.unstaged,
             color_theme,
@@ -879,9 +893,9 @@ pub fn build_working_changes_tree_rows(
     rows
 }
 
-fn section_header_row(text: &str, color_theme: &ColorTheme) -> TreeRow {
+fn section_header_row(text: Cow<'static, str>, color_theme: &ColorTheme) -> TreeRow {
     TreeRow {
-        line: Line::from(text.to_string()).style(Style::default().fg(color_theme.fg).bold()),
+        line: Line::from(text).style(Style::default().fg(color_theme.fg).bold()),
         file: None,
     }
 }

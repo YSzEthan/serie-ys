@@ -10,7 +10,7 @@ license = "MIT"
 keywords = ["git", "cli", "tui", "terminal"]
 categories = ["command-line-utilities"]
 edition = "2021"
-rust-version = "1.88.0"
+rust-version = "1.89.0"
 
 # `/docs` 整個排掉會讓打包出來的 crate 編不動測試：`src/config.rs` 用
 # `include_str!` 讀 docs/src/configurations/config-file-format.md。只排掉
@@ -46,6 +46,7 @@ notify = { version = "7.0.0", features = ["macos_fsevent"] }
 notify-debouncer-mini = "0.5.0"
 umbra = "0.4.0"
 unicode-width = "0.2"
+rust-i18n = "4"
 
 [dev-dependencies]
 dircpy = "0.3.20"

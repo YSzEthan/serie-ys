@@ -6,12 +6,13 @@
 # 命令列參數指定的值一律優先於這裡的設定。
 
 [core.option]
-# 畫面呈現相關的旋鈕，等同於 -o/-g/-c/-s/-i/-n 這幾個命令列參數的預設值。
+# 畫面呈現相關的旋鈕，等同於 -o/-g/-c/-s/-i/-n/--locale 這幾個命令列參數的預設值。
 order = "chrono"              # commit 排序：chrono（時間序）｜topo（拓撲序）
 graph_width = "auto"          # 圖形欄寬：auto｜double｜single
 compact = "auto"              # 緊湊模式：auto｜on｜off
 graph_style = "rounded"       # 圖形邊線風格：rounded｜angular｜ascii
 initial_selection = "latest"  # 啟動時初始選取：latest｜head
+locale = "zh-tw"              # 介面語言：zh-tw（繁體中文）｜en（English）
 # max_count 預設不限制，取消註解並填數字可限制渲染的最大 commit 數量。
 # max_count = 1000
 

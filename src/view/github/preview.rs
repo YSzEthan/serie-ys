@@ -4,10 +4,12 @@ use ratatui::{
     widgets::{Paragraph, Wrap},
 };
 
+use rust_i18n::t;
+
 use crate::github::Mergeable;
 
 use super::{
-    render::{label_spans, state_color},
+    render::{label_spans, state_color, state_label},
     timeline::{
         build_timeline, diff_stat_spans, mergeable_marker, TimelineEntry, TimelineLoad,
         TimelineStage,
@@ -25,7 +27,7 @@ pub(super) fn build_preview_content(
     let number = input.number;
     let Some(item) = input.item.as_ref() else {
         let lines = vec![Line::styled(
-            "(no item selected)",
+            t!("github.preview.no_item"),
             Style::default().fg(Color::DarkGray),
         )];
         let timeline_start = lines.len();
@@ -53,7 +55,7 @@ pub(super) fn build_preview_content(
 
     let mut meta_spans = vec![
         Span::styled(
-            item.state.to_lowercase(),
+            state_label(item.state),
             Style::default().fg(state_color(item.state)),
         ),
         Span::styled(
@@ -92,7 +94,7 @@ pub(super) fn build_preview_content(
     lines.push(header_rule(
         width,
         if has_relations {
-            "Related"
+            t!("github.preview.related")
         } else {
             Section::Body.label()
         },
@@ -104,7 +106,7 @@ pub(super) fn build_preview_content(
 
     if item.body.is_empty() {
         lines.push(Line::styled(
-            "(no body)",
+            t!("github.preview.no_body"),
             Style::default().fg(Color::DarkGray),
         ));
     } else {
@@ -347,7 +349,7 @@ fn related_issue_line(indent: &'static str, r: &crate::github::GhRelatedIssue) -
         Span::raw(r.title.clone()),
         Span::raw(" "),
         Span::styled(
-            format!("({})", r.state.to_lowercase()),
+            format!("({})", state_label(&r.state)),
             Style::default().fg(state_color(&r.state)),
         ),
     ])
@@ -360,9 +362,11 @@ fn append_relation_lines(
     width: usize,
 ) {
     if let Some(parent) = parent {
-        let prefix = "Parent: ";
         lines.push(Line::from(vec![
-            Span::styled(prefix, Style::default().fg(Color::DarkGray)),
+            Span::styled(
+                t!("github.preview.parent"),
+                Style::default().fg(Color::DarkGray),
+            ),
             Span::styled(
                 format!("#{} ", parent.number),
                 Style::default().fg(Color::DarkGray),
@@ -370,7 +374,7 @@ fn append_relation_lines(
             Span::raw(parent.title.clone()),
             Span::raw(" "),
             Span::styled(
-                format!("({})", parent.state.to_lowercase()),
+                format!("({})", state_label(&parent.state)),
                 Style::default().fg(state_color(&parent.state)),
             ),
         ]));
@@ -378,7 +382,7 @@ fn append_relation_lines(
     if !sub_issues.is_empty() {
         let indent = "  ";
         lines.push(Line::styled(
-            format!("Sub-issues ({}):", sub_issues.len()),
+            t!("github.preview.sub_issues", n = sub_issues.len()),
             Style::default().fg(Color::DarkGray),
         ));
         for sub in sub_issues {
@@ -392,8 +396,13 @@ fn append_relation_lines(
 
 /// header／relations 區塊下方的分隔線：線條維持 markdown 分隔線的灰色，
 /// 標籤用 body 區段的顏色。
-fn header_rule(width: usize, label: &str) -> Line<'static> {
-    crate::view::markdown::labeled_rule(width, label, Color::DarkGray, Section::Body.color())
+fn header_rule(width: usize, label: impl AsRef<str>) -> Line<'static> {
+    crate::view::markdown::labeled_rule(
+        width,
+        label.as_ref(),
+        Color::DarkGray,
+        Section::Body.color(),
+    )
 }
 
 #[cfg(test)]
@@ -468,7 +477,7 @@ mod tests {
             cache
                 .lines()
                 .iter()
-                .any(|l| l.spans.iter().any(|s| s.content.contains("(mergeable)"))),
+                .any(|l| l.spans.iter().any(|s| s.content.contains("可 merge"))),
             "rebuilt content must reflect the new mergeable state, got: {:?}",
             cache.lines()
         );

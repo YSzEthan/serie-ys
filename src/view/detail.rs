@@ -1,3 +1,4 @@
+use rust_i18n::t;
 use std::rc::Rc;
 
 use crate::{
@@ -37,44 +38,53 @@ use ratatui::{
 /// 寫成自由函式（而不是吃 `&self` 的方法）是為了可測：它只依賴 pane，
 /// 測試可以直接餵 `DetailPane` 進來檢查每個 event 都有綁鍵、也都在說明頁列出。
 pub fn status_hints_for(pane: DetailPane) -> Vec<HintSpec> {
-    let mut hints = vec![h(&[UserEvent::DetailPaneToggle], "pane")];
+    let mut hints = vec![h(&[UserEvent::DetailPaneToggle], t!("common.hint.pane"))];
     match pane {
         DetailPane::Info => {
             hints.push(h(
                 &[UserEvent::NavigateDown, UserEvent::NavigateUp],
-                "scroll",
+                t!("common.hint.scroll"),
             ));
         }
         DetailPane::Files => {
-            hints.push(h(&[UserEvent::NavigateDown, UserEvent::NavigateUp], "file"));
-            hints.push(h(&[UserEvent::SelectDown, UserEvent::SelectUp], "diff"));
-            hints.push(h(&[UserEvent::GoToNext, UserEvent::GoToPrevious], "hunk"));
+            hints.push(h(
+                &[UserEvent::NavigateDown, UserEvent::NavigateUp],
+                t!("common.hint.file"),
+            ));
+            hints.push(h(
+                &[UserEvent::SelectDown, UserEvent::SelectUp],
+                t!("common.hint.diff"),
+            ));
+            hints.push(h(
+                &[UserEvent::GoToNext, UserEvent::GoToPrevious],
+                t!("common.hint.hunk"),
+            ));
         }
     }
     hints.extend([
         h(
             &[UserEvent::NavigateLeft, UserEvent::NavigateRight],
-            "commit",
+            t!("common.hint.commit"),
         ),
         h(
             &[UserEvent::GoToParent, UserEvent::GoToChild],
-            "parent/child",
+            t!("common.hint.parent_child"),
         ),
-        h(&[UserEvent::ShortCopy], "copy"),
+        h(&[UserEvent::ShortCopy], t!("common.hint.copy")),
     ]);
     if pane == DetailPane::Files {
         hints.extend([
-            h(&[UserEvent::HalfPageDown], "half"),
-            h(&[UserEvent::PageDown], "page"),
+            h(&[UserEvent::HalfPageDown], t!("common.hint.half")),
+            h(&[UserEvent::PageDown], t!("common.hint.page")),
         ]);
     }
     hints.extend([
-        h(&[UserEvent::RefList], "refs"),
-        h(&[UserEvent::RemoteRefsToggle], "remote"),
-        h(&[UserEvent::GitHubToggle], "github"),
-        h(&[UserEvent::Refresh], "refresh"),
-        h(&[UserEvent::HelpToggle], "help"),
-        h(&[UserEvent::Cancel], "close"),
+        h(&[UserEvent::RefList], t!("common.hint.refs")),
+        h(&[UserEvent::RemoteRefsToggle], t!("common.hint.remote")),
+        h(&[UserEvent::GitHubToggle], t!("common.hint.github")),
+        h(&[UserEvent::Refresh], t!("common.hint.refresh")),
+        h(&[UserEvent::HelpToggle], t!("common.hint.help")),
+        h(&[UserEvent::Cancel], t!("common.hint.close")),
     ]);
     hints
 }
@@ -303,11 +313,13 @@ impl<'a> DetailView<'a> {
                 if let Some(ref mut cls) = self.commit_list_state {
                     let show = cls.toggle_remote_refs();
                     if show {
-                        self.tx
-                            .send(AppEvent::NotifyInfo("Remote refs: shown".into()));
+                        self.tx.send(AppEvent::NotifyInfo(
+                            t!("view.list.remote_refs_shown").into_owned(),
+                        ));
                     } else {
-                        self.tx
-                            .send(AppEvent::NotifyInfo("Remote refs: hidden".into()));
+                        self.tx.send(AppEvent::NotifyInfo(
+                            t!("view.list.remote_refs_hidden").into_owned(),
+                        ));
                     }
                     self.tx
                         .send_after(AppEvent::ClearStatusLine, std::time::Duration::from_secs(3));
@@ -670,7 +682,7 @@ impl<'a> DetailView<'a> {
     fn copy_commit_short_hash(&self) {
         if let DetailContent::Commit { commit, .. } = &self.content {
             self.copy_to_clipboard(
-                "Commit SHA (short)".into(),
+                t!("view.clipboard.commit_sha_short").into_owned(),
                 commit.commit_hash.as_short_hash().into(),
             );
         }
@@ -678,7 +690,10 @@ impl<'a> DetailView<'a> {
 
     fn copy_commit_subject(&self) {
         if let DetailContent::Commit { commit, .. } = &self.content {
-            self.copy_to_clipboard("Commit Subject".into(), commit.subject.clone());
+            self.copy_to_clipboard(
+                t!("view.clipboard.commit_subject").into_owned(),
+                commit.subject.clone(),
+            );
         }
     }
 
@@ -759,20 +774,21 @@ fn diff_pane_title(
 ) -> Line<'static> {
     let mut flags = Vec::new();
     if notes.binary {
-        flags.push("binary");
+        flags.push(t!("view.detail.flag.binary"));
     }
     if let Some(label) = notes.mode.map(ModeNote::label) {
         flags.push(label);
     }
     if notes.truncated {
-        flags.push("truncated");
+        flags.push(t!("view.detail.flag.truncated"));
     }
     let head = if flags.is_empty() {
         path.to_string()
     } else {
         format!("{path}{TITLE_SEP}{}", flags.join(TITLE_SEP))
     };
-    let hunk = hunk_display.map(|(current, total)| format!("hunk {current}/{total}"));
+    let hunk = hunk_display
+        .map(|(current, total)| t!("view.detail.hunk", current = current, total = total));
 
     let width = area_width as usize;
     let head_width = display_width(&head);
@@ -851,7 +867,7 @@ mod tests {
         let line = diff_pane_title("scripts/run.sh", &notes, None, 200, &theme);
         assert_eq!(
             line.to_string(),
-            "scripts/run.sh · binary · mode → executable · truncated",
+            "scripts/run.sh · binary · mode → 可執行 · 已截斷",
             "沒有 hunk（binary/純 mode 變更）就不該印出 hunk 後綴"
         );
     }

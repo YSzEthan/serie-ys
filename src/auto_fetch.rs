@@ -29,6 +29,8 @@ use std::{
 use clap::ValueEnum;
 use serde::Deserialize;
 
+use rust_i18n::t;
+
 use crate::{
     event::{AppEvent, AutoFetchClock, EventController, Sender},
     git::{background_command, FetchPrune},
@@ -153,7 +155,7 @@ pub fn spawn_due_fetch(
     let repo = repo.to_path_buf();
 
     tx.send(AppEvent::ShowPendingOverlay {
-        message: "Auto-fetching...".into(),
+        message: t!("app.fetch.auto_pending").into_owned(),
     });
 
     std::thread::spawn(move || {

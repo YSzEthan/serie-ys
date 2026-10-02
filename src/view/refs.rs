@@ -5,6 +5,7 @@ use ratatui::{
     layout::{Constraint, Layout, Rect},
     Frame,
 };
+use rust_i18n::t;
 
 use crate::{
     app::AppContext,
@@ -123,9 +124,9 @@ impl<'a> RefsView<'a> {
             .or_else(|| self.ref_list_state.selected_remote_branch());
         match name {
             Some(target) => self.tx.send(AppEvent::CheckoutCommit { target }),
-            None => self
-                .tx
-                .send(AppEvent::NotifyWarn("Select a branch to checkout".into())),
+            None => self.tx.send(AppEvent::NotifyWarn(
+                t!("view.refs.select_checkout").into_owned(),
+            )),
         }
     }
 
@@ -147,7 +148,7 @@ impl<'a> RefsView<'a> {
             });
         } else {
             self.tx.send(AppEvent::NotifyWarn(
-                "Select a branch or tag to delete".into(),
+                t!("view.refs.select_delete").into_owned(),
             ));
         }
     }

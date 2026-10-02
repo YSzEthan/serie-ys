@@ -10,6 +10,7 @@ use std::{
 
 use arboard::Clipboard;
 use base64::{engine::general_purpose::STANDARD, Engine};
+use rust_i18n::t;
 
 use crate::config::ClipboardConfig;
 
@@ -129,10 +130,10 @@ fn write_to_stdout(s: &str) -> Result<(), String> {
     let mut stdout = io::stdout().lock();
     stdout
         .write_all(s.as_bytes())
-        .map_err(|e| format!("Failed to write OSC 52 sequence: {e}"))?;
+        .map_err(|e| t!("git.external.osc52_write_failed", error = e).into_owned())?;
     stdout
         .flush()
-        .map_err(|e| format!("Failed to flush stdout: {e}"))?;
+        .map_err(|e| t!("git.external.flush_failed", error = e).into_owned())?;
     Ok(())
 }
 
@@ -158,25 +159,39 @@ fn copy_to_clipboard_custom(value: String, commands: &[String]) -> Result<(), St
     use std::process::Stdio;
 
     if commands.is_empty() {
-        return Err("No clipboard command specified".to_string());
+        return Err(t!("git.external.no_clipboard_command").into_owned());
     }
 
     let mut child = Command::new(&commands[0])
         .args(&commands[1..])
         .stdin(Stdio::piped())
         .spawn()
-        .map_err(|e| format!("Failed to run {}: {e}", commands[0]))?;
+        .map_err(|e| {
+            t!("git.external.run_failed", program = commands[0], error = e).into_owned()
+        })?;
 
     child
         .stdin
         .take()
         .expect("stdin should be available")
         .write_all(value.as_bytes())
-        .map_err(|e| format!("Failed to write to {}: {e}", commands[0]))?;
+        .map_err(|e| {
+            t!(
+                "git.external.write_failed",
+                program = commands[0],
+                error = e
+            )
+            .into_owned()
+        })?;
 
-    child
-        .wait()
-        .map_err(|e| format!("{} failed: {e}", commands[0]))?;
+    child.wait().map_err(|e| {
+        t!(
+            "git.external.command_failed",
+            program = commands[0],
+            error = e
+        )
+        .into_owned()
+    })?;
 
     Ok(())
 }
@@ -184,16 +199,26 @@ fn copy_to_clipboard_custom(value: String, commands: &[String]) -> Result<(), St
 fn copy_to_clipboard_auto(value: String) -> Result<(), String> {
     CLIPBOARD.with_borrow_mut(|clipboard| {
         if clipboard.is_none() {
-            *clipboard = Clipboard::new()
-                .map(Some)
-                .map_err(|e| format!("Failed to create clipboard: {e:?}"))?;
+            *clipboard = Clipboard::new().map(Some).map_err(|e| {
+                t!(
+                    "git.external.clipboard_create_failed",
+                    error = format!("{e:?}")
+                )
+                .into_owned()
+            })?;
         }
 
         clipboard
             .as_mut()
             .expect("The clipboard should have been initialized above")
             .set_text(value)
-            .map_err(|e| format!("Failed to copy to clipboard: {e:?}"))
+            .map_err(|e| {
+                t!(
+                    "git.external.clipboard_copy_failed",
+                    error = format!("{e:?}")
+                )
+                .into_owned()
+            })
     })
 }
 
@@ -207,7 +232,7 @@ pub enum OpenUrlOutcome {
 
 pub fn open_url(url: &str) -> Result<OpenUrlOutcome, String> {
     if !(url.starts_with("https://") || url.starts_with("http://")) {
-        return Err(format!("Refusing to open non-http URL: {url}"));
+        return Err(t!("git.external.non_http_url", url = url).into_owned());
     }
 
     if is_ssh_session() {
@@ -226,7 +251,7 @@ pub fn open_url(url: &str) -> Result<OpenUrlOutcome, String> {
         .args(args)
         .spawn()
         .map(|_| OpenUrlOutcome::Spawned)
-        .map_err(|e| format!("Failed to open URL: {e}"))
+        .map_err(|e| t!("git.external.open_url_failed", error = e).into_owned())
 }
 
 /// 把 URL 加標籤格式化成 OSC 8 超連結跳脫序列。支援 OSC 8 的終端機（ghostty、
@@ -260,14 +285,15 @@ pub fn exec_user_command(params: ExternalCommandParameters) -> Result<String, St
     let output = Command::new(&command[0])
         .args(&command[1..])
         .output()
-        .map_err(|e| format!("Failed to execute command: {e:?}"))?;
+        .map_err(|e| t!("git.external.exec_failed", error = format!("{e:?}")).into_owned())?;
 
     if !output.status.success() {
-        let msg = format!(
-            "Command exited with non-zero status: {}, stderr: {}",
-            output.status,
-            String::from_utf8_lossy(&output.stderr)
-        );
+        let msg = t!(
+            "git.external.exec_nonzero_stderr",
+            status = output.status,
+            stderr = String::from_utf8_lossy(&output.stderr)
+        )
+        .into_owned();
         return Err(msg);
     }
 
@@ -280,10 +306,10 @@ pub fn exec_user_command_suspend(params: ExternalCommandParameters) -> Result<()
     let output = Command::new(&command[0])
         .args(&command[1..])
         .status()
-        .map_err(|e| format!("Failed to execute command: {e:?}"))?;
+        .map_err(|e| t!("git.external.exec_failed", error = format!("{e:?}")).into_owned())?;
 
     if !output.success() {
-        let msg = format!("Command exited with non-zero status: {output}");
+        let msg = t!("git.external.exec_nonzero", status = output).into_owned();
         return Err(msg);
     }
 
@@ -387,7 +413,7 @@ fn replace_markers(
             continue;
         }
         let Some(params) = params else {
-            return Err(format!("沒有選到 commit，無法代入 {marker}"));
+            return Err(t!("git.external.no_commit_for_marker", marker = marker).into_owned());
         };
         let value = commit_marker_value(marker, params, &esc)?;
         result = result.replace(marker, &value);
@@ -428,9 +454,12 @@ fn shell_quote(v: &str) -> Result<String, String> {
 fn shell_quote(v: &str) -> Result<String, String> {
     const DANGEROUS: &[char] = &['"', '%', '^', '&', '|', '<', '>', '(', ')', '!'];
     if v.chars().any(|c| DANGEROUS.contains(&c)) {
-        return Err(format!(
-            "無法在 Windows 上安全代入含 {DANGEROUS:?} 的值：{v:?}"
-        ));
+        return Err(t!(
+            "git.external.windows_unsafe_value",
+            chars = format!("{DANGEROUS:?}"),
+            value = format!("{v:?}")
+        )
+        .into_owned());
     }
     if v.contains(char::is_whitespace) {
         Ok(format!("\"{v}\""))
@@ -520,7 +549,7 @@ pub fn exec_shell_command(
     child_slot: &Arc<Mutex<Option<std::process::Child>>>,
 ) -> Result<String, String> {
     let Some((prog, flags)) = shell.split_first() else {
-        return Err("core.shell.command 不能是空陣列".to_string());
+        return Err(t!("git.external.empty_shell_command").into_owned());
     };
     let posix = is_posix_shell(prog);
     let full_command = if posix {
@@ -566,7 +595,7 @@ pub fn exec_shell_command(
 
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("Failed to run {prog}: {e}"))?;
+        .map_err(|e| t!("git.external.run_failed", program = prog, error = e).into_owned())?;
     let mut stdout = child.stdout.take().expect("stdout is piped");
     let stderr = child.stderr.take();
 
@@ -604,7 +633,10 @@ pub fn exec_shell_command(
         if let Some(child) = child_slot.lock().unwrap().as_mut() {
             let _ = child.kill();
         }
-        text.push_str(&format!("\n… 輸出過長，已在 {MAX_OUTPUT_BYTES} bytes 截斷"));
+        text.push_str(&format!(
+            "\n{}",
+            t!("git.external.output_truncated", max = MAX_OUTPUT_BYTES)
+        ));
     }
 
     // 先把 child 從鎖裡取出來再 wait——`child_slot.lock().unwrap().as_mut()`
@@ -617,7 +649,10 @@ pub fn exec_shell_command(
     let status = child.and_then(|mut c| c.wait().ok());
     if let Some(status) = status {
         if !status.success() {
-            text.push_str(&format!("\n[exit status: {status}]"));
+            text.push_str(&format!(
+                "\n{}",
+                t!("git.external.exit_status", status = status)
+            ));
         }
     }
     Ok(text)
@@ -852,7 +887,7 @@ mod tests {
         let child_slot = Arc::new(Mutex::new(None));
         let output = exec_shell_command("exit 3", &env::temp_dir(), &shell, &child_slot).unwrap();
         assert!(
-            output.contains("[exit status:"),
+            output.contains("[指令結束："),
             "非零 exit 要附上狀態: {output}"
         );
     }

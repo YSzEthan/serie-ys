@@ -9,6 +9,8 @@ use ratatui::{
     DefaultTerminal, Frame,
 };
 
+use rust_i18n::t;
+
 use crate::color::ColorTheme;
 
 /// 把使用者給的路徑字串換成瀏覽器起點：`canonicalize` 不成（路徑不存在、
@@ -164,11 +166,11 @@ impl BrowserState {
         let hint = crate::widget::hint_line(
             theme,
             &[
-                ("↑↓".into(), "移動"),
-                ("←".into(), "上層目錄"),
-                ("→".into(), "進入子目錄"),
-                ("Enter".into(), "選取目前目錄"),
-                ("Esc".into(), "取消"),
+                ("↑↓".into(), &*t!("common.hint.move")),
+                ("←".into(), &*t!("wizard.path.hint.up")),
+                ("→".into(), &*t!("wizard.path.hint.enter")),
+                ("Enter".into(), &*t!("wizard.path.hint.select_current")),
+                ("Esc".into(), &*t!("common.hint.cancel")),
             ],
             theme.help_key_fg,
         );
@@ -181,7 +183,7 @@ impl BrowserState {
         );
 
         let items: Vec<ListItem> = if self.entries.is_empty() {
-            vec![ListItem::new("（沒有子目錄）")
+            vec![ListItem::new(t!("wizard.path.no_subdirs"))
                 .style(Style::default().fg(theme.status_input_transient_fg))]
         } else {
             self.entries

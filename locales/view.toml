@@ -1,0 +1,309 @@
+_version = 2
+
+[view.search.opt.ignore_case]
+zh-TW = "忽略大小寫"
+en-US = "ignore case"
+
+[view.search.opt.case_sensitive]
+zh-TW = "區分大小寫"
+en-US = "case-sensitive"
+
+[view.search.opt.fuzzy]
+zh-TW = "模糊"
+en-US = "fuzzy"
+
+[view.search.opt.substring]
+zh-TW = "子字串"
+en-US = "substring"
+
+[view.search.options]
+zh-TW = "[%{case}] [%{matcher}] [比對欄位：%{target}]"
+en-US = "[%{case}] [%{matcher}] [match target: %{target}]"
+
+[view.search.target.all]
+zh-TW = "全部"
+en-US = "all"
+
+[view.search.target.subject]
+zh-TW = "subject"
+en-US = "subject"
+
+[view.search.target.author]
+zh-TW = "author"
+en-US = "author"
+
+[view.search.target.hash]
+zh-TW = "hash"
+en-US = "hash"
+
+[view.search.target.ref]
+zh-TW = "ref"
+en-US = "ref"
+
+[view.search.msg.ignore_case_on]
+zh-TW = "忽略大小寫：開啟"
+en-US = "Ignore case: on"
+
+[view.search.msg.ignore_case_off]
+zh-TW = "忽略大小寫：關閉"
+en-US = "Ignore case: off"
+
+[view.search.msg.fuzzy_on]
+zh-TW = "模糊比對：開啟"
+en-US = "Fuzzy match: on"
+
+[view.search.msg.fuzzy_off]
+zh-TW = "模糊比對：關閉"
+en-US = "Fuzzy match: off"
+
+[view.search.msg.target]
+zh-TW = "比對欄位：%{target}"
+en-US = "Match target: %{target}"
+
+[view.search.no_match]
+zh-TW = "找不到符合項（query：\"%{query}\"）%{options}"
+en-US = "No matches found (query: \"%{query}\") %{options}"
+
+[view.search.match_of]
+zh-TW = "第 %{index} 筆，共 %{total} 筆（query：\"%{query}\"）%{options}"
+en-US = "Match %{index} of %{total} (query: \"%{query}\") %{options}"
+
+[view.filter.prefix]
+zh-TW = "過濾："
+en-US = "Filter: "
+
+[view.delete_branch.checked_out]
+zh-TW = "無法刪除目前已 checkout 的 branch"
+en-US = "Cannot delete the currently checked-out branch"
+
+[view.delete_branch.no_local]
+zh-TW = "這個 commit 上沒有 local branch"
+en-US = "No local branch on this commit"
+
+[view.list.col.graph]
+zh-TW = "Graph"
+en-US = "Graph"
+
+[view.list.col.subject]
+zh-TW = "Subject"
+en-US = "Subject"
+
+[view.list.col.author]
+zh-TW = "Author"
+en-US = "Author"
+
+[view.list.col.hash]
+zh-TW = "Commit"
+en-US = "Commit"
+
+[view.list.col.date]
+zh-TW = "日期"
+en-US = "Date"
+
+[view.list.uncommitted]
+zh-TW = "未 commit 的變更（%{count}）"
+en-US = "Uncommitted changes (%{count})"
+
+[view.refs.root.branches]
+zh-TW = "Branches"
+en-US = "Branches"
+
+[view.refs.root.remotes]
+zh-TW = "Remotes"
+en-US = "Remotes"
+
+[view.refs.root.tags]
+zh-TW = "Tags"
+en-US = "Tags"
+
+[view.refs.root.stashes]
+zh-TW = "Stashes"
+en-US = "Stashes"
+
+[view.list.remote_refs_shown]
+zh-TW = "Remote refs：顯示"
+en-US = "Remote refs: shown"
+
+[view.list.remote_refs_hidden]
+zh-TW = "Remote refs：隱藏"
+en-US = "Remote refs: hidden"
+
+[view.list.search_options]
+zh-TW = "搜尋：%{options}"
+en-US = "Search: %{options}"
+
+[view.clipboard.commit_sha_short]
+zh-TW = "Commit short hash"
+en-US = "Commit short hash"
+
+[view.clipboard.commit_subject]
+zh-TW = "Commit subject"
+en-US = "Commit subject"
+
+[view.refs.select_checkout]
+zh-TW = "請先選擇要 checkout 的 branch"
+en-US = "Select a branch to checkout"
+
+[view.refs.select_delete]
+zh-TW = "請先選擇要刪除的 branch 或 tag"
+en-US = "Select a branch or tag to delete"
+
+[view.dialog.commit_label]
+zh-TW = "Commit："
+en-US = "Commit: "
+
+[view.create_tag.name_empty]
+zh-TW = "Tag 名稱不可為空"
+en-US = "Tag name must not be empty"
+
+[view.create_tag.pending_push]
+zh-TW = "正在建立 tag '%{tag}' 並 push…"
+en-US = "Creating and pushing tag '%{tag}'…"
+
+[view.create_tag.pending]
+zh-TW = "正在建立 tag '%{tag}'…"
+en-US = "Creating tag '%{tag}'…"
+
+[view.create_tag.push_failed]
+zh-TW = "Tag 已在 local 建立，但 push 失敗：%{detail}"
+en-US = "Tag created locally, but push failed: %{detail}"
+
+[view.create_tag.done_push]
+zh-TW = "已建立 tag '%{tag}' 並 push 到 origin"
+en-US = "Tag '%{tag}' created and pushed to origin"
+
+[view.create_tag.done]
+zh-TW = "已建立 tag '%{tag}'"
+en-US = "Tag '%{tag}' created"
+
+[view.create_tag.title]
+zh-TW = " 建立 Tag"
+en-US = " Create Tag"
+
+[view.create_tag.tag_name_label]
+zh-TW = "Tag 名稱："
+en-US = "Tag name:"
+
+[view.create_tag.message_label]
+zh-TW = "訊息："
+en-US = "Message:"
+
+[view.create_tag.push_to_origin]
+zh-TW = " Push 到 origin"
+en-US = " Push to origin"
+
+[view.delete_tag.pending_remote]
+zh-TW = "正在從 local 與 remote 刪除 tag '%{tag}'…"
+en-US = "Deleting tag '%{tag}' from local and remote…"
+
+[view.delete_tag.pending]
+zh-TW = "正在刪除 tag '%{tag}'…"
+en-US = "Deleting tag '%{tag}'…"
+
+[view.delete_tag.remote_failed]
+zh-TW = "Local tag 已刪除，但從 remote 刪除失敗：%{detail}"
+en-US = "Local tag deleted, but failed to delete from remote: %{detail}"
+
+[view.delete_tag.done_remote]
+zh-TW = "已從 local 與 remote 刪除 tag '%{tag}'"
+en-US = "Tag '%{tag}' deleted from local and remote"
+
+[view.delete_tag.done_local]
+zh-TW = "已在 local 刪除 tag '%{tag}'"
+en-US = "Tag '%{tag}' deleted locally"
+
+[view.delete_tag.title]
+zh-TW = " 刪除 Tag"
+en-US = " Delete Tag"
+
+[view.delete_tag.no_tags]
+zh-TW = "這個 commit 上沒有 tag"
+en-US = "No tags on this commit"
+
+[view.delete_tag.from_origin]
+zh-TW = " 一併從 origin 刪除"
+en-US = " Also delete from origin"
+
+[view.delete_ref.pending_remote_branch]
+zh-TW = "正在刪除 remote branch '%{name}'…"
+en-US = "Deleting remote branch '%{name}'…"
+
+[view.delete_ref.done_remote_branch]
+zh-TW = "已刪除 remote branch '%{name}'"
+en-US = "Remote branch '%{name}' deleted"
+
+[view.delete_ref.title_branch]
+zh-TW = " 刪除 Branch"
+en-US = " Delete Branch"
+
+[view.delete_ref.title_remote_branch]
+zh-TW = " 刪除 Remote Branch"
+en-US = " Delete Remote Branch"
+
+[view.delete_ref.force_delete]
+zh-TW = " 強制刪除（-D）"
+en-US = " Force delete (-D)"
+
+[view.shell.truncated]
+zh-TW = "… 輸出過長，已在 %{max} 行截斷"
+en-US = "… Output too long, truncated at %{max} lines"
+
+[view.shell.running]
+zh-TW = "  執行中…"
+en-US = "  Running…"
+
+[view.release_notes.title]
+zh-TW = " Release Notes"
+en-US = " Release Notes"
+
+[view.detail.flag.binary]
+zh-TW = "binary"
+en-US = "binary"
+
+[view.detail.flag.truncated]
+zh-TW = "已截斷"
+en-US = "truncated"
+
+[view.detail.hunk]
+zh-TW = "hunk %{current}/%{total}"
+en-US = "hunk %{current}/%{total}"
+
+[view.detail.author]
+zh-TW = "Author："
+en-US = "Author: "
+
+[view.detail.committer]
+zh-TW = "Committer："
+en-US = "Committer: "
+
+[view.detail.commit]
+zh-TW = "Commit："
+en-US = "Commit: "
+
+[view.detail.parents]
+zh-TW = "Parent："
+en-US = "Parent: "
+
+[view.detail.refs]
+zh-TW = "Refs："
+en-US = "Refs: "
+
+[view.detail.uncommitted]
+zh-TW = "未 commit 的變更"
+en-US = "Uncommitted changes"
+
+[view.detail.staged_changes]
+zh-TW = "已 stage 的變更（%{count}）"
+en-US = "Staged changes (%{count})"
+
+[view.detail.unstaged_changes]
+zh-TW = "未 stage 的變更（%{count}）"
+en-US = "Unstaged changes (%{count})"
+
+[view.detail.staged_header]
+zh-TW = "已 stage："
+en-US = "Staged:"
+
+[view.detail.unstaged_header]
+zh-TW = "未 stage："
+en-US = "Unstaged:"

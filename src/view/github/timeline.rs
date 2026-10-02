@@ -1,7 +1,10 @@
+use std::borrow::Cow;
+
 use ratatui::{
     style::{Color, Modifier, Style},
     text::{Line, Span},
 };
+use rust_i18n::t;
 
 use crate::github::{CheckState, DiffStat, GhCheck, GhTimelineItem, Mergeable};
 
@@ -106,9 +109,9 @@ impl<'a> TimelineBlock<'a> {
                 }));
                 if comments.total_count > comments.nodes.len() {
                     items.push(TimelineItem::notice(
-                        format!(
-                            "(+{} more comments)",
-                            comments.total_count - comments.nodes.len()
+                        t!(
+                            "github.timeline.more_review_comments",
+                            n = comments.total_count - comments.nodes.len()
                         ),
                         Color::DarkGray,
                     ));
@@ -135,15 +138,18 @@ pub(super) fn build_timeline(
     expand_commits: bool,
 ) -> Vec<TimelineBlock<'_>> {
     let Some(entry) = entry else {
-        return vec![notice_block("(loading comments…)", Color::DarkGray)];
+        return vec![notice_block(t!("github.timeline.loading"), Color::DarkGray)];
     };
 
     match &entry.state {
         TimelineLoad::NotRequested | TimelineLoad::Loading => {
-            vec![notice_block("(loading comments…)", Color::DarkGray)]
+            vec![notice_block(t!("github.timeline.loading"), Color::DarkGray)]
         }
         TimelineLoad::Error(e) => {
-            vec![notice_block(format!("(comments failed: {e})"), Color::Red)]
+            vec![notice_block(
+                t!("github.timeline.failed", detail = e),
+                Color::Red,
+            )]
         }
         TimelineLoad::Loaded => {
             let mut blocks = Vec::new();
@@ -164,12 +170,12 @@ pub(super) fn build_timeline(
             // 前 100 筆全是 commit、留言落在下一頁的長命 PR 很常見，只看
             // comments 會在那種情況印出騙人的「沒有留言」。
             if blocks.is_empty() {
-                blocks.push(notice_block("(no comments)", Color::DarkGray));
+                blocks.push(notice_block(t!("github.timeline.empty"), Color::DarkGray));
             } else if entry.next_cursor.is_some() {
                 let text = if entry.loading_more {
-                    "(loading more…)"
+                    t!("github.timeline.loading_more")
                 } else {
-                    "(more comments — scroll down to load)"
+                    t!("github.timeline.more")
                 };
                 // `next_cursor` 代表「還有 timelineItems」，不是「還有留言」
                 // ——文案沿用舊字樣，即使下一頁其實是更多 commit 也一樣，
@@ -352,7 +358,7 @@ impl<'a> TimelineItem<'a> {
             }
             TimelineItem::CollapsedCommits(n) => {
                 lines.push(Line::styled(
-                    format!("▸ {n} commits"),
+                    t!("github.timeline.collapsed_commits", n = n),
                     Style::default().fg(Color::DarkGray),
                 ));
             }
@@ -366,7 +372,7 @@ impl<'a> TimelineItem<'a> {
                 ]));
             }
             TimelineItem::CollapsedChecks(checks) => {
-                let label = format!("▸ {} checks ", checks.len());
+                let label = t!("github.timeline.collapsed_checks", n = checks.len());
                 // 色塊只取塞得進剩餘寬度的數量：保證單行，捲動補償才算得準。
                 // `checks` 依 fail → pending → pass 排序，截斷時優先丟掉綠色。
                 let room = width.saturating_sub(console::measure_text_width(&label));
@@ -392,7 +398,7 @@ impl<'a> TimelineItem<'a> {
                             .add_modifier(Modifier::BOLD),
                     ),
                     Span::styled(
-                        format!("  {}", state.to_lowercase()),
+                        format!("  {}", review_state_label(state)),
                         Style::default().fg(marker_color),
                     ),
                     Span::styled(
@@ -415,10 +421,10 @@ impl<'a> TimelineItem<'a> {
                     None => path.to_string(),
                 };
                 if outdated {
-                    header.push_str("  (outdated)");
+                    header.push_str(&t!("github.timeline.outdated"));
                 }
                 if resolved {
-                    header.push_str("  (resolved)");
+                    header.push_str(&t!("github.timeline.resolved"));
                 }
                 lines.push(Line::styled(header, Style::default().fg(Color::DarkGray)));
                 lines.extend(crate::view::markdown::render(body, width));
@@ -463,11 +469,22 @@ fn check_state_marker(state: CheckState) -> (&'static str, Color) {
 
 /// `base ← head` 那一列的合併狀態標記文字 + 顏色。`None`（不是 PR，或
 /// GitHub 回傳 `UNKNOWN`）代表完全沒有標記。
-pub(super) fn mergeable_marker(state: Option<Mergeable>) -> Option<(&'static str, Color)> {
+pub(super) fn mergeable_marker(state: Option<Mergeable>) -> Option<(Cow<'static, str>, Color)> {
     match state {
-        Some(Mergeable::Mergeable) => Some(("  (mergeable)", Color::Green)),
-        Some(Mergeable::Conflicting) => Some(("  (conflicts)", Color::Red)),
+        Some(Mergeable::Mergeable) => Some((t!("github.timeline.mergeable"), Color::Green)),
+        Some(Mergeable::Conflicting) => Some((t!("github.timeline.conflicting"), Color::Red)),
         None => None,
+    }
+}
+
+/// review state（GitHub API 值）的顯示文字。未知的值原樣轉小寫顯示。
+fn review_state_label(state: &str) -> Cow<'static, str> {
+    match state {
+        "APPROVED" => t!("github.review.approved"),
+        "CHANGES_REQUESTED" => t!("github.review.changes_requested"),
+        "COMMENTED" => t!("github.review.commented"),
+        "DISMISSED" => t!("github.review.dismissed"),
+        other => Cow::Owned(other.to_lowercase()),
     }
 }
 
@@ -527,11 +544,11 @@ mod tests {
     fn mergeable_marker_covers_all_states() {
         assert_eq!(
             mergeable_marker(Some(Mergeable::Mergeable)),
-            Some(("  (mergeable)", Color::Green))
+            Some((t!("github.timeline.mergeable"), Color::Green))
         );
         assert_eq!(
             mergeable_marker(Some(Mergeable::Conflicting)),
-            Some(("  (conflicts)", Color::Red))
+            Some((t!("github.timeline.conflicting"), Color::Red))
         );
         // GitHub 的 `UNKNOWN` 跟「這是 Issue 不是 PR」都會變成 `None`——
         // 兩者都不該顯示標記。
@@ -678,7 +695,7 @@ mod tests {
         let mut blocks = build_timeline(Some(&entry), false);
         let lines = render_block(blocks.remove(1), 40);
         assert_eq!(lines.len(), 1);
-        assert_eq!(text(&lines[0]), "▸ 3 checks ▮▮▮");
+        assert_eq!(text(&lines[0]), "▸ 3 個 check ▮▮▮");
         let swatch_colors: Vec<_> = lines[0].spans[1..].iter().map(|s| s.style.fg).collect();
         assert_eq!(
             swatch_colors,
@@ -691,7 +708,7 @@ mod tests {
     fn collapsed_ci_swatches_truncate_to_width_keeping_failures() {
         let entry = loaded_entry(Vec::new(), three_checks());
         let mut blocks = build_timeline(Some(&entry), false);
-        let width = console::measure_text_width("▸ 3 checks ") + 1;
+        let width = console::measure_text_width("▸ 3 個 check ") + 1;
         let lines = render_block(blocks.remove(0), width);
         assert_eq!(lines.len(), 1);
         assert!(lines[0].width() <= width);

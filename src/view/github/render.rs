@@ -1,3 +1,5 @@
+use std::borrow::Cow;
+
 use ratatui::{
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
@@ -5,6 +7,7 @@ use ratatui::{
     widgets::{Block, Borders, Clear, Padding, Paragraph, Wrap},
     Frame,
 };
+use rust_i18n::t;
 
 use crate::github::{GhIssue, GhPullRequest};
 
@@ -34,9 +37,9 @@ impl<'a> GitHubView<'a> {
         // ── Loading / 錯誤提示 ──
         if self.current_list_len() == 0 {
             let (text, color) = match &self.load_state {
-                LoadState::Loading => ("Loading GitHub data...".to_string(), Color::DarkGray),
+                LoadState::Loading => (t!("github.render.loading").into_owned(), Color::DarkGray),
                 LoadState::Error(err) => (err.clone(), Color::Red),
-                LoadState::Idle => ("No items".to_string(), Color::DarkGray),
+                LoadState::Idle => (t!("github.render.empty").into_owned(), Color::DarkGray),
             };
             render_centered_message(f, content_area, text, color);
             return;
@@ -72,10 +75,10 @@ impl<'a> GitHubView<'a> {
     }
 
     fn render_header(&self, f: &mut Frame, area: Rect) {
-        let filter_label = self.state_filter.as_str();
+        let filter_label = self.state_filter.label();
         let count = self.current_list_len();
-        let issues_label = format!(" Issues ({}) ", self.issues.len());
-        let prs_label = format!(" PRs ({}) ", self.pull_requests.len());
+        let issues_label = t!("github.render.tab_issues", n = self.issues.len());
+        let prs_label = t!("github.render.tab_prs", n = self.pull_requests.len());
 
         let tab_line = Line::from(vec![
             Span::styled(
@@ -102,14 +105,17 @@ impl<'a> GitHubView<'a> {
             ),
             if self.has_active_filter() {
                 Span::styled(
-                    format!("  {count} matched"),
+                    t!("github.render.matched", n = count),
                     Style::default().fg(Color::DarkGray),
                 )
             } else {
                 Span::raw("")
             },
             if matches!(self.load_state, LoadState::Loading) {
-                Span::styled("  ⟳ 重新抓取中…", Style::default().fg(Color::Yellow))
+                Span::styled(
+                    t!("github.render.refetching"),
+                    Style::default().fg(Color::Yellow),
+                )
             } else {
                 Span::raw("")
             },
@@ -175,9 +181,9 @@ impl<'a> GitHubView<'a> {
 
         if has_next {
             let hint = if self.loading_more {
-                " Loading more…"
+                t!("github.render.loading_more")
             } else {
-                " ↓ more"
+                t!("github.render.more")
             };
             lines.push(Line::styled(hint, Style::default().fg(Color::DarkGray)));
         }
@@ -428,7 +434,7 @@ impl<'a> GitHubView<'a> {
         let block = Block::default()
             .borders(Borders::ALL)
             .border_style(Style::default().fg(Color::Yellow))
-            .title(" Tasks (editing) ")
+            .title(t!("github.render.tasks_title"))
             .padding(Padding::horizontal(1));
         let inner = block.inner(area);
         f.render_widget(block, area);
@@ -476,7 +482,7 @@ impl<'a> GitHubView<'a> {
 
         // Footer 列
         lines.push(Line::from(Span::styled(
-            " h/l:toggle  Enter:submit  Esc:cancel",
+            t!("github.render.tasks_footer"),
             Style::default().fg(Color::DarkGray),
         )));
 
@@ -513,6 +519,24 @@ fn label_color(label: &crate::github::GhLabel) -> Color {
         .as_deref()
         .map(hex_to_color)
         .unwrap_or(Color::Yellow)
+}
+
+/// GitHub 狀態值（OPEN／CLOSED／MERGED）的顯示文字。未知的值原樣轉小寫。
+pub(super) fn state_label(state: &str) -> Cow<'static, str> {
+    match state {
+        "OPEN" => t!("github.state.open"),
+        "CLOSED" => t!("github.state.closed"),
+        "MERGED" => t!("github.state.merged"),
+        other => Cow::Owned(other.to_lowercase()),
+    }
+}
+
+/// 列表列的狀態欄固定 8 格寬（最寬的標籤是「已 merge」）。中文字佔 2 格，
+/// 所以要用顯示寬度補空白，不能用 `{:<8}`（那是照字元數補）。
+const STATE_COL_WIDTH: usize = 8;
+
+fn pad_state_cell(label: &str) -> String {
+    console::pad_str(label, STATE_COL_WIDTH, console::Alignment::Left, None).into_owned()
 }
 
 pub(super) fn state_color(state: &str) -> Color {
@@ -618,15 +642,15 @@ fn render_issue_line(
             Style::default().fg(Color::DarkGray),
         ),
         Span::styled(
-            format!("{:<6}", issue.state.to_lowercase()),
+            pad_state_cell(&state_label(&issue.state)),
             Style::default().fg(state_color),
         ),
     ];
     spans.extend(label_cell(&issue.labels, label_mode, labels_pad_width));
 
     let tail = format!("{}  @{}", issue.title, issue.author.login);
-    // 2 (indicator) + 7 (#N 區塊 `#XXXXX `) + 6 (state `{:<6}`) + labels_pad + 1 (空格)
-    let prefix_width = 2 + 7 + 6 + labels_pad_width + 1;
+    // 2 (indicator) + 7 (#N 區塊 `#XXXXX `) + 狀態欄 + labels_pad + 1 (空格)
+    let prefix_width = 2 + 7 + STATE_COL_WIDTH + labels_pad_width + 1;
     let (tail_spans, scrolled) = tail_spans(
         &tail,
         content_width.saturating_sub(prefix_width),
@@ -671,8 +695,8 @@ fn render_pr_line(
     marquee_frame: Option<u64>,
 ) -> (Line<'static>, bool) {
     let indicator = if selected { "▸ " } else { "  " };
-    let (state_color, state_label) = if pr.is_draft {
-        (Color::Gray, "draft".to_string())
+    let (state_color, state_text) = if pr.is_draft {
+        (Color::Gray, t!("github.state.draft"))
     } else {
         let color = match pr.state.as_str() {
             "OPEN" => Color::Green,
@@ -680,7 +704,7 @@ fn render_pr_line(
             "MERGED" => Color::Magenta,
             _ => Color::Gray,
         };
-        (color, pr.state.to_lowercase())
+        (color, state_label(&pr.state))
     };
     let style = if selected {
         Style::default().fg(Color::Cyan).bold()
@@ -695,14 +719,14 @@ fn render_pr_line(
             Style::default().fg(Color::DarkGray),
         ),
         Span::styled(
-            format!("{state_label:<6}"),
+            pad_state_cell(&state_text),
             Style::default().fg(state_color),
         ),
     ];
     spans.extend(label_cell(&pr.labels, label_mode, labels_pad_width));
 
     let tail = format!("{}  ← {}  @{}", pr.title, pr.head_ref_name, pr.author.login);
-    let prefix_width = 2 + 7 + 6 + labels_pad_width + 1;
+    let prefix_width = 2 + 7 + STATE_COL_WIDTH + labels_pad_width + 1;
     let (tail_spans, scrolled) = tail_spans(
         &tail,
         content_width.saturating_sub(prefix_width),

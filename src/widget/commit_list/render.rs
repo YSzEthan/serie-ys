@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::{borrow::Cow, rc::Rc};
 
 use laurier::highlight::highlight_matched_text;
 use ratatui::{
@@ -8,6 +8,7 @@ use ratatui::{
     text::{Line, Span},
     widgets::{Paragraph, StatefulWidget, Widget},
 };
+use rust_i18n::t;
 use rustc_hash::FxHashMap;
 
 use crate::{
@@ -109,12 +110,12 @@ impl<'a> StatefulWidget for CommitList<'a> {
             .add_modifier(Modifier::BOLD);
         for (i, col) in columns.iter().enumerate() {
             let title = match col {
-                UserListColumnType::Graph => "Graph",
-                UserListColumnType::Marker => "",
-                UserListColumnType::Subject => "Description",
-                UserListColumnType::Name => "Author",
-                UserListColumnType::Hash => "Commit",
-                UserListColumnType::Date => "Date",
+                UserListColumnType::Graph => t!("view.list.col.graph"),
+                UserListColumnType::Marker => Cow::Borrowed(""),
+                UserListColumnType::Subject => t!("view.list.col.subject"),
+                UserListColumnType::Name => t!("view.list.col.author"),
+                UserListColumnType::Hash => t!("view.list.col.hash"),
+                UserListColumnType::Date => t!("view.list.col.date"),
             };
             if !title.is_empty() {
                 Paragraph::new(Line::from(vec![
@@ -457,7 +458,7 @@ impl CommitList<'_> {
             match &row.content {
                 RowContent::Virtual => {
                     let count = state.working_changes().map_or(0, |wc| wc.file_count());
-                    let text = format!("Uncommitted Changes ({count})");
+                    let text = t!("view.list.uncommitted", count = count).into_owned();
                     let spans = vec![Span::styled(
                         text,
                         Style::default()
@@ -1304,7 +1305,7 @@ mod tests {
 
             assert_eq!(
                 full_row(&buf, 0),
-                " Graph   Description                                 Date        Author Commit  ",
+                " Graph   Subject                                     日 期         Author Commit  ",
                 "header row"
             );
             assert_eq!(
@@ -1942,8 +1943,8 @@ mod tests {
             // virtual row 的 dot 畫在 cell index 2（見
             // virtual_row_draws_gray_head_dot_at_top 對同一個 fixture 的
             // 斷言），合成那列 cells 只有這一格非 Blank，text_x =
-            // cells_extent = 2+1 = 3；"Uncommitted..." 的 U 貼在 x=4。
-            assert_eq!(buf[(4, 1)].symbol(), "U");
+            // cells_extent = 2+1 = 3；"未 commit 的變更…" 的「未」貼在 x=4。
+            assert_eq!(buf[(4, 1)].symbol(), "未");
         }
 
         #[test]

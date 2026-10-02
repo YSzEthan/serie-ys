@@ -7,6 +7,7 @@ use ratatui::{
     widgets::{Block, Borders, Padding, Paragraph, Wrap},
     Frame,
 };
+use rust_i18n::t;
 
 use crate::{
     app::AppContext,
@@ -112,7 +113,7 @@ impl<'a> ReleaseNotesView<'a> {
             .borders(Borders::TOP)
             .style(Style::default().fg(self.ctx.color_theme.divider_fg))
             .padding(Padding::horizontal(2))
-            .title_top(" Release Notes ");
+            .title_top(t!("view.release_notes.title"));
         let inner = block.inner(area);
         self.height = inner.height as usize;
         f.render_widget(block, area);

@@ -3,6 +3,8 @@ use std::process::{Command, Output, Stdio};
 use std::sync::mpsc;
 use std::time::{Duration, Instant};
 
+use rust_i18n::t;
+
 const POLL_INTERVAL: Duration = Duration::from_millis(20);
 
 /// 把 pipe 讀到底丟進 channel；呼叫端只能用 `recv_timeout` 有界地等，
@@ -44,7 +46,7 @@ pub fn run_with_timeout(
 
     let mut child = cmd
         .spawn()
-        .map_err(|e| format!("Failed to execute {program}: {e}"))?;
+        .map_err(|e| t!("git.external.run_failed", program = program, error = e).into_owned())?;
 
     if let Some(data) = stdin_data {
         // 射後不理：唯一的副作用是寫完 drop 掉 `stdin`，讓子行程收到
@@ -70,12 +72,14 @@ pub fn run_with_timeout(
                 std::thread::sleep(POLL_INTERVAL);
                 continue;
             }
-            Ok(None) => format!(
-                "{program} command timed out after {}s (network issue?)",
-                timeout.as_secs()
-            ),
+            Ok(None) => t!(
+                "git.process.timeout",
+                program = program,
+                secs = timeout.as_secs()
+            )
+            .into_owned(),
             // try_wait 本身失敗（極罕見）也走同一條收尾。
-            Err(e) => format!("Failed to wait for {program}: {e}"),
+            Err(e) => t!("git.process.wait_failed", program = program, error = e).into_owned(),
         };
         let _ = child.kill();
         let _ = child.wait(); // reap，不留 zombie；不等 reader thread
@@ -138,7 +142,7 @@ mod tests {
         cmd.arg("30");
         let start = Instant::now();
         let err = run_with_timeout(cmd, None, BUDGET).expect_err("sleep 30 should time out");
-        assert!(err.contains("timed out"), "{err}");
+        assert!(err.contains("逾時"), "{err}");
         assert!(start.elapsed() < MAX_ELAPSED, "took {:?}", start.elapsed());
     }
 
@@ -152,7 +156,7 @@ mod tests {
         let start = Instant::now();
         let err = run_with_timeout(cmd, None, BUDGET)
             .expect_err("should time out even though a grandchild still holds the pipe open");
-        assert!(err.contains("timed out"), "{err}");
+        assert!(err.contains("逾時"), "{err}");
         assert!(start.elapsed() < MAX_ELAPSED, "took {:?}", start.elapsed());
     }
 

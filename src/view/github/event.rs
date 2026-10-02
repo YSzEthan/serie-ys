@@ -1,6 +1,7 @@
 use std::time::Instant;
 
 use ratatui::crossterm::event::{Event, KeyEvent};
+use rust_i18n::t;
 use tui_input::backend::crossterm::EventHandler;
 
 use crate::{
@@ -9,7 +10,7 @@ use crate::{
     github::{self, PrDraftAction, StateAction},
 };
 
-use super::{GitHubFocus, GitHubTab, GitHubView, LoadState, TaskListPanel};
+use super::{render::state_label, GitHubFocus, GitHubTab, GitHubView, LoadState, TaskListPanel};
 
 impl<'a> GitHubView<'a> {
     pub fn handle_event(&mut self, event_with_count: UserEventWithCount, key: KeyEvent) {
@@ -242,9 +243,12 @@ impl<'a> GitHubView<'a> {
                 self.dispatch_refresh();
             }
             UserEvent::ShortCopy => {
-                let kind = self.active_tab.kind();
+                let name = match self.active_tab.kind() {
+                    github::GhItemKind::Issue => t!("github.copy.url_issue"),
+                    github::GhItemKind::PullRequest => t!("github.copy.url_pr"),
+                };
                 self.with_selected_url(|url| AppEvent::CopyToClipboard {
-                    name: format!("{} URL", kind.display_name()),
+                    name: name.into_owned(),
                     value: url,
                 });
             }
@@ -253,8 +257,12 @@ impl<'a> GitHubView<'a> {
             }
             UserEvent::TagCopy => {
                 if let Some((number, kind)) = self.selected_number_and_kind() {
+                    let name = match kind {
+                        github::GhItemKind::Issue => t!("github.copy.number_issue"),
+                        github::GhItemKind::PullRequest => t!("github.copy.number_pr"),
+                    };
                     self.tx.send(AppEvent::CopyToClipboard {
-                        name: format!("{} Number", kind.display_name()),
+                        name: name.into_owned(),
                         value: format!("#{number}"),
                     });
                 }
@@ -297,12 +305,20 @@ impl<'a> GitHubView<'a> {
             return;
         };
         if pr.is_draft {
-            self.set_flash(format!("PR #{} is draft", pr.number), true);
+            self.set_flash(
+                t!("github.flash.pr_is_draft", number = pr.number).into_owned(),
+                true,
+            );
             return;
         }
         if pr.state != "OPEN" {
             self.set_flash(
-                format!("PR #{} is {}", pr.number, pr.state.to_lowercase()),
+                t!(
+                    "github.flash.pr_state",
+                    number = pr.number,
+                    state = state_label(&pr.state)
+                )
+                .into_owned(),
                 true,
             );
             return;
@@ -323,7 +339,12 @@ impl<'a> GitHubView<'a> {
         };
         if pr.state != "OPEN" {
             self.set_flash(
-                format!("PR #{} is {}", pr.number, pr.state.to_lowercase()),
+                t!(
+                    "github.flash.pr_state",
+                    number = pr.number,
+                    state = state_label(&pr.state)
+                )
+                .into_owned(),
                 true,
             );
             return;
@@ -343,8 +364,16 @@ impl<'a> GitHubView<'a> {
         let Some(action) = StateAction::for_state(state) else {
             // merged 的 PR 不能 reopen。要有回饋，否則按下去毫無反應 ——
             // 與同分頁的 merge / draft 切換遇到不可操作狀態時的行為一致。
-            let msg = format!("{} #{number} is {}", kind.noun(), state.to_lowercase());
-            self.set_flash(msg, true);
+            let state = state_label(state);
+            let msg = match kind {
+                github::GhItemKind::Issue => {
+                    t!("github.flash.issue_state", number = number, state = state)
+                }
+                github::GhItemKind::PullRequest => {
+                    t!("github.flash.pr_state", number = number, state = state)
+                }
+            };
+            self.set_flash(msg.into_owned(), true);
             return;
         };
         self.tx.send(AppEvent::OpenToggleStatePrompt {
@@ -480,7 +509,7 @@ impl<'a> GitHubView<'a> {
         }
         let items = github::parse_checkboxes(&body);
         if items.is_empty() {
-            self.set_flash("No tasks found".to_string(), false);
+            self.set_flash(t!("github.flash.no_tasks").into_owned(), false);
             return;
         }
         if let Some((number, kind)) = self.selected_number_and_kind() {
@@ -525,7 +554,7 @@ impl<'a> GitHubView<'a> {
             Some(url) if !url.is_empty() => self.tx.send(on_url(url)),
             Some(_) => self
                 .tx
-                .send(AppEvent::NotifyWarn("No URL for this item".into())),
+                .send(AppEvent::NotifyWarn(t!("github.flash.no_url").into_owned())),
             None => {}
         }
     }

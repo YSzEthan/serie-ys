@@ -64,6 +64,15 @@
               "type": "integer",
               "description": "The maximum number of commits to render. Unset renders all commits. The value specified in the command line argument takes precedence.",
               "minimum": 0
+            },
+            "locale": {
+              "type": "string",
+              "description": "The interface language. The value specified in the command line argument takes precedence.",
+              "enum": [
+                "zh-tw",
+                "en"
+              ],
+              "default": "zh-tw"
             }
           },
           "additionalProperties": false

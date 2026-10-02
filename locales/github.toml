@@ -1,0 +1,365 @@
+_version = 2
+
+# ── 狀態（GitHub API 值 OPEN/CLOSED/MERGED 與過濾）──
+
+[github.state.open]
+zh-TW = "開啟"
+en-US = "Open"
+
+[github.state.closed]
+zh-TW = "已關閉"
+en-US = "Closed"
+
+[github.state.merged]
+zh-TW = "已 merge"
+en-US = "Merged"
+
+[github.state.draft]
+zh-TW = "draft"
+en-US = "draft"
+
+[github.state.all]
+zh-TW = "全部"
+en-US = "All"
+
+# ── 錯誤訊息（夾帶 gh/git 的原文用 detail 帶入，不翻）──
+
+[github.error.gh_failed]
+zh-TW = "gh 指令失敗：%{detail}"
+en-US = "gh command failed: %{detail}"
+
+[github.error.invalid_utf8]
+zh-TW = "輸出不是有效的 UTF-8：%{detail}"
+en-US = "Output is not valid UTF-8: %{detail}"
+
+[github.error.unexpected_repo]
+zh-TW = "無法解析 nameWithOwner：%{value}"
+en-US = "Failed to parse nameWithOwner: %{value}"
+
+[github.error.json_parse]
+zh-TW = "JSON 解析失敗：%{detail}"
+en-US = "Failed to parse JSON: %{detail}"
+
+[github.error.pr_not_found]
+zh-TW = "找不到 PR"
+en-US = "PR not found"
+
+[github.error.commit_not_found]
+zh-TW = "找不到 commit %{oid}"
+en-US = "Commit %{oid} not found"
+
+[github.error.edit_failed]
+zh-TW = "gh edit 失敗：%{detail}"
+en-US = "gh edit failed: %{detail}"
+
+[github.error.page_failed]
+zh-TW = "%{what} 第 %{page} 頁：%{detail}"
+en-US = "%{what} page %{page}: %{detail}"
+
+[github.what.review_threads]
+zh-TW = "Review thread"
+en-US = "Review thread"
+
+[github.what.ci_checks]
+zh-TW = "CI check"
+en-US = "CI check"
+
+# ── Issue/PR 狀態切換 ──
+
+[github.state_action.close_issue.prompt]
+zh-TW = "關閉 issue #%{number}？ "
+en-US = "Close issue #%{number}? "
+
+[github.state_action.close_issue.pending]
+zh-TW = "正在關閉 issue #%{number}…"
+en-US = "Closing issue #%{number}…"
+
+[github.state_action.close_issue.success]
+zh-TW = "已關閉 issue #%{number}"
+en-US = "Closed issue #%{number}"
+
+[github.state_action.close_issue.hint]
+zh-TW = "關閉 issue"
+en-US = "close issue"
+
+[github.state_action.reopen_issue.prompt]
+zh-TW = "重新開啟 issue #%{number}？ "
+en-US = "Reopen issue #%{number}? "
+
+[github.state_action.reopen_issue.pending]
+zh-TW = "正在重新開啟 issue #%{number}…"
+en-US = "Reopening issue #%{number}…"
+
+[github.state_action.reopen_issue.success]
+zh-TW = "已重新開啟 issue #%{number}"
+en-US = "Reopened issue #%{number}"
+
+[github.state_action.reopen_issue.hint]
+zh-TW = "重新開啟 issue"
+en-US = "reopen issue"
+
+[github.state_action.close_pr.prompt]
+zh-TW = "關閉 PR #%{number}？ "
+en-US = "Close PR #%{number}? "
+
+[github.state_action.close_pr.pending]
+zh-TW = "正在關閉 PR #%{number}…"
+en-US = "Closing PR #%{number}…"
+
+[github.state_action.close_pr.success]
+zh-TW = "已關閉 PR #%{number}"
+en-US = "Closed PR #%{number}"
+
+[github.state_action.close_pr.hint]
+zh-TW = "關閉 PR"
+en-US = "close PR"
+
+[github.state_action.reopen_pr.prompt]
+zh-TW = "重新開啟 PR #%{number}？ "
+en-US = "Reopen PR #%{number}? "
+
+[github.state_action.reopen_pr.pending]
+zh-TW = "正在重新開啟 PR #%{number}…"
+en-US = "Reopening PR #%{number}…"
+
+[github.state_action.reopen_pr.success]
+zh-TW = "已重新開啟 PR #%{number}"
+en-US = "Reopened PR #%{number}"
+
+[github.state_action.reopen_pr.hint]
+zh-TW = "重新開啟 PR"
+en-US = "reopen PR"
+
+# ── PR draft 切換 ──
+
+[github.draft.mark_ready.prompt]
+zh-TW = "將 PR #%{number} 標為可供 review？ "
+en-US = "Mark PR #%{number} ready for review? "
+
+[github.draft.mark_ready.pending]
+zh-TW = "正在將 PR #%{number} 標為可供 review…"
+en-US = "Marking PR #%{number} ready for review…"
+
+[github.draft.mark_ready.success]
+zh-TW = "PR #%{number} 已可供 review"
+en-US = "PR #%{number} is ready for review"
+
+[github.draft.mark_ready.hint]
+zh-TW = "可供 review"
+en-US = "ready for review"
+
+[github.draft.to_draft.prompt]
+zh-TW = "將 PR #%{number} 轉回 draft？ "
+en-US = "Convert PR #%{number} back to draft? "
+
+[github.draft.to_draft.pending]
+zh-TW = "正在將 PR #%{number} 轉為 draft…"
+en-US = "Converting PR #%{number} to draft…"
+
+[github.draft.to_draft.success]
+zh-TW = "PR #%{number} 已轉為 draft"
+en-US = "PR #%{number} converted to draft"
+
+[github.draft.to_draft.hint]
+zh-TW = "轉回 draft"
+en-US = "back to draft"
+
+# ── GitHub view ──
+
+[github.section.body]
+zh-TW = "內文"
+en-US = "Body"
+
+[github.section.comment]
+zh-TW = "留言"
+en-US = "Comment"
+
+[github.section.commit]
+zh-TW = "Commits"
+en-US = "Commits"
+
+[github.section.ci]
+zh-TW = "CI"
+en-US = "CI"
+
+[github.section.review]
+zh-TW = "Review"
+en-US = "Review"
+
+[github.jump.not_found_issues]
+zh-TW = "issues 裡沒有 #%{number}（過濾：%{filter}）"
+en-US = "Issue #%{number} not found (filter: %{filter})"
+
+[github.jump.not_found_prs]
+zh-TW = "PRs 裡沒有 #%{number}（過濾：%{filter}）"
+en-US = "PR #%{number} not found (filter: %{filter})"
+
+[github.hint.collapse_commits]
+zh-TW = "收合 commits"
+en-US = "collapse commits"
+
+[github.hint.expand_commits]
+zh-TW = "展開 commits"
+en-US = "expand commits"
+
+[github.copy.url_issue]
+zh-TW = "Issue URL"
+en-US = "Issue URL"
+
+[github.copy.url_pr]
+zh-TW = "PR URL"
+en-US = "PR URL"
+
+[github.copy.number_issue]
+zh-TW = "Issue 編號"
+en-US = "Issue number"
+
+[github.copy.number_pr]
+zh-TW = "PR 編號"
+en-US = "PR number"
+
+[github.flash.pr_is_draft]
+zh-TW = "PR #%{number} 是 draft"
+en-US = "PR #%{number} is draft"
+
+[github.flash.pr_state]
+zh-TW = "PR #%{number} 的狀態為%{state}"
+en-US = "PR #%{number} state is %{state}"
+
+[github.flash.issue_state]
+zh-TW = "Issue #%{number} 的狀態為%{state}"
+en-US = "Issue #%{number} state is %{state}"
+
+[github.flash.no_tasks]
+zh-TW = "找不到 task"
+en-US = "No tasks found"
+
+[github.flash.no_url]
+zh-TW = "此項目沒有 URL"
+en-US = "No URL for this item"
+
+[github.render.loading]
+zh-TW = "載入 GitHub 資料中…"
+en-US = "Loading GitHub data…"
+
+[github.render.empty]
+zh-TW = "沒有項目"
+en-US = "No items"
+
+[github.render.tab_issues]
+zh-TW = " Issues (%{n}) "
+en-US = " Issues (%{n}) "
+
+[github.render.tab_prs]
+zh-TW = " PRs (%{n}) "
+en-US = " PRs (%{n}) "
+
+[github.render.matched]
+zh-TW = "  符合 %{n} 項"
+en-US = "  %{n} matched"
+
+[github.render.loading_more]
+zh-TW = " 載入更多中…"
+en-US = " Loading more…"
+
+[github.render.more]
+zh-TW = " ↓ 還有更多"
+en-US = " ↓ more"
+
+[github.render.tasks_title]
+zh-TW = " 編輯 task 清單 "
+en-US = " Edit task list "
+
+[github.render.tasks_footer]
+zh-TW = " h/l:切換  Enter:送出  Esc:取消"
+en-US = " h/l:toggle  Enter:submit  Esc:cancel"
+
+# ── Preview/timeline ──
+
+[github.preview.no_item]
+zh-TW = "（沒有選取項目）"
+en-US = "(no item selected)"
+
+[github.preview.related]
+zh-TW = "相關"
+en-US = "Related"
+
+[github.preview.no_body]
+zh-TW = "（沒有內文）"
+en-US = "(no body)"
+
+[github.preview.parent]
+zh-TW = "Parent："
+en-US = "Parent: "
+
+[github.preview.sub_issues]
+zh-TW = "Sub-issues（%{n}）："
+en-US = "Sub-issues (%{n}):"
+
+[github.timeline.more_review_comments]
+zh-TW = "（還有 %{n} 則留言）"
+en-US = "(+%{n} more comments)"
+
+[github.timeline.loading]
+zh-TW = "（載入留言中…）"
+en-US = "(loading comments…)"
+
+[github.timeline.failed]
+zh-TW = "（留言載入失敗：%{detail}）"
+en-US = "(failed to load comments: %{detail})"
+
+[github.timeline.empty]
+zh-TW = "（沒有留言）"
+en-US = "(no comments)"
+
+[github.timeline.loading_more]
+zh-TW = "（載入更多中…）"
+en-US = "(loading more…)"
+
+[github.timeline.more]
+zh-TW = "（還有更多留言——往下捲動載入）"
+en-US = "(more comments — scroll down to load)"
+
+[github.timeline.collapsed_commits]
+zh-TW = "▸ %{n} 個 commit"
+en-US = "▸ %{n} commits"
+
+[github.timeline.collapsed_checks]
+zh-TW = "▸ %{n} 個 check "
+en-US = "▸ %{n} checks "
+
+[github.timeline.outdated]
+zh-TW = "  （已過時）"
+en-US = "  (outdated)"
+
+[github.timeline.resolved]
+zh-TW = "  （已解決）"
+en-US = "  (resolved)"
+
+[github.timeline.mergeable]
+zh-TW = "  （可 merge）"
+en-US = "  (mergeable)"
+
+[github.timeline.conflicting]
+zh-TW = "  （有衝突）"
+en-US = "  (has conflicts)"
+
+[github.review.approved]
+zh-TW = "Approved"
+en-US = "Approved"
+
+[github.review.changes_requested]
+zh-TW = "Changes requested"
+en-US = "Changes requested"
+
+[github.review.commented]
+zh-TW = "Commented"
+en-US = "Commented"
+
+[github.review.dismissed]
+zh-TW = "Dismissed"
+en-US = "Dismissed"
+
+[github.render.refetching]
+zh-TW = "  ⟳ 重新抓取中…"
+en-US = "  ⟳ Refetching…"

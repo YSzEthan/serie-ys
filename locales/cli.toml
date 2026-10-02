@@ -1,0 +1,269 @@
+_version = 2
+
+[cli.whats_new.none]
+zh-TW = "這個版本沒有對應的 CHANGELOG 段落。"
+en-US = "No CHANGELOG section for this version."
+
+[cli.notice.applied_on_disk]
+zh-TW = "已套用磁碟上的新版本"
+en-US = "Applied the version already on disk"
+
+[cli.notice.no_commit_graph]
+zh-TW = "找不到 commit-graph。執行 `git commit-graph write --reachable` 可加快載入"
+en-US = "No commit-graph found. Run `git commit-graph write --reachable` to speed up loading"
+
+[cli.startup.loading]
+zh-TW = "載入中… %{secs} 秒"
+en-US = "Loading… %{secs}s"
+
+[cli.update.config_load_failed]
+zh-TW = "設定檔載入失敗（%{error}），本次 -U 使用預設更新設定"
+en-US = "Failed to load the config file (%{error}), using default update settings for this -U run"
+
+[cli.update.up_to_date]
+zh-TW = "已是最新版本（v%{version}）"
+en-US = "Already up to date (v%{version})"
+
+[cli.update.confirm]
+zh-TW = "v%{current} → %{tag}  要更新嗎？[Y/n]"
+en-US = "v%{current} → %{tag}  Update? [Y/n]"
+
+[cli.update.cancelled]
+zh-TW = "已取消更新。"
+en-US = "Update cancelled."
+
+[cli.update.updating]
+zh-TW = "正在更新到 %{tag}…"
+en-US = "Updating to %{tag}…"
+
+[cli.update.confirm_launch]
+zh-TW = "現在啟動 ysgit 嗎？[Y/n]"
+en-US = "Launch ysgit now? [Y/n]"
+
+[cli.update.restart_failed]
+zh-TW = "已更新到 %{tag}，但重啟失敗：%{error}"
+en-US = "Updated to %{tag}, but restart failed: %{error}"
+
+[cli.update.restart_manually]
+zh-TW = "請重啟 ysgit 以使用新版本。"
+en-US = "Restart ysgit to use the new version."
+
+[cli.update.updated]
+zh-TW = "已更新到 %{tag}。請重啟 ysgit 以使用新版本。"
+en-US = "Updated to %{tag}. Restart ysgit to use the new version."
+
+[cli.update.err.windows]
+zh-TW = "Windows 請至 GitHub Releases 頁面手動下載更新"
+en-US = "On Windows, download the update manually from the GitHub Releases page"
+
+[cli.update.err.debug_build]
+zh-TW = "開發版本（debug build）不支援自我更新"
+en-US = "Self-update is not supported in debug builds"
+
+[cli.update.err.in_progress]
+zh-TW = "已經有一個更新在進行中"
+en-US = "An update is already in progress"
+
+[cli.update.err.cannot_write]
+zh-TW = "無法在 %{path} 寫入（權限不足？）：%{error}"
+en-US = "Failed to write to %{path} (insufficient permission?): %{error}"
+
+[cli.update.err.replace_failed]
+zh-TW = "替換執行檔失敗：%{error}"
+en-US = "Failed to replace the executable: %{error}"
+
+[cli.update.err.restart_failed]
+zh-TW = "自動重啟失敗：%{error}"
+en-US = "Failed to restart automatically: %{error}"
+
+[cli.update.err.restart_unsupported]
+zh-TW = "此平台不支援自動重啟"
+en-US = "Automatic restart is not supported on this platform"
+
+[cli.update.err.no_asset]
+zh-TW = "沒有 %{os}-%{arch} 平台的 release"
+en-US = "No release for the %{os}-%{arch} platform"
+
+[cli.update.err.exe_replaced]
+zh-TW = "磁碟上的 ysgit 已被替換（自我更新或手動部署），請重啟後再更新"
+en-US = "The ysgit on disk has been replaced (self-update or manual deployment), so restart it before updating again"
+
+[cli.update.err.fetch_release]
+zh-TW = "抓取 release 資訊失敗（%{status}）"
+en-US = "Failed to fetch release info (%{status})"
+
+[cli.update.err.invalid_utf8]
+zh-TW = "回應不是合法 UTF-8：%{error}"
+en-US = "Response is not valid UTF-8: %{error}"
+
+[cli.update.err.download_failed]
+zh-TW = "下載失敗（%{status}）"
+en-US = "Download failed (%{status})"
+
+[cli.update.err.read_perms]
+zh-TW = "讀取原執行檔權限失敗：%{error}"
+en-US = "Failed to read the permissions of the original executable: %{error}"
+
+[cli.update.err.set_perms]
+zh-TW = "設定執行權限失敗：%{error}"
+en-US = "Failed to set execute permission: %{error}"
+
+[cli.update.err.cannot_run]
+zh-TW = "無法執行下載的檔案：%{error}"
+en-US = "Failed to run the downloaded file: %{error}"
+
+[cli.update.err.run_failed]
+zh-TW = "下載的檔案無法正常執行（%{status}）——可能被系統標記為不安全，或下載不完整"
+en-US = "The downloaded file did not run correctly (%{status}) — it may have been flagged as unsafe by the system, or the download is incomplete"
+
+[cli.update.err.version_mismatch]
+zh-TW = "下載的檔案版本不符（預期含 %{expected}，實際輸出：%{actual}）"
+en-US = "The downloaded file has the wrong version (expected output to contain %{expected}, actual output: %{actual})"
+
+[cli.update.err.exe_path_missing]
+zh-TW = "找不到目前執行檔路徑：%{error}"
+en-US = "Current executable path not found: %{error}"
+
+[cli.update.err.exe_path_resolve]
+zh-TW = "無法解析執行檔路徑：%{error}"
+en-US = "Failed to resolve the executable path: %{error}"
+
+[cli.update.err.not_a_file]
+zh-TW = "%{path} 不是一般檔案"
+en-US = "%{path} is not a regular file"
+
+[cli.update.err.curl_missing]
+zh-TW = "找不到 curl，請先安裝"
+en-US = "curl not found, please install it first"
+
+[cli.update.err.curl_failed]
+zh-TW = "執行 curl 失敗：%{error}"
+en-US = "Failed to run curl: %{error}"
+
+[cli.update.err.signal]
+zh-TW = "被 signal %{sig} 中止"
+en-US = "terminated by signal %{sig}"
+
+[cli.update.err.abnormal]
+zh-TW = "異常終止"
+en-US = "terminated abnormally"
+
+[cli.config.env_file_missing]
+zh-TW = "$%{env} 環境變數指定的設定檔不存在：%{path}"
+en-US = "The config file specified by the $%{env} environment variable does not exist: %{path}"
+
+[cli.config.write_default_failed]
+zh-TW = "寫入預設設定檔失敗（%{path}）：%{error}"
+en-US = "Failed to write the default config file (%{path}): %{error}"
+
+[cli.config.create_default_failed]
+zh-TW = "無法建立預設設定檔（%{path}）：%{error}"
+en-US = "Failed to create the default config file (%{path}): %{error}"
+
+[cli.config.command_key_empty]
+zh-TW = "command 的 key 不能是空的，例如 `commands_`"
+en-US = "The command key must not be empty, for example `commands_`"
+
+[cli.config.commands_key_invalid]
+zh-TW = "`commands` 不是合法的 key，請改用 `commands_n` 格式"
+en-US = "`commands` is not a valid key, use the `commands_n` format instead"
+
+[cli.config.inline_refresh]
+zh-TW = "inline command 的 refresh 不能是 true"
+en-US = "refresh must not be true for an inline command"
+
+[cli.keybind.duplicate_event]
+zh-TW = "%{event} 在這個檔案裡被宣告了不只一次（請檢查是否有別名的 action 名稱對應到同一個 event）"
+en-US = "%{event} is declared more than once in this file (check whether alias action names map to the same event)"
+
+[cli.keybind.invalid_key]
+zh-TW = "%{key} 不是合法的按鍵：%{reason}"
+en-US = "%{key} is not a valid key: %{reason}"
+
+[cli.keybind.multiple_events]
+zh-TW = "%{key} 對應到多個 event：%{event}、%{other}"
+en-US = "%{key} maps to multiple events: %{event}, %{other}"
+
+[cli.keybind.parse_failed]
+zh-TW = "無法解析 %{raw}"
+en-US = "Failed to parse %{raw}"
+
+[cli.help.path]
+zh-TW = "git repository 路徑 [default: current directory]"
+en-US = "Path to the git repository [default: current directory]"
+
+[cli.help.path_browser]
+zh-TW = "以互動式目錄瀏覽器選擇 [PATH]（類似 ranger；可搭配上面的路徑引數指定起始目錄）"
+en-US = "Pick [PATH] with an interactive directory browser (ranger-like; the path argument above sets the starting directory)"
+
+[cli.help.max_count]
+zh-TW = "要渲染的最大 commit 數量"
+en-US = "Maximum number of commits to render"
+
+[cli.help.order]
+zh-TW = "Commit 排序演算法 [default: chrono]"
+en-US = "Commit ordering algorithm [default: chrono]"
+
+[cli.help.graph_width]
+zh-TW = "Commit graph 格子寬度 [default: auto]"
+en-US = "Width of each commit graph cell [default: auto]"
+
+[cli.help.compact]
+zh-TW = "緊湊模式：commit 文字貼齊該列 graph 實際畫到的最右邊，不保留固定留白 [default: auto]"
+en-US = "Compact mode: align commit text to the rightmost column the graph actually draws, with no fixed padding [default: auto]"
+
+[cli.help.graph_style]
+zh-TW = "Commit graph 邊線風格 [default: rounded]"
+en-US = "Commit graph edge style [default: rounded]"
+
+[cli.help.initial_selection]
+zh-TW = "初始選取的 commit [default: latest]"
+en-US = "Commit selected on startup [default: latest]"
+
+[cli.help.update_mode]
+zh-TW = "自動更新檢查模式 [default: check]"
+en-US = "Auto-update check mode [default: check]"
+
+[cli.help.update_interval]
+zh-TW = "自動更新的檢查間隔，單位小時 [default: 6]"
+en-US = "Auto-update check interval in hours [default: 6]"
+
+[cli.help.auto_restart]
+zh-TW = "更新完成後自動重啟（TUI）／開啟新版（CLI），不再詢問；開啟時也會偵測磁碟上的執行檔是否被別的 ysgit 實例或手動部署換掉，換掉且確認可執行就在使用者閒置時自動接上新版 [default: off]"
+en-US = "Restart automatically after an update (TUI) / launch the new version (CLI) without asking. When on, also detects that the executable on disk was replaced by another ysgit instance or a manual deployment and, once it is confirmed runnable, switches to it while you are idle [default: off]"
+
+[cli.help.release_notes]
+zh-TW = "版本變了、第一次啟動時是否自動跳出該版的 release notes [default: on]"
+en-US = "Whether to show the release notes automatically on the first launch after the version changes [default: on]"
+
+[cli.help.auto_fetch]
+zh-TW = "背景定期偵測 git remote 是否有新內容，有就自動 fetch（只更新 remote-tracking refs，local branch 不動）[default: off]"
+en-US = "Periodically check in the background whether the git remote has new content and fetch automatically (only remote-tracking refs are updated; local branches are untouched) [default: off]"
+
+[cli.help.auto_fetch_interval]
+zh-TW = "自動 fetch 的輪詢間隔，單位秒 [default: 600]"
+en-US = "Auto-fetch polling interval in seconds [default: 600]"
+
+[cli.help.fetch_prune]
+zh-TW = "fetch 時是否加上 --prune（手動 f 與 auto-fetch 共用）；關閉時不加任何 prune 相關旗標，是否 prune 交由 git 自己的 fetch.prune 設定決定 [default: off]"
+en-US = "Whether to add --prune on fetch (shared by manual f and auto-fetch); when off, no prune flag is passed and git's own fetch.prune setting decides [default: off]"
+
+[cli.help.locale]
+zh-TW = "介面語言 [default: zh-tw]"
+en-US = "Interface language [default: zh-tw]"
+
+[cli.help.help]
+zh-TW = "顯示說明"
+en-US = "Show help"
+
+[cli.help.version]
+zh-TW = "顯示版本"
+en-US = "Show version"
+
+[cli.help.update]
+zh-TW = "檢查 GitHub Releases 並更新執行檔本身"
+en-US = "Check GitHub Releases and update the executable itself"
+
+[cli.help.whats_new]
+zh-TW = "顯示目前這一版的 release notes 並離開，不進 TUI"
+en-US = "Show the release notes for the current version and exit without starting the TUI"

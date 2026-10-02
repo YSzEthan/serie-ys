@@ -1,0 +1,261 @@
+_version = 2
+
+[event.desc.force_quit]
+zh-TW = "強制離開"
+en-US = "Force quit"
+
+[event.desc.quit]
+zh-TW = "離開（按兩次）"
+en-US = "Quit (press twice)"
+
+[event.desc.help_toggle]
+zh-TW = "開啟／關閉說明"
+en-US = "Open/close help"
+
+[event.desc.cancel]
+zh-TW = "取消"
+en-US = "Cancel"
+
+[event.desc.close]
+zh-TW = "關閉"
+en-US = "Close"
+
+[event.desc.navigate_up]
+zh-TW = "向上移動"
+en-US = "Move up"
+
+[event.desc.navigate_down]
+zh-TW = "向下移動"
+en-US = "Move down"
+
+[event.desc.navigate_right]
+zh-TW = "向右移動／顯示詳情"
+en-US = "Move right/show details"
+
+[event.desc.navigate_left]
+zh-TW = "向左移動／關閉詳情"
+en-US = "Move left/close details"
+
+[event.desc.select_up]
+zh-TW = "選取範圍向上擴展"
+en-US = "Extend selection up"
+
+[event.desc.select_down]
+zh-TW = "選取範圍向下擴展"
+en-US = "Extend selection down"
+
+[event.desc.go_to_top]
+zh-TW = "跳到頂端"
+en-US = "Go to top"
+
+[event.desc.go_to_bottom]
+zh-TW = "跳到底端"
+en-US = "Go to bottom"
+
+[event.desc.go_to_parent]
+zh-TW = "選擇 parent commit"
+en-US = "Select parent commit"
+
+[event.desc.go_to_child]
+zh-TW = "選擇 child commit"
+en-US = "Select child commit"
+
+[event.desc.go_to_head]
+zh-TW = "回到 HEAD"
+en-US = "Go back to HEAD"
+
+[event.desc.scroll_up]
+zh-TW = "向上捲動"
+en-US = "Scroll up"
+
+[event.desc.scroll_down]
+zh-TW = "向下捲動"
+en-US = "Scroll down"
+
+[event.desc.page_up]
+zh-TW = "向上一頁"
+en-US = "Page up"
+
+[event.desc.page_down]
+zh-TW = "向下一頁"
+en-US = "Page down"
+
+[event.desc.half_page_up]
+zh-TW = "向上半頁"
+en-US = "Half page up"
+
+[event.desc.half_page_down]
+zh-TW = "向下半頁"
+en-US = "Half page down"
+
+[event.desc.go_to_next]
+zh-TW = "下一個符合項"
+en-US = "Next match"
+
+[event.desc.go_to_previous]
+zh-TW = "上一個符合項"
+en-US = "Previous match"
+
+[event.desc.confirm]
+zh-TW = "確認"
+en-US = "Confirm"
+
+[event.desc.ref_list]
+zh-TW = "開啟／關閉 refs 清單"
+en-US = "Open/close refs list"
+
+[event.desc.search]
+zh-TW = "開始搜尋"
+en-US = "Start search"
+
+[event.desc.filter]
+zh-TW = "開始過濾"
+en-US = "Start filter"
+
+[event.desc.ignore_case_toggle]
+zh-TW = "切換忽略大小寫"
+en-US = "Toggle ignore case"
+
+[event.desc.fuzzy_toggle]
+zh-TW = "切換模糊比對"
+en-US = "Toggle fuzzy match"
+
+[event.desc.target_toggle]
+zh-TW = "切換比對欄位"
+en-US = "Toggle match target"
+
+[event.desc.refresh]
+zh-TW = "重新整理"
+en-US = "Refresh"
+
+[event.desc.short_copy]
+zh-TW = "複製 commit short hash"
+en-US = "Copy commit short hash"
+
+[event.desc.full_copy]
+zh-TW = "複製 commit subject"
+en-US = "Copy commit subject"
+
+[event.desc.branch_copy]
+zh-TW = "複製 branch 名稱（優先 local）"
+en-US = "Copy branch name (local preferred)"
+
+[event.desc.full_branch_copy]
+zh-TW = "複製 remote branch 名稱"
+en-US = "Copy remote branch name"
+
+[event.desc.tag_copy]
+zh-TW = "複製 tag 名稱"
+en-US = "Copy tag name"
+
+[event.desc.create_tag]
+zh-TW = "在 commit 上建立 tag"
+en-US = "Create tag on commit"
+
+[event.desc.delete_tag]
+zh-TW = "刪除 commit 上的 tag"
+en-US = "Delete tag on commit"
+
+[event.desc.delete_ref]
+zh-TW = "刪除 commit 上的 local branch"
+en-US = "Delete local branch on commit"
+
+[event.desc.remote_refs_toggle]
+zh-TW = "切換 remote refs"
+en-US = "Toggle remote refs"
+
+[event.desc.git_hub_toggle]
+zh-TW = "開啟 GitHub issues/PRs"
+en-US = "Open GitHub issues/PRs"
+
+[event.desc.shell_toggle]
+zh-TW = "開啟 Shell"
+en-US = "Open Shell"
+
+[event.desc.task_list_toggle]
+zh-TW = "切換 task 清單"
+en-US = "Toggle task list"
+
+[event.desc.detail_pane_toggle]
+zh-TW = "切換詳情 pane"
+en-US = "Toggle details pane"
+
+[event.desc.fetch]
+zh-TW = "fetch 所有 remote"
+en-US = "Fetch all remotes"
+
+[event.desc.checkout]
+zh-TW = "checkout 選取的 commit/ref"
+en-US = "Checkout selected commit/ref"
+
+[event.desc.merge_pr]
+zh-TW = "merge PR"
+en-US = "Merge PR"
+
+[event.desc.toggle_issue_state]
+zh-TW = "切換 issue 開啟／關閉狀態"
+en-US = "Toggle issue open/closed state"
+
+[event.desc.toggle_pr_draft]
+zh-TW = "切換 PR draft 狀態"
+en-US = "Toggle PR draft state"
+
+[event.desc.toggle_commit_log]
+zh-TW = "展開／收合 commit log"
+en-US = "Expand/collapse commit log"
+
+[event.desc.check_update]
+zh-TW = "檢查更新"
+en-US = "Check for updates"
+
+[event.related.parent]
+zh-TW = "Parent"
+en-US = "Parent"
+
+[event.related.sub]
+zh-TW = "Sub-issue"
+en-US = "Sub-issue"
+
+[event.related.linked]
+zh-TW = "Linked"
+en-US = "Linked"
+
+[event.copy_label.local]
+zh-TW = "Branch 名稱"
+en-US = "Branch Name"
+
+[event.copy_label.remote]
+zh-TW = "Remote branch 名稱"
+en-US = "Remote Branch Name"
+
+[event.copy_label.tag]
+zh-TW = "Tag 名稱"
+en-US = "Tag Name"
+
+[event.pick_prompt.local]
+zh-TW = "選擇 branch："
+en-US = "Select branch: "
+
+[event.pick_prompt.remote]
+zh-TW = "選擇 remote branch："
+en-US = "Select remote branch: "
+
+[event.pick_prompt.tag]
+zh-TW = "選擇 tag："
+en-US = "Select tag: "
+
+[event.checkout_prompt.branch]
+zh-TW = "Checkout branch："
+en-US = "Checkout branch: "
+
+[event.checkout_prompt.tag]
+zh-TW = "Checkout tag："
+en-US = "Checkout tag: "
+
+[event.err.invalid_user_command]
+zh-TW = "user_command_n 格式不正確：%{value}"
+en-US = "Invalid user_command_n format: %{value}"
+
+[event.err.unknown_user_event]
+zh-TW = "未知的 user event：%{value}"
+en-US = "Unknown user event: %{value}"

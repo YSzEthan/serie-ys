@@ -7,6 +7,7 @@ use std::{
 };
 
 use garde::Validate;
+use rust_i18n::t;
 use rustc_hash::FxHashMap;
 use serde::Deserialize;
 use smart_default::SmartDefault;
@@ -18,7 +19,7 @@ use crate::{
     git::FetchPrune,
     keybind::KeyBind,
     update::{AutoRestart, ReleaseNotes, UpdateMode, MAX_INTERVAL_HOURS, MIN_INTERVAL_HOURS},
-    CommitOrderType, CompactType, GraphStyle, GraphWidthType, InitialSelection, Result,
+    CommitOrderType, CompactType, GraphStyle, GraphWidthType, InitialSelection, Locale, Result,
 };
 
 const CONFIG_FILE_NAME: &str = ".ysgit.toml";
@@ -28,11 +29,12 @@ pub fn load() -> Result<(CoreConfig, UiConfig, ColorTheme, Option<KeyBind>)> {
     let config = match config_file_path_from_env() {
         Some(user_path) => {
             if !user_path.exists() {
-                let msg = format!(
-                    "Config file specified by ${CONFIG_FILE_ENV_NAME} environment variable not found: {}",
-                    user_path.display()
-                );
-                return Err(msg.into());
+                return Err(t!(
+                    "cli.config.env_file_missing",
+                    env = CONFIG_FILE_ENV_NAME,
+                    path = user_path.display()
+                )
+                .into());
             }
             read_config_from_path(&user_path)
         }
@@ -86,12 +88,26 @@ pub fn ensure_config_file() {
         Ok(mut file) => {
             const DEFAULT_CONFIG: &str = include_str!("../assets/default-config.toml");
             if let Err(e) = file.write_all(DEFAULT_CONFIG.as_bytes()) {
-                eprintln!("寫入預設設定檔失敗（{}）：{e}", path.display());
+                eprintln!(
+                    "{}",
+                    t!(
+                        "cli.config.write_default_failed",
+                        path = path.display(),
+                        error = e
+                    )
+                );
             }
         }
         Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => {}
         Err(e) => {
-            eprintln!("無法建立預設設定檔（{}）：{e}", path.display());
+            eprintln!(
+                "{}",
+                t!(
+                    "cli.config.create_default_failed",
+                    path = path.display(),
+                    error = e
+                )
+            );
         }
     }
 }
@@ -194,6 +210,7 @@ pub struct CoreOptionConfig {
     pub graph_style: Option<GraphStyle>,
     pub initial_selection: Option<InitialSelection>,
     pub max_count: Option<usize>,
+    pub locale: Option<Locale>,
 }
 
 /// 自動更新設定，四個欄位對應 `-U`／背景檢查／重啟提示／更新後跳
@@ -326,18 +343,14 @@ impl<'de> Deserialize<'de> for OptionalCoreUserCommandConfig {
                     if let Some(suffix) = key.strip_prefix("commands_") {
                         let command_key = suffix.to_string();
                         if command_key.is_empty() {
-                            return Err(V::Error::custom(
-                                "command key cannot be empty, like `commands_`",
-                            ));
+                            return Err(V::Error::custom(t!("cli.config.command_key_empty")));
                         }
                         let command_value: UserCommand = map.next_value()?;
                         commands.insert(command_key, command_value);
                     } else if key == "tab_width" {
                         tab_width = Some(map.next_value()?);
                     } else if key == "commands" {
-                        return Err(V::Error::custom(
-                            "invalid key `commands`, use `commands_n` format instead",
-                        ));
+                        return Err(V::Error::custom(t!("cli.config.commands_key_invalid")));
                     } else {
                         let _: serde::de::IgnoredAny = map.next_value()?;
                     }
@@ -379,9 +392,7 @@ fn validate_user_command_refresh(
 ) -> impl FnOnce(&bool, &()) -> garde::Result + '_ {
     move |refresh, _| {
         if matches!(command_type, UserCommandType::Inline) && *refresh {
-            return Err(garde::Error::new(
-                "refresh cannot be true for inline command",
-            ));
+            return Err(garde::Error::new(t!("cli.config.inline_refresh")));
         }
         Ok(())
     }
@@ -818,6 +829,7 @@ mod tests {
                     graph_style: None,
                     initial_selection: None,
                     max_count: None,
+                    locale: None,
                 },
                 update: CoreUpdateConfig {
                     mode: None,
@@ -931,6 +943,7 @@ mod tests {
                     graph_style: Some(GraphStyle::Angular),
                     initial_selection: Some(InitialSelection::Head),
                     max_count: None,
+                    locale: None,
                 },
                 update: CoreUpdateConfig {
                     mode: None,
@@ -1317,6 +1330,24 @@ mod tests {
     #[test]
     fn auto_fetch_mode_schema_enum_matches_every_accepted_cli_value() {
         assert_schema_enum_matches_every_accepted_cli_value::<AutoFetch>(&["auto_fetch", "mode"]);
+    }
+
+    #[test]
+    fn locale_schema_enum_matches_every_accepted_cli_value() {
+        assert_schema_enum_matches_every_accepted_cli_value::<Locale>(&["option", "locale"]);
+    }
+
+    #[test]
+    fn locale_parses_from_config_and_rejects_unknown_values() {
+        let parse = |v: &str| {
+            toml::from_str::<OptionalConfig>(&format!("[core.option]\nlocale = \"{v}\"\n"))
+        };
+        let cfg: Config = parse("en").unwrap().into();
+        assert_eq!(cfg.core.option.locale, Some(Locale::En));
+        let cfg: Config = parse("zh-tw").unwrap().into();
+        assert_eq!(cfg.core.option.locale, Some(Locale::ZhTw));
+        assert!(parse("zh-TW").is_err(), "只接受小寫，與其他 enum 一致");
+        assert!(parse("fr").is_err());
     }
 
     #[test]

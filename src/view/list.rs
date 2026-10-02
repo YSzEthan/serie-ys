@@ -5,6 +5,7 @@ use ratatui::{
     layout::Rect,
     Frame,
 };
+use rust_i18n::t;
 
 use crate::{
     app::AppContext,
@@ -215,11 +216,13 @@ impl<'a> ListView<'a> {
             UserEvent::RemoteRefsToggle => {
                 let show = self.as_mut_list_state().toggle_remote_refs();
                 if show {
-                    self.tx
-                        .send(AppEvent::NotifyInfo("Remote refs: shown".into()));
+                    self.tx.send(AppEvent::NotifyInfo(
+                        t!("view.list.remote_refs_shown").into_owned(),
+                    ));
                 } else {
-                    self.tx
-                        .send(AppEvent::NotifyInfo("Remote refs: hidden".into()));
+                    self.tx.send(AppEvent::NotifyInfo(
+                        t!("view.list.remote_refs_hidden").into_owned(),
+                    ));
                 }
                 self.tx
                     .send_after(AppEvent::ClearStatusLine, std::time::Duration::from_secs(3));
@@ -366,10 +369,13 @@ impl<'a> ListView<'a> {
         if let SearchState::Applied { .. } = self.as_list_state().search_state() {
             self.update_matched_message();
         } else {
-            self.tx.send(AppEvent::NotifyInfo(format!(
-                "Search: {}",
-                self.as_list_state().search_options().status_string()
-            )));
+            self.tx.send(AppEvent::NotifyInfo(
+                t!(
+                    "view.list.search_options",
+                    options = self.as_list_state().search_options().status_string()
+                )
+                .into_owned(),
+            ));
         }
     }
 
@@ -378,7 +384,10 @@ impl<'a> ListView<'a> {
             return;
         }
         let selected = self.as_list_state().selected_commit_hash();
-        self.copy_to_clipboard("Commit SHA (short)".into(), selected.as_short_hash().into());
+        self.copy_to_clipboard(
+            t!("view.clipboard.commit_sha_short").into_owned(),
+            selected.as_short_hash().into(),
+        );
     }
 
     fn copy_commit_subject(&self) {
@@ -386,7 +395,10 @@ impl<'a> ListView<'a> {
             return;
         }
         let subject = self.as_list_state().selected_commit_subject();
-        self.copy_to_clipboard("Commit Subject".into(), subject.into());
+        self.copy_to_clipboard(
+            t!("view.clipboard.commit_subject").into_owned(),
+            subject.into(),
+        );
     }
 
     fn handle_branch_copy(&self, full: bool) {
