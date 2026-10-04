@@ -2039,7 +2039,7 @@ impl App<'_> {
                     t!("app.open_url.opening", url = url).into_owned(),
                 ));
             }
-            // 沒有本機瀏覽器可 spawn（SSH／mosh）。OSC 8 在這條路徑上沒有能
+            // 沒有本機瀏覽器可 spawn（見 `external::viewer_is_remote`）。OSC 8 在這條路徑上沒有能
             // 動的版本——mosh 的終端模擬器直接吃掉整個 OSC 8 序列（沒有
             // hyperlink 欄位可存），tmux 的 DCS passthrough 則會讓 label
             // 印到錯的座標、後續畫面留下殘骸（見 git log 這次變更的說明）。
