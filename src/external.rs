@@ -70,10 +70,15 @@ pub fn is_tmux() -> bool {
     env::var_os("TMUX").is_some()
 }
 
-// tmux session 可能在 SSH 前就存在、看不到 SSH_* env，導致 arboard 寫不到 host
-// 剪貼簿；只要在 tmux 內，一律改走 OSC52 讓外層終端處理。
+fn is_herdr() -> bool {
+    env::var_os("HERDR_ENV").is_some()
+}
+
+// 多工器（tmux、herdr）的 server 可能在 SSH 前就存在、或本來就常駐在遠端主機，
+// pane 內看不到 SSH_* env，導致 arboard 寫進的是遠端主機自己的剪貼簿；只要在
+// 多工器內，一律改走 OSC52 讓外層終端處理。
 fn should_use_osc52() -> bool {
-    is_ssh_session() || is_tmux()
+    is_ssh_session() || is_tmux() || is_herdr()
 }
 
 // tmux DCS passthrough：把 inner 所有 \x1b 替換成 \x1b\x1b，包在 \x1bPtmux;...\x1b\\ 裡。
@@ -93,6 +98,7 @@ fn copy_to_clipboard_osc52(value: &str) -> Result<(), String> {
     let in_tmux = is_tmux();
 
     // /dev/tty 永遠先寫一次：在純 SSH 或非 tmux 環境下這就是終端，bytes 直達外層解析剪貼簿。
+    // herdr 內的 /dev/tty 是 pane pty，herdr 會把 OSC52 轉發到使用者眼前那台機器（0.9.3 實測）。
     // tmux 內的 /dev/tty 是 pane pty，bytes 會被 set-clipboard 攔截 — 由下面 list-clients 路徑兜底。
     let mut wrote_any = write_to_tty("/dev/tty", &raw).is_ok();
 

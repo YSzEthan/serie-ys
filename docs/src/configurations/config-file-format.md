@@ -408,7 +408,7 @@ filter 的 `ignore_case`/`fuzzy` 沒有對應 config 可設定的既有設計）
 - 型別：`object`（enum）
 - 預設值：`Auto`
 - 可選值：
-  - `Auto`：使用預設剪貼簿函式庫（`arboard`）。當 `$SSH_CONNECTION` 或 `$SSH_TTY` 有設定時，改用 `Osc52`，讓複製結果進到**本機**剪貼簿，而不是遠端主機的 X11／Wayland 剪貼簿。
+  - `Auto`：使用預設剪貼簿函式庫（`arboard`）。在 SSH（`$SSH_CONNECTION` 或 `$SSH_TTY`）、tmux（`$TMUX`）或 herdr（`$HERDR_ENV`）裡會改用 `Osc52`，讓複製結果進到**本機**剪貼簿，而不是遠端主機的剪貼簿。
   - `Osc52`：一律對 stdout 送出 OSC 52 終端跳脫序列；支援的終端機（iTerm2、Kitty、WezTerm、foot、開了 `set-clipboard on` 的 tmux 等）會把文字寫入本機剪貼簿。不需要 X11 forwarding 就能透過 SSH 運作。
   - `{ Custom = { commands = ["..."] } }`：使用自訂指令，文字透過 stdin 傳入。
     - `commands`：`array of strings` —— 指令與其引數。
@@ -421,6 +421,8 @@ filter 的 `ignore_case`/`fuzzy` 沒有對應 config 可設定的既有設計）
 `Osc52` 的注意事項：
 
 - tmux：3.3 以後 `allow-passthrough` 預設關閉，需要在 `~/.tmux.conf` 加上 `set -g allow-passthrough on`。若你已經設了 `set -g set-clipboard on`，tmux 會自行處理 OSC 52，不需要 passthrough。
+- herdr：0.9.3 實測會把 pane 送出的 OSC 52 轉發到本機剪貼簿，連到遠端機器的 pane 也一樣。
+- 多工器或終端機沒有轉發 OSC 52 時，`Auto` 沒有辦法退回 `arboard`，請改用 `Custom`（例如 `pbcopy`、`wl-copy`）。
 - 不支援的終端機會靜默忽略這個序列（不會有錯誤訊息），但這仍然好過以往那種複製到錯誤主機剪貼簿的行為。
 
 ### `ui.cursor_type`
