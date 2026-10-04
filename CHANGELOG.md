@@ -1,5 +1,17 @@
 # Changelog
 
+## [4.7.1](https://github.com/YSzEthan/serie-ys/compare/v4.7.0...v4.7.1) (2026-10-04)
+
+
+### Bug Fixes
+
+* herdr 內複製改走 OSC 52、開 URL 遇遠端 client 改顯示 (#149) (#150) (#151) ([220bb31](https://github.com/YSzEthan/serie-ys/commit/220bb31351e6a693efb90abf81a3d92c2cec6d9b))
+
+
+### Tests
+
+* 移植 upstream v0.9.2 圖形測試，驗證欄位重用不會造成邊重疊 (#147) (#148) ([9f5decf](https://github.com/YSzEthan/serie-ys/commit/9f5decf85e7582c78a5f21bea59f8eea829d9310))
+
 ## [4.7.0](https://github.com/YSzEthan/serie-ys/compare/v4.6.1...v4.7.0) (2026-10-02)
 
 
