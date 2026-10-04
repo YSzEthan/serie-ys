@@ -228,9 +228,37 @@ fn copy_to_clipboard_auto(value: String) -> Result<(), String> {
     })
 }
 
-/// `open_url` 的結果。`NotSpawned`：沒有本機瀏覽器可開（SSH／mosh），
-/// 呼叫端負責把 URL 顯示出來、讓終端自己偵測——理由見它的呼叫端
-/// `App::open_url`。
+// argv[0] 的檔名是 herdr、argv[1] 是 remote-client-bridge 才算。
+// 連出去那端的 `ssh … herdr remote-client-bridge` 整行也含這段字串，
+// 所以不能用子字串比對。路徑含空白會漏判，結果等同沒偵測到。
+fn has_herdr_remote_bridge(ps_args: &str) -> bool {
+    ps_args.lines().any(|line| {
+        let mut argv = line.split_whitespace();
+        argv.next()
+            .is_some_and(|p| p.rsplit('/').next() == Some("herdr"))
+            && argv.next() == Some("remote-client-bridge")
+    })
+}
+
+// 回答的是「有人從別台連進這台主機的 herdr」，不是「這個 pane 正被遠端觀看」
+// ——herdr 0.9.3 沒有後者的 env 或 API。依據是未文件化的內部子命令名稱，
+// herdr 改名後這裡回 false，行為退回直接 spawn。`ww` 避免舊版 procps 在非 tty
+// 下把輸出截到 80 欄；沒有 `ps`（Windows）或執行失敗一律當沒有。
+fn herdr_has_remote_client() -> bool {
+    Command::new("ps")
+        .args(["xww", "-o", "args="])
+        .output()
+        .is_ok_and(|out| has_herdr_remote_bridge(&String::from_utf8_lossy(&out.stdout)))
+}
+
+// herdr 的 server 常駐在遠端主機時，pane 內看不到 SSH_*，所以另外看有沒有遠端
+// client 連進這台。`is_herdr()` 在前，不在 herdr 內就不 spawn `ps`。
+fn viewer_is_remote() -> bool {
+    is_ssh_session() || (is_herdr() && herdr_has_remote_client())
+}
+
+/// `open_url` 的結果。`NotSpawned`：沒有本機瀏覽器可開（判斷見 `viewer_is_remote`），
+/// 呼叫端負責把 URL 顯示出來、讓終端自己偵測——理由見它的呼叫端 `App::open_url`。
 pub enum OpenUrlOutcome {
     Spawned,
     NotSpawned,
@@ -241,7 +269,7 @@ pub fn open_url(url: &str) -> Result<OpenUrlOutcome, String> {
         return Err(t!("git.external.non_http_url", url = url).into_owned());
     }
 
-    if is_ssh_session() {
+    if viewer_is_remote() {
         return Ok(OpenUrlOutcome::NotSpawned);
     }
 
@@ -700,6 +728,31 @@ mod tests {
             format_osc8_hyperlink("https://x.com", "[#1]"),
             "\x1b]8;;https://x.com\x1b\\[#1]\x1b]8;;\x1b\\"
         );
+    }
+
+    #[test]
+    fn has_herdr_remote_bridge_matches_server_side_bridge() {
+        let ps = "/Users/x/.local/bin/herdr server\n\
+                  /Users/x/.local/bin/herdr remote-client-bridge --idle-timeout-v1\n\
+                  sshd-session: x@notty";
+        assert!(has_herdr_remote_bridge(ps));
+        assert!(has_herdr_remote_bridge("herdr remote-client-bridge"));
+    }
+
+    #[test]
+    fn has_herdr_remote_bridge_rejects_lookalikes() {
+        for line in [
+            // 連出去那端：整行含 remote-client-bridge，但 argv[0] 是 ssh
+            "ssh -C -F /tmp/config -S /tmp/hssh-%C host herdr remote-client-bridge",
+            "zsh -c herdr remote-client-bridge",
+            "/x/herdr-foo remote-client-bridge",
+            "/x/notherdr remote-client-bridge",
+            "/x/herdr server",
+            "node /x/plugins/claude-auto-retry/bin/main.js monitor term_1",
+            "",
+        ] {
+            assert!(!has_herdr_remote_bridge(line), "{line:?}");
+        }
     }
 
     fn params_with_stash<'a>(
