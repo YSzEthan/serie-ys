@@ -123,8 +123,8 @@
 | <kbd>Ctrl-u</kbd> | 向上半頁 | `half_page_up` |
 | <kbd>i</kbd> | 跳到頂端 | `go_to_top` |
 | <kbd>G</kbd> | 跳到底端 | `go_to_bottom` |
-| <kbd>Enter</kbd> <kbd>y</kbd> <kbd>Right</kbd> <kbd>l</kbd> | 預覽內容／切換 checkbox | `confirm` `navigate_right` |
-| <kbd>Left</kbd> <kbd>h</kbd> | 返回／取消 | `navigate_left` |
+| <kbd>Enter</kbd> <kbd>y</kbd> <kbd>Right</kbd> <kbd>l</kbd> | 預覽內容／切換 checkbox（Branches：Right/l 移到右側卡片，Enter 無作用） | `confirm` `navigate_right` |
+| <kbd>Left</kbd> <kbd>h</kbd> | 返回／取消（Branches：移到左側卡片，不關閉） | `navigate_left` |
 | <kbd>:</kbd> | 搜尋／輸入純數字跳到 #N | `search` |
 | <kbd>'</kbd> | 過濾（Branches：依作者篩選） | `filter` |
 | <kbd>c</kbd> | 複製 issue/PR URL（Branches：compare URL） | `short_copy` |

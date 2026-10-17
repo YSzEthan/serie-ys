@@ -389,12 +389,12 @@ zh-TW = "跳到底端"
 en-US = "Go to bottom"
 
 [help.github.preview_toggle_checkbox]
-zh-TW = "預覽內容／切換 checkbox"
-en-US = "Preview / toggle checkbox"
+zh-TW = "預覽內容／切換 checkbox（Branches：Right/l 移到右側卡片，Enter 無作用）"
+en-US = "Preview / toggle checkbox (Branches: Right/l moves to the right card, Enter does nothing)"
 
 [help.github.back_cancel]
-zh-TW = "返回／取消"
-en-US = "Back / cancel"
+zh-TW = "返回／取消（Branches：移到左側卡片，不關閉）"
+en-US = "Back / cancel (Branches: moves to the left card, does not close)"
 
 [help.github.search_type_number_to_jump_to_n]
 zh-TW = "搜尋／輸入純數字跳到 #N"

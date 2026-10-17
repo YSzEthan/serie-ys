@@ -1036,8 +1036,7 @@ impl<'a> GitHubView<'a> {
         };
         self.active_tab = GitHubTab::Issues;
         self.focus = GitHubFocus::List;
-        self.search_input.reset();
-        self.clear_filtered_indices();
+        self.clear_search();
         self.selected_index = raw_idx;
         self.offset = 0;
         self.preview_offset = 0;
@@ -1091,12 +1090,6 @@ impl<'a> GitHubView<'a> {
             GitHubTab::PullRequests => &self.filtered_pr_indices,
             GitHubTab::Branches => &self.filtered_branch_indices,
         }
-    }
-
-    fn clear_filtered_indices(&mut self) {
-        self.filtered_issue_indices.clear();
-        self.filtered_pr_indices.clear();
-        self.filtered_branch_indices.clear();
     }
 
     fn has_active_filter(&self) -> bool {
@@ -3539,6 +3532,26 @@ mod tests {
         assert!(view.offset > 0);
         assert!(screen.contains("b9"), "got:\n{screen}");
         assert!(!screen.contains(" b0 "), "got:\n{screen}");
+    }
+
+    /// 作者篩選獨立於搜尋字串：數字 jump 清掉搜尋後，切回 Branches 仍要套用作者篩選。
+    #[test]
+    fn numeric_jump_keeps_the_branch_author_filter() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent};
+        let (mut view, _rx) = branches_view();
+        let mut other = test_branch("b", 1, 1);
+        other.author = "bob".to_string();
+        view.set_branches(Ok((vec![test_branch("a", 1, 1), other], false)));
+        view.cycle_branch_author();
+        assert_eq!(view.current_list_len(), 1);
+
+        view.active_tab = GitHubTab::Issues;
+        view.focus = GitHubFocus::Prompt;
+        view.search_input = "5".into();
+        view.handle_prompt_event(UserEvent::Confirm, 1, KeyEvent::from(KeyCode::Enter));
+        view.active_tab = GitHubTab::Branches;
+
+        assert_eq!(view.current_list_len(), 1);
     }
 
     #[test]

@@ -479,9 +479,7 @@ impl<'a> GitHubView<'a> {
                     self.tx.send(AppEvent::CloseGitHub);
                 } else {
                     // 清空查詢字串 → 回到未篩選的列表
-                    self.search_input.reset();
-                    // Branches 的作者篩選不跟搜尋字串一起清掉，所以用重建而非清空
-                    self.rebuild_filtered_indices();
+                    self.clear_search();
                     self.selected_index = 0;
                     self.offset = 0;
                     self.preview_offset = 0;
@@ -495,8 +493,7 @@ impl<'a> GitHubView<'a> {
                     .then(|| trimmed.parse::<u64>().ok())
                     .flatten();
                 if let Some(number) = jump {
-                    self.search_input.reset();
-                    self.clear_filtered_indices();
+                    self.clear_search();
                     self.focus = GitHubFocus::List;
                     self.start_jump(number);
                 } else {
@@ -597,6 +594,12 @@ impl<'a> GitHubView<'a> {
                 .send(AppEvent::NotifyWarn(t!("github.flash.no_url").into_owned())),
             None => {}
         }
+    }
+
+    /// 清空搜尋字串；Branches 的作者篩選獨立於搜尋字串，所以重建而非清空索引
+    pub(super) fn clear_search(&mut self) {
+        self.search_input.reset();
+        self.rebuild_filtered_indices();
     }
 
     pub(super) fn rebuild_filtered_indices(&mut self) {

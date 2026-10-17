@@ -1205,15 +1205,21 @@ fn parse_origin_branches(output: &str, default_branch: &str) -> Vec<RemoteBranch
 }
 
 /// `origin/<default>...origin/<branch>`（三點，相對 merge-base）的 (新增, 刪除) 行數。
+/// 歷史與 default 不相連的 branch（例如 `gh-pages`）沒有 merge-base，三點 diff 會
+/// 失敗；這時退回兩點（直接比兩個 tip），不能讓一個孤兒 branch 拖垮整個分頁。
 pub fn branch_line_stat(
     path: &Path,
     default_branch: &str,
     branch: &str,
 ) -> std::result::Result<(u32, u32), String> {
+    let base = format!("{ORIGIN_REF_PREFIX}{default_branch}");
+    let head = format!("{ORIGIN_REF_PREFIX}{branch}");
+    numstat(path, format!("{base}...{head}")).or_else(|_| numstat(path, format!("{base}..{head}")))
+}
+
+fn numstat(path: &Path, range: String) -> std::result::Result<(u32, u32), String> {
     let mut cmd = git_read(path);
-    cmd.args(["diff", "--numstat", "--no-renames"]).arg(format!(
-        "{ORIGIN_REF_PREFIX}{default_branch}...{ORIGIN_REF_PREFIX}{branch}"
-    ));
+    cmd.args(["diff", "--numstat", "--no-renames"]).arg(range);
     Ok(parse_numstat(&git_stdout(cmd, BRANCH_QUERY_TIMEOUT)?))
 }
 
@@ -1810,6 +1816,34 @@ mod tests {
             .map(|b| b.name)
             .collect();
         assert_eq!(names, ["topic"]);
+    }
+
+    /// 沒有共同祖先的 branch（如 gh-pages）：三點 diff 無 merge-base，要退回兩點而非報錯。
+    #[test]
+    fn branch_line_stat_falls_back_for_unrelated_histories() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        git_env(path, &["init", "-q", "-b", "main"], &[]);
+        std::fs::write(path.join("a.txt"), "1\n2\n").unwrap();
+        git_env(path, &["add", "."], &[]);
+        commit_at(path, "A", "2026-01-01T00:00:01+00:00");
+        git_env(path, &["checkout", "-q", "--orphan", "pages"], &[]);
+        git_env(path, &["rm", "-qrf", "."], &[]);
+        std::fs::write(path.join("b.txt"), "x\n").unwrap();
+        git_env(path, &["add", "."], &[]);
+        commit_at(path, "P", "2026-01-01T00:00:02+00:00");
+        git_env(
+            path,
+            &["update-ref", "refs/remotes/origin/main", "main"],
+            &[],
+        );
+        git_env(
+            path,
+            &["update-ref", "refs/remotes/origin/pages", "pages"],
+            &[],
+        );
+
+        assert_eq!(branch_line_stat(path, "main", "pages"), Ok((1, 2)));
     }
 
     #[test]
