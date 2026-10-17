@@ -24,13 +24,13 @@ path = "src/main.rs"
 [dependencies]
 ansi-to-tui = "8.0.1"
 arboard = { version = "3.6.1", features = ["wayland-data-control"] }
-base64 = "0.22.1"
+base64 = { version = "0.23.1", default-features = false, features = ["std"] }
 chrono = "0.4.44"
 clap = { version = "4.6.0", features = ["derive"] }
 console = "0.16.3"
 emojis = "0.9.0"
 fuzzy-matcher = "0.3.7"
-garde = { version = "0.22.1", features = ["derive", "regex"] }
+garde = { version = "0.23.0", features = ["derive", "regex"] }
 laurier = "0.3.0"
 ratatui = { version = "0.30.2", features = ["serde", "unstable-rendered-line-info"] }
 rustc-hash = "2.1.2"
@@ -40,17 +40,16 @@ serde_json = "1"
 signal-hook = { version = "0.3", default-features = false }
 smart-default = "0.7.1"
 toml = { version = "1.1.2", features = ["preserve_order"] }
-toml_edit = "0.22.25"
+toml_edit = "0.25.17"
 tui-input = "0.15.1"
-notify = { version = "7.0.0", features = ["macos_fsevent"] }
-notify-debouncer-mini = "0.5.0"
-umbra = "0.4.0"
+notify = { version = "8.2.0", features = ["macos_fsevent"] }
+notify-debouncer-mini = "0.7.0"
+umbra = "0.6.0"
 unicode-width = "0.2"
 rust-i18n = "4"
 
 [dev-dependencies]
-dircpy = "0.3.20"
-rstest = "0.26.1"
+rstest = "0.27.0"
 tempfile = "3.27.0"
 
 [profile.release]

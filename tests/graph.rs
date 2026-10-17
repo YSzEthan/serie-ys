@@ -2345,13 +2345,36 @@ fn create_output_dirs(path: &str) {
     std::fs::create_dir_all(path).unwrap();
 }
 
+/// 把測試用的 repo 複製到 `OUTPUT_DIR`，供人工檢查失敗的 graph 測試。
+/// 預設不複製（34 個 repo 約 8MB）；設 `SERIE_TEST_DUMP_GRAPH_REPOS` 才執行。
 fn copy_git_dir(path: &Path, name: &str) {
+    if std::env::var_os("SERIE_TEST_DUMP_GRAPH_REPOS").is_none() {
+        return;
+    }
     let dst_path = format!("{OUTPUT_DIR}/{name}");
-    // dircpy 的覆蓋行為似乎不如預期，所以在這裡明確刪除
     if Path::new(&dst_path).is_dir() {
         std::fs::remove_dir_all(&dst_path).unwrap();
     }
-    dircpy::CopyBuilder::new(path, dst_path).run().unwrap();
+    copy_dir(path, Path::new(&dst_path));
+}
+
+fn copy_dir(src: &Path, dst: &Path) {
+    std::fs::create_dir_all(dst).unwrap();
+    for entry in std::fs::read_dir(src).unwrap() {
+        let entry = entry.unwrap();
+        let file_type = entry.file_type().unwrap();
+        let to = dst.join(entry.file_name());
+        if file_type.is_dir() {
+            copy_dir(&entry.path(), &to);
+        } else if file_type.is_file() {
+            // 背景的 `git gc --auto` 可能在複製途中清掉 loose object，來源消失就略過。
+            if let Err(e) = std::fs::copy(entry.path(), &to) {
+                assert_eq!(e.kind(), std::io::ErrorKind::NotFound, "{e}");
+            }
+        } else {
+            panic!("不支援複製 symlink：{}", entry.path().display());
+        }
+    }
 }
 
 /// Angular 的四個轉角跟 rounded 是一對一對應。Ascii 則額外把四個轉角
