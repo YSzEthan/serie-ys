@@ -1125,6 +1125,113 @@ fn parse_tag_refs(hash: &str, refs: &str) -> Option<Ref> {
     }
 }
 
+/// `origin` 上的一個遠端 branch（remote-tracking ref，是上次 fetch 的快照）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct RemoteBranch {
+    pub name: String,
+    pub head_oid: String,
+    pub committer_date: String,
+    pub author: String,
+}
+
+const ORIGIN_REF_PREFIX: &str = "refs/remotes/origin/";
+const BRANCH_QUERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// `refs/remotes/origin/HEAD` 指向的 branch 名；沒設定（例如 `git init` 後
+/// `remote add`、沒跑過 `remote set-head`）時回 `None`。
+pub fn origin_default_branch(path: &Path) -> Option<String> {
+    let output = git_read(path)
+        .args(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())?;
+    let target = String::from_utf8(output.stdout).ok()?;
+    target
+        .trim()
+        .strip_prefix(ORIGIN_REF_PREFIX)
+        .map(str::to_owned)
+}
+
+/// 列出 `origin` 的所有 branch（新到舊），排除 `origin/HEAD` 與 default branch。
+pub fn origin_branches(
+    path: &Path,
+    default_branch: &str,
+) -> std::result::Result<Vec<RemoteBranch>, String> {
+    let mut cmd = git_read(path);
+    cmd.args([
+        "for-each-ref",
+        "--sort=-committerdate",
+        "--format=%(refname)%1f%(objectname)%1f%(committerdate:short)%1f%(authorname)",
+        "refs/remotes/origin/",
+    ]);
+    Ok(parse_origin_branches(
+        &git_stdout(cmd, BRANCH_QUERY_TIMEOUT)?,
+        default_branch,
+    ))
+}
+
+/// 帶 timeout 執行並回 stdout；非 0 結束碼統一包成 `git.external.command_failed`。
+fn git_stdout(cmd: Command, timeout: std::time::Duration) -> std::result::Result<String, String> {
+    let output = crate::process::run_with_timeout(cmd, None, timeout)?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr);
+        return Err(t!(
+            "git.external.command_failed",
+            program = "git",
+            error = detail
+        )
+        .into_owned());
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).into_owned())
+}
+
+fn parse_origin_branches(output: &str, default_branch: &str) -> Vec<RemoteBranch> {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\x1f');
+            let name = fields.next()?.strip_prefix(ORIGIN_REF_PREFIX)?;
+            if name == "HEAD" || name == default_branch {
+                return None;
+            }
+            Some(RemoteBranch {
+                name: name.to_owned(),
+                head_oid: fields.next()?.to_owned(),
+                committer_date: fields.next()?.to_owned(),
+                author: fields.next()?.to_owned(),
+            })
+        })
+        .collect()
+}
+
+/// `origin/<default>...origin/<branch>`（三點，相對 merge-base）的 (新增, 刪除) 行數。
+pub fn branch_line_stat(
+    path: &Path,
+    default_branch: &str,
+    branch: &str,
+) -> std::result::Result<(u32, u32), String> {
+    let mut cmd = git_read(path);
+    cmd.args(["diff", "--numstat", "--no-renames"]).arg(format!(
+        "{ORIGIN_REF_PREFIX}{default_branch}...{ORIGIN_REF_PREFIX}{branch}"
+    ));
+    Ok(parse_numstat(&git_stdout(cmd, BRANCH_QUERY_TIMEOUT)?))
+}
+
+/// binary 檔在 `--numstat` 是 `-\t-\tpath`，解析不出數字就略過不計。
+fn parse_numstat(output: &str) -> (u32, u32) {
+    output
+        .lines()
+        .filter_map(|line| {
+            let mut cols = line.split('\t');
+            let added = cols.next()?.parse::<u32>().ok()?;
+            let removed = cols.next()?.parse::<u32>().ok()?;
+            Some((added, removed))
+        })
+        .fold((0, 0), |(a, r), (da, dr)| {
+            (a.saturating_add(da), r.saturating_add(dr))
+        })
+}
+
 fn get_current_branch(path: &Path) -> Option<String> {
     let mut cmd = git_read(path)
         .arg("branch")
@@ -1628,6 +1735,89 @@ pub fn delete_remote_branch(path: &Path, branch_name: &str) -> std::result::Resu
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parse_origin_branches_skips_head_and_default() {
+        let out = [
+            "refs/remotes/origin/HEAD\x1fa1\x1f2026-01-03\x1fA",
+            "refs/remotes/origin/main\x1fa2\x1f2026-01-02\x1fB",
+            "refs/remotes/origin/feat/x\x1fa3\x1f2026-01-01\x1fC",
+        ]
+        .join("\n");
+
+        let branches = parse_origin_branches(&out, "main");
+
+        assert_eq!(
+            branches,
+            vec![RemoteBranch {
+                name: "feat/x".into(),
+                head_oid: "a3".into(),
+                committer_date: "2026-01-01".into(),
+                author: "C".into(),
+            }]
+        );
+    }
+
+    #[test]
+    fn parse_numstat_sums_and_skips_binary() {
+        let out = "3\t1\ta.rs\n-\t-\timg.png\n10\t0\tb.rs\n";
+        assert_eq!(parse_numstat(out), (13, 1));
+        assert_eq!(parse_numstat(""), (0, 0));
+    }
+
+    #[test]
+    fn branch_line_stat_is_relative_to_merge_base() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path();
+        git_env(path, &["init", "-q", "-b", "main"], &[]);
+        std::fs::write(path.join("a.txt"), "1\n2\n3\n").unwrap();
+        git_env(path, &["add", "."], &[]);
+        commit_at(path, "A", "2026-01-01T00:00:01+00:00");
+        git_env(path, &["checkout", "-q", "-b", "topic"], &[]);
+        std::fs::write(path.join("a.txt"), "1\nX\n3\n4\n").unwrap();
+        git_env(path, &["commit", "-qam", "T"], &[]);
+        git_env(path, &["checkout", "-q", "main"], &[]);
+        // main 在分岔後的改動不能算進 topic 的差異
+        std::fs::write(path.join("b.txt"), "m\nm\nm\n").unwrap();
+        git_env(path, &["add", "."], &[]);
+        commit_at(path, "M", "2026-01-01T00:00:02+00:00");
+        // 以 refs/remotes/origin/* 模擬 fetch 後的狀態
+        git_env(
+            path,
+            &["update-ref", "refs/remotes/origin/main", "main"],
+            &[],
+        );
+        git_env(
+            path,
+            &["update-ref", "refs/remotes/origin/topic", "topic"],
+            &[],
+        );
+        git_env(
+            path,
+            &[
+                "symbolic-ref",
+                "refs/remotes/origin/HEAD",
+                "refs/remotes/origin/main",
+            ],
+            &[],
+        );
+
+        assert_eq!(origin_default_branch(path).as_deref(), Some("main"));
+        assert_eq!(branch_line_stat(path, "main", "topic"), Ok((2, 1)));
+        let names: Vec<_> = origin_branches(path, "main")
+            .unwrap()
+            .into_iter()
+            .map(|b| b.name)
+            .collect();
+        assert_eq!(names, ["topic"]);
+    }
+
+    #[test]
+    fn origin_default_branch_is_none_without_origin_head() {
+        let dir = tempfile::tempdir().unwrap();
+        git_env(dir.path(), &["init", "-q", "-b", "main"], &[]);
+        assert_eq!(origin_default_branch(dir.path()), None);
+    }
 
     /// 只釘不變式，不逐字重抄 `fetch_all_args` 的兩個分支（那樣等於沒測）：
     /// Off 不含任何 prune 相關字串——守住「不是 `--no-prune`」這個決定。

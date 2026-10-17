@@ -40,6 +40,14 @@ en-US = "Failed to parse nameWithOwner: %{value}"
 zh-TW = "JSON 解析失敗：%{detail}"
 en-US = "Failed to parse JSON: %{detail}"
 
+[github.error.no_default_branch]
+zh-TW = "找不到 default branch（origin/HEAD 未設定，gh 也沒有回報）"
+en-US = "Cannot determine the default branch (origin/HEAD is unset and gh reported none)"
+
+[github.error.branch_worker_panicked]
+zh-TW = "計算 branch 差異的 thread 異常終止"
+en-US = "Branch diff worker thread panicked"
+
 [github.error.pr_not_found]
 zh-TW = "找不到 PR"
 en-US = "PR not found"
@@ -363,3 +371,23 @@ en-US = "Dismissed"
 [github.render.refetching]
 zh-TW = "  ⟳ 重新抓取中…"
 en-US = "  ⟳ Refetching…"
+
+[github.render.tab_branches]
+zh-TW = " Branches (%{n}) "
+en-US = " Branches (%{n}) "
+
+[github.render.branches_truncated]
+zh-TW = "僅顯示最近 %{n} 個 branch"
+en-US = "Showing the %{n} most recent branches only"
+
+[github.copy.url_branch]
+zh-TW = "branch 的 compare URL"
+en-US = "branch compare URL"
+
+[github.copy.branch_name]
+zh-TW = "branch 名稱"
+en-US = "branch name"
+
+[github.render.all_authors]
+zh-TW = "[所有作者]"
+en-US = "[all authors]"

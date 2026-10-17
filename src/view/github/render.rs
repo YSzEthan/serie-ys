@@ -12,6 +12,7 @@ use rust_i18n::t;
 use crate::github::{GhIssue, GhPullRequest};
 
 use super::{
+    branches,
     preview::{borrow_lines, RowData},
     GitHubFocus, GitHubTab, GitHubView, LabelMode, LoadState,
 };
@@ -24,6 +25,11 @@ const LIST_LINK_COL_OFFSET: u16 = 3;
 impl<'a> GitHubView<'a> {
     pub fn render(&mut self, f: &mut Frame, area: Rect, marquee_frame: u64) {
         self.height = area.height as usize;
+        self.width = area.width as usize;
+        // 視窗縮放會改變卡片欄數與可見列數，先把選取重新捲進畫面
+        if self.active_tab == GitHubTab::Branches {
+            self.adjust_scroll();
+        }
         // render 是溢出狀態的唯一真相來源——在進入時重置，讓跳過 render_list
         // 的 focus（CheckboxEdit、Prompt）能自動清除。
         self.selected_row_overflows.set(false);
@@ -36,7 +42,7 @@ impl<'a> GitHubView<'a> {
 
         // ── Loading / 錯誤提示 ──
         if self.current_list_len() == 0 {
-            let (text, color) = match &self.load_state {
+            let (text, color) = match self.list_load_state() {
                 LoadState::Loading => (t!("github.render.loading").into_owned(), Color::DarkGray),
                 LoadState::Error(err) => (err.clone(), Color::Red),
                 LoadState::Idle => (t!("github.render.empty").into_owned(), Color::DarkGray),
@@ -45,12 +51,16 @@ impl<'a> GitHubView<'a> {
             return;
         }
 
-        let [list_area, preview_area] =
-            Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
-                .areas(content_area);
+        if self.active_tab == GitHubTab::Branches {
+            self.render_branches(f, content_area);
+        } else {
+            let [list_area, preview_area] =
+                Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
+                    .areas(content_area);
 
-        self.render_list(f, list_area, marquee_frame);
-        self.render_preview(f, preview_area);
+            self.render_list(f, list_area, marquee_frame);
+            self.render_preview(f, preview_area);
+        }
 
         // ── 提示訊息 ──
         if let Some((ref msg, is_error)) = self.flash_message {
@@ -79,28 +89,32 @@ impl<'a> GitHubView<'a> {
         let count = self.current_list_len();
         let issues_label = t!("github.render.tab_issues", n = self.issues.len());
         let prs_label = t!("github.render.tab_prs", n = self.pull_requests.len());
+        let branches_label = t!("github.render.tab_branches", n = self.branches.len());
+        let tab_style = |tab: GitHubTab| {
+            if self.active_tab == tab {
+                Style::default().fg(Color::Black).bg(Color::Cyan).bold()
+            } else {
+                Style::default().fg(Color::DarkGray)
+            }
+        };
 
         let tab_line = Line::from(vec![
-            Span::styled(
-                issues_label,
-                if self.active_tab == GitHubTab::Issues {
-                    Style::default().fg(Color::Black).bg(Color::Cyan).bold()
-                } else {
-                    Style::default().fg(Color::DarkGray)
-                },
-            ),
+            Span::styled(issues_label, tab_style(GitHubTab::Issues)),
             Span::raw(" "),
-            Span::styled(
-                prs_label,
-                if self.active_tab == GitHubTab::PullRequests {
-                    Style::default().fg(Color::Black).bg(Color::Cyan).bold()
-                } else {
-                    Style::default().fg(Color::DarkGray)
-                },
-            ),
+            Span::styled(prs_label, tab_style(GitHubTab::PullRequests)),
+            Span::raw(" "),
+            Span::styled(branches_label, tab_style(GitHubTab::Branches)),
             Span::raw("  "),
+            // state filter 只管 issue／PR；Branches 分頁的 `'` 是作者篩選
             Span::styled(
-                format!("[{filter_label}]"),
+                if self.active_tab == GitHubTab::Branches {
+                    match &self.branches_author {
+                        Some(author) => format!("[@{author}]"),
+                        None => t!("github.render.all_authors").into_owned(),
+                    }
+                } else {
+                    format!("[{filter_label}]")
+                },
                 Style::default().fg(Color::DarkGray),
             ),
             if self.has_active_filter() {
@@ -111,7 +125,7 @@ impl<'a> GitHubView<'a> {
             } else {
                 Span::raw("")
             },
-            if matches!(self.load_state, LoadState::Loading) {
+            if matches!(self.list_load_state(), LoadState::Loading) {
                 Span::styled(
                     t!("github.render.refetching"),
                     Style::default().fg(Color::Yellow),
@@ -246,6 +260,7 @@ impl<'a> GitHubView<'a> {
                 .map(|p| labels_display_width(&p.labels, self.label_mode))
                 .max()
                 .unwrap_or(0),
+            GitHubTab::Branches => 0,
         }
     }
 
@@ -324,6 +339,8 @@ impl<'a> GitHubView<'a> {
                         rows.push(row);
                     }
                 }
+                // Branches 走 `render_branches`，不經過列表列
+                GitHubTab::Branches => {}
             }
         } else {
             let indices = self.current_filtered_indices();
@@ -352,10 +369,68 @@ impl<'a> GitHubView<'a> {
                         rows.push(row);
                     }
                 }
+                GitHubTab::Branches => {}
             }
         }
         self.selected_row_overflows.set(overflow);
         rows
+    }
+
+    /// Branches 分頁：內容區依寬度排成多欄固定高度的卡片，沒有 preview。
+    fn render_branches(&self, f: &mut Frame, area: Rect) {
+        f.render_widget(Clear, area);
+
+        // 候選超過上限時，底部留一列說明只顯示了最近的一部分
+        let footer = self.branches_truncated && area.height > branches::CARD_HEIGHT;
+        let cards_area = Rect {
+            height: area.height - u16::from(footer),
+            ..area
+        };
+
+        let cols = self.branch_columns();
+        let card_width = cards_area.width / cols as u16;
+        let visible_rows = (cards_area.height / branches::CARD_HEIGHT) as usize;
+        // `offset` 對齊列首（見 `adjust_branch_scroll`）；縮放後也在這裡再對齊一次
+        let first = self.offset / cols * cols;
+        let shown = (first..self.current_list_len()).take(visible_rows * cols);
+        for (slot, vis_i) in shown.enumerate() {
+            let Some(branch) = self.branches.get(self.actual_index(vis_i)) else {
+                break;
+            };
+            let (row, col) = ((slot / cols) as u16, (slot % cols) as u16);
+            // 除不盡的寬度由最後一欄吃掉，整列才會貼滿
+            let width = if col as usize == cols - 1 {
+                cards_area.width - col * card_width
+            } else {
+                card_width
+            };
+            let card_area = Rect {
+                x: cards_area.x + col * card_width,
+                y: cards_area.y + row * branches::CARD_HEIGHT,
+                width,
+                height: branches::CARD_HEIGHT,
+            };
+            branches::render_card(f, card_area, branch, vis_i == self.selected_index);
+        }
+
+        if footer {
+            let footer_area = Rect {
+                y: area.bottom() - 1,
+                height: 1,
+                ..area
+            };
+            f.render_widget(
+                Paragraph::new(Line::styled(
+                    t!(
+                        "github.render.branches_truncated",
+                        n = crate::github::BRANCH_LIMIT
+                    ),
+                    Style::default().fg(Color::Gray),
+                ))
+                .alignment(ratatui::layout::Alignment::Center),
+                footer_area,
+            );
+        }
     }
 
     fn render_preview(&mut self, f: &mut Frame, area: Rect) {

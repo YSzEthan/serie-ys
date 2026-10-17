@@ -18,6 +18,8 @@ impl<'a> GitHubView<'a> {
         // 在偏 modal 的 focus（List/Preview）中，右/左鍵兼作 Confirm/Cancel。
         // Prompt 接收原始按鍵輸入；CheckboxEdit 用左/右鍵切換。
         let event = match self.focus {
+            // Branches 是多欄卡片，左右鍵用來在卡片間橫向移動，不當 Confirm/Cancel
+            GitHubFocus::List if self.active_tab == GitHubTab::Branches => event_with_count.event,
             GitHubFocus::List | GitHubFocus::Preview => modal_yesno_aliases(event_with_count.event),
             GitHubFocus::Prompt | GitHubFocus::CheckboxEdit => event_with_count.event,
         };
@@ -154,34 +156,35 @@ impl<'a> GitHubView<'a> {
     }
 
     pub(super) fn handle_list_event(&mut self, event: UserEvent, count: usize) {
+        if self.active_tab == GitHubTab::Branches && self.handle_branches_event(event, count) {
+            return;
+        }
         match event {
             UserEvent::GitHubToggle | UserEvent::Cancel | UserEvent::Close => {
                 self.tx.send(AppEvent::CloseGitHub);
             }
             UserEvent::RefList => {
-                self.active_tab = match self.active_tab {
-                    GitHubTab::Issues => GitHubTab::PullRequests,
-                    GitHubTab::PullRequests => GitHubTab::Issues,
-                };
+                self.active_tab = self.active_tab.next();
                 self.selected_index = 0;
                 self.offset = 0;
                 self.preview_offset = 0;
                 self.bump_generation();
+                self.ensure_branches_loaded();
             }
             UserEvent::NavigateDown | UserEvent::SelectDown => {
                 let max = self.current_list_len().saturating_sub(1);
+                let step = self.nav_step();
                 for _ in 0..count {
-                    if self.selected_index < max {
-                        self.selected_index += 1;
-                    }
+                    self.selected_index = (self.selected_index + step).min(max);
                 }
                 self.preview_offset = 0;
                 self.adjust_scroll();
                 self.maybe_load_more();
             }
             UserEvent::NavigateUp | UserEvent::SelectUp => {
+                let step = self.nav_step();
                 for _ in 0..count {
-                    self.selected_index = self.selected_index.saturating_sub(1);
+                    self.selected_index = self.selected_index.saturating_sub(step);
                 }
                 self.preview_offset = 0;
                 self.adjust_scroll();
@@ -201,7 +204,7 @@ impl<'a> GitHubView<'a> {
                 self.focus = GitHubFocus::Preview;
             }
             UserEvent::PageDown => {
-                let page = self.height.saturating_sub(3).max(1);
+                let page = self.list_rows().max(1);
                 let max = self.current_list_len().saturating_sub(1);
                 self.selected_index = (self.selected_index + page).min(max);
                 self.preview_offset = 0;
@@ -209,13 +212,13 @@ impl<'a> GitHubView<'a> {
                 self.maybe_load_more();
             }
             UserEvent::PageUp => {
-                let page = self.height.saturating_sub(3).max(1);
+                let page = self.list_rows().max(1);
                 self.selected_index = self.selected_index.saturating_sub(page);
                 self.preview_offset = 0;
                 self.adjust_scroll();
             }
             UserEvent::HalfPageDown => {
-                let half = self.height.saturating_sub(3).max(1) / 2;
+                let half = self.list_rows().max(1) / 2;
                 let max = self.current_list_len().saturating_sub(1);
                 self.selected_index = (self.selected_index + half).min(max);
                 self.preview_offset = 0;
@@ -223,7 +226,7 @@ impl<'a> GitHubView<'a> {
                 self.maybe_load_more();
             }
             UserEvent::HalfPageUp => {
-                let half = self.height.saturating_sub(3).max(1) / 2;
+                let half = self.list_rows().max(1) / 2;
                 self.selected_index = self.selected_index.saturating_sub(half);
                 self.preview_offset = 0;
                 self.adjust_scroll();
@@ -244,8 +247,9 @@ impl<'a> GitHubView<'a> {
             }
             UserEvent::ShortCopy => {
                 let name = match self.active_tab.kind() {
-                    github::GhItemKind::Issue => t!("github.copy.url_issue"),
-                    github::GhItemKind::PullRequest => t!("github.copy.url_pr"),
+                    Some(github::GhItemKind::Issue) => t!("github.copy.url_issue"),
+                    Some(github::GhItemKind::PullRequest) => t!("github.copy.url_pr"),
+                    None => t!("github.copy.url_branch"),
                 };
                 self.with_selected_url(|url| AppEvent::CopyToClipboard {
                     name: name.into_owned(),
@@ -297,6 +301,38 @@ impl<'a> GitHubView<'a> {
         self.tx.send(AppEvent::RefreshGitHub {
             state: self.state_filter,
         });
+    }
+
+    /// Branches 分頁會誤用 issue／PR 行為的事件在這裡攔下。回傳 true 表示已處理；
+    /// 移動、搜尋、關閉、複製／開啟 URL（走 `selected_url`）等共用行為回 false，
+    /// 交給 `handle_list_event` 原本的流程。
+    fn handle_branches_event(&mut self, event: UserEvent, count: usize) -> bool {
+        match event {
+            UserEvent::Refresh => self.reload_branches(),
+            UserEvent::Filter => self.cycle_branch_author(),
+            UserEvent::NavigateLeft | UserEvent::NavigateRight => {
+                let max = self.current_list_len().saturating_sub(1);
+                self.selected_index = if event == UserEvent::NavigateLeft {
+                    self.selected_index.saturating_sub(count)
+                } else {
+                    (self.selected_index + count).min(max)
+                };
+                self.adjust_scroll();
+            }
+            UserEvent::TagCopy => {
+                let idx = self.actual_index(self.selected_index);
+                if let Some(branch) = self.branches.get(idx) {
+                    self.tx.send(AppEvent::CopyToClipboard {
+                        name: t!("github.copy.branch_name").into_owned(),
+                        value: branch.name.clone(),
+                    });
+                }
+            }
+            // 沒有 preview、related picker
+            UserEvent::Confirm | UserEvent::DetailPaneToggle => {}
+            _ => return false,
+        }
+        true
     }
 
     fn try_merge_selected_pr(&mut self) {
@@ -430,11 +466,12 @@ impl<'a> GitHubView<'a> {
                     }
                 }
             }
+            GitHubTab::Branches => {}
         }
         items
     }
 
-    fn handle_prompt_event(&mut self, event: UserEvent, count: usize, key: KeyEvent) {
+    pub(super) fn handle_prompt_event(&mut self, event: UserEvent, count: usize, key: KeyEvent) {
         match event {
             UserEvent::Cancel | UserEvent::Close => {
                 if self.search_input.value().is_empty() {
@@ -443,8 +480,8 @@ impl<'a> GitHubView<'a> {
                 } else {
                     // 清空查詢字串 → 回到未篩選的列表
                     self.search_input.reset();
-                    self.filtered_issue_indices.clear();
-                    self.filtered_pr_indices.clear();
+                    // Branches 的作者篩選不跟搜尋字串一起清掉，所以用重建而非清空
+                    self.rebuild_filtered_indices();
                     self.selected_index = 0;
                     self.offset = 0;
                     self.preview_offset = 0;
@@ -453,10 +490,13 @@ impl<'a> GitHubView<'a> {
             }
             UserEvent::Confirm => {
                 let trimmed = self.search_input.value().trim();
-                if let Ok(number) = trimmed.parse::<u64>() {
+                // branch 沒有編號：純數字當一般查詢字串，不做 jump
+                let jump = (self.active_tab != GitHubTab::Branches)
+                    .then(|| trimmed.parse::<u64>().ok())
+                    .flatten();
+                if let Some(number) = jump {
                     self.search_input.reset();
-                    self.filtered_issue_indices.clear();
-                    self.filtered_pr_indices.clear();
+                    self.clear_filtered_indices();
                     self.focus = GitHubFocus::List;
                     self.start_jump(number);
                 } else {
@@ -466,30 +506,28 @@ impl<'a> GitHubView<'a> {
             UserEvent::NavigateDown | UserEvent::SelectDown => {
                 // 移動列表選取，但不離開 prompt
                 let max = self.current_list_len().saturating_sub(1);
+                let step = self.nav_step();
                 for _ in 0..count {
-                    if self.selected_index < max {
-                        self.selected_index += 1;
-                    }
+                    self.selected_index = (self.selected_index + step).min(max);
                 }
                 self.preview_offset = 0;
                 self.adjust_scroll();
             }
             UserEvent::NavigateUp | UserEvent::SelectUp => {
+                let step = self.nav_step();
                 for _ in 0..count {
-                    self.selected_index = self.selected_index.saturating_sub(1);
+                    self.selected_index = self.selected_index.saturating_sub(step);
                 }
                 self.preview_offset = 0;
                 self.adjust_scroll();
             }
             UserEvent::RefList => {
-                // Tab 鍵：切換 Issues ⇄ PRs（保留查詢字串）
-                self.active_tab = match self.active_tab {
-                    GitHubTab::Issues => GitHubTab::PullRequests,
-                    GitHubTab::PullRequests => GitHubTab::Issues,
-                };
+                // Tab 鍵：Issues → PRs → Branches 循環（保留查詢字串）
+                self.active_tab = self.active_tab.next();
                 self.selected_index = 0;
                 self.offset = 0;
                 self.preview_offset = 0;
+                self.ensure_branches_loaded();
             }
             _ => {
                 // 把按鍵轉發給 tui-input；只有值真的變了才重建
@@ -538,14 +576,16 @@ impl<'a> GitHubView<'a> {
                 .get(idx)
                 .map(|p| p.body.clone())
                 .unwrap_or_default(),
+            GitHubTab::Branches => String::new(),
         }
     }
 
-    fn selected_url(&self) -> Option<String> {
+    pub(super) fn selected_url(&self) -> Option<String> {
         let idx = self.actual_index(self.selected_index);
         match self.active_tab {
             GitHubTab::Issues => self.issues.get(idx).map(|i| i.url.clone()),
             GitHubTab::PullRequests => self.pull_requests.get(idx).map(|p| p.url.clone()),
+            GitHubTab::Branches => self.branches.get(idx).map(|b| b.url.clone()),
         }
     }
 
@@ -559,14 +599,32 @@ impl<'a> GitHubView<'a> {
         }
     }
 
-    fn rebuild_filtered_indices(&mut self) {
+    pub(super) fn rebuild_filtered_indices(&mut self) {
         let query = self.search_input.value().to_string();
-        if query.is_empty() {
+        let matcher = (!query.is_empty()).then(|| SearchMatcher::new(&query, true, true));
+
+        // Branches 另有作者篩選，沒有搜尋字串時也要算
+        self.filtered_branch_indices = if matcher.is_some() || self.branches_author.is_some() {
+            self.branches
+                .iter()
+                .enumerate()
+                .filter(|(_, b)| {
+                    self.branches_author.as_ref().is_none_or(|a| &b.author == a)
+                        && matcher
+                            .as_ref()
+                            .is_none_or(|m| m.matches(&format!("{} @{}", b.name, b.author)))
+                })
+                .map(|(idx, _)| idx)
+                .collect()
+        } else {
+            Vec::new()
+        };
+
+        let Some(matcher) = matcher else {
             self.filtered_issue_indices.clear();
             self.filtered_pr_indices.clear();
             return;
-        }
-        let matcher = SearchMatcher::new(&query, true, true);
+        };
 
         self.filtered_issue_indices = self
             .issues

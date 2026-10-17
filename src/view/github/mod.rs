@@ -1,3 +1,4 @@
+mod branches;
 mod event;
 mod preview;
 mod render;
@@ -17,7 +18,7 @@ use tui_input::Input;
 use crate::{
     event::{AppEvent, Sender, UserEvent},
     github::{
-        CheckboxItem, GhIssue, GhItemKind, GhPullRequest, GhTimelinePage, GitHubData,
+        CheckboxItem, GhBranch, GhIssue, GhItemKind, GhPullRequest, GhTimelinePage, GitHubData,
         PrDraftAction, StateAction, StateFilter,
     },
     view::View,
@@ -77,13 +78,25 @@ impl Section {
 enum GitHubTab {
     Issues,
     PullRequests,
+    Branches,
 }
 
 impl GitHubTab {
-    fn kind(self) -> GhItemKind {
+    /// Branches 沒有編號，也沒有 issue／PR 那套 timeline、分頁，所以沒有 kind。
+    fn kind(self) -> Option<GhItemKind> {
         match self {
-            GitHubTab::Issues => GhItemKind::Issue,
-            GitHubTab::PullRequests => GhItemKind::PullRequest,
+            GitHubTab::Issues => Some(GhItemKind::Issue),
+            GitHubTab::PullRequests => Some(GhItemKind::PullRequest),
+            GitHubTab::Branches => None,
+        }
+    }
+
+    /// Tab 鍵的循環順序：Issues → PRs → Branches → Issues。
+    fn next(self) -> GitHubTab {
+        match self {
+            GitHubTab::Issues => GitHubTab::PullRequests,
+            GitHubTab::PullRequests => GitHubTab::Branches,
+            GitHubTab::Branches => GitHubTab::Issues,
         }
     }
 }
@@ -144,6 +157,18 @@ pub struct GitHubView<'a> {
     search_input: Input,
     filtered_issue_indices: Vec<usize>,
     filtered_pr_indices: Vec<usize>,
+    filtered_branch_indices: Vec<usize>,
+
+    /// Branches 分頁的資料與載入狀態，獨立於 issue／PR（見 `AppEvent::LoadGitHubBranches`）。
+    /// `branches_loaded` 為 false 表示還沒成功載入過，第一次切進分頁時才送請求。
+    branches: Vec<GhBranch>,
+    branches_truncated: bool,
+    branches_loaded: bool,
+    branches_load: LoadState,
+    /// Branches 分頁的作者篩選（`'` 循環切換）；`None` 是所有作者。
+    branches_author: Option<String>,
+    /// 內容區寬度，`render` 記錄；卡片欄數由它決定，導覽（上下移動、捲動）要用。
+    width: usize,
 
     state_filter: StateFilter,
 
@@ -205,6 +230,15 @@ impl<'a> GitHubView<'a> {
             search_input: Input::default(),
             filtered_issue_indices: Vec::new(),
             filtered_pr_indices: Vec::new(),
+            filtered_branch_indices: Vec::new(),
+            branches: Vec::new(),
+            branches_truncated: false,
+            branches_loaded: false,
+            // 開 view 時 `App::open_github` 會同時送出 `LoadGitHubBranches`，所以
+            // 一律從 Loading 起跳（跟 `load_state` 同理）。
+            branches_load: LoadState::Loading,
+            branches_author: None,
+            width: 0,
             state_filter: data.state_filter,
             task_panel: None,
             load_state: LoadState::Loading,
@@ -233,11 +267,14 @@ impl<'a> GitHubView<'a> {
         let tab = match self.active_tab {
             GitHubTab::Issues => "issues",
             GitHubTab::PullRequests => "prs",
+            // 卡片標題在邊框上，不跑馬燈
+            GitHubTab::Branches => return None,
         };
         let idx = self.actual_index(self.selected_index);
         let num = match self.active_tab {
             GitHubTab::Issues => self.issues.get(idx).map(|i| i.number)?,
             GitHubTab::PullRequests => self.pull_requests.get(idx).map(|p| p.number)?,
+            GitHubTab::Branches => return None,
         };
         Some(std::sync::Arc::from(format!("gh:{tab}:{num}")))
     }
@@ -345,6 +382,62 @@ impl<'a> GitHubView<'a> {
         self.request_timeline_for_selected();
     }
 
+    /// 結果直接取代整份清單（Branches 沒有分頁／增量更新）；選取位置超出範圍時夾回。
+    pub fn set_branches(&mut self, result: Result<(Vec<GhBranch>, bool), String>) {
+        match result {
+            Ok((branches, truncated)) => {
+                self.branches = branches;
+                self.branches_truncated = truncated;
+                self.branches_loaded = true;
+                self.branches_load = LoadState::Idle;
+                // 重載後該作者已不存在就回到所有作者，否則會卡在一個空清單
+                if self
+                    .branches_author
+                    .as_ref()
+                    .is_some_and(|a| !self.branches.iter().any(|b| &b.author == a))
+                {
+                    self.branches_author = None;
+                }
+                self.rebuild_filtered_indices();
+            }
+            Err(e) if self.branches.is_empty() => self.branches_load = LoadState::Error(e),
+            // 已有舊資料時保留畫面，只用 flash 告知這次重抓失敗
+            Err(e) => {
+                self.branches_load = LoadState::Idle;
+                self.set_flash(e, true);
+            }
+        }
+        if self.active_tab == GitHubTab::Branches {
+            let max = self.current_list_len().saturating_sub(1);
+            self.selected_index = self.selected_index.min(max);
+            self.adjust_scroll();
+        }
+    }
+
+    /// 開 view 時已預載；只有預載失敗（`branches_loaded` 仍為 false）才會在
+    /// 切進 Branches 分頁時重試。
+    fn ensure_branches_loaded(&mut self) {
+        if self.active_tab == GitHubTab::Branches && !self.branches_loaded {
+            self.reload_branches();
+        }
+    }
+
+    fn reload_branches(&mut self) {
+        if matches!(self.branches_load, LoadState::Loading) {
+            return;
+        }
+        self.branches_load = LoadState::Loading;
+        self.tx.send(AppEvent::LoadGitHubBranches);
+    }
+
+    /// 目前分頁的載入狀態；header 的「重新載入中」與空清單的提示都看這個。
+    fn list_load_state(&self) -> &LoadState {
+        match self.active_tab {
+            GitHubTab::Branches => &self.branches_load,
+            GitHubTab::Issues | GitHubTab::PullRequests => &self.load_state,
+        }
+    }
+
     fn finish_loading(&mut self) {
         if matches!(self.load_state, LoadState::Loading) {
             self.load_state = LoadState::Idle;
@@ -402,6 +495,12 @@ impl<'a> GitHubView<'a> {
         let found = match self.active_tab {
             GitHubTab::Issues => self.issues.iter().position(|i| i.number == number),
             GitHubTab::PullRequests => self.pull_requests.iter().position(|p| p.number == number),
+            // branch 沒有編號可跳（prompt Confirm 已擋）；從別的分頁帶過來的
+            // pending_jump 在此丟棄
+            GitHubTab::Branches => {
+                self.pending_jump = None;
+                return;
+            }
         };
         if let Some(idx) = found {
             self.selected_index = idx;
@@ -429,7 +528,7 @@ impl<'a> GitHubView<'a> {
                     filter = filter
                 )
             }
-            GitHubTab::PullRequests => {
+            GitHubTab::PullRequests | GitHubTab::Branches => {
                 t!(
                     "github.jump.not_found_prs",
                     number = number,
@@ -609,12 +708,15 @@ impl<'a> GitHubView<'a> {
         match self.active_tab {
             GitHubTab::Issues => self.issues_next_cursor.is_some(),
             GitHubTab::PullRequests => self.prs_next_cursor.is_some(),
+            GitHubTab::Branches => false,
         }
     }
 
     fn dispatch_load_more(&mut self) {
+        let Some(kind) = self.active_tab.kind() else {
+            return;
+        };
         self.loading_more = true;
-        let kind = self.active_tab.kind();
         self.tx.send(AppEvent::LoadMoreGitHub {
             kind,
             generation: self.request_generation,
@@ -665,7 +767,7 @@ impl<'a> GitHubView<'a> {
             }
             GitHubFocus::List => {
                 if self.current_list_len() == 0 {
-                    return match &self.load_state {
+                    return match self.list_load_state() {
                         LoadState::Loading => {
                             vec![h(&[UserEvent::Cancel], t!("common.hint.close"))]
                         }
@@ -680,6 +782,18 @@ impl<'a> GitHubView<'a> {
                             h(&[UserEvent::Cancel], t!("common.hint.close")),
                         ],
                     };
+                }
+                if self.active_tab == GitHubTab::Branches {
+                    return vec![
+                        h(&[UserEvent::RefList], t!("common.hint.switch_tab")),
+                        h(&[UserEvent::Search], t!("common.hint.search")),
+                        h(&[UserEvent::Refresh], t!("common.hint.refresh")),
+                        h(&[UserEvent::Filter], t!("common.hint.author_filter")),
+                        h(&[UserEvent::ShortCopy], t!("common.hint.copy_url")),
+                        h(&[UserEvent::FullCopy], t!("common.hint.create_pr")),
+                        h(&[UserEvent::TagCopy], t!("common.hint.branch_name")),
+                        h(&[UserEvent::GitHubToggle], t!("common.hint.close")),
+                    ];
                 }
                 // contextual action 隨選取項目變動、使用者猜不到，排在靜態提示之前，
                 // 讓被終端寬度切掉的是 help 裡查得到的那些。
@@ -769,6 +883,14 @@ impl<'a> GitHubView<'a> {
         };
         let (tx, _rx) = Sender::channel_for_test();
         let mut view = GitHubView::new(View::Default, data, tx);
+        view.branches = vec![GhBranch {
+            name: "topic".to_string(),
+            head_oid: "deadbeef".to_string(),
+            committer_date: "2026-01-01".to_string(),
+            author: "alice".to_string(),
+            diff_stat: DiffStat::default(),
+            url: String::new(),
+        }];
 
         let mut all = Vec::new();
         for focus in [
@@ -777,7 +899,11 @@ impl<'a> GitHubView<'a> {
             GitHubFocus::Prompt,
             GitHubFocus::CheckboxEdit,
         ] {
-            for tab in [GitHubTab::Issues, GitHubTab::PullRequests] {
+            for tab in [
+                GitHubTab::Issues,
+                GitHubTab::PullRequests,
+                GitHubTab::Branches,
+            ] {
                 for expand in [false, true] {
                     for label_mode in [LabelMode::Names, LabelMode::Swatches] {
                         view.focus = focus;
@@ -796,14 +922,19 @@ impl<'a> GitHubView<'a> {
         // 空清單的三條分支走的是另一組提示，清單有東西時掃不到。
         view.issues.clear();
         view.pull_requests.clear();
+        view.branches.clear();
         view.focus = GitHubFocus::List;
-        for state in [
-            LoadState::Idle,
-            LoadState::Loading,
-            LoadState::Error(String::new()),
-        ] {
-            view.load_state = state;
-            all.extend(view.status_hints());
+        for tab in [GitHubTab::Issues, GitHubTab::Branches] {
+            view.active_tab = tab;
+            for make_state in [
+                || LoadState::Idle,
+                || LoadState::Loading,
+                || LoadState::Error(String::new()),
+            ] {
+                view.load_state = make_state();
+                view.branches_load = make_state();
+                all.extend(view.status_hints());
+            }
         }
 
         all
@@ -846,6 +977,7 @@ impl<'a> GitHubView<'a> {
                 .pull_requests
                 .get(idx)
                 .map(|p| (p.number, GhItemKind::PullRequest, p.state.as_str())),
+            GitHubTab::Branches => None,
         }
     }
 
@@ -901,8 +1033,7 @@ impl<'a> GitHubView<'a> {
         self.active_tab = GitHubTab::Issues;
         self.focus = GitHubFocus::List;
         self.search_input.reset();
-        self.filtered_issue_indices.clear();
-        self.filtered_pr_indices.clear();
+        self.clear_filtered_indices();
         self.selected_index = raw_idx;
         self.offset = 0;
         self.preview_offset = 0;
@@ -922,6 +1053,7 @@ impl<'a> GitHubView<'a> {
                 .pull_requests
                 .get(idx)
                 .is_some_and(|p| !p.linked_issues.is_empty()),
+            GitHubTab::Branches => false,
         }
     }
 
@@ -933,6 +1065,7 @@ impl<'a> GitHubView<'a> {
                 .pull_requests
                 .get(idx)
                 .map(|p| (p.number, GhItemKind::PullRequest)),
+            GitHubTab::Branches => None,
         }
     }
 
@@ -943,6 +1076,7 @@ impl<'a> GitHubView<'a> {
             match self.active_tab {
                 GitHubTab::Issues => self.issues.len(),
                 GitHubTab::PullRequests => self.pull_requests.len(),
+                GitHubTab::Branches => self.branches.len(),
             }
         }
     }
@@ -951,11 +1085,61 @@ impl<'a> GitHubView<'a> {
         match self.active_tab {
             GitHubTab::Issues => &self.filtered_issue_indices,
             GitHubTab::PullRequests => &self.filtered_pr_indices,
+            GitHubTab::Branches => &self.filtered_branch_indices,
         }
+    }
+
+    fn clear_filtered_indices(&mut self) {
+        self.filtered_issue_indices.clear();
+        self.filtered_pr_indices.clear();
+        self.filtered_branch_indices.clear();
     }
 
     fn has_active_filter(&self) -> bool {
         !self.search_input.value().is_empty()
+            || (self.active_tab == GitHubTab::Branches && self.branches_author.is_some())
+    }
+
+    /// 卡片一列放幾張，隨寬度變化，不浪費橫向空間。
+    fn branch_columns(&self) -> usize {
+        branches::columns(self.width)
+    }
+
+    /// 上下移動一次跨幾個項目：Branches 是多欄卡片，一次跨一整列。
+    fn nav_step(&self) -> usize {
+        match self.active_tab {
+            GitHubTab::Branches => self.branch_columns(),
+            GitHubTab::Issues | GitHubTab::PullRequests => 1,
+        }
+    }
+
+    /// Branches 可見的卡片列數。尾端有「僅顯示最近 N 個」時扣掉那一列，
+    /// 要跟 `render_branches` 的版面一致。
+    fn branch_visible_rows(&self) -> usize {
+        let content = self.height.saturating_sub(3);
+        let footer = self.branches_truncated && content > branches::CARD_HEIGHT as usize;
+        (content - usize::from(footer)) / branches::CARD_HEIGHT as usize
+    }
+
+    /// `'`：Branches 分頁依作者篩選，所有作者 → 各作者（依最近 commit 出現順序）→ 回到所有作者。
+    pub(super) fn cycle_branch_author(&mut self) {
+        let mut authors: Vec<&str> = Vec::new();
+        for b in &self.branches {
+            if !authors.contains(&b.author.as_str()) {
+                authors.push(&b.author);
+            }
+        }
+        let next = match self.branches_author.as_deref() {
+            None => authors.first(),
+            Some(cur) => authors
+                .iter()
+                .position(|a| *a == cur)
+                .and_then(|i| authors.get(i + 1)),
+        };
+        self.branches_author = next.map(|a| (*a).to_string());
+        self.selected_index = 0;
+        self.offset = 0;
+        self.rebuild_filtered_indices();
     }
 
     /// 把可視索引對應到實際資料索引（若有篩選則透過篩選對應）
@@ -970,16 +1154,44 @@ impl<'a> GitHubView<'a> {
         }
     }
 
+    /// 列表一屏能容納幾個項目（扣掉頂部 tab／prompt 的 3 列）；Branches 是
+    /// 固定高度的卡片，一屏的項目數要除以卡片高度。
+    fn list_rows(&self) -> usize {
+        let rows = self.height.saturating_sub(3);
+        match self.active_tab {
+            GitHubTab::Branches => self.branch_visible_rows() * self.branch_columns(),
+            GitHubTab::Issues | GitHubTab::PullRequests => rows,
+        }
+    }
+
     fn adjust_scroll(&mut self) {
         if self.height == 0 {
             return;
         }
-        let visible = self.height.saturating_sub(3);
+        if self.active_tab == GitHubTab::Branches {
+            self.adjust_branch_scroll();
+            return;
+        }
+        let visible = self.list_rows();
         if self.selected_index < self.offset {
             self.offset = self.selected_index;
         } else if self.selected_index >= self.offset + visible {
             self.offset = self.selected_index - visible + 1;
         }
+    }
+
+    /// 以「列」為單位捲動，`offset` 永遠對齊列首。
+    fn adjust_branch_scroll(&mut self) {
+        let cols = self.branch_columns();
+        let rows = self.branch_visible_rows().max(1);
+        let selected_row = self.selected_index / cols;
+        let mut first_row = self.offset / cols;
+        if selected_row < first_row {
+            first_row = selected_row;
+        } else if selected_row >= first_row + rows {
+            first_row = selected_row + 1 - rows;
+        }
+        self.offset = first_row * cols;
     }
 
     /// 把選取的 issue/PR 及其 timeline entry 一併借出成單一值——這是
@@ -1016,6 +1228,7 @@ impl<'a> GitHubView<'a> {
                     diff_stat: pr.diff_stat,
                 },
             }),
+            GitHubTab::Branches => None,
         };
         PreviewInput {
             tab: self.active_tab,
@@ -3031,5 +3244,408 @@ mod tests {
 
         view.on_tick(t0 + TIMELINE_DEBOUNCE);
         assert!(timeline_requests(&rx).is_empty());
+    }
+
+    // ── Branches 分頁 ──
+
+    fn test_branch(name: &str, additions: u32, deletions: u32) -> GhBranch {
+        GhBranch {
+            name: name.to_string(),
+            head_oid: "0123456789abcdef".to_string(),
+            committer_date: "2026-01-02".to_string(),
+            author: "alice".to_string(),
+            diff_stat: DiffStat {
+                additions,
+                deletions,
+            },
+            url: format!("https://example.com/compare/{name}?expand=1"),
+        }
+    }
+
+    fn branches_view() -> (GitHubView<'static>, std::sync::mpsc::Receiver<AppEvent>) {
+        let (tx, rx) = Sender::channel_for_test();
+        let mut view = GitHubView::new(View::Default, GitHubData::default(), tx);
+        view.active_tab = GitHubTab::Branches;
+        (view, rx)
+    }
+
+    #[test]
+    fn tab_key_cycles_issues_prs_branches_and_back() {
+        let (mut view, _rx) = branches_view();
+        view.active_tab = GitHubTab::Issues;
+
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            view.handle_list_event(UserEvent::RefList, 1);
+            seen.push(view.active_tab);
+        }
+
+        assert_eq!(
+            seen,
+            [
+                GitHubTab::PullRequests,
+                GitHubTab::Branches,
+                GitHubTab::Issues
+            ]
+        );
+    }
+
+    #[test]
+    fn branches_are_preloaded_with_the_view_and_only_retried_after_failure() {
+        let (mut view, rx) = branches_view();
+        view.active_tab = GitHubTab::PullRequests;
+
+        // 開 view 時 `App::open_github` 已送出載入，view 從 Loading 起跳：
+        // 切進分頁與載入中按 r 都不重複送
+        assert!(matches!(view.branches_load, LoadState::Loading));
+        view.handle_list_event(UserEvent::RefList, 1);
+        assert_eq!(view.active_tab, GitHubTab::Branches);
+        assert!(rx.try_recv().is_err());
+        view.handle_list_event(UserEvent::Refresh, 1);
+        assert!(rx.try_recv().is_err());
+
+        // 預載失敗：沒有舊資料 → 錯誤頁；再切進來會重試
+        view.set_branches(Err("boom".to_string()));
+        assert!(matches!(view.branches_load, LoadState::Error(_)));
+        view.active_tab = GitHubTab::PullRequests;
+        view.handle_list_event(UserEvent::RefList, 1);
+        assert!(matches!(rx.try_recv(), Ok(AppEvent::LoadGitHubBranches)));
+
+        // 成功後切走再切回來不重抓
+        view.set_branches(Ok((vec![test_branch("a", 1, 1)], false)));
+        view.active_tab = GitHubTab::PullRequests;
+        view.handle_list_event(UserEvent::RefList, 1);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn failed_reload_keeps_old_branches_and_flashes() {
+        let (mut view, _rx) = branches_view();
+        view.set_branches(Ok((vec![test_branch("a", 1, 1)], false)));
+
+        view.set_branches(Err("offline".to_string()));
+
+        assert_eq!(view.branches.len(), 1);
+        assert!(matches!(view.branches_load, LoadState::Idle));
+        assert_eq!(view.flash_message, Some(("offline".to_string(), true)));
+    }
+
+    #[test]
+    fn branches_render_as_cards_with_line_stat() {
+        let (mut view, _rx) = branches_view();
+        view.set_branches(Ok((
+            vec![test_branch("feat/a", 12, 3), test_branch("fix/b", 700, 0)],
+            false,
+        )));
+
+        let screen = render_to_string(&mut view);
+
+        assert!(screen.contains("Branches (2)"), "got:\n{screen}");
+        assert!(screen.contains("feat/a"), "got:\n{screen}");
+        assert!(screen.contains("+12 -3 =15"), "got:\n{screen}");
+        assert!(screen.contains("fix/b"), "got:\n{screen}");
+        assert!(screen.contains("+700 -0 =700"), "got:\n{screen}");
+    }
+
+    #[test]
+    fn truncated_branches_show_the_limit_footer() {
+        let (mut view, _rx) = branches_view();
+        view.set_branches(Ok((vec![test_branch("a", 1, 1)], true)));
+
+        let screen = render_to_string(&mut view);
+
+        assert!(
+            screen.contains(&crate::github::BRANCH_LIMIT.to_string()),
+            "got:\n{screen}"
+        );
+    }
+
+    #[test]
+    fn selection_scrolls_by_whole_cards() {
+        let (mut view, _rx) = branches_view();
+        let many = (0..10)
+            .map(|i| test_branch(&format!("b{i}"), i, 0))
+            .collect();
+        view.set_branches(Ok((many, false)));
+        render_to_string(&mut view); // 填入 height
+
+        for _ in 0..9 {
+            view.handle_list_event(UserEvent::NavigateDown, 1);
+        }
+        let screen = render_to_string(&mut view);
+
+        assert_eq!(view.selected_index, 9);
+        assert!(view.offset > 0);
+        assert!(screen.contains("b9"), "got:\n{screen}");
+        assert!(!screen.contains(" b0 "), "got:\n{screen}");
+    }
+
+    #[test]
+    fn search_filters_branches_and_selection_follows_the_filter() {
+        let (mut view, _rx) = branches_view();
+        view.set_branches(Ok((
+            vec![test_branch("feat/a", 1, 1), test_branch("fix/b", 2, 2)],
+            false,
+        )));
+
+        view.search_input = "fix".into();
+        view.rebuild_filtered_indices();
+
+        assert_eq!(view.current_list_len(), 1);
+        assert_eq!(view.actual_index(0), 1);
+        assert_eq!(
+            view.selected_url().as_deref(),
+            Some("https://example.com/compare/fix/b?expand=1")
+        );
+    }
+
+    #[test]
+    fn numeric_query_on_branches_is_a_filter_not_a_jump() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let (mut view, _rx) = branches_view();
+        view.set_branches(Ok((vec![test_branch("release-2026", 1, 1)], false)));
+        view.focus = GitHubFocus::Prompt;
+        view.search_input = "2026".into();
+        view.rebuild_filtered_indices();
+
+        view.handle_prompt_event(
+            UserEvent::Confirm,
+            1,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+
+        assert_eq!(view.focus, GitHubFocus::List);
+        assert_eq!(view.search_input.value(), "2026");
+        assert_eq!(view.current_list_len(), 1);
+    }
+
+    #[test]
+    fn pr_only_actions_are_inert_on_branches() {
+        let (mut view, rx) = branches_view();
+        view.set_branches(Ok((vec![test_branch("a", 1, 1)], false)));
+
+        for event in [
+            UserEvent::Confirm,
+            UserEvent::DetailPaneToggle,
+            UserEvent::MergePr,
+            UserEvent::ToggleIssueState,
+            UserEvent::TogglePrDraft,
+        ] {
+            view.handle_list_event(event, 1);
+        }
+
+        assert_eq!(view.focus, GitHubFocus::List, "no preview for branches");
+        assert!(rx.try_recv().is_err(), "no event should be sent");
+    }
+
+    #[test]
+    fn branches_copy_url_open_and_name() {
+        let (mut view, rx) = branches_view();
+        view.set_branches(Ok((vec![test_branch("feat/a", 1, 1)], false)));
+
+        view.handle_list_event(UserEvent::ShortCopy, 1);
+        let AppEvent::CopyToClipboard { value, .. } = rx.try_recv().unwrap() else {
+            panic!("expected CopyToClipboard");
+        };
+        assert_eq!(value, "https://example.com/compare/feat/a?expand=1");
+
+        view.handle_list_event(UserEvent::FullCopy, 1);
+        assert!(matches!(rx.try_recv(), Ok(AppEvent::OpenUrl(_))));
+
+        view.handle_list_event(UserEvent::TagCopy, 1);
+        let AppEvent::CopyToClipboard { value, .. } = rx.try_recv().unwrap() else {
+            panic!("expected CopyToClipboard");
+        };
+        assert_eq!(value, "feat/a");
+    }
+
+    #[test]
+    fn branches_status_hints_offer_only_working_keys() {
+        let (mut view, _rx) = branches_view();
+        view.set_branches(Ok((vec![test_branch("a", 1, 1)], false)));
+
+        let events: Vec<_> = view
+            .status_hints()
+            .into_iter()
+            .flat_map(|(events, _)| events.to_vec())
+            .collect();
+
+        for useless in [
+            UserEvent::Confirm,
+            UserEvent::DetailPaneToggle,
+            UserEvent::MergePr,
+        ] {
+            assert!(!events.contains(&useless), "{useless:?} does nothing here");
+        }
+        assert!(events.contains(&UserEvent::RefList));
+        // `'` 在這個分頁是作者篩選
+        assert!(events.contains(&UserEvent::Filter));
+    }
+
+    fn author_branch(name: &str, author: &str) -> GhBranch {
+        GhBranch {
+            author: author.to_string(),
+            ..test_branch(name, 1, 1)
+        }
+    }
+
+    fn three_authors_view() -> GitHubView<'static> {
+        let (mut view, _rx) = branches_view();
+        view.set_branches(Ok((
+            vec![
+                author_branch("a1", "alice"),
+                author_branch("b1", "bob"),
+                author_branch("a2", "alice"),
+                author_branch("c1", "carol"),
+            ],
+            false,
+        )));
+        view
+    }
+
+    #[test]
+    fn filter_key_cycles_authors_then_back_to_all() {
+        let mut view = three_authors_view();
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            view.handle_list_event(UserEvent::Filter, 1);
+            seen.push((view.branches_author.clone(), view.current_list_len()));
+        }
+
+        // 依最近 commit 的出現順序：alice(2) → bob(1) → carol(1) → 所有作者(4)
+        assert_eq!(
+            seen,
+            [
+                (Some("alice".to_string()), 2),
+                (Some("bob".to_string()), 1),
+                (Some("carol".to_string()), 1),
+                (None, 4),
+            ]
+        );
+    }
+
+    #[test]
+    fn author_filter_combines_with_search_and_survives_clearing_it() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut view = three_authors_view();
+        view.handle_list_event(UserEvent::Filter, 1); // alice
+        view.search_input = "a2".into();
+        view.rebuild_filtered_indices();
+        assert_eq!(view.current_list_len(), 1);
+        assert_eq!(view.actual_index(0), 2);
+
+        // 清掉搜尋字串後作者篩選仍在
+        view.focus = GitHubFocus::Prompt;
+        view.handle_prompt_event(
+            UserEvent::Cancel,
+            1,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+        );
+        assert_eq!(view.branches_author.as_deref(), Some("alice"));
+        assert_eq!(view.current_list_len(), 2);
+    }
+
+    #[test]
+    fn author_filter_is_dropped_when_that_author_disappears_after_reload() {
+        let mut view = three_authors_view();
+        view.handle_list_event(UserEvent::Filter, 1); // alice
+        view.handle_list_event(UserEvent::Filter, 1); // bob
+
+        view.set_branches(Ok((vec![author_branch("a1", "alice")], false)));
+
+        assert_eq!(view.branches_author, None);
+        assert_eq!(view.current_list_len(), 1);
+    }
+
+    #[test]
+    fn header_shows_the_selected_author() {
+        let mut view = three_authors_view();
+        assert!(render_to_string(&mut view).contains("[所有作者]"));
+
+        view.handle_list_event(UserEvent::Filter, 1);
+
+        assert!(render_to_string(&mut view).contains("[@alice]"));
+    }
+
+    fn many_branches_view(n: usize) -> GitHubView<'static> {
+        let (mut view, _rx) = branches_view();
+        let items = (0..n)
+            .map(|i| test_branch(&format!("b{i:02}"), i as u32, 0))
+            .collect();
+        view.set_branches(Ok((items, false)));
+        view
+    }
+
+    #[test]
+    fn wide_terminal_packs_several_cards_per_row() {
+        let mut view = many_branches_view(6);
+
+        let screen = render_to_string_at_width(&mut view, 120);
+
+        assert_eq!(view.branch_columns(), 3);
+        // 同一個畫面列上並排出現三張卡片的標題
+        let title_row = screen
+            .lines()
+            .find(|l| l.contains("b00"))
+            .expect("first card title");
+        assert!(
+            title_row.contains("b01") && title_row.contains("b02"),
+            "got:\n{screen}"
+        );
+        assert!(!title_row.contains("b03"), "got:\n{screen}");
+    }
+
+    #[test]
+    fn narrow_terminal_falls_back_to_one_card_per_row() {
+        let mut view = many_branches_view(3);
+
+        let screen = render_to_string_at_width(&mut view, 30);
+
+        assert_eq!(view.branch_columns(), 1);
+        let title_row = screen.lines().find(|l| l.contains("b00")).unwrap();
+        assert!(!title_row.contains("b01"), "got:\n{screen}");
+    }
+
+    #[test]
+    fn up_down_move_a_whole_row_and_left_right_move_one_card() {
+        let mut view = many_branches_view(8);
+        render_to_string_at_width(&mut view, 120); // cols = 3
+
+        view.handle_list_event(UserEvent::NavigateDown, 1);
+        assert_eq!(view.selected_index, 3);
+        view.handle_list_event(UserEvent::NavigateRight, 1);
+        assert_eq!(view.selected_index, 4);
+        view.handle_list_event(UserEvent::NavigateLeft, 2);
+        assert_eq!(view.selected_index, 2);
+        view.handle_list_event(UserEvent::NavigateUp, 1);
+        assert_eq!(view.selected_index, 0);
+
+        // 最後一列不滿時往下停在最後一張，不越界
+        view.selected_index = 4;
+        view.handle_list_event(UserEvent::NavigateDown, 1);
+        assert_eq!(view.selected_index, 7);
+        assert_eq!(
+            view.focus,
+            GitHubFocus::List,
+            "左右鍵不能關掉或進入 preview"
+        );
+    }
+
+    #[test]
+    fn grid_scroll_keeps_selected_row_visible_and_offset_row_aligned() {
+        let mut view = many_branches_view(30);
+        render_to_string_at_width(&mut view, 120); // cols = 3
+
+        for _ in 0..9 {
+            view.handle_list_event(UserEvent::NavigateDown, 1);
+        }
+        let screen = render_to_string_at_width(&mut view, 120);
+
+        assert_eq!(view.selected_index, 27);
+        assert_eq!(view.offset % 3, 0);
+        assert!(screen.contains("b27"), "got:\n{screen}");
+        assert!(!screen.contains("b00"), "got:\n{screen}");
     }
 }

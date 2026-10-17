@@ -223,3 +223,15 @@ en-US = "update"
 [common.hint.restart]
 zh-TW = "重啟"
 en-US = "restart"
+
+[common.hint.create_pr]
+zh-TW = "開 PR 頁"
+en-US = "create PR"
+
+[common.hint.branch_name]
+zh-TW = "branch 名"
+en-US = "branch name"
+
+[common.hint.author_filter]
+zh-TW = "篩選作者"
+en-US = "filter author"

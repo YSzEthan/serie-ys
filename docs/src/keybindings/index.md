@@ -114,7 +114,7 @@
 | 按鍵 | 說明 | 設定鍵名 |
 | --- | --- | --- |
 | <kbd>g</kbd> <kbd>n</kbd> <kbd>Esc</kbd> <kbd>Backspace</kbd> | 關閉 GitHub view | `github_toggle` `cancel` `close` |
-| <kbd>Tab</kbd> | 切換 issue/PR 分頁 | `ref_list` |
+| <kbd>Tab</kbd> | 切換 Issues → PRs → Branches 分頁（Branches 列出 origin 上沒有 OPEN PR 的 branch 與行數差異） | `ref_list` |
 | <kbd>Down</kbd> <kbd>j</kbd> <kbd>J</kbd> | 向下移動 | `navigate_down` `select_down` |
 | <kbd>Up</kbd> <kbd>k</kbd> <kbd>K</kbd> | 向上移動 | `navigate_up` `select_up` |
 | <kbd>PageDown</kbd> <kbd>Ctrl-f</kbd> | 向下一頁 | `page_down` |
@@ -126,10 +126,10 @@
 | <kbd>Enter</kbd> <kbd>y</kbd> <kbd>Right</kbd> <kbd>l</kbd> | 預覽內容／切換 checkbox | `confirm` `navigate_right` |
 | <kbd>Left</kbd> <kbd>h</kbd> | 返回／取消 | `navigate_left` |
 | <kbd>:</kbd> | 搜尋／輸入純數字跳到 #N | `search` |
-| <kbd>'</kbd> | 過濾 | `filter` |
-| <kbd>c</kbd> | 複製 issue/PR URL | `short_copy` |
-| <kbd>C</kbd> | 在瀏覽器開啟 issue/PR | `full_copy` |
-| <kbd>v</kbd> | 複製 issue/PR 編號（#N） | `tag_copy` |
+| <kbd>'</kbd> | 過濾（Branches：依作者篩選） | `filter` |
+| <kbd>c</kbd> | 複製 issue/PR URL（Branches：compare URL） | `short_copy` |
+| <kbd>C</kbd> | 在瀏覽器開啟 issue/PR（Branches：開 PR 頁） | `full_copy` |
+| <kbd>v</kbd> | 複製 issue/PR 編號（#N）（Branches：branch 名稱） | `tag_copy` |
 | <kbd>u</kbd> | 開啟相關 issue/PR 選單 | `detail_pane_toggle` |
 | <kbd>r</kbd> | 重新整理 | `refresh` |
 | <kbd>p</kbd> | 三階段 merge PR：選擇方式、刪除 branch、確認 | `merge_pr` |

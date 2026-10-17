@@ -556,6 +556,14 @@ impl App<'_> {
                         view.append_pull_requests(items, next_cursor, generation);
                     }
                 }
+                AppEvent::LoadGitHubBranches => {
+                    self.load_github_branches();
+                }
+                AppEvent::GitHubBranchesLoaded { result } => {
+                    if let View::GitHub(ref mut view) = self.view {
+                        view.set_branches(result);
+                    }
+                }
                 AppEvent::LoadGitHubTimeline {
                     number,
                     kind,
@@ -1643,6 +1651,8 @@ impl App<'_> {
         let before_view = std::mem::take(&mut self.view);
         self.view = View::of_github(before_view, data, self.github_label_mode, self.ec.sender());
         self.refresh_github(filter);
+        // Branches 也在開 view 時一起預載，切到分頁時資料多半已經好了
+        self.load_github_branches();
     }
 
     fn on_github_data_loaded(&mut self, data: crate::github::GitHubData, warnings: Vec<String>) {
@@ -1820,6 +1830,16 @@ impl App<'_> {
                     error: e,
                 }),
             }
+        });
+    }
+
+    fn load_github_branches(&self) {
+        let repo_path = self.repository.path().to_path_buf();
+        let tx = self.ec.sender();
+        std::thread::spawn(move || {
+            tx.send(AppEvent::GitHubBranchesLoaded {
+                result: crate::github::list_unpr_branches(&repo_path),
+            });
         });
     }
 
