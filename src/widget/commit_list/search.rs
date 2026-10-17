@@ -4,7 +4,7 @@ use ratatui::crossterm::event::{Event, KeyEvent};
 use rust_i18n::t;
 use rustc_hash::FxHashMap;
 use tui_input::backend::crossterm::EventHandler;
-use tui_input::Input;
+use tui_input::{Input, InputRequest};
 use unicode_width::UnicodeWidthStr;
 
 use crate::config::SearchTarget;
@@ -415,15 +415,25 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn start_search(&mut self) {
-        if let SearchState::Inactive | SearchState::Applied { .. } = self.search_state {
-            self.search_state = SearchState::Searching {
-                start_index: self.current_selected_raw(),
-                match_index: 0,
-                transient_message: TransientMessage::None,
-            };
-            self.search_input.reset();
-            self.search = MatchSet::default();
-        }
+        // `Applied` 時 `search.key` 與 `search_input`／`search_options` 一致，
+        // 保留 `MatchSet` 讓續打字能走增量路徑
+        let match_index = match self.search_state {
+            SearchState::Inactive => {
+                self.search_input.reset();
+                self.search = MatchSet::default();
+                0
+            }
+            SearchState::Applied { match_index, .. } => {
+                self.search_input.handle(InputRequest::GoToEnd);
+                match_index
+            }
+            SearchState::Searching { .. } => return,
+        };
+        self.search_state = SearchState::Searching {
+            start_index: self.current_selected_raw(),
+            match_index,
+            transient_message: TransientMessage::None,
+        };
     }
 
     pub fn handle_search_input(&mut self, key: KeyEvent) {
@@ -439,7 +449,7 @@ impl<'a> CommitListState<'a> {
     pub fn apply_search(&mut self) {
         if let SearchState::Searching { match_index, .. } = self.search_state {
             if self.search_input.value().is_empty() {
-                self.search_state = SearchState::Inactive;
+                self.cancel_search();
             } else {
                 self.search_state = SearchState::Applied {
                     match_index,
@@ -528,6 +538,9 @@ impl<'a> CommitListState<'a> {
             SearchState::Inactive => {}
             SearchState::Searching { start_index, .. } => {
                 self.update_search_matches();
+                // 空 query、零命中、命中全被 filter 藏住時不會有人更新 index，
+                // 先歸零免得殘留 resume 前的舊值
+                self.search_state.update_match_index(0);
                 self.select_current_or_next_match_index(start_index);
             }
             SearchState::Applied { .. } => self.reapply_search(),
@@ -830,7 +843,19 @@ mod tests {
 
     use crate::git::Commit;
 
+    use ratatui::crossterm::event::{KeyCode, KeyModifiers};
+
     use super::*;
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::empty())
+    }
+
+    fn type_query(state: &mut CommitListState<'_>, query: &str) {
+        for c in query.chars() {
+            state.handle_search_input(key(KeyCode::Char(c)));
+        }
+    }
 
     fn commit_fixture() -> Commit {
         Commit {
@@ -1535,6 +1560,242 @@ mod tests {
         });
     }
 
+    #[test]
+    fn resume_search_preserves_query_options_matches_and_view_position() {
+        with_state(&["other", "Fix parser", "FIX graph", "last"], |state| {
+            state.reset_height(2);
+            state.toggle_ignore_case();
+            state.toggle_fuzzy();
+            state.toggle_target();
+            state.start_search();
+            type_query(state, "fx");
+            state.handle_search_input(key(KeyCode::Left));
+            state.apply_search();
+            state.select_next_match();
+            state.scroll_up();
+
+            let options = state.search_options();
+            let position = state.current_list_status();
+            let hits = state.search.hits.clone();
+            let applied = state.search_state();
+            assert_eq!(
+                applied,
+                SearchState::Applied {
+                    match_index: 2,
+                    total_match: 2
+                }
+            );
+
+            state.start_search();
+
+            assert_eq!(state.search_query_string(), Some("/fx".into()));
+            assert_eq!(state.search_query_cursor_position(), 3);
+            assert_eq!(state.search_options(), options);
+            assert_eq!(state.current_list_status(), position);
+            assert_eq!(state.search.hits, hits);
+
+            state.apply_search();
+            assert_eq!(state.search_state(), applied);
+            assert_eq!(state.current_list_status(), position);
+        });
+    }
+
+    #[test]
+    fn resume_search_edits_from_current_selection() {
+        with_state(
+            &["fix parser older", "fix graph", "fix parser newer"],
+            |state| {
+                state.start_search();
+                type_query(state, "fix");
+                state.apply_search();
+                state.select_next_match();
+                assert_eq!(state.selected_commit_hash(), &hash(2));
+
+                state.start_search();
+                type_query(state, " parser");
+                assert_eq!(state.selected_commit_hash(), &hash(3));
+                assert_eq!(state.search.hits, vec![RawCommitIdx(0), RawCommitIdx(2)]);
+
+                state.handle_search_input(key(KeyCode::Backspace));
+                assert_eq!(state.search_query_string(), Some("/fix parse".into()));
+                state.apply_search();
+                assert_eq!(
+                    state.search_state(),
+                    SearchState::Applied {
+                        match_index: 2,
+                        total_match: 2
+                    }
+                );
+            },
+        );
+    }
+
+    #[test]
+    fn resume_search_does_not_move_selection_off_an_unmatched_commit() {
+        with_state(&["fix", "other", "fix again"], |state| {
+            state.start_search();
+            type_query(state, "fix");
+            state.apply_search();
+            state.select_next();
+            let position = state.current_list_status();
+            let applied = state.search_state();
+
+            state.start_search();
+            state.apply_search();
+
+            assert_eq!(state.current_list_status(), position);
+            assert_eq!(state.selected_commit_hash(), &hash(2));
+            assert_eq!(state.search_state(), applied);
+        });
+    }
+
+    #[test]
+    fn resume_search_without_matches_can_be_corrected() {
+        with_state(&["fix", "other"], |state| {
+            state.start_search();
+            type_query(state, "fixx");
+            state.apply_search();
+            let applied = state.search_state();
+
+            state.start_search();
+            assert_eq!(state.search_query_string(), Some("/fixx".into()));
+            state.apply_search();
+            assert_eq!(state.search_state(), applied);
+
+            state.start_search();
+            state.handle_search_input(key(KeyCode::Backspace));
+            state.apply_search();
+            assert_eq!(
+                state.search_state(),
+                SearchState::Applied {
+                    match_index: 1,
+                    total_match: 1
+                }
+            );
+        });
+    }
+
+    #[test]
+    fn cancel_resumed_search_starts_next_search_empty() {
+        with_state(&["fix", "other"], |state| {
+            state.start_search();
+            type_query(state, "fix");
+            state.apply_search();
+            state.start_search();
+            state.cancel_search();
+
+            assert_eq!(state.search_state(), SearchState::Inactive);
+            assert!(state.search.hits.is_empty());
+            state.start_search();
+            assert_eq!(state.search_query_string(), Some("/".into()));
+        });
+    }
+
+    #[test]
+    fn clear_resumed_query_clears_matches_and_applies_inactive_search() {
+        for fuzzy in [false, true] {
+            with_state(&["fix", "other"], |state| {
+                if fuzzy {
+                    state.toggle_fuzzy();
+                }
+                state.start_search();
+                type_query(state, "fix");
+                state.apply_search();
+                state.start_search();
+                state.handle_search_input(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+
+                assert_eq!(state.search_query_string(), Some("/".into()));
+                assert!(state.search.hits.is_empty());
+                let SearchState::Searching { match_index, .. } = state.search_state() else {
+                    panic!("expected Searching");
+                };
+                assert_eq!(match_index, 0);
+
+                state.apply_search();
+                assert_eq!(state.search_state(), SearchState::Inactive);
+                assert_eq!(state.matched_query_string(), None);
+
+                state.start_search();
+                assert_eq!(state.search_query_string(), Some("/".into()));
+                type_query(state, "o");
+                state.apply_search();
+                assert_eq!(
+                    state.search_state(),
+                    SearchState::Applied {
+                        match_index: 1,
+                        total_match: 1
+                    }
+                );
+            });
+        }
+    }
+
+    #[test]
+    fn resume_search_moves_cursor_to_end_of_long_unicode_query() {
+        let query = "検索".repeat(40);
+        with_state(&[query.as_str()], |state| {
+            state.start_search();
+            type_query(state, &query);
+            state.handle_search_input(key(KeyCode::Home));
+            state.apply_search();
+
+            state.start_search();
+            assert_eq!(state.search_query_string(), Some(format!("/{query}")));
+            assert_eq!(state.search_query_cursor_position(), 161);
+            type_query(state, "追");
+            assert_eq!(state.search_query_string(), Some(format!("/{query}追")));
+        });
+    }
+
+    /// resume 保留的 `MatchSet` 之後走增量路徑：先換選項再續打，結果必須跟
+    /// 從零全量掃描一致。
+    #[test]
+    fn resume_search_then_toggle_and_type_matches_full_scan() {
+        with_state(&["Fix a", "fix ab", "FIX abc", "other"], |state| {
+            state.start_search();
+            type_query(state, "fix");
+            state.apply_search();
+            assert_eq!(state.search.hits, vec![RawCommitIdx(1)]);
+
+            state.start_search();
+            state.toggle_ignore_case();
+            type_query(state, " ab");
+
+            let mut full = MatchSet::default();
+            full.update(
+                &state.commits,
+                MatchQuery {
+                    query: "fix ab".into(),
+                    options: state.search_options(),
+                },
+            );
+            assert_eq!(full.hits.len(), 2);
+            assert_eq!(state.search.hits, full.hits);
+        });
+    }
+
+    #[test]
+    fn searching_with_all_hits_filtered_out_resets_match_index() {
+        with_state(&["alpha", "beta", "gamma"], |state| {
+            state.restore_filter(&exact("beta"));
+            state.restore_search(&exact("beta"));
+            let SearchState::Applied { match_index, .. } = state.search_state() else {
+                panic!("expected Applied");
+            };
+            assert_eq!(match_index, 1);
+
+            state.start_search();
+            state.handle_search_input(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
+            type_query(state, "alpha");
+
+            assert_eq!(state.search.hits, vec![RawCommitIdx(0)]);
+            let SearchState::Searching { match_index, .. } = state.search_state() else {
+                panic!("expected Searching");
+            };
+            assert_eq!(match_index, 0, "命中全被 filter 藏住，不該殘留舊 index");
+        });
+    }
+
     /// #122 手動量測：讀真實 repo，逐字打 "fix bug"，印出每一鍵耗時。
     /// 不在一般 `cargo test` 跑，用法：
     /// `SERIE_PERF_REPO=<repo path> cargo test --release perf_search -- --ignored --nocapture`
@@ -1544,8 +1805,6 @@ mod tests {
         use std::path::Path;
         use std::rc::Rc;
         use std::time::Instant;
-
-        use ratatui::crossterm::event::{KeyCode, KeyModifiers};
 
         use crate::git::{Repository, SortCommit};
         use crate::graph::Graph;
@@ -1592,7 +1851,7 @@ mod tests {
         state.start_search();
         for c in "fix bug".chars() {
             let key_start = Instant::now();
-            state.handle_search_input(KeyEvent::new(KeyCode::Char(c), KeyModifiers::empty()));
+            state.handle_search_input(key(KeyCode::Char(c)));
             eprintln!("key {c:?}: {:?}", key_start.elapsed());
         }
     }
