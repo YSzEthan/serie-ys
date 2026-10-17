@@ -11,14 +11,15 @@ use crate::github::Mergeable;
 use super::{
     render::{label_spans, state_color, state_label},
     timeline::{
-        build_timeline, diff_stat_spans, mergeable_marker, TimelineEntry, TimelineLoad,
+        build_timeline, diff_stat_spans, leading, mergeable_marker, TimelineEntry, TimelineLoad,
         TimelineStage,
     },
     GitHubTab, Section,
 };
 
-/// 第三個回傳值是 timeline 起點的*邏輯*行號（第一條區段分隔線的位置），
-/// 供 `PreviewCache` 換算成折行後的行號。
+/// 第三個回傳值是 leading 區（CI、commit）起點的*邏輯*行號，也就是 header
+/// 最後一行之後、第一條區段分隔線的位置，供 `PreviewCache` 換算成折行後的
+/// 行號。載入完成時 leading 區會長出來，把 Body 以下整段往下推。
 pub(super) fn build_preview_content(
     input: &PreviewInput,
 ) -> (Vec<Line<'static>>, Option<PreviewOverlay>, usize) {
@@ -30,8 +31,8 @@ pub(super) fn build_preview_content(
             t!("github.preview.no_item"),
             Style::default().fg(Color::DarkGray),
         )];
-        let timeline_start = lines.len();
-        return (lines, overlay, timeline_start);
+        let leading_start = lines.len();
+        return (lines, overlay, leading_start);
     };
 
     let mut lines = Vec::new();
@@ -87,18 +88,27 @@ pub(super) fn build_preview_content(
         lines.push(Line::from(spans));
     }
 
+    let leading_start = lines.len();
+    let mut prev = None;
+    if let Some(entry) = input.entry {
+        for block in leading(entry, input.expand_commits).into_iter().flatten() {
+            lines.push(rule(prev, block.section, width));
+            prev = Some(block.section);
+            for item in block.items {
+                item.render(&mut lines, width);
+            }
+        }
+    }
+
     let has_relations = matches!(
         item.extra,
         SelectedItemExtra::Issue { parent, sub_issues } if parent.is_some() || !sub_issues.is_empty()
     );
-    lines.push(header_rule(
-        width,
-        if has_relations {
-            t!("github.preview.related")
-        } else {
-            Section::Body.label()
-        },
-    ));
+    lines.push(if has_relations {
+        header_rule(width, t!("github.preview.related"))
+    } else {
+        rule(prev, Section::Body, width)
+    });
 
     if let SelectedItemExtra::Issue { parent, sub_issues } = item.extra {
         append_relation_lines(&mut lines, parent, sub_issues, width);
@@ -113,20 +123,18 @@ pub(super) fn build_preview_content(
         lines.extend(crate::view::markdown::render(item.body, width));
     }
 
-    let timeline_start = lines.len();
-    append_comment_lines(&mut lines, input.entry, input.expand_commits, width);
+    append_comment_lines(&mut lines, input.entry, width);
 
-    (lines, overlay, timeline_start)
+    (lines, overlay, leading_start)
 }
 
 pub(super) fn append_comment_lines(
     lines: &mut Vec<Line<'static>>,
     entry: Option<&TimelineEntry>,
-    expand_commits: bool,
     width: usize,
 ) {
     let mut prev = Section::Body;
-    for block in build_timeline(entry, expand_commits) {
+    for block in build_timeline(entry) {
         lines.push(prev.divider(block.section, width));
         for item in block.items {
             item.render(lines, width);
@@ -239,8 +247,8 @@ struct CachedPreview {
     overlay: Option<PreviewOverlay>,
     /// 折行*之後*的行數——`preview_offset` 就是以這個為單位量測。
     visual_len: usize,
-    /// timeline 第一條分隔線的視覺行號（header 加 body 折行後的行數）。
-    timeline_start: usize,
+    /// leading 區（CI、commit）起點的視覺行號，也就是 header 折行後的行數。
+    leading_start: usize,
 }
 
 #[derive(Debug, Default)]
@@ -273,33 +281,33 @@ impl PreviewCache {
         }
         let (lines, overlay, logical_start) = build_preview_content(input);
         // 分兩段量：`Paragraph` 每個 `Line` 各自折行、互不影響，所以兩段
-        // 相加等於整段，順便得到 timeline 起點的視覺行號，不用多走一趟。
+        // 相加等於整段，順便得到 leading 起點的視覺行號，不用多走一趟。
         let wrapped_len = |lines: &[Line<'static>]| {
             Paragraph::new(borrow_lines(lines))
                 .wrap(Wrap { trim: false })
                 .line_count(input.width)
         };
-        let (head, timeline) = lines.split_at(logical_start);
-        let timeline_start = wrapped_len(head);
-        let visual_len = timeline_start + wrapped_len(timeline);
+        let (head, rest) = lines.split_at(logical_start);
+        let leading_start = wrapped_len(head);
+        let visual_len = leading_start + wrapped_len(rest);
         self.cached = Some(CachedPreview {
             key,
             lines,
             overlay,
             visual_len,
-            timeline_start,
+            leading_start,
         });
         visual_len
     }
 
-    /// timeline 起點的視覺行號。只在 cache 對應的正是 `(tab, number)` 時才
+    /// leading 起點的視覺行號。只在 cache 對應的正是 `(tab, number)` 時才
     /// 有值；冷快取或 cache 還停在別的項目上回傳 `None`，呼叫端據此略過
     /// 捲動補償，不會拿別人的行號算。
-    pub(super) fn timeline_start(&self, tab: GitHubTab, number: u64) -> Option<usize> {
+    pub(super) fn leading_start(&self, tab: GitHubTab, number: u64) -> Option<usize> {
         self.cached
             .as_ref()
             .filter(|c| c.key.tab == tab && c.key.number == number)
-            .map(|c| c.timeline_start)
+            .map(|c| c.leading_start)
     }
 
     /// 冷快取回傳空切片；`render_preview` 一定先呼叫 `get_or_build`。
@@ -390,8 +398,19 @@ fn append_relation_lines(
         }
     }
     if parent.is_some() || !sub_issues.is_empty() {
-        lines.push(header_rule(width, Section::Body.label()));
+        lines.push(rule(None, Section::Body, width));
     }
+}
+
+/// 區段分隔線：`prev` 是上方的區段，`None` 代表上方是 header（灰線）。
+/// 線色由上方決定、標籤文字與色由下方決定，跟 `Section::divider` 同一條規則。
+fn rule(prev: Option<Section>, next: Section, width: usize) -> Line<'static> {
+    crate::view::markdown::labeled_rule(
+        width,
+        &next.label(),
+        prev.map_or(Color::DarkGray, Section::color),
+        next.color(),
+    )
 }
 
 /// header／relations 區塊下方的分隔線：線條維持 markdown 分隔線的灰色，
@@ -504,16 +523,16 @@ mod tests {
         );
     }
 
-    /// 長 body 在窄寬度下會折成多行：`timeline_start` 必須是折行*後*的
-    /// 視覺行號（跟 `preview_offset` 同單位），而且分段量測的總長要等於
-    /// 整段一起量。
+    /// 長標題在窄寬度下會折成多行：`leading_start` 必須是折行*後*的視覺行號
+    /// （跟 `preview_offset` 同單位），而且分段量測的總長要等於整段一起量。
+    /// leading 起點之前只有 header，所以折行要靠長標題來測。
     #[test]
-    fn timeline_start_counts_wrapped_lines_and_sums_to_visual_len() {
-        let long_body = "word ".repeat(40);
+    fn leading_start_counts_wrapped_lines_and_sums_to_visual_len() {
+        let long_title = "word ".repeat(40);
         let entry = loaded_entry(None);
         let mut input = pr_input(&entry);
         input.item = input.item.map(|item| SelectedItem {
-            body: &long_body,
+            title: &long_title,
             ..item
         });
 
@@ -527,7 +546,7 @@ mod tests {
         assert_eq!(visual_len, whole);
 
         let start = cache
-            .timeline_start(GitHubTab::PullRequests, 1)
+            .leading_start(GitHubTab::PullRequests, 1)
             .expect("cache is warm for the input's item");
         assert!(
             start > logical_start,
@@ -537,14 +556,137 @@ mod tests {
 
     /// cache 還停在別的項目（或別的分頁）時不能拿它的行號給呼叫端用。
     #[test]
-    fn timeline_start_is_none_for_a_different_item_or_a_cold_cache() {
+    fn leading_start_is_none_for_a_different_item_or_a_cold_cache() {
         let entry = loaded_entry(None);
         let mut cache = PreviewCache::default();
-        assert_eq!(cache.timeline_start(GitHubTab::PullRequests, 1), None);
+        assert_eq!(cache.leading_start(GitHubTab::PullRequests, 1), None);
 
         cache.get_or_build(&pr_input(&entry));
-        assert!(cache.timeline_start(GitHubTab::PullRequests, 1).is_some());
-        assert_eq!(cache.timeline_start(GitHubTab::PullRequests, 2), None);
-        assert_eq!(cache.timeline_start(GitHubTab::Issues, 1), None);
+        assert!(cache.leading_start(GitHubTab::PullRequests, 1).is_some());
+        assert_eq!(cache.leading_start(GitHubTab::PullRequests, 2), None);
+        assert_eq!(cache.leading_start(GitHubTab::Issues, 1), None);
+    }
+
+    fn text(line: &Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    /// 回傳 preview 裡每條區段分隔線：(標籤文字, 線色)。分隔線以 `── ` 開頭。
+    fn rules(lines: &[Line<'static>]) -> Vec<(String, Option<Color>)> {
+        lines
+            .iter()
+            .filter(|l| text(l).starts_with("── "))
+            .map(|l| (text(l), l.style.fg))
+            .collect()
+    }
+
+    fn entry_with(commits: usize, checks: usize) -> TimelineEntry {
+        use crate::github::{CheckState, GhCheck, GhCommit, GhTimelineItem};
+        TimelineEntry {
+            state: TimelineLoad::Loaded,
+            items: (0..commits)
+                .map(|_| GhTimelineItem::PullRequestCommit {
+                    commit: GhCommit {
+                        abbreviated_oid: "abc1234".to_string(),
+                        message_headline: "headline".to_string(),
+                        status_check_rollup: None,
+                    },
+                })
+                .collect(),
+            ci_checks: (0..checks)
+                .map(|i| GhCheck {
+                    name: format!("check{i}"),
+                    state: CheckState::Passed,
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    fn label_of(section: Section) -> String {
+        format!("── {} ", section.label())
+    }
+
+    fn rule_labels(lines: &[Line<'static>]) -> Vec<String> {
+        rules(lines)
+            .into_iter()
+            .map(|(t, _)| t.trim_end_matches('─').to_string())
+            .collect()
+    }
+
+    /// PR 的順序是 header → CI → Commit → Body → 留言；四種有／無組合都走
+    /// 同一條規則，沒有的區段就整段（含分隔線）消失。
+    #[test]
+    fn pr_preview_puts_ci_and_commit_before_body() {
+        let body = label_of(Section::Body);
+        let ci = label_of(Section::Ci);
+        let commit = label_of(Section::Commit);
+        let comment = label_of(Section::Comment);
+
+        for (commits, checks, expected) in [
+            (1, 1, vec![ci.clone(), commit.clone(), body.clone()]),
+            (0, 1, vec![ci.clone(), body.clone()]),
+            (1, 0, vec![commit.clone(), body.clone()]),
+            (0, 0, vec![body.clone()]),
+        ] {
+            let entry = entry_with(commits, checks);
+            let (lines, _, _) = build_preview_content(&pr_input(&entry));
+            let labels = rule_labels(&lines);
+            // 最後一條是「沒有留言」的 Comment 分隔線，前面才是 header 區的順序
+            let (header, tail) = labels.split_at(labels.len() - 1);
+            assert_eq!(header, expected, "commits={commits} checks={checks}");
+            assert_eq!(tail, std::slice::from_ref(&comment));
+        }
+    }
+
+    /// 線色由上方區段決定、標籤色由下方決定：header 之後是灰線。
+    #[test]
+    fn pr_preview_rule_colors_follow_the_section_above() {
+        let entry = entry_with(1, 1);
+        let (lines, _, _) = build_preview_content(&pr_input(&entry));
+        let colors: Vec<_> = rules(&lines).into_iter().map(|(_, c)| c).collect();
+        assert_eq!(
+            colors[..3],
+            [
+                Some(Color::DarkGray),         // header → CI
+                Some(Section::Ci.color()),     // CI → Commit
+                Some(Section::Commit.color()), // Commit → Body
+            ]
+        );
+
+        // 沒有 CI／commit：header → Body 仍是灰線，跟改動前一致
+        let entry = entry_with(0, 0);
+        let (lines, _, _) = build_preview_content(&pr_input(&entry));
+        assert_eq!(rules(&lines)[0].1, Some(Color::DarkGray));
+    }
+
+    /// 載入前（沒有 entry）與載入後的差別只在 leading 區；起點是同一行，
+    /// 捲動補償才有共同的錨點。
+    #[test]
+    fn leading_start_is_the_row_after_the_header_whether_or_not_loaded() {
+        let loading = TimelineEntry::default();
+        let loaded = entry_with(2, 3);
+        let (_, _, before) = build_preview_content(&pr_input(&loading));
+        let (lines, _, after) = build_preview_content(&pr_input(&loaded));
+        assert_eq!(before, after);
+        assert!(text(&lines[after]).starts_with("── "));
+    }
+
+    /// Issue 沒有 CI／commit，版面與以前一樣：header 之後直接是 Body 分隔線。
+    #[test]
+    fn issue_preview_has_no_leading_blocks() {
+        let entry = entry_with(0, 0);
+        let mut input = pr_input(&entry);
+        input.tab = GitHubTab::Issues;
+        input.item = input.item.map(|item| SelectedItem {
+            extra: SelectedItemExtra::Issue {
+                parent: None,
+                sub_issues: &[],
+            },
+            ..item
+        });
+        let (lines, _, start) = build_preview_content(&input);
+        assert_eq!(rules(&lines)[0].1, Some(Color::DarkGray));
+        assert!(text(&lines[start]).starts_with(&label_of(Section::Body)));
     }
 }

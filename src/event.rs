@@ -105,6 +105,12 @@ pub enum AppEvent {
         next_cursor: Option<String>,
         generation: u64,
     },
+    /// Branches 分頁的資料獨立於 issue／PR 的 refresh：逐 branch 算 diff 可能
+    /// 很慢，不能拖住另外兩個分頁，也不該被 state filter 的切換觸發重算。
+    LoadGitHubBranches,
+    GitHubBranchesLoaded {
+        result: Result<(Vec<crate::github::GhBranch>, bool), String>,
+    },
     LoadGitHubTimeline {
         number: u64,
         kind: crate::github::GhItemKind,

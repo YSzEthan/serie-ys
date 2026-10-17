@@ -1,3 +1,4 @@
+mod branches;
 mod event;
 mod preview;
 mod render;
@@ -17,7 +18,7 @@ use tui_input::Input;
 use crate::{
     event::{AppEvent, Sender, UserEvent},
     github::{
-        CheckboxItem, GhIssue, GhItemKind, GhPullRequest, GhTimelinePage, GitHubData,
+        CheckboxItem, GhBranch, GhIssue, GhItemKind, GhPullRequest, GhTimelinePage, GitHubData,
         PrDraftAction, StateAction, StateFilter,
     },
     view::View,
@@ -77,13 +78,25 @@ impl Section {
 enum GitHubTab {
     Issues,
     PullRequests,
+    Branches,
 }
 
 impl GitHubTab {
-    fn kind(self) -> GhItemKind {
+    /// Branches 沒有編號，也沒有 issue／PR 那套 timeline、分頁，所以沒有 kind。
+    fn kind(self) -> Option<GhItemKind> {
         match self {
-            GitHubTab::Issues => GhItemKind::Issue,
-            GitHubTab::PullRequests => GhItemKind::PullRequest,
+            GitHubTab::Issues => Some(GhItemKind::Issue),
+            GitHubTab::PullRequests => Some(GhItemKind::PullRequest),
+            GitHubTab::Branches => None,
+        }
+    }
+
+    /// Tab 鍵的循環順序：Issues → PRs → Branches → Issues。
+    fn next(self) -> GitHubTab {
+        match self {
+            GitHubTab::Issues => GitHubTab::PullRequests,
+            GitHubTab::PullRequests => GitHubTab::Branches,
+            GitHubTab::Branches => GitHubTab::Issues,
         }
     }
 }
@@ -144,6 +157,18 @@ pub struct GitHubView<'a> {
     search_input: Input,
     filtered_issue_indices: Vec<usize>,
     filtered_pr_indices: Vec<usize>,
+    filtered_branch_indices: Vec<usize>,
+
+    /// Branches 分頁的資料與載入狀態，獨立於 issue／PR（見 `AppEvent::LoadGitHubBranches`）。
+    /// `branches_loaded` 為 false 表示還沒成功載入過，第一次切進分頁時才送請求。
+    branches: Vec<GhBranch>,
+    branches_truncated: bool,
+    branches_loaded: bool,
+    branches_load: LoadState,
+    /// Branches 分頁的作者篩選（`'` 循環切換）；`None` 是所有作者。
+    branches_author: Option<String>,
+    /// 內容區寬度，`render` 記錄；卡片欄數由它決定，導覽（上下移動、捲動）要用。
+    width: usize,
 
     state_filter: StateFilter,
 
@@ -177,8 +202,8 @@ pub struct GitHubView<'a> {
     /// Preview 內容高度，由 `render_preview` 記錄。捲動處理函式直接用這個值，
     /// 不會從 `height` 重新推算。
     preview_height: usize,
-    /// commit log 是逐筆顯示還是收合成單一摘要列。全有全無（`z` 切換整個
-    /// log），不是逐筆切換。
+    /// commit／CI 區塊是逐筆顯示還是收合成單一摘要列，預設收合。全有全無
+    /// （`z` 切換整個區塊），不是逐筆切換。
     expand_commits: bool,
     /// labels 顯示名稱還是色塊，`t` 切換（重用 `CreateTag`，理由見上面
     /// `LabelMode` 的註解）。session 內由 `App::github_label_mode` 保存
@@ -205,6 +230,15 @@ impl<'a> GitHubView<'a> {
             search_input: Input::default(),
             filtered_issue_indices: Vec::new(),
             filtered_pr_indices: Vec::new(),
+            filtered_branch_indices: Vec::new(),
+            branches: Vec::new(),
+            branches_truncated: false,
+            branches_loaded: false,
+            // 開 view 時 `App::open_github` 會同時送出 `LoadGitHubBranches`，所以
+            // 一律從 Loading 起跳（跟 `load_state` 同理）。
+            branches_load: LoadState::Loading,
+            branches_author: None,
+            width: 0,
             state_filter: data.state_filter,
             task_panel: None,
             load_state: LoadState::Loading,
@@ -223,7 +257,7 @@ impl<'a> GitHubView<'a> {
             body_rev: 0,
             preview_cache: PreviewCache::default(),
             preview_height: 0,
-            expand_commits: true,
+            expand_commits: false,
             label_mode: LabelMode::default(),
             tx,
         }
@@ -233,11 +267,14 @@ impl<'a> GitHubView<'a> {
         let tab = match self.active_tab {
             GitHubTab::Issues => "issues",
             GitHubTab::PullRequests => "prs",
+            // 卡片標題在邊框上，不跑馬燈
+            GitHubTab::Branches => return None,
         };
         let idx = self.actual_index(self.selected_index);
         let num = match self.active_tab {
             GitHubTab::Issues => self.issues.get(idx).map(|i| i.number)?,
             GitHubTab::PullRequests => self.pull_requests.get(idx).map(|p| p.number)?,
+            GitHubTab::Branches => return None,
         };
         Some(std::sync::Arc::from(format!("gh:{tab}:{num}")))
     }
@@ -345,6 +382,62 @@ impl<'a> GitHubView<'a> {
         self.request_timeline_for_selected();
     }
 
+    /// 結果直接取代整份清單（Branches 沒有分頁／增量更新）；選取位置超出範圍時夾回。
+    pub fn set_branches(&mut self, result: Result<(Vec<GhBranch>, bool), String>) {
+        match result {
+            Ok((branches, truncated)) => {
+                self.branches = branches;
+                self.branches_truncated = truncated;
+                self.branches_loaded = true;
+                self.branches_load = LoadState::Idle;
+                // 重載後該作者已不存在就回到所有作者，否則會卡在一個空清單
+                if self
+                    .branches_author
+                    .as_ref()
+                    .is_some_and(|a| !self.branches.iter().any(|b| &b.author == a))
+                {
+                    self.branches_author = None;
+                }
+                self.rebuild_filtered_indices();
+            }
+            Err(e) if self.branches.is_empty() => self.branches_load = LoadState::Error(e),
+            // 已有舊資料時保留畫面，只用 flash 告知這次重抓失敗
+            Err(e) => {
+                self.branches_load = LoadState::Idle;
+                self.set_flash(e, true);
+            }
+        }
+        if self.active_tab == GitHubTab::Branches {
+            let max = self.current_list_len().saturating_sub(1);
+            self.selected_index = self.selected_index.min(max);
+            self.adjust_scroll();
+        }
+    }
+
+    /// 開 view 時已預載；只有預載失敗（`branches_loaded` 仍為 false）才會在
+    /// 切進 Branches 分頁時重試。
+    fn ensure_branches_loaded(&mut self) {
+        if self.active_tab == GitHubTab::Branches && !self.branches_loaded {
+            self.reload_branches();
+        }
+    }
+
+    fn reload_branches(&mut self) {
+        if matches!(self.branches_load, LoadState::Loading) {
+            return;
+        }
+        self.branches_load = LoadState::Loading;
+        self.tx.send(AppEvent::LoadGitHubBranches);
+    }
+
+    /// 目前分頁的載入狀態；header 的「重新載入中」與空清單的提示都看這個。
+    fn list_load_state(&self) -> &LoadState {
+        match self.active_tab {
+            GitHubTab::Branches => &self.branches_load,
+            GitHubTab::Issues | GitHubTab::PullRequests => &self.load_state,
+        }
+    }
+
     fn finish_loading(&mut self) {
         if matches!(self.load_state, LoadState::Loading) {
             self.load_state = LoadState::Idle;
@@ -402,6 +495,12 @@ impl<'a> GitHubView<'a> {
         let found = match self.active_tab {
             GitHubTab::Issues => self.issues.iter().position(|i| i.number == number),
             GitHubTab::PullRequests => self.pull_requests.iter().position(|p| p.number == number),
+            // branch 沒有編號可跳（prompt Confirm 已擋）；從別的分頁帶過來的
+            // pending_jump 在此丟棄
+            GitHubTab::Branches => {
+                self.pending_jump = None;
+                return;
+            }
         };
         if let Some(idx) = found {
             self.selected_index = idx;
@@ -429,7 +528,7 @@ impl<'a> GitHubView<'a> {
                     filter = filter
                 )
             }
-            GitHubTab::PullRequests => {
+            GitHubTab::PullRequests | GitHubTab::Branches => {
                 t!(
                     "github.jump.not_found_prs",
                     number = number,
@@ -544,26 +643,24 @@ impl<'a> GitHubView<'a> {
         after: Option<String>,
         page: GhTimelinePage,
     ) {
-        // commit／CI block 畫在 timeline 最前面（見 `timeline::build_timeline`），
-        // 它們的行數一變（載入更多插進新 commit、刷新時 CI 狀態改變），
-        // 位在下面的內容就整段位移。commit 與 CI 各自的高度可能變多也可能
-        // 變少（force-push 後新 head 還沒有 check），所以分開量、分段對映
-        // （見 `LeadingHeights::remap`）：頂端在 CI 區塊內、commit 區塊長高
-        // 時，CI 的內容也被推下去，同樣要補。頂端在 body／header 內時
-        // 上面的內容沒動，不補。超出底端的情況交給 `render_preview` 的
-        // clamp。冷快取（還沒 render 過）沒有起點可比，使用者也不可能已經
-        // 捲動，直接略過。
-        let timeline_start = if self.selected_number_and_kind() == Some((number, kind)) {
-            self.preview_cache.timeline_start(self.active_tab, number)
+        // CI／commit block 畫在 Body 之前、緊接 header（見 `timeline::leading`），
+        // 它們的行數一變（首次載入長出來、載入更多插進新 commit、刷新時 CI
+        // 狀態改變），Body 以下的內容就整段位移。CI 與 commit 各自的高度可能
+        // 變多也可能變少（force-push 後新 head 還沒有 check），所以分開量、
+        // 分段對映（見 `timeline::remap`）：頂端在 CI 區塊內、commit 區塊長高
+        // 時，commit 的內容也被推下去，同樣要補。首次載入也要補：使用者可能
+        // 在 timeline 回來前就已經往下讀 Body，這時 `leading_heights` 全零，
+        // 整段平移新增的高度。頂端在 header 內時上面的內容沒動，不補。超出
+        // 底端的情況交給 `render_preview` 的 clamp。冷快取（還沒 render 過）
+        // 沒有起點可比，使用者也不可能已經捲動，直接略過。
+        let leading_start = if self.selected_number_and_kind() == Some((number, kind)) {
+            self.preview_cache.leading_start(self.active_tab, number)
         } else {
             None
         };
 
         let entry = self.timeline.entry((kind, number)).or_default();
-        // 首次載入／重試（state 還不是 Loaded）時畫面上的是 loading／錯誤提示，
-        // 沒有 leading 區塊可位移，補償只會把視窗推過剛落地的 commit／CI。
-        let before = timeline_start
-            .filter(|_| entry.state == TimelineLoad::Loaded)
+        let before = leading_start
             .map(|start| (start, timeline::leading_heights(entry, self.expand_commits)));
         // CI 只有首頁會查（見 `github::build_timeline_query`），載入更多的頁面
         // 帶的是空清單，不能拿來覆寫。
@@ -582,7 +679,7 @@ impl<'a> GitHubView<'a> {
         if let Some((start, before)) = before {
             if let Some(rel) = self.preview_offset.checked_sub(start) {
                 let now = timeline::leading_heights(entry, self.expand_commits);
-                self.preview_offset = start + before.remap(now, rel);
+                self.preview_offset = start + timeline::remap(before, now, rel);
             }
         }
     }
@@ -609,12 +706,15 @@ impl<'a> GitHubView<'a> {
         match self.active_tab {
             GitHubTab::Issues => self.issues_next_cursor.is_some(),
             GitHubTab::PullRequests => self.prs_next_cursor.is_some(),
+            GitHubTab::Branches => false,
         }
     }
 
     fn dispatch_load_more(&mut self) {
+        let Some(kind) = self.active_tab.kind() else {
+            return;
+        };
         self.loading_more = true;
-        let kind = self.active_tab.kind();
         self.tx.send(AppEvent::LoadMoreGitHub {
             kind,
             generation: self.request_generation,
@@ -665,7 +765,7 @@ impl<'a> GitHubView<'a> {
             }
             GitHubFocus::List => {
                 if self.current_list_len() == 0 {
-                    return match &self.load_state {
+                    return match self.list_load_state() {
                         LoadState::Loading => {
                             vec![h(&[UserEvent::Cancel], t!("common.hint.close"))]
                         }
@@ -680,6 +780,18 @@ impl<'a> GitHubView<'a> {
                             h(&[UserEvent::Cancel], t!("common.hint.close")),
                         ],
                     };
+                }
+                if self.active_tab == GitHubTab::Branches {
+                    return vec![
+                        h(&[UserEvent::RefList], t!("common.hint.switch_tab")),
+                        h(&[UserEvent::Search], t!("common.hint.search")),
+                        h(&[UserEvent::Refresh], t!("common.hint.refresh")),
+                        h(&[UserEvent::Filter], t!("common.hint.author_filter")),
+                        h(&[UserEvent::ShortCopy], t!("common.hint.copy_url")),
+                        h(&[UserEvent::FullCopy], t!("common.hint.create_pr")),
+                        h(&[UserEvent::TagCopy], t!("common.hint.branch_name")),
+                        h(&[UserEvent::GitHubToggle], t!("common.hint.close")),
+                    ];
                 }
                 // contextual action 隨選取項目變動、使用者猜不到，排在靜態提示之前，
                 // 讓被終端寬度切掉的是 help 裡查得到的那些。
@@ -769,6 +881,14 @@ impl<'a> GitHubView<'a> {
         };
         let (tx, _rx) = Sender::channel_for_test();
         let mut view = GitHubView::new(View::Default, data, tx);
+        view.branches = vec![GhBranch {
+            name: "topic".to_string(),
+            head_oid: "deadbeef".to_string(),
+            committer_date: "2026-01-01".to_string(),
+            author: "alice".to_string(),
+            diff_stat: DiffStat::default(),
+            url: String::new(),
+        }];
 
         let mut all = Vec::new();
         for focus in [
@@ -777,7 +897,11 @@ impl<'a> GitHubView<'a> {
             GitHubFocus::Prompt,
             GitHubFocus::CheckboxEdit,
         ] {
-            for tab in [GitHubTab::Issues, GitHubTab::PullRequests] {
+            for tab in [
+                GitHubTab::Issues,
+                GitHubTab::PullRequests,
+                GitHubTab::Branches,
+            ] {
                 for expand in [false, true] {
                     for label_mode in [LabelMode::Names, LabelMode::Swatches] {
                         view.focus = focus;
@@ -796,14 +920,19 @@ impl<'a> GitHubView<'a> {
         // 空清單的三條分支走的是另一組提示，清單有東西時掃不到。
         view.issues.clear();
         view.pull_requests.clear();
+        view.branches.clear();
         view.focus = GitHubFocus::List;
-        for state in [
-            LoadState::Idle,
-            LoadState::Loading,
-            LoadState::Error(String::new()),
-        ] {
-            view.load_state = state;
-            all.extend(view.status_hints());
+        for tab in [GitHubTab::Issues, GitHubTab::Branches] {
+            view.active_tab = tab;
+            for make_state in [
+                || LoadState::Idle,
+                || LoadState::Loading,
+                || LoadState::Error(String::new()),
+            ] {
+                view.load_state = make_state();
+                view.branches_load = make_state();
+                all.extend(view.status_hints());
+            }
         }
 
         all
@@ -811,11 +940,17 @@ impl<'a> GitHubView<'a> {
 
     /// 同時收合／展開 commit 與 CI 區塊。
     ///
-    /// 收合／展開不會重置 `preview_offset`——跟另外約 20 個在導覽時會重置
-    /// 它的地方不同，這只是內容密度的切換，不是「你現在看的是別的東西了」
-    /// 那種時刻。`render_preview` 裡既有的 clamp 會擋住捲過新結尾的情況。
+    /// CI／commit 區塊在 Body 之前，切換會把 Body 以下整段推動；頂端在
+    /// header 內時不動，其餘（在 leading 區或 Body 以下）一律捲回 leading
+    /// 起點，讓使用者直接看到切換的結果，而不是按了鍵卻畫面沒變。冷快取
+    /// 沒有起點，維持原位；`render_preview` 的 clamp 會擋住捲過新結尾的情況。
     fn toggle_commit_log(&mut self) {
         self.expand_commits = !self.expand_commits;
+        if let Some((number, _)) = self.selected_number_and_kind() {
+            if let Some(start) = self.preview_cache.leading_start(self.active_tab, number) {
+                self.preview_offset = self.preview_offset.min(start);
+            }
+        }
     }
 
     fn toggle_label_mode(&mut self) {
@@ -846,6 +981,7 @@ impl<'a> GitHubView<'a> {
                 .pull_requests
                 .get(idx)
                 .map(|p| (p.number, GhItemKind::PullRequest, p.state.as_str())),
+            GitHubTab::Branches => None,
         }
     }
 
@@ -900,9 +1036,7 @@ impl<'a> GitHubView<'a> {
         };
         self.active_tab = GitHubTab::Issues;
         self.focus = GitHubFocus::List;
-        self.search_input.reset();
-        self.filtered_issue_indices.clear();
-        self.filtered_pr_indices.clear();
+        self.clear_search();
         self.selected_index = raw_idx;
         self.offset = 0;
         self.preview_offset = 0;
@@ -922,6 +1056,7 @@ impl<'a> GitHubView<'a> {
                 .pull_requests
                 .get(idx)
                 .is_some_and(|p| !p.linked_issues.is_empty()),
+            GitHubTab::Branches => false,
         }
     }
 
@@ -933,6 +1068,7 @@ impl<'a> GitHubView<'a> {
                 .pull_requests
                 .get(idx)
                 .map(|p| (p.number, GhItemKind::PullRequest)),
+            GitHubTab::Branches => None,
         }
     }
 
@@ -943,6 +1079,7 @@ impl<'a> GitHubView<'a> {
             match self.active_tab {
                 GitHubTab::Issues => self.issues.len(),
                 GitHubTab::PullRequests => self.pull_requests.len(),
+                GitHubTab::Branches => self.branches.len(),
             }
         }
     }
@@ -951,11 +1088,55 @@ impl<'a> GitHubView<'a> {
         match self.active_tab {
             GitHubTab::Issues => &self.filtered_issue_indices,
             GitHubTab::PullRequests => &self.filtered_pr_indices,
+            GitHubTab::Branches => &self.filtered_branch_indices,
         }
     }
 
     fn has_active_filter(&self) -> bool {
         !self.search_input.value().is_empty()
+            || (self.active_tab == GitHubTab::Branches && self.branches_author.is_some())
+    }
+
+    /// 卡片一列放幾張，隨寬度變化，不浪費橫向空間。
+    fn branch_columns(&self) -> usize {
+        branches::columns(self.width)
+    }
+
+    /// 上下移動一次跨幾個項目：Branches 是多欄卡片，一次跨一整列。
+    fn nav_step(&self) -> usize {
+        match self.active_tab {
+            GitHubTab::Branches => self.branch_columns(),
+            GitHubTab::Issues | GitHubTab::PullRequests => 1,
+        }
+    }
+
+    /// Branches 可見的卡片列數。尾端有「僅顯示最近 N 個」時扣掉那一列，
+    /// 要跟 `render_branches` 的版面一致。
+    fn branch_visible_rows(&self) -> usize {
+        let content = self.height.saturating_sub(3);
+        let footer = self.branches_truncated && content > branches::CARD_HEIGHT as usize;
+        (content - usize::from(footer)) / branches::CARD_HEIGHT as usize
+    }
+
+    /// `'`：Branches 分頁依作者篩選，所有作者 → 各作者（依最近 commit 出現順序）→ 回到所有作者。
+    pub(super) fn cycle_branch_author(&mut self) {
+        let mut authors: Vec<&str> = Vec::new();
+        for b in &self.branches {
+            if !authors.contains(&b.author.as_str()) {
+                authors.push(&b.author);
+            }
+        }
+        let next = match self.branches_author.as_deref() {
+            None => authors.first(),
+            Some(cur) => authors
+                .iter()
+                .position(|a| *a == cur)
+                .and_then(|i| authors.get(i + 1)),
+        };
+        self.branches_author = next.map(|a| (*a).to_string());
+        self.selected_index = 0;
+        self.offset = 0;
+        self.rebuild_filtered_indices();
     }
 
     /// 把可視索引對應到實際資料索引（若有篩選則透過篩選對應）
@@ -970,16 +1151,44 @@ impl<'a> GitHubView<'a> {
         }
     }
 
+    /// 列表一屏能容納幾個項目（扣掉頂部 tab／prompt 的 3 列）；Branches 是
+    /// 固定高度的卡片，一屏的項目數要除以卡片高度。
+    fn list_rows(&self) -> usize {
+        let rows = self.height.saturating_sub(3);
+        match self.active_tab {
+            GitHubTab::Branches => self.branch_visible_rows() * self.branch_columns(),
+            GitHubTab::Issues | GitHubTab::PullRequests => rows,
+        }
+    }
+
     fn adjust_scroll(&mut self) {
         if self.height == 0 {
             return;
         }
-        let visible = self.height.saturating_sub(3);
+        if self.active_tab == GitHubTab::Branches {
+            self.adjust_branch_scroll();
+            return;
+        }
+        let visible = self.list_rows();
         if self.selected_index < self.offset {
             self.offset = self.selected_index;
         } else if self.selected_index >= self.offset + visible {
             self.offset = self.selected_index - visible + 1;
         }
+    }
+
+    /// 以「列」為單位捲動，`offset` 永遠對齊列首。
+    fn adjust_branch_scroll(&mut self) {
+        let cols = self.branch_columns();
+        let rows = self.branch_visible_rows().max(1);
+        let selected_row = self.selected_index / cols;
+        let mut first_row = self.offset / cols;
+        if selected_row < first_row {
+            first_row = selected_row;
+        } else if selected_row >= first_row + rows {
+            first_row = selected_row + 1 - rows;
+        }
+        self.offset = first_row * cols;
     }
 
     /// 把選取的 issue/PR 及其 timeline entry 一併借出成單一值——這是
@@ -1016,6 +1225,7 @@ impl<'a> GitHubView<'a> {
                     diff_stat: pr.diff_stat,
                 },
             }),
+            GitHubTab::Branches => None,
         };
         PreviewInput {
             tab: self.active_tab,
@@ -1190,6 +1400,9 @@ mod tests {
         };
         let mut view = GitHubView::new(View::Default, data, tx);
         view.active_tab = GitHubTab::PullRequests;
+        // 正式預設是收合；多數測試要逐筆斷言 commit／check，所以 fixture 先展開。
+        // 預設值本身由 `new_view_collapses_commits_and_ci_by_default` 釘住。
+        view.expand_commits = true;
         (view, rx)
     }
 
@@ -1320,53 +1533,59 @@ mod tests {
         assert!(!screen.contains("✗ lint"), "got:\n{screen}");
     }
 
-    /// 先 render 一次讓 preview cache 暖起來，回傳 timeline 起點的視覺行號。
-    /// 捲動補償靠這個值判斷使用者在看 body 還是 timeline，冷快取不補償。
-    fn warm_timeline_start(view: &mut GitHubView<'_>) -> usize {
+    /// 先 render 一次讓 preview cache 暖起來，回傳 leading 起點（header 之後、
+    /// CI／commit 區塊開始處）的視覺行號。捲動補償靠這個值判斷使用者在看
+    /// header 還是其下的內容，冷快取不補償。
+    fn warm_leading_start(view: &mut GitHubView<'_>) -> usize {
         render_to_string(view);
         view.preview_cache
-            .timeline_start(view.active_tab, 1)
+            .leading_start(view.active_tab, 1)
             .expect("cache must be warm for the selected item")
     }
 
-    /// 視窗頂端在 CI 區塊內、載入更多讓 commit 區塊長高：CI 的內容被往下推，
-    /// `preview_offset` 要跟著位移，不然畫面會往上跳。
+    /// 載入更多讓 commit 區塊從 2 行長到 4 行。畫面順序是 CI（4 行）、commit
+    /// （2 行）、Body：頂端在 CI 或 commit 區塊內時，上面的內容沒動，不補；
+    /// 頂端在 Body 以下時，整段被往下推，`preview_offset` 要跟著位移，不然畫面
+    /// 會往上跳。
     #[test]
-    fn loading_more_shifts_preview_offset_inside_ci_block_when_commit_block_grows() {
+    fn loading_more_commits_shifts_preview_offset_only_below_the_commit_block() {
         use crate::github::CheckState::Passed;
-        let mut view = view_with_body("body".to_string());
-        view.append_timeline_items(
-            1,
-            GhItemKind::PullRequest,
-            None,
-            ci_page(
-                vec![timeline_commit("aaaaaaa", "SUCCESS")],
-                Some("cursor".to_string()),
-                vec![
-                    ci_check("a", Passed),
-                    ci_check("b", Passed),
-                    ci_check("c", Passed),
-                ],
-            ),
-        );
-        let start = warm_timeline_start(&mut view);
-        // commit 區塊 = 分隔線 + 1 行；停在 CI 區塊的第二行
-        view.preview_offset = start + 2 + 1;
-
-        view.append_timeline_items(
-            1,
-            GhItemKind::PullRequest,
-            Some("cursor".to_string()),
-            timeline_page(
-                vec![
-                    timeline_commit("bbbbbbb", "SUCCESS"),
-                    timeline_commit("ccccccc", "SUCCESS"),
-                ],
+        // (停在哪一行, 預期位移)；0 = CI 第一行、2 = CI 最後一行（共 4 行）、
+        // 4 = commit 第一行（分隔線）、5 = commit 最後一行、6 以下是 Body
+        for (rel, shift) in [(0, 0), (3, 0), (4, 0), (5, 0), (6, 2), (8, 2)] {
+            let mut view = view_with_body("body".to_string());
+            view.append_timeline_items(
+                1,
+                GhItemKind::PullRequest,
                 None,
-            ),
-        );
+                ci_page(
+                    vec![timeline_commit("aaaaaaa", "SUCCESS")],
+                    Some("cursor".to_string()),
+                    vec![
+                        ci_check("a", Passed),
+                        ci_check("b", Passed),
+                        ci_check("c", Passed),
+                    ],
+                ),
+            );
+            let start = warm_leading_start(&mut view);
+            view.preview_offset = start + rel;
 
-        assert_eq!(view.preview_offset, start + 2 + 1 + 2);
+            view.append_timeline_items(
+                1,
+                GhItemKind::PullRequest,
+                Some("cursor".to_string()),
+                timeline_page(
+                    vec![
+                        timeline_commit("bbbbbbb", "SUCCESS"),
+                        timeline_commit("ccccccc", "SUCCESS"),
+                    ],
+                    None,
+                ),
+            );
+
+            assert_eq!(view.preview_offset, start + rel + shift, "rel={rel}");
+        }
     }
 
     /// CI 只有首頁會查：載入更多的頁面帶的是空清單，不能覆寫既有的 check，
@@ -1385,7 +1604,7 @@ mod tests {
                 vec![ci_check("a", Passed), ci_check("b", Passed)],
             ),
         );
-        let start = warm_timeline_start(&mut view);
+        let start = warm_leading_start(&mut view);
         view.preview_offset = start + 10;
 
         view.append_timeline_items(
@@ -1412,10 +1631,10 @@ mod tests {
         );
     }
 
-    /// 載入更多時使用者還在看 body（長 body、短 timeline 也會走到 near-bottom）：
-    /// 視窗頂端在 timeline 之上，新 commit 插進 timeline 不影響它，不能補償。
+    /// 載入更多時使用者還在看 header（長 body、短 timeline 也會走到 near-bottom）：
+    /// 視窗頂端在 leading 起點之上，新 commit 區塊插在它下面，不能補償。
     #[test]
-    fn loading_more_does_not_shift_preview_offset_while_viewing_body() {
+    fn loading_more_does_not_shift_preview_offset_while_viewing_header() {
         let mut view = view_with_long_body();
         view.append_timeline_items(
             1,
@@ -1426,8 +1645,8 @@ mod tests {
                 Some("cursor".to_string()),
             ),
         );
-        let start = warm_timeline_start(&mut view);
-        assert!(start > 2, "long body must push the timeline down");
+        let start = warm_leading_start(&mut view);
+        assert!(start > 2, "header must be at least three rows tall");
         view.preview_offset = 2;
 
         view.append_timeline_items(
@@ -1438,6 +1657,33 @@ mod tests {
         );
 
         assert_eq!(view.preview_offset, 2);
+    }
+
+    /// 載入更多時使用者正在讀 body：新出現的 commit 區塊（分隔線 + 1 行）
+    /// 插在 body 上方，body 被往下推，`preview_offset` 要跟著位移。
+    #[test]
+    fn loading_more_shifts_preview_offset_while_viewing_body() {
+        let mut view = view_with_long_body();
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            timeline_page(
+                vec![timeline_comment("a", "one")],
+                Some("cursor".to_string()),
+            ),
+        );
+        let start = warm_leading_start(&mut view);
+        view.preview_offset = start + 5;
+
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            Some("cursor".to_string()),
+            timeline_page(vec![timeline_commit("aaaaaaa", "SUCCESS")], None),
+        );
+
+        assert_eq!(view.preview_offset, start + 5 + 2);
     }
 
     /// 刷新（`after: None`）時 CI 行數變多：使用者正在看留言區，
@@ -1456,7 +1702,7 @@ mod tests {
                 vec![ci_check("a", Passed)],
             ),
         );
-        let start = warm_timeline_start(&mut view);
+        let start = warm_leading_start(&mut view);
         // CI 區塊（分隔線 + 1）之下
         view.preview_offset = start + 2 + 3;
 
@@ -1493,7 +1739,7 @@ mod tests {
                 vec![ci_check("a", Passed), ci_check("b", Passed)],
             ),
         );
-        let start = warm_timeline_start(&mut view);
+        let start = warm_leading_start(&mut view);
         view.preview_offset = start + 10;
 
         view.append_timeline_items(
@@ -1506,8 +1752,8 @@ mod tests {
         assert_eq!(view.preview_offset, start + 10 - 3);
     }
 
-    /// 視窗頂端停在 CI 區塊最後一行，刷新後 CI 縮到頂端之上：落在第一則
-    /// 留言，不會越過它。
+    /// 視窗頂端停在 CI 區塊最後一行，刷新後 CI 縮短：夾在 CI 區塊末端，也就是
+    /// commit 區塊的分隔線，不會越過它。
     #[test]
     fn refreshing_clamps_preview_offset_when_ci_block_shrinks_above_it() {
         use crate::github::CheckState::Passed;
@@ -1529,9 +1775,9 @@ mod tests {
                 ],
             ),
         );
-        let start = warm_timeline_start(&mut view);
-        // commit 區塊 2 行、CI 區塊 4 行；停在 CI 最後一行
-        view.preview_offset = start + 2 + 3;
+        let start = warm_leading_start(&mut view);
+        // CI 區塊 4 行、commit 區塊 2 行；停在 CI 最後一行
+        view.preview_offset = start + 3;
 
         view.append_timeline_items(
             1,
@@ -1547,8 +1793,8 @@ mod tests {
             ),
         );
 
-        // commit 2 行 + CI 2 行，之後就是第一則留言
-        assert_eq!(view.preview_offset, start + 2 + 2);
+        // CI 縮成 2 行，之後就是 commit 區塊的分隔線
+        assert_eq!(view.preview_offset, start + 2);
     }
 
     /// 收合後 CI 區塊從無到有是「分隔線 + 一行摘要」= 2 行，不是 check 筆數。
@@ -1563,7 +1809,7 @@ mod tests {
             timeline_page(vec![timeline_comment("a", "one")], None),
         );
         view.toggle_commit_log();
-        let start = warm_timeline_start(&mut view);
+        let start = warm_leading_start(&mut view);
         view.preview_offset = start + 1;
 
         view.append_timeline_items(
@@ -1584,38 +1830,40 @@ mod tests {
         assert_eq!(view.preview_offset, start + 1 + 2);
     }
 
-    /// 視窗頂端落在 commit 區塊內時，頂端內容本身沒位移（CI 區塊在它
-    /// 之後），刷新讓 CI 變多不能補償。
+    /// 刷新讓 CI 從 1 個 check 變 2 個（CI 區塊 2→3 行）。頂端在 CI 區塊內，
+    /// 上面的內容沒動，不補；頂端在 commit 區塊內，commit 被 CI 往下推，要補。
     #[test]
-    fn refreshing_does_not_shift_preview_offset_inside_leading_blocks() {
+    fn refreshing_shifts_preview_offset_inside_commit_block_but_not_inside_ci_block() {
         use crate::github::CheckState::Passed;
-        let mut view = view_with_body("body".to_string());
-        view.append_timeline_items(
-            1,
-            GhItemKind::PullRequest,
-            None,
-            ci_page(
-                vec![timeline_commit("aaaaaaa", "SUCCESS")],
+        // 0、1 = CI 區塊（分隔線 + 1 個 check）；2、3 = commit 區塊
+        for (rel, shift) in [(0, 0), (1, 0), (2, 1), (3, 1)] {
+            let mut view = view_with_body("body".to_string());
+            view.append_timeline_items(
+                1,
+                GhItemKind::PullRequest,
                 None,
-                vec![ci_check("a", Passed)],
-            ),
-        );
-        let start = warm_timeline_start(&mut view);
-        // commit 區塊 = 分隔線 + 1 行；停在它的第二行
-        view.preview_offset = start + 1;
+                ci_page(
+                    vec![timeline_commit("aaaaaaa", "SUCCESS")],
+                    None,
+                    vec![ci_check("a", Passed)],
+                ),
+            );
+            let start = warm_leading_start(&mut view);
+            view.preview_offset = start + rel;
 
-        view.append_timeline_items(
-            1,
-            GhItemKind::PullRequest,
-            None,
-            ci_page(
-                vec![timeline_commit("aaaaaaa", "SUCCESS")],
+            view.append_timeline_items(
+                1,
+                GhItemKind::PullRequest,
                 None,
-                vec![ci_check("a", Passed), ci_check("b", Passed)],
-            ),
-        );
+                ci_page(
+                    vec![timeline_commit("aaaaaaa", "SUCCESS")],
+                    None,
+                    vec![ci_check("a", Passed), ci_check("b", Passed)],
+                ),
+            );
 
-        assert_eq!(view.preview_offset, start + 1);
+            assert_eq!(view.preview_offset, start + rel + shift, "rel={rel}");
+        }
     }
 
     /// 收合後 leading 區塊固定是「分隔線 + 一行摘要」×2，check 筆數變動
@@ -1635,7 +1883,7 @@ mod tests {
             ),
         );
         view.toggle_commit_log();
-        let start = warm_timeline_start(&mut view);
+        let start = warm_leading_start(&mut view);
         view.preview_offset = start + 4 + 3;
 
         view.append_timeline_items(
@@ -1896,7 +2144,7 @@ mod tests {
         assert_eq!(entry.rev, 3);
     }
 
-    /// commit block 畫在 timeline 最前面。載入更多把新 commit 插進正在
+    /// commit block 畫在 Body 之前。載入更多把新 commit 插進正在
     /// 檢視的項目時，等於在使用者視窗上方塞進新內容——`preview_offset`
     /// 必須跟著位移，畫面才不會因為視窗上方多出內容而往回跳。
     #[test]
@@ -1912,7 +2160,7 @@ mod tests {
             ),
         );
 
-        let start = warm_timeline_start(&mut view);
+        let start = warm_leading_start(&mut view);
         view.preview_offset = start;
 
         // 續接第二頁，這頁帶了兩個新 commit——commit block 從無到有，
@@ -1933,13 +2181,14 @@ mod tests {
         assert_eq!(view.preview_offset, start + 3);
     }
 
-    /// 首次載入落地時（畫面上只有 loading 提示），視窗即使已捲到 timeline
-    /// 起點之下，也不能被推過剛出現的 commit／CI 區塊。
+    /// 首次載入落地時，CI／commit 區塊從無到有，插在 Body 之前：使用者趁
+    /// timeline 還沒回來就已經往下讀 Body 的話，Body 被往下推（CI、commit
+    /// 各 2 行），`preview_offset` 要跟著位移。
     #[test]
-    fn first_load_does_not_shift_preview_offset() {
+    fn first_load_shifts_preview_offset_while_viewing_body() {
         use crate::github::CheckState::Passed;
         let mut view = view_with_body("body".to_string());
-        let start = warm_timeline_start(&mut view);
+        let start = warm_leading_start(&mut view);
         view.preview_offset = start + 1;
 
         view.append_timeline_items(
@@ -1953,13 +2202,35 @@ mod tests {
             ),
         );
 
-        assert_eq!(view.preview_offset, start + 1);
+        assert_eq!(view.preview_offset, start + 1 + 4);
     }
 
-    /// 刷新時視窗頂端還在 body 內（在 timeline 之上），新出現的 commit 區塊
-    /// 不影響它，`preview_offset` 不該被補償邏輯動到。
+    /// 首次載入時使用者還在看 header：leading 區塊插在它下面，不補償。
     #[test]
-    fn refreshing_first_page_does_not_shift_preview_offset_while_viewing_body() {
+    fn first_load_does_not_shift_preview_offset_while_viewing_header() {
+        let mut view = view_with_body("body".to_string());
+        let start = warm_leading_start(&mut view);
+        assert!(start > 0);
+        view.preview_offset = start - 1;
+
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            ci_page(
+                vec![timeline_commit("aaaaaaa", "SUCCESS")],
+                None,
+                vec![ci_check("a", crate::github::CheckState::Passed)],
+            ),
+        );
+
+        assert_eq!(view.preview_offset, start - 1);
+    }
+
+    /// 刷新時視窗頂端在 header 內（leading 起點之上），新出現的 commit 區塊
+    /// 插在它下面，`preview_offset` 不該被補償邏輯動到。
+    #[test]
+    fn refreshing_first_page_does_not_shift_preview_offset_while_viewing_header() {
         let mut view = view_with_long_body();
         view.append_timeline_items(
             1,
@@ -1967,9 +2238,9 @@ mod tests {
             None,
             timeline_page(vec![timeline_comment("a", "one")], None),
         );
-        let start = warm_timeline_start(&mut view);
-        assert!(start > 5, "long body must push the timeline down");
-        view.preview_offset = 5;
+        let start = warm_leading_start(&mut view);
+        assert!(start > 2, "header must be at least three rows tall");
+        view.preview_offset = 2;
 
         view.append_timeline_items(
             1,
@@ -1984,7 +2255,37 @@ mod tests {
             ),
         );
 
-        assert_eq!(view.preview_offset, 5);
+        assert_eq!(view.preview_offset, 2);
+    }
+
+    /// 刷新時使用者正在讀 body：新出現的 commit 區塊（分隔線 + 1 行）插在
+    /// body 上方，`preview_offset` 要跟著位移。
+    #[test]
+    fn refreshing_first_page_shifts_preview_offset_while_viewing_body() {
+        let mut view = view_with_long_body();
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            timeline_page(vec![timeline_comment("a", "one")], None),
+        );
+        let start = warm_leading_start(&mut view);
+        view.preview_offset = start + 5;
+
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            timeline_page(
+                vec![
+                    timeline_commit("aaaaaaa", "SUCCESS"),
+                    timeline_comment("a", "one"),
+                ],
+                None,
+            ),
+        );
+
+        assert_eq!(view.preview_offset, start + 5 + 2);
     }
 
     /// `item_count`／`mergeable` 都沒變，只有 CI 狀態換了——沒有 `rev`
@@ -2110,12 +2411,12 @@ mod tests {
         assert_eq!(
             dividers,
             vec![
-                // meta → body：markdown 自己的灰色，維持不變
+                // header → commit block（兩個 commit 集中在一起）：灰線
                 ('─', Some(Color::DarkGray)),
-                // body → commit block（兩個 commit 集中在一起）
-                ('─', Some(Section::Body.color())),
-                // commit block → 第一則留言
+                // commit block → body
                 ('─', Some(Section::Commit.color())),
+                // body → 第一則留言
+                ('─', Some(Section::Body.color())),
                 // 第一則留言 → 第二則留言
                 ('─', Some(Section::Comment.color())),
             ],
@@ -2135,8 +2436,8 @@ mod tests {
             .collect()
     }
 
-    /// 每條分隔線都寫出「下面是什麼」：header 下方是 Body，之後依序是各 block
-    /// 自己的 section 名稱。
+    /// 每條分隔線都寫出「下面是什麼」：header 下方依序是 CI、Commits、Body，
+    /// 之後是 timeline 各 block 自己的 section 名稱。
     #[test]
     fn every_divider_is_labeled_with_the_section_below_it() {
         use crate::github::CheckState::Passed;
@@ -2180,7 +2481,7 @@ mod tests {
                     .to_string()
             })
             .collect();
-        assert_eq!(labels, ["內文", "Commits", "CI", "留言", "Review"]);
+        assert_eq!(labels, ["CI", "Commits", "內文", "留言", "Review"]);
     }
 
     /// 分隔線顏色來自它*之前*那個 block 的 section，所以 `Section::Review`
@@ -2442,11 +2743,10 @@ mod tests {
         );
     }
 
-    /// 只有 commit、沒有留言的 PR 不該顯示「沒有留言」——那是專門為「整條
-    /// timeline 都沒有可渲染內容」保留的訊息。commit block 本身就是內容，
-    /// 而且 timelineItems 是混合 connection，留言完全有可能落在下一頁。
+    /// commit 畫在 header 區，不再算進 timeline 區：只有 commit、沒有留言、
+    /// 也沒有下一頁的 PR，timeline 確實是空的，要顯示「沒有留言」。
     #[test]
-    fn commits_without_comments_do_not_show_no_comments_notice() {
+    fn commits_without_comments_and_without_next_page_show_no_comments_notice() {
         let mut view = view_with_body("body".to_string());
         view.append_timeline_items(
             1,
@@ -2456,7 +2756,65 @@ mod tests {
         );
 
         let screen = render_to_string(&mut view);
+        assert!(screen.contains("沒有留言"), "got:\n{screen}");
+    }
+
+    /// timelineItems 是混合 connection：前 100 筆全是 commit、留言落在下一頁的
+    /// 長命 PR 很常見，這時要提示還有更多，不能印出騙人的「沒有留言」。
+    #[test]
+    fn commits_without_comments_but_with_next_page_show_the_more_footer() {
+        let mut view = view_with_body("body".to_string());
+        view.append_timeline_items(
+            1,
+            GhItemKind::PullRequest,
+            None,
+            timeline_page(
+                vec![timeline_commit("aaaaaaa", "SUCCESS")],
+                Some("cursor".to_string()),
+            ),
+        );
+
+        let screen = render_to_string(&mut view);
         assert!(!screen.contains("沒有留言"), "got:\n{screen}");
+        assert!(screen.contains("還有更多留言"), "got:\n{screen}");
+    }
+
+    /// `z` 切換收合：頂端在 header 內不動；在 leading 區或 body 以下就捲回
+    /// leading 起點，直接看到切換的結果。
+    #[test]
+    fn toggle_commit_log_snaps_preview_offset_to_leading_start() {
+        use crate::github::CheckState::Passed;
+        // (相對 leading 起點的行, 是否捲回起點)
+        for (rel, snapped) in [(-1, false), (0, true), (3, true), (50, true)] {
+            let mut view = view_with_long_body();
+            view.append_timeline_items(
+                1,
+                GhItemKind::PullRequest,
+                None,
+                ci_page(
+                    vec![timeline_commit("aaaaaaa", "SUCCESS")],
+                    None,
+                    vec![ci_check("a", Passed), ci_check("b", Passed)],
+                ),
+            );
+            let start = warm_leading_start(&mut view);
+            let offset = start.checked_add_signed(rel).unwrap();
+            view.preview_offset = offset;
+
+            view.toggle_commit_log();
+
+            let expected = if snapped { start } else { offset };
+            assert_eq!(view.preview_offset, expected, "rel={rel}");
+        }
+    }
+
+    /// 冷快取（這個項目還沒 render 過）沒有 leading 起點可比，維持原位。
+    #[test]
+    fn toggle_commit_log_keeps_preview_offset_on_a_cold_cache() {
+        let mut view = view_with_body("body".to_string());
+        view.preview_offset = 7;
+        view.toggle_commit_log();
+        assert_eq!(view.preview_offset, 7);
     }
 
     #[test]
@@ -2513,7 +2871,16 @@ mod tests {
         };
         let mut view = GitHubView::new(View::Default, data, tx);
         view.active_tab = GitHubTab::Issues;
+        view.expand_commits = true;
         view
+    }
+
+    /// 正式預設：commit 與 CI 收合成一行摘要，按 `z` 才展開。
+    #[test]
+    fn new_view_collapses_commits_and_ci_by_default() {
+        let (tx, _rx) = Sender::channel_for_test();
+        let view = GitHubView::new(View::Default, GitHubData::default(), tx);
+        assert!(!view.expand_commits);
     }
 
     /// Issues 分頁從 `TimelineEntry` 以下跟 PR 共用每一條程式碼路徑——
@@ -3031,5 +3398,428 @@ mod tests {
 
         view.on_tick(t0 + TIMELINE_DEBOUNCE);
         assert!(timeline_requests(&rx).is_empty());
+    }
+
+    // ── Branches 分頁 ──
+
+    fn test_branch(name: &str, additions: u32, deletions: u32) -> GhBranch {
+        GhBranch {
+            name: name.to_string(),
+            head_oid: "0123456789abcdef".to_string(),
+            committer_date: "2026-01-02".to_string(),
+            author: "alice".to_string(),
+            diff_stat: DiffStat {
+                additions,
+                deletions,
+            },
+            url: format!("https://example.com/compare/{name}?expand=1"),
+        }
+    }
+
+    fn branches_view() -> (GitHubView<'static>, std::sync::mpsc::Receiver<AppEvent>) {
+        let (tx, rx) = Sender::channel_for_test();
+        let mut view = GitHubView::new(View::Default, GitHubData::default(), tx);
+        view.active_tab = GitHubTab::Branches;
+        (view, rx)
+    }
+
+    #[test]
+    fn tab_key_cycles_issues_prs_branches_and_back() {
+        let (mut view, _rx) = branches_view();
+        view.active_tab = GitHubTab::Issues;
+
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            view.handle_list_event(UserEvent::RefList, 1);
+            seen.push(view.active_tab);
+        }
+
+        assert_eq!(
+            seen,
+            [
+                GitHubTab::PullRequests,
+                GitHubTab::Branches,
+                GitHubTab::Issues
+            ]
+        );
+    }
+
+    #[test]
+    fn branches_are_preloaded_with_the_view_and_only_retried_after_failure() {
+        let (mut view, rx) = branches_view();
+        view.active_tab = GitHubTab::PullRequests;
+
+        // 開 view 時 `App::open_github` 已送出載入，view 從 Loading 起跳：
+        // 切進分頁與載入中按 r 都不重複送
+        assert!(matches!(view.branches_load, LoadState::Loading));
+        view.handle_list_event(UserEvent::RefList, 1);
+        assert_eq!(view.active_tab, GitHubTab::Branches);
+        assert!(rx.try_recv().is_err());
+        view.handle_list_event(UserEvent::Refresh, 1);
+        assert!(rx.try_recv().is_err());
+
+        // 預載失敗：沒有舊資料 → 錯誤頁；再切進來會重試
+        view.set_branches(Err("boom".to_string()));
+        assert!(matches!(view.branches_load, LoadState::Error(_)));
+        view.active_tab = GitHubTab::PullRequests;
+        view.handle_list_event(UserEvent::RefList, 1);
+        assert!(matches!(rx.try_recv(), Ok(AppEvent::LoadGitHubBranches)));
+
+        // 成功後切走再切回來不重抓
+        view.set_branches(Ok((vec![test_branch("a", 1, 1)], false)));
+        view.active_tab = GitHubTab::PullRequests;
+        view.handle_list_event(UserEvent::RefList, 1);
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn failed_reload_keeps_old_branches_and_flashes() {
+        let (mut view, _rx) = branches_view();
+        view.set_branches(Ok((vec![test_branch("a", 1, 1)], false)));
+
+        view.set_branches(Err("offline".to_string()));
+
+        assert_eq!(view.branches.len(), 1);
+        assert!(matches!(view.branches_load, LoadState::Idle));
+        assert_eq!(view.flash_message, Some(("offline".to_string(), true)));
+    }
+
+    #[test]
+    fn branches_render_as_cards_with_line_stat() {
+        let (mut view, _rx) = branches_view();
+        view.set_branches(Ok((
+            vec![test_branch("feat/a", 12, 3), test_branch("fix/b", 700, 0)],
+            false,
+        )));
+
+        let screen = render_to_string(&mut view);
+
+        assert!(screen.contains("Branches (2)"), "got:\n{screen}");
+        assert!(screen.contains("feat/a"), "got:\n{screen}");
+        assert!(screen.contains("+12 -3 =15"), "got:\n{screen}");
+        assert!(screen.contains("fix/b"), "got:\n{screen}");
+        assert!(screen.contains("+700 -0 =700"), "got:\n{screen}");
+    }
+
+    #[test]
+    fn truncated_branches_show_the_limit_footer() {
+        let (mut view, _rx) = branches_view();
+        view.set_branches(Ok((vec![test_branch("a", 1, 1)], true)));
+
+        let screen = render_to_string(&mut view);
+
+        assert!(
+            screen.contains(&crate::github::BRANCH_LIMIT.to_string()),
+            "got:\n{screen}"
+        );
+    }
+
+    #[test]
+    fn selection_scrolls_by_whole_cards() {
+        let (mut view, _rx) = branches_view();
+        let many = (0..10)
+            .map(|i| test_branch(&format!("b{i}"), i, 0))
+            .collect();
+        view.set_branches(Ok((many, false)));
+        render_to_string(&mut view); // 填入 height
+
+        for _ in 0..9 {
+            view.handle_list_event(UserEvent::NavigateDown, 1);
+        }
+        let screen = render_to_string(&mut view);
+
+        assert_eq!(view.selected_index, 9);
+        assert!(view.offset > 0);
+        assert!(screen.contains("b9"), "got:\n{screen}");
+        assert!(!screen.contains(" b0 "), "got:\n{screen}");
+    }
+
+    /// 作者篩選獨立於搜尋字串：數字 jump 清掉搜尋後，切回 Branches 仍要套用作者篩選。
+    #[test]
+    fn numeric_jump_keeps_the_branch_author_filter() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent};
+        let (mut view, _rx) = branches_view();
+        let mut other = test_branch("b", 1, 1);
+        other.author = "bob".to_string();
+        view.set_branches(Ok((vec![test_branch("a", 1, 1), other], false)));
+        view.cycle_branch_author();
+        assert_eq!(view.current_list_len(), 1);
+
+        view.active_tab = GitHubTab::Issues;
+        view.focus = GitHubFocus::Prompt;
+        view.search_input = "5".into();
+        view.handle_prompt_event(UserEvent::Confirm, 1, KeyEvent::from(KeyCode::Enter));
+        view.active_tab = GitHubTab::Branches;
+
+        assert_eq!(view.current_list_len(), 1);
+    }
+
+    #[test]
+    fn search_filters_branches_and_selection_follows_the_filter() {
+        let (mut view, _rx) = branches_view();
+        view.set_branches(Ok((
+            vec![test_branch("feat/a", 1, 1), test_branch("fix/b", 2, 2)],
+            false,
+        )));
+
+        view.search_input = "fix".into();
+        view.rebuild_filtered_indices();
+
+        assert_eq!(view.current_list_len(), 1);
+        assert_eq!(view.actual_index(0), 1);
+        assert_eq!(
+            view.selected_url().as_deref(),
+            Some("https://example.com/compare/fix/b?expand=1")
+        );
+    }
+
+    #[test]
+    fn numeric_query_on_branches_is_a_filter_not_a_jump() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let (mut view, _rx) = branches_view();
+        view.set_branches(Ok((vec![test_branch("release-2026", 1, 1)], false)));
+        view.focus = GitHubFocus::Prompt;
+        view.search_input = "2026".into();
+        view.rebuild_filtered_indices();
+
+        view.handle_prompt_event(
+            UserEvent::Confirm,
+            1,
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+
+        assert_eq!(view.focus, GitHubFocus::List);
+        assert_eq!(view.search_input.value(), "2026");
+        assert_eq!(view.current_list_len(), 1);
+    }
+
+    #[test]
+    fn pr_only_actions_are_inert_on_branches() {
+        let (mut view, rx) = branches_view();
+        view.set_branches(Ok((vec![test_branch("a", 1, 1)], false)));
+
+        for event in [
+            UserEvent::Confirm,
+            UserEvent::DetailPaneToggle,
+            UserEvent::MergePr,
+            UserEvent::ToggleIssueState,
+            UserEvent::TogglePrDraft,
+        ] {
+            view.handle_list_event(event, 1);
+        }
+
+        assert_eq!(view.focus, GitHubFocus::List, "no preview for branches");
+        assert!(rx.try_recv().is_err(), "no event should be sent");
+    }
+
+    #[test]
+    fn branches_copy_url_open_and_name() {
+        let (mut view, rx) = branches_view();
+        view.set_branches(Ok((vec![test_branch("feat/a", 1, 1)], false)));
+
+        view.handle_list_event(UserEvent::ShortCopy, 1);
+        let AppEvent::CopyToClipboard { value, .. } = rx.try_recv().unwrap() else {
+            panic!("expected CopyToClipboard");
+        };
+        assert_eq!(value, "https://example.com/compare/feat/a?expand=1");
+
+        view.handle_list_event(UserEvent::FullCopy, 1);
+        assert!(matches!(rx.try_recv(), Ok(AppEvent::OpenUrl(_))));
+
+        view.handle_list_event(UserEvent::TagCopy, 1);
+        let AppEvent::CopyToClipboard { value, .. } = rx.try_recv().unwrap() else {
+            panic!("expected CopyToClipboard");
+        };
+        assert_eq!(value, "feat/a");
+    }
+
+    #[test]
+    fn branches_status_hints_offer_only_working_keys() {
+        let (mut view, _rx) = branches_view();
+        view.set_branches(Ok((vec![test_branch("a", 1, 1)], false)));
+
+        let events: Vec<_> = view
+            .status_hints()
+            .into_iter()
+            .flat_map(|(events, _)| events.to_vec())
+            .collect();
+
+        for useless in [
+            UserEvent::Confirm,
+            UserEvent::DetailPaneToggle,
+            UserEvent::MergePr,
+        ] {
+            assert!(!events.contains(&useless), "{useless:?} does nothing here");
+        }
+        assert!(events.contains(&UserEvent::RefList));
+        // `'` 在這個分頁是作者篩選
+        assert!(events.contains(&UserEvent::Filter));
+    }
+
+    fn author_branch(name: &str, author: &str) -> GhBranch {
+        GhBranch {
+            author: author.to_string(),
+            ..test_branch(name, 1, 1)
+        }
+    }
+
+    fn three_authors_view() -> GitHubView<'static> {
+        let (mut view, _rx) = branches_view();
+        view.set_branches(Ok((
+            vec![
+                author_branch("a1", "alice"),
+                author_branch("b1", "bob"),
+                author_branch("a2", "alice"),
+                author_branch("c1", "carol"),
+            ],
+            false,
+        )));
+        view
+    }
+
+    #[test]
+    fn filter_key_cycles_authors_then_back_to_all() {
+        let mut view = three_authors_view();
+        let mut seen = Vec::new();
+        for _ in 0..4 {
+            view.handle_list_event(UserEvent::Filter, 1);
+            seen.push((view.branches_author.clone(), view.current_list_len()));
+        }
+
+        // 依最近 commit 的出現順序：alice(2) → bob(1) → carol(1) → 所有作者(4)
+        assert_eq!(
+            seen,
+            [
+                (Some("alice".to_string()), 2),
+                (Some("bob".to_string()), 1),
+                (Some("carol".to_string()), 1),
+                (None, 4),
+            ]
+        );
+    }
+
+    #[test]
+    fn author_filter_combines_with_search_and_survives_clearing_it() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut view = three_authors_view();
+        view.handle_list_event(UserEvent::Filter, 1); // alice
+        view.search_input = "a2".into();
+        view.rebuild_filtered_indices();
+        assert_eq!(view.current_list_len(), 1);
+        assert_eq!(view.actual_index(0), 2);
+
+        // 清掉搜尋字串後作者篩選仍在
+        view.focus = GitHubFocus::Prompt;
+        view.handle_prompt_event(
+            UserEvent::Cancel,
+            1,
+            KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE),
+        );
+        assert_eq!(view.branches_author.as_deref(), Some("alice"));
+        assert_eq!(view.current_list_len(), 2);
+    }
+
+    #[test]
+    fn author_filter_is_dropped_when_that_author_disappears_after_reload() {
+        let mut view = three_authors_view();
+        view.handle_list_event(UserEvent::Filter, 1); // alice
+        view.handle_list_event(UserEvent::Filter, 1); // bob
+
+        view.set_branches(Ok((vec![author_branch("a1", "alice")], false)));
+
+        assert_eq!(view.branches_author, None);
+        assert_eq!(view.current_list_len(), 1);
+    }
+
+    #[test]
+    fn header_shows_the_selected_author() {
+        let mut view = three_authors_view();
+        assert!(render_to_string(&mut view).contains("[所有作者]"));
+
+        view.handle_list_event(UserEvent::Filter, 1);
+
+        assert!(render_to_string(&mut view).contains("[@alice]"));
+    }
+
+    fn many_branches_view(n: usize) -> GitHubView<'static> {
+        let (mut view, _rx) = branches_view();
+        let items = (0..n)
+            .map(|i| test_branch(&format!("b{i:02}"), i as u32, 0))
+            .collect();
+        view.set_branches(Ok((items, false)));
+        view
+    }
+
+    #[test]
+    fn wide_terminal_packs_several_cards_per_row() {
+        let mut view = many_branches_view(6);
+
+        let screen = render_to_string_at_width(&mut view, 120);
+
+        assert_eq!(view.branch_columns(), 3);
+        // 同一個畫面列上並排出現三張卡片的標題
+        let title_row = screen
+            .lines()
+            .find(|l| l.contains("b00"))
+            .expect("first card title");
+        assert!(
+            title_row.contains("b01") && title_row.contains("b02"),
+            "got:\n{screen}"
+        );
+        assert!(!title_row.contains("b03"), "got:\n{screen}");
+    }
+
+    #[test]
+    fn narrow_terminal_falls_back_to_one_card_per_row() {
+        let mut view = many_branches_view(3);
+
+        let screen = render_to_string_at_width(&mut view, 30);
+
+        assert_eq!(view.branch_columns(), 1);
+        let title_row = screen.lines().find(|l| l.contains("b00")).unwrap();
+        assert!(!title_row.contains("b01"), "got:\n{screen}");
+    }
+
+    #[test]
+    fn up_down_move_a_whole_row_and_left_right_move_one_card() {
+        let mut view = many_branches_view(8);
+        render_to_string_at_width(&mut view, 120); // cols = 3
+
+        view.handle_list_event(UserEvent::NavigateDown, 1);
+        assert_eq!(view.selected_index, 3);
+        view.handle_list_event(UserEvent::NavigateRight, 1);
+        assert_eq!(view.selected_index, 4);
+        view.handle_list_event(UserEvent::NavigateLeft, 2);
+        assert_eq!(view.selected_index, 2);
+        view.handle_list_event(UserEvent::NavigateUp, 1);
+        assert_eq!(view.selected_index, 0);
+
+        // 最後一列不滿時往下停在最後一張，不越界
+        view.selected_index = 4;
+        view.handle_list_event(UserEvent::NavigateDown, 1);
+        assert_eq!(view.selected_index, 7);
+        assert_eq!(
+            view.focus,
+            GitHubFocus::List,
+            "左右鍵不能關掉或進入 preview"
+        );
+    }
+
+    #[test]
+    fn grid_scroll_keeps_selected_row_visible_and_offset_row_aligned() {
+        let mut view = many_branches_view(30);
+        render_to_string_at_width(&mut view, 120); // cols = 3
+
+        for _ in 0..9 {
+            view.handle_list_event(UserEvent::NavigateDown, 1);
+        }
+        let screen = render_to_string_at_width(&mut view, 120);
+
+        assert_eq!(view.selected_index, 27);
+        assert_eq!(view.offset % 3, 0);
+        assert!(screen.contains("b27"), "got:\n{screen}");
+        assert!(!screen.contains("b00"), "got:\n{screen}");
     }
 }

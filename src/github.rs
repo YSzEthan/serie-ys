@@ -1501,6 +1501,152 @@ impl MergeMethod {
     }
 }
 
+/// 一次最多算幾個 branch 的行數差異；每個 branch 一個 git 行程，大 repo 的
+/// 三點 diff 還要先算 merge-base，不設上限會拖很久。依 committerdate 新到舊取。
+pub const BRANCH_LIMIT: usize = 100;
+
+/// origin 上沒有 OPEN PR 的 branch，附相對 default branch 的行數差異。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GhBranch {
+    pub name: String,
+    pub head_oid: String,
+    pub committer_date: String,
+    pub author: String,
+    pub diff_stat: DiffStat,
+    /// GitHub 的 compare 頁，直接可以按「Create pull request」。
+    pub url: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GhRepoInfo {
+    url: String,
+    default_branch_ref: Option<GhDefaultBranchRef>,
+}
+
+#[derive(Deserialize)]
+struct GhDefaultBranchRef {
+    name: String,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GhPrHead {
+    head_ref_name: String,
+    is_cross_repository: bool,
+}
+
+/// 全部 OPEN PR 的 head branch 名（排除 fork 來的）。`GitHubData.pull_requests`
+/// 只有第一頁且受 state filter 影響，不能拿來判斷「有沒有 PR」。
+/// 上限 1000 筆；超過時多出來的 PR 其 branch 會被誤列，視為已知限制。
+fn list_open_pr_heads(path: &Path) -> Result<FxHashSet<String>, String> {
+    let json = run_gh(
+        path,
+        &[
+            "pr",
+            "list",
+            "--state",
+            "open",
+            "--limit",
+            "1000",
+            "--json",
+            "headRefName,isCrossRepository",
+        ],
+    )?;
+    parse_open_pr_heads(&json)
+}
+
+fn parse_open_pr_heads(json: &str) -> Result<FxHashSet<String>, String> {
+    let heads: Vec<GhPrHead> = parse_json(json)?;
+    Ok(heads
+        .into_iter()
+        .filter(|h| !h.is_cross_repository)
+        .map(|h| h.head_ref_name)
+        .collect())
+}
+
+/// 回傳 `(branches, truncated)`；`truncated` 為 true 表示候選超過 [`BRANCH_LIMIT`]。
+/// 比較基準是 origin 的 default branch（等同 `origin/HEAD`），沒設定
+/// `origin/HEAD` 時改問 gh，避免要求使用者先跑 `git remote set-head`。
+pub fn list_unpr_branches(path: &Path) -> Result<(Vec<GhBranch>, bool), String> {
+    let info: GhRepoInfo = parse_json(&run_gh(
+        path,
+        &["repo", "view", "--json", "url,defaultBranchRef"],
+    )?)?;
+    let default = crate::git::origin_default_branch(path)
+        .or(info.default_branch_ref.map(|r| r.name))
+        .ok_or_else(|| t!("github.error.no_default_branch").into_owned())?;
+
+    let open_heads = list_open_pr_heads(path)?;
+    let mut candidates = crate::git::origin_branches(path, &default)?;
+    candidates.retain(|b| !open_heads.contains(&b.name));
+    let truncated = candidates.len() > BRANCH_LIMIT;
+    candidates.truncate(BRANCH_LIMIT);
+
+    let stats = branch_line_stats(path, &default, &candidates)?;
+    let branches = candidates
+        .into_iter()
+        .zip(stats)
+        .map(|(b, (additions, deletions))| GhBranch {
+            url: format!(
+                "{}/compare/{}?expand=1",
+                info.url.trim_end_matches('/'),
+                encode_ref_path(&b.name)
+            ),
+            name: b.name,
+            head_oid: b.head_oid,
+            committer_date: b.committer_date,
+            author: b.author,
+            diff_stat: DiffStat {
+                additions,
+                deletions,
+            },
+        })
+        .collect();
+    Ok((branches, truncated))
+}
+
+/// 固定數量的 worker 以原子計數器搶下一個 index；結果依輸入順序回傳。
+fn branch_line_stats(
+    path: &Path,
+    default: &str,
+    branches: &[crate::git::RemoteBranch],
+) -> Result<Vec<(u32, u32)>, String> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let workers = std::thread::available_parallelism()
+        .map_or(4, |n| n.get())
+        .min(8)
+        .min(branches.len());
+    let next = AtomicUsize::new(0);
+    let mut stats: Vec<Option<Result<(u32, u32), String>>> = vec![None; branches.len()];
+    std::thread::scope(|s| {
+        let handles: Vec<_> = (0..workers)
+            .map(|_| {
+                s.spawn(|| {
+                    let mut done = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(b) = branches.get(i) else { break };
+                        done.push((i, crate::git::branch_line_stat(path, default, &b.name)));
+                    }
+                    done
+                })
+            })
+            .collect();
+        for h in handles {
+            // worker panic 時對應 slot 維持 None，下面統一轉成錯誤
+            for (i, r) in h.join().unwrap_or_default() {
+                stats[i] = Some(r);
+            }
+        }
+    });
+    stats
+        .into_iter()
+        .map(|r| r.unwrap_or_else(|| Err(t!("github.error.branch_worker_panicked").into_owned())))
+        .collect()
+}
+
 pub fn merge_pr(path: &Path, number: u64, method: &str) -> Result<(), String> {
     run_gh(path, &["pr", "merge", &number.to_string(), method])?;
     Ok(())
@@ -2139,6 +2285,22 @@ mod tests {
             ref_delete_endpoint("owner", "repo", "feature/x"),
             "repos/owner/repo/git/refs/heads/feature/x"
         );
+    }
+
+    /// fork 來的 PR 其 head 名只是剛好同名，不代表 origin 上的同名 branch 有 PR。
+    #[test]
+    fn parse_open_pr_heads_skips_cross_repository_prs() {
+        let json = r#"[
+            {"headRefName": "feat/a", "isCrossRepository": false},
+            {"headRefName": "fork-topic", "isCrossRepository": true}
+        ]"#;
+
+        let heads = parse_open_pr_heads(json).unwrap();
+
+        assert_eq!(heads.len(), 1);
+        assert!(heads.contains("feat/a"));
+        assert!(parse_open_pr_heads("[]").unwrap().is_empty());
+        assert!(parse_open_pr_heads("not json").is_err());
     }
 
     /// `/` 原樣留（endpoint 本來就吃斜線），但 `%` `#` `?` 會壞掉 URL 或被

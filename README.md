@@ -18,7 +18,7 @@ Serie（[`/zéːriə/`](docs/src/faq/index.md)）是一個 TUI 應用程式，�
 
 以下功能為此 fork 新增，原版 serie 不包含：
 
-- **GitHub Issue/PR 瀏覽器** — 按 `g` 開啟，瀏覽與篩選 issue／PR、切換 checkbox、三階段確認 merge PR、開關 issue/PR 狀態、複製連結或在瀏覽器開啟
+- **GitHub Issue/PR 瀏覽器** — 按 `g` 開啟，瀏覽與篩選 issue／PR、切換 checkbox、三階段確認 merge PR、開關 issue/PR 狀態、複製連結或在瀏覽器開啟；Branches 分頁以卡片列出 origin 上沒有 OPEN PR 的 branch 與其相對 default branch 的 `+`／`-`／總數行數差異（remote-tracking 為上次 fetch 的快照）
 - **Tag 管理** — 按 `t` 建立 tag，`Ctrl-t` 刪除 tag，支援推送到 remote
 - **Remote refs 切換** — 按 `o` 顯示/隱藏 remote-only 的 commit，使用 BFS filtered graph 重新計算佈局
 - **Ref 刪除** — 在 refs 列表中刪除 branch（local/remote）或 tag

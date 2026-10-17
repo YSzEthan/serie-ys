@@ -133,10 +133,7 @@ impl<'a> TimelineBlock<'a> {
 /// 回傳借用的項目而非 owned 複本，所以 `None`/`NotRequested` 這種
 /// entry（沒東西可借）必須在 `Loaded` 這個 match arm 之前處理，不能靠
 /// local 預設值折疊進去——那樣會產生 dangling reference。
-pub(super) fn build_timeline(
-    entry: Option<&TimelineEntry>,
-    expand_commits: bool,
-) -> Vec<TimelineBlock<'_>> {
+pub(super) fn build_timeline(entry: Option<&TimelineEntry>) -> Vec<TimelineBlock<'_>> {
     let Some(entry) = entry else {
         return vec![notice_block(t!("github.timeline.loading"), Color::DarkGray)];
     };
@@ -152,35 +149,28 @@ pub(super) fn build_timeline(
             )]
         }
         TimelineLoad::Loaded => {
-            let mut blocks = Vec::new();
-            blocks.extend(commit_block(entry, expand_commits));
-            blocks.extend(ci_block(entry, expand_commits));
-            blocks.extend(
-                entry
-                    .items
-                    .iter()
-                    .filter(|item| !is_commit(item))
-                    .filter_map(TimelineBlock::from_gh),
-            );
+            let mut blocks: Vec<_> = entry
+                .items
+                .iter()
+                .filter(|item| !is_commit(item))
+                .filter_map(TimelineBlock::from_gh)
+                .collect();
 
-            // 判斷用的是*過濾/分組後*的 block 清單，不是 `entry.items`：一頁
-            // 全是 `Unknown` 節點時，仍然要 fallback 到提示訊息，而不是渲染
-            // 出零列（也就沒有任何分隔線）。判空主體刻意維持整條 timeline，
-            // 不是只看 comments——`timelineItems` 是一條混合 connection，
-            // 前 100 筆全是 commit、留言落在下一頁的長命 PR 很常見，只看
-            // comments 會在那種情況印出騙人的「沒有留言」。
-            if blocks.is_empty() {
-                blocks.push(notice_block(t!("github.timeline.empty"), Color::DarkGray));
-            } else if entry.next_cursor.is_some() {
+            // `next_cursor` 代表「還有 timelineItems」，不是「還有留言」：
+            // 長命 PR 常見前 100 筆全是 commit（畫在 header 區，不在這裡）、
+            // 留言落在下一頁，這時 `blocks` 是空的，卻不能印出騙人的「沒有
+            // 留言」，所以先判斷還有沒有下一頁，才判斷空。文案沿用舊字樣，
+            // 即使下一頁其實是更多 commit 也一樣，避免為了措辭精確而長出
+            // 第二種 footer。
+            if entry.next_cursor.is_some() {
                 let text = if entry.loading_more {
                     t!("github.timeline.loading_more")
                 } else {
                     t!("github.timeline.more")
                 };
-                // `next_cursor` 代表「還有 timelineItems」，不是「還有留言」
-                // ——文案沿用舊字樣，即使下一頁其實是更多 commit 也一樣，
-                // 避免為了措辭精確而長出第二種 footer。
                 blocks.push(notice_block(text, Color::DarkGray));
+            } else if blocks.is_empty() {
+                blocks.push(notice_block(t!("github.timeline.empty"), Color::DarkGray));
             }
             blocks
         }
@@ -237,52 +227,53 @@ fn ci_block(entry: &TimelineEntry, expand_commits: bool) -> Option<TimelineBlock
     })
 }
 
-/// timeline 最前面兩個 block 各自佔的視覺行數。每個 block 是 1 條分隔線加上
-/// 每個 item 各一行（收合時 item 只有一個摘要），前提是這兩種 block 的每個
-/// item 都只渲染一行（有測試固定）。
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub(super) struct LeadingHeights {
-    pub(super) commit: usize,
-    pub(super) ci: usize,
-}
-
-impl LeadingHeights {
-    fn total(self) -> usize {
-        self.commit + self.ci
-    }
-
-    /// 視窗頂端在 timeline 內第 `rel` 行；內容從 `self` 變成 `new` 之後，
-    /// 同一段內容的新位置。三段用同一條規則：新區段起點加上
-    /// `min(區段內位移, 新區段長度)`——區段縮小到頂端之上時落在區段末端，
-    /// 不會越界進下一段。
-    ///
-    /// 只保住位置、保不住內容：CI 依狀態重新排序時，頂端那一行可能換成
-    /// 另一個 check。超出底端的部分交給 `render_preview` 的 clamp。
-    pub(super) fn remap(self, new: Self, rel: usize) -> usize {
-        if rel < self.commit {
-            rel.min(new.commit)
-        } else if rel < self.total() {
-            new.commit + (rel - self.commit).min(new.ci)
-        } else {
-            new.total() + (rel - self.total())
-        }
-    }
-}
-
-/// commit／CI block 目前的高度。`append_timeline_items` 用落地前後的兩份
-/// 高度來位移 `preview_offset`：這些 block 插在 timeline 最前面，行數變化
-/// 必須讓捲動位置跟著位移，畫面才不會因為視窗上方的內容變動而跳動。
-/// 版面規則只有 `commit_block`／`ci_block` 一個來源，與渲染不會不同步。
+/// 畫在 Body 之前、緊接 header 的兩個 block，依畫面順序（CI、commit）。
+/// 畫面順序只在這裡寫一次：渲染、高度、`remap` 都由這個陣列推導。
 /// 非 `Loaded` 時畫面上是提示訊息，沒有這兩個 block。
-pub(super) fn leading_heights(entry: &TimelineEntry, expand_commits: bool) -> LeadingHeights {
+pub(super) fn leading(
+    entry: &TimelineEntry,
+    expand_commits: bool,
+) -> [Option<TimelineBlock<'_>>; LEADING_BLOCKS] {
     if entry.state != TimelineLoad::Loaded {
-        return LeadingHeights::default();
+        return [None, None];
     }
-    let rows = |block: Option<TimelineBlock>| block.map_or(0, |b| 1 + b.items.len());
-    LeadingHeights {
-        commit: rows(commit_block(entry, expand_commits)),
-        ci: rows(ci_block(entry, expand_commits)),
+    [
+        ci_block(entry, expand_commits),
+        commit_block(entry, expand_commits),
+    ]
+}
+
+pub(super) const LEADING_BLOCKS: usize = 2;
+
+/// `leading` 各 block 佔的視覺行數。每個 block 是 1 條分隔線加上每個 item
+/// 各一行（收合時 item 只有一個摘要），前提是這兩種 block 的每個 item 都只
+/// 渲染一行（有測試固定）。
+pub(super) type LeadingHeights = [usize; LEADING_BLOCKS];
+
+/// `append_timeline_items` 用落地前後的兩份高度來位移 `preview_offset`：
+/// 這些 block 插在 Body 之前，行數變化會把 Body 以下整段推動，必須讓捲動位置
+/// 跟著位移，畫面才不會因為視窗上方的內容變動而跳動。
+pub(super) fn leading_heights(entry: &TimelineEntry, expand_commits: bool) -> LeadingHeights {
+    leading(entry, expand_commits).map(|b| b.map_or(0, |b| 1 + b.items.len()))
+}
+
+/// 視窗頂端在 leading 起點之下第 `rel` 行；內容從 `old` 變成 `new` 之後，
+/// 同一段內容的新位置。每一段用同一條規則：新區段起點加上
+/// `min(區段內位移, 新區段長度)`——區段縮小到頂端之上時落在區段末端，
+/// 不會越界進下一段。最後一段（Body 以下）整段平移。
+///
+/// 只保住位置、保不住內容：CI 依狀態重新排序時，頂端那一行可能換成
+/// 另一個 check。超出底端的部分交給 `render_preview` 的 clamp。
+pub(super) fn remap(old: LeadingHeights, new: LeadingHeights, mut rel: usize) -> usize {
+    let mut base = 0;
+    for (o, n) in old.into_iter().zip(new) {
+        if rel < o {
+            return base + rel.min(n);
+        }
+        rel -= o;
+        base += n;
     }
+    base + rel
 }
 
 /// timeline 的一列可渲染內容：留言、commit、review 總結、review 行內留言、
@@ -671,15 +662,33 @@ mod tests {
         line.spans.iter().map(|s| s.content.as_ref()).collect()
     }
 
+    /// 畫面順序只寫在 `leading` 一處：CI 在前、commit 在後。
     #[test]
-    fn expanded_ci_block_follows_commit_block_one_line_per_check() {
+    fn leading_blocks_are_ci_then_commit() {
         let entry = loaded_entry(vec![commit_item()], three_checks());
-        let mut blocks = build_timeline(Some(&entry), true);
-        assert_eq!(blocks.len(), 2);
-        assert!(blocks[0].section == Section::Commit);
-        assert!(blocks[1].section == Section::Ci);
+        let sections: Vec<_> = leading(&entry, true)
+            .into_iter()
+            .flatten()
+            .map(|b| b.section)
+            .collect();
+        assert_eq!(sections, [Section::Ci, Section::Commit]);
+    }
 
-        let lines = render_block(blocks.remove(1), 40);
+    /// commit 與 CI 已搬到 header 區，不再出現在 timeline 的 block 清單裡。
+    #[test]
+    fn build_timeline_no_longer_emits_commit_or_ci_blocks() {
+        let entry = loaded_entry(vec![commit_item()], three_checks());
+        assert!(build_timeline(Some(&entry))
+            .iter()
+            .all(|b| !matches!(b.section, Section::Commit | Section::Ci)));
+    }
+
+    #[test]
+    fn expanded_ci_block_is_one_line_per_check() {
+        let entry = loaded_entry(vec![commit_item()], three_checks());
+        let [ci, _] = leading(&entry, true);
+
+        let lines = render_block(ci.expect("has checks"), 40);
         let rendered: Vec<_> = lines.iter().map(text).collect();
         assert_eq!(rendered, ["✗ lint", "● build", "✓ test"]);
         let colors: Vec<_> = lines.iter().map(|l| l.spans[0].style.fg).collect();
@@ -692,8 +701,8 @@ mod tests {
     #[test]
     fn collapsed_ci_block_is_one_line_with_colored_swatches() {
         let entry = loaded_entry(vec![commit_item()], three_checks());
-        let mut blocks = build_timeline(Some(&entry), false);
-        let lines = render_block(blocks.remove(1), 40);
+        let [ci, _] = leading(&entry, false);
+        let lines = render_block(ci.expect("has checks"), 40);
         assert_eq!(lines.len(), 1);
         assert_eq!(text(&lines[0]), "▸ 3 個 check ▮▮▮");
         let swatch_colors: Vec<_> = lines[0].spans[1..].iter().map(|s| s.style.fg).collect();
@@ -707,9 +716,9 @@ mod tests {
     #[test]
     fn collapsed_ci_swatches_truncate_to_width_keeping_failures() {
         let entry = loaded_entry(Vec::new(), three_checks());
-        let mut blocks = build_timeline(Some(&entry), false);
+        let [ci, _] = leading(&entry, false);
         let width = console::measure_text_width("▸ 3 個 check ") + 1;
-        let lines = render_block(blocks.remove(0), width);
+        let lines = render_block(ci.expect("has checks"), width);
         assert_eq!(lines.len(), 1);
         assert!(lines[0].width() <= width);
         assert_eq!(lines[0].spans.len(), 2);
@@ -722,8 +731,8 @@ mod tests {
             Vec::new(),
             vec![gh_check(&"x".repeat(100), CheckState::Passed)],
         );
-        let mut blocks = build_timeline(Some(&entry), true);
-        let lines = render_block(blocks.remove(0), 20);
+        let [ci, _] = leading(&entry, true);
+        let lines = render_block(ci.expect("has checks"), 20);
         assert_eq!(lines.len(), 1);
         assert!(lines[0].width() <= 20);
     }
@@ -731,96 +740,99 @@ mod tests {
     #[test]
     fn no_ci_block_without_checks() {
         let entry = loaded_entry(vec![commit_item()], Vec::new());
-        let blocks = build_timeline(Some(&entry), true);
-        assert!(blocks.iter().all(|b| b.section != Section::Ci));
-    }
-
-    fn heights(commit: usize, ci: usize) -> LeadingHeights {
-        LeadingHeights { commit, ci }
+        let [ci, commit] = leading(&entry, true);
+        assert!(ci.is_none());
+        assert!(commit.is_some());
     }
 
     #[test]
-    fn leading_heights_counts_commit_and_ci_blocks_separately() {
+    fn leading_is_empty_until_the_timeline_is_loaded() {
+        let entry = TimelineEntry {
+            ci_checks: three_checks(),
+            items: vec![commit_item()],
+            ..Default::default()
+        };
+        let [ci, commit] = leading(&entry, true);
+        assert!(ci.is_none() && commit.is_none());
+    }
+
+    #[test]
+    fn leading_heights_counts_ci_and_commit_blocks_separately() {
         let entry = loaded_entry(vec![commit_item()], three_checks());
-        // 展開：commit（分隔線 + 1）、CI（分隔線 + 3）
-        assert_eq!(leading_heights(&entry, true), heights(2, 4));
+        // 展開：CI（分隔線 + 3）、commit（分隔線 + 1）
+        assert_eq!(leading_heights(&entry, true), [4, 2]);
         // 收合：兩個 block 各是分隔線 + 一行摘要
-        assert_eq!(leading_heights(&entry, false), heights(2, 2));
+        assert_eq!(leading_heights(&entry, false), [2, 2]);
 
         let no_ci = loaded_entry(vec![commit_item()], Vec::new());
-        assert_eq!(leading_heights(&no_ci, true), heights(2, 0));
-        assert_eq!(leading_heights(&no_ci, false), heights(2, 0));
+        assert_eq!(leading_heights(&no_ci, true), [0, 2]);
+        assert_eq!(leading_heights(&no_ci, false), [0, 2]);
 
         let no_commit = loaded_entry(Vec::new(), three_checks());
-        assert_eq!(leading_heights(&no_commit, true), heights(0, 4));
+        assert_eq!(leading_heights(&no_commit, true), [4, 0]);
 
-        // 還沒載入完：只有「loading」提示，不算 commit／CI
-        assert_eq!(
-            leading_heights(&TimelineEntry::default(), true),
-            LeadingHeights::default()
-        );
+        // 還沒載入完：畫面上只有「loading」提示，不算 CI／commit
+        assert_eq!(leading_heights(&TimelineEntry::default(), true), [0, 0]);
     }
 
-    /// commit 與 CI 各自的高度必須和 `build_timeline` 實際排出的 block 一致，
-    /// 版面規則才真的只有一個來源。
+    /// 高度與實際渲染出的行數（分隔線不在這裡畫，所以加 1）必須一致，
+    /// 版面規則才真的只有 `leading` 一個來源。
     #[test]
-    fn leading_heights_match_the_blocks_build_timeline_emits() {
+    fn leading_heights_match_the_rendered_blocks() {
         let entry = loaded_entry(vec![commit_item(), commit_item()], three_checks());
         for expand in [true, false] {
-            let blocks = build_timeline(Some(&entry), expand);
-            let rows = |section| {
-                blocks
-                    .iter()
-                    .filter(|b| b.section == section)
-                    .map(|b| 1 + b.items.len())
-                    .sum::<usize>()
-            };
-            assert_eq!(
-                leading_heights(&entry, expand),
-                heights(rows(Section::Commit), rows(Section::Ci)),
-                "expand={expand}"
-            );
+            let rendered =
+                leading(&entry, expand).map(|b| b.map_or(0, |b| 1 + render_block(b, 40).len()));
+            assert_eq!(leading_heights(&entry, expand), rendered, "expand={expand}");
         }
     }
 
-    /// 三段（commit、CI、其後）各取邊界：區段第一行、最後一行、剛越過去的一行。
+    /// 三段（CI、commit、其後）各取邊界：區段第一行、最後一行、剛越過去的一行。
     #[test]
     fn remap_keeps_the_top_content_in_place_across_all_three_segments() {
         // commit 2→4 行，CI 3 行不變
-        let (old, new) = (heights(2, 3), heights(4, 3));
-        // commit 區塊內：上面的內容沒動
-        assert_eq!(old.remap(new, 0), 0);
-        assert_eq!(old.remap(new, 1), 1);
-        // CI 區塊內：跟著 commit 的增加位移
-        assert_eq!(old.remap(new, 2), 4);
-        assert_eq!(old.remap(new, 4), 6);
-        // 兩區塊之下（留言）：跟著總和位移
-        assert_eq!(old.remap(new, 5), 7);
-        assert_eq!(old.remap(new, 9), 11);
+        let (old, new) = ([3, 2], [3, 4]);
+        // CI 區塊內：上面的內容沒動
+        assert_eq!(remap(old, new, 0), 0);
+        assert_eq!(remap(old, new, 2), 2);
+        // commit 區塊內：CI 沒變，起點沒動
+        assert_eq!(remap(old, new, 3), 3);
+        assert_eq!(remap(old, new, 4), 4);
+        // 兩區塊之下（Body 以下）：跟著總和位移
+        assert_eq!(remap(old, new, 5), 7);
+        assert_eq!(remap(old, new, 9), 11);
+
+        // CI 3→5 行：commit 區塊與其下整段被往下推
+        let (old, new) = ([3, 2], [5, 2]);
+        assert_eq!(remap(old, new, 2), 2);
+        assert_eq!(remap(old, new, 3), 5);
+        assert_eq!(remap(old, new, 5), 7);
     }
 
     #[test]
     fn remap_clamps_when_a_segment_shrinks_above_the_top() {
-        // CI 3→0 行（force-push 後新 head 沒有 check）：頂端落在第一則留言
-        assert_eq!(heights(2, 3).remap(heights(2, 0), 3), 2);
-        // 頂端在 CI 最後一行，CI 縮成 2 行：落在 CI 區塊之後（第一則留言）
-        assert_eq!(heights(2, 3).remap(heights(2, 2), 4), 4);
+        // CI 3→0 行（force-push 後新 head 沒有 check）：頂端原本是 commit 的
+        // 第一行，現在 commit 區塊從 0 開始
+        assert_eq!(remap([3, 2], [0, 2], 3), 0);
+        // 頂端在 CI 最後一行，CI 縮成 2 行：夾在 CI 區塊末端，也就是 commit 的起點
+        assert_eq!(remap([3, 2], [2, 2], 2), 2);
         // commit 4→2 行（重抓截回第一頁），頂端在 commit 內第 3 行：夾在
-        // commit 區塊末端，也就是 CI 的起點
-        assert_eq!(heights(4, 3).remap(heights(2, 3), 3), 2);
-        // commit 消失，頂端原本在 commit 內
-        assert_eq!(heights(2, 3).remap(heights(0, 3), 1), 0);
+        // commit 區塊末端，也就是 Body 分隔線
+        assert_eq!(remap([3, 4], [3, 2], 6), 5);
+        // CI 消失，頂端原本在 CI 內
+        assert_eq!(remap([3, 2], [0, 2], 1), 0);
     }
 
     #[test]
     fn remap_handles_missing_leading_blocks() {
-        // 一開始什麼都沒有（rel 一定落在第三段）：整段位移新增的高度
-        assert_eq!(heights(0, 0).remap(heights(2, 4), 0), 6);
-        assert_eq!(heights(0, 0).remap(heights(2, 4), 5), 11);
+        // 一開始什麼都沒有（rel 一定落在最後一段）：整段位移新增的高度。
+        // 首次載入就是這個情境，使用者可能已經往下讀 Body。
+        assert_eq!(remap([0, 0], [4, 2], 0), 6);
+        assert_eq!(remap([0, 0], [4, 2], 5), 11);
         // 全部消失：往回位移
-        assert_eq!(heights(2, 4).remap(heights(0, 0), 8), 2);
-        // commit 是 0 行時，rel = 0 就是 CI 的第一行
-        assert_eq!(heights(0, 3).remap(heights(2, 3), 0), 2);
+        assert_eq!(remap([4, 2], [0, 0], 8), 2);
+        // CI 是 0 行時，rel = 0 就是 commit 的第一行
+        assert_eq!(remap([0, 3], [2, 3], 0), 2);
     }
 
     /// `leading_heights` 以「每個 item 一行」為前提，這裡固定住它。
@@ -828,13 +840,31 @@ mod tests {
     fn every_commit_and_ci_item_renders_exactly_one_line() {
         let entry = loaded_entry(vec![commit_item(), commit_item()], three_checks());
         for expand in [true, false] {
-            for block in build_timeline(Some(&entry), expand) {
-                if !matches!(block.section, Section::Commit | Section::Ci) {
-                    continue;
-                }
+            for block in leading(&entry, expand).into_iter().flatten() {
                 let n = block.items.len();
                 assert_eq!(render_block(block, 40).len(), n, "expand={expand}");
             }
         }
+    }
+
+    fn only_notice(entry: &TimelineEntry) -> String {
+        let mut blocks = build_timeline(Some(entry));
+        assert_eq!(blocks.len(), 1, "expected a single notice block");
+        text(&render_block(blocks.remove(0), 60)[0])
+    }
+
+    /// 前 100 筆全是 commit、留言在下一頁：不能印「沒有留言」，要顯示還有更多。
+    #[test]
+    fn only_commits_with_a_next_page_shows_the_more_footer_not_empty() {
+        let mut entry = loaded_entry(vec![commit_item()], Vec::new());
+        entry.next_cursor = Some("c".to_string());
+        assert_eq!(only_notice(&entry), "（還有更多留言——往下捲動載入）");
+    }
+
+    /// 只有 commit、沒有下一頁：commit 已畫在 header 區，timeline 確實沒有留言。
+    #[test]
+    fn only_commits_without_a_next_page_shows_empty() {
+        let entry = loaded_entry(vec![commit_item()], Vec::new());
+        assert_eq!(only_notice(&entry), "（沒有留言）");
     }
 }
