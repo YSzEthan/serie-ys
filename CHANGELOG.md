@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.8.0](https://github.com/YSzEthan/serie-ys/compare/v4.7.1...v4.8.0) (2026-10-17)
+
+
+### Features
+
+* gh 介面新增 Branches 分頁，並把 PR 的 CI 與 Commit 區塊移到 Body 之前 (#152, #153) (#154) ([aa615d6](https://github.com/YSzEthan/serie-ys/commit/aa615d6df71b441a6a0283f09074b16737da57e5))
+
 ## [4.7.1](https://github.com/YSzEthan/serie-ys/compare/v4.7.0...v4.7.1) (2026-10-04)
 
 
