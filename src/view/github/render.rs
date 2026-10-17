@@ -1,6 +1,7 @@
 use std::borrow::Cow;
 
 use ratatui::{
+    buffer::CellDiffOption,
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -241,7 +242,7 @@ impl<'a> GitHubView<'a> {
             let payload = crate::external::format_osc8_hyperlink(&row.url, &label);
             buf[(x, y)].set_symbol(&payload);
             for j in 1..label_width {
-                buf[(x + j, y)].set_skip(true);
+                buf[(x + j, y)].set_diff_option(CellDiffOption::Skip);
             }
         }
     }
@@ -497,7 +498,7 @@ impl<'a> GitHubView<'a> {
         buf[(x, y)].set_symbol(&payload);
         let remaining = inner.right() - x;
         for i in 1..label_width.min(remaining) {
-            buf[(x + i, y)].set_skip(true);
+            buf[(x + i, y)].set_diff_option(CellDiffOption::Skip);
         }
     }
 
