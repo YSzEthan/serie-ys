@@ -151,6 +151,9 @@ impl<'a> GitHubView<'a> {
             UserEvent::Refresh => {
                 self.dispatch_refresh();
             }
+            UserEvent::Fetch => {
+                self.tx.send(AppEvent::FetchAll);
+            }
             _ => {}
         }
     }
@@ -244,6 +247,9 @@ impl<'a> GitHubView<'a> {
             }
             UserEvent::Refresh => {
                 self.dispatch_refresh();
+            }
+            UserEvent::Fetch => {
+                self.tx.send(AppEvent::FetchAll);
             }
             UserEvent::ShortCopy => {
                 let name = match self.active_tab.kind() {

@@ -1501,134 +1501,235 @@ impl MergeMethod {
     }
 }
 
-/// 一次最多算幾個 branch 的行數差異；每個 branch 一個 git 行程，大 repo 的
-/// 三點 diff 還要先算 merge-base，不設上限會拖很久。依 committerdate 新到舊取。
+/// 一次最多列幾個 branch，也是最多算幾個 branch 的行數差異；每個 branch 一個
+/// git 行程，大 repo 的三點 diff 還要先算 merge-base，不設上限會拖很久。
+/// 依 committedDate 新到舊取。
 pub const BRANCH_LIMIT: usize = 100;
 
-/// origin 上沒有 OPEN PR 的 branch，附相對 default branch 的行數差異。
+/// 最多翻幾頁 `refs`（每頁 100 個）；branch 數量失控的 repo 不值得循序打更多次 API。
+const BRANCH_PAGE_LIMIT: usize = 20;
+
+/// GitHub 上沒有 OPEN PR 的 branch，附相對 default branch 的行數差異。
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct GhBranch {
     pub name: String,
     pub head_oid: String,
     pub committer_date: String,
     pub author: String,
-    pub diff_stat: DiffStat,
+    /// 本機沒有這個 branch 或 default 的 commit（沒 fetch 到）時算不出來，為 `None`。
+    pub diff_stat: Option<DiffStat>,
     /// GitHub 的 compare 頁，直接可以按「Create pull request」。
     pub url: String,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct GhRepoInfo {
+struct GqlBranchesRepo {
     url: String,
-    default_branch_ref: Option<GhDefaultBranchRef>,
+    default_branch_ref: Option<GqlDefaultBranch>,
+    refs: GqlConnection<GqlRefNode>,
 }
 
 #[derive(Deserialize)]
-struct GhDefaultBranchRef {
+struct GqlDefaultBranch {
     name: String,
+    target: Option<GqlOid>,
+}
+
+#[derive(Deserialize)]
+struct GqlOid {
+    oid: String,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct GhPrHead {
-    head_ref_name: String,
-    is_cross_repository: bool,
+struct GqlRefNode {
+    name: String,
+    associated_pull_requests: GqlCount,
+    target: Option<GqlBranchTarget>,
 }
 
-/// 全部 OPEN PR 的 head branch 名（排除 fork 來的）。`GitHubData.pull_requests`
-/// 只有第一頁且受 state filter 影響，不能拿來判斷「有沒有 PR」。
-/// 上限 1000 筆；超過時多出來的 PR 其 branch 會被誤列，視為已知限制。
-fn list_open_pr_heads(path: &Path) -> Result<FxHashSet<String>, String> {
-    let json = run_gh(
-        path,
-        &[
-            "pr",
-            "list",
-            "--state",
-            "open",
-            "--limit",
-            "1000",
-            "--json",
-            "headRefName,isCrossRepository",
-        ],
-    )?;
-    parse_open_pr_heads(&json)
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlCount {
+    total_count: u32,
 }
 
-fn parse_open_pr_heads(json: &str) -> Result<FxHashSet<String>, String> {
-    let heads: Vec<GhPrHead> = parse_json(json)?;
-    Ok(heads
+/// `... on Commit` 對非 Commit 的 target 會回 `{}`，所以欄位全是 `Option`。
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct GqlBranchTarget {
+    oid: Option<String>,
+    committed_date: Option<String>,
+    author: Option<GqlGitActor>,
+}
+
+/// `GitActor.name` 是 nullable。
+#[derive(Deserialize)]
+struct GqlGitActor {
+    name: Option<String>,
+}
+
+fn parse_branches_graphql(json: &str) -> Result<GqlBranchesRepo, String> {
+    Ok(parse_json::<GqlRepoResp<GqlBranchesRepo>>(json)?
+        .data
+        .repository)
+}
+
+fn fetch_branch_page(
+    path: &Path,
+    owner: &str,
+    name: &str,
+    after: Option<&str>,
+) -> Result<GqlBranchesRepo, String> {
+    let query = r#"query($owner:String!,$name:String!,$after:String){
+            repository(owner:$owner,name:$name){
+                url
+                defaultBranchRef { name target { oid } }
+                refs(refPrefix:"refs/heads/",first:100,after:$after){
+                    pageInfo { hasNextPage endCursor }
+                    nodes {
+                        name
+                        associatedPullRequests(states:OPEN){ totalCount }
+                        target { ... on Commit { oid committedDate author { name } } }
+                    }
+                }
+            }
+        }"#;
+    let owner_f = format!("owner={owner}");
+    let name_f = format!("name={name}");
+    let query_f = format!("query={query}");
+    let mut args = vec![
+        "api", "graphql", "-F", &owner_f, "-F", &name_f, "-f", &query_f,
+    ];
+    let after_f;
+    if let Some(cursor) = after {
+        after_f = format!("after={cursor}");
+        args.push("-f");
+        args.push(&after_f);
+    }
+    parse_branches_graphql(&run_gh(path, &args)?)
+}
+
+/// 過濾（排除 default、有 OPEN PR、target 不是 commit）、依 committedDate 新到舊排序後
+/// 取前 [`BRANCH_LIMIT`] 個；第二個回傳值為 true 表示候選超過上限。
+///
+/// GitHub 的 `refs` 排序對 branch 不可靠（`TAG_COMMIT_DATE` 會把較舊的 default 排在前面），
+/// 所以收齊後在本機排。`committedDate` 是 UTC `Z` 格式，字典序就是時間序。
+fn into_branches(nodes: Vec<GqlRefNode>, default: &str, repo_url: &str) -> (Vec<GhBranch>, bool) {
+    let mut candidates: Vec<(String, GhBranch)> = nodes
         .into_iter()
-        .filter(|h| !h.is_cross_repository)
-        .map(|h| h.head_ref_name)
-        .collect())
-}
-
-/// 回傳 `(branches, truncated)`；`truncated` 為 true 表示候選超過 [`BRANCH_LIMIT`]。
-/// 比較基準是 origin 的 default branch（等同 `origin/HEAD`），沒設定
-/// `origin/HEAD` 時改問 gh，避免要求使用者先跑 `git remote set-head`。
-pub fn list_unpr_branches(path: &Path) -> Result<(Vec<GhBranch>, bool), String> {
-    let info: GhRepoInfo = parse_json(&run_gh(
-        path,
-        &["repo", "view", "--json", "url,defaultBranchRef"],
-    )?)?;
-    let default = crate::git::origin_default_branch(path)
-        .or(info.default_branch_ref.map(|r| r.name))
-        .ok_or_else(|| t!("github.error.no_default_branch").into_owned())?;
-
-    let open_heads = list_open_pr_heads(path)?;
-    let mut candidates = crate::git::origin_branches(path, &default)?;
-    candidates.retain(|b| !open_heads.contains(&b.name));
-    let truncated = candidates.len() > BRANCH_LIMIT;
-    candidates.truncate(BRANCH_LIMIT);
-
-    let stats = branch_line_stats(path, &default, &candidates)?;
-    let branches = candidates
-        .into_iter()
-        .zip(stats)
-        .map(|(b, (additions, deletions))| GhBranch {
-            url: format!(
-                "{}/compare/{}?expand=1",
-                info.url.trim_end_matches('/'),
-                encode_ref_path(&b.name)
-            ),
-            name: b.name,
-            head_oid: b.head_oid,
-            committer_date: b.committer_date,
-            author: b.author,
-            diff_stat: DiffStat {
-                additions,
-                deletions,
-            },
+        .filter(|n| n.name != default && n.associated_pull_requests.total_count == 0)
+        .filter_map(|n| {
+            let t = n.target?;
+            let (oid, date) = (t.oid?, t.committed_date?);
+            let branch = GhBranch {
+                url: format!(
+                    "{}/compare/{}?expand=1",
+                    repo_url.trim_end_matches('/'),
+                    encode_ref_path(&n.name)
+                ),
+                name: n.name,
+                head_oid: oid,
+                committer_date: local_date(&date),
+                author: t.author.and_then(|a| a.name).unwrap_or_default(),
+                diff_stat: None,
+            };
+            Some((date, branch))
         })
         .collect();
-    Ok((branches, truncated))
+    candidates.sort_by(|a, b| b.0.cmp(&a.0));
+    let truncated = candidates.len() > BRANCH_LIMIT;
+    candidates.truncate(BRANCH_LIMIT);
+    (candidates.into_iter().map(|(_, b)| b).collect(), truncated)
 }
 
-/// 固定數量的 worker 以原子計數器搶下一個 index；結果依輸入順序回傳。
+/// RFC 3339 的 UTC 時間轉本地日期 `YYYY-MM-DD`；解析不了就截前 10 個字元。
+fn local_date(rfc3339: &str) -> String {
+    chrono::DateTime::parse_from_rfc3339(rfc3339).map_or_else(
+        |_| rfc3339.chars().take(10).collect(),
+        |d| {
+            d.with_timezone(&chrono::Local)
+                .format("%Y-%m-%d")
+                .to_string()
+        },
+    )
+}
+
+/// 回傳 `(branches, truncated)`；`truncated` 為 true 表示候選超過 [`BRANCH_LIMIT`]，
+/// 或 `refs` 超過 [`BRANCH_PAGE_LIMIT`] 頁沒翻完。
+///
+/// 清單與「有沒有 OPEN PR」都以 GitHub 為準；行數是本機 `git diff`，本機沒有的
+/// commit（沒 fetch 到）`diff_stat` 為 `None`。
+pub fn list_unpr_branches(path: &Path) -> Result<(Vec<GhBranch>, bool), String> {
+    let (owner, name) = fetch_repo_name_with_owner(path)?;
+    let GqlBranchesRepo {
+        url,
+        default_branch_ref,
+        refs,
+    } = fetch_branch_page(path, &owner, &name, None)?;
+    // 沒有 default branch 就不必白翻後面的頁
+    let (default, default_oid) = default_branch_ref
+        .and_then(|d| Some((d.name, d.target?.oid)))
+        .ok_or_else(|| t!("github.error.no_default_branch").into_owned())?;
+    let mut nodes = refs.nodes;
+    let mut next = refs.page_info.next_cursor();
+    for _ in 1..BRANCH_PAGE_LIMIT {
+        let Some(cursor) = next else { break };
+        let page = fetch_branch_page(path, &owner, &name, Some(&cursor))?.refs;
+        nodes.extend(page.nodes);
+        next = page.page_info.next_cursor();
+    }
+    let pages_truncated = next.is_some();
+
+    let (mut branches, truncated) = into_branches(nodes, &default, &url);
+    let head_oids: Vec<&str> = branches.iter().map(|b| b.head_oid.as_str()).collect();
+    let stats = branch_line_stats(path, &default_oid, &head_oids)?;
+    for (b, stat) in branches.iter_mut().zip(stats) {
+        b.diff_stat = stat;
+    }
+    Ok((branches, truncated || pages_truncated))
+}
+
+/// 固定數量的 worker 以原子計數器搶下一個 job；結果依輸入順序回傳。
+/// default 或 branch 的 commit 不在本機的，不派 job，結果為 `None`。
 fn branch_line_stats(
     path: &Path,
-    default: &str,
-    branches: &[crate::git::RemoteBranch],
-) -> Result<Vec<(u32, u32)>, String> {
+    default_oid: &str,
+    head_oids: &[&str],
+) -> Result<Vec<Option<DiffStat>>, String> {
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    let mut stats = vec![None; head_oids.len()];
+    let wanted: Vec<&str> = std::iter::once(default_oid)
+        .chain(head_oids.iter().copied())
+        .collect();
+    let local = crate::git::local_commits(path, &wanted)?;
+    if !local.contains(default_oid) {
+        return Ok(stats);
+    }
+    let jobs: Vec<usize> = (0..head_oids.len())
+        .filter(|&i| local.contains(head_oids[i]))
+        .collect();
 
     let workers = std::thread::available_parallelism()
         .map_or(4, |n| n.get())
         .min(8)
-        .min(branches.len());
+        .min(jobs.len());
     let next = AtomicUsize::new(0);
-    let mut stats: Vec<Option<Result<(u32, u32), String>>> = vec![None; branches.len()];
+    let mut results: Vec<Option<Result<(u32, u32), String>>> = vec![None; jobs.len()];
     std::thread::scope(|s| {
         let handles: Vec<_> = (0..workers)
             .map(|_| {
                 s.spawn(|| {
                     let mut done = Vec::new();
                     loop {
-                        let i = next.fetch_add(1, Ordering::Relaxed);
-                        let Some(b) = branches.get(i) else { break };
-                        done.push((i, crate::git::branch_line_stat(path, default, &b.name)));
+                        let j = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(&i) = jobs.get(j) else { break };
+                        done.push((
+                            j,
+                            crate::git::branch_line_stat(path, default_oid, head_oids[i]),
+                        ));
                     }
                     done
                 })
@@ -1636,15 +1737,20 @@ fn branch_line_stats(
             .collect();
         for h in handles {
             // worker panic 時對應 slot 維持 None，下面統一轉成錯誤
-            for (i, r) in h.join().unwrap_or_default() {
-                stats[i] = Some(r);
+            for (j, r) in h.join().unwrap_or_default() {
+                results[j] = Some(r);
             }
         }
     });
-    stats
-        .into_iter()
-        .map(|r| r.unwrap_or_else(|| Err(t!("github.error.branch_worker_panicked").into_owned())))
-        .collect()
+    for (&i, r) in jobs.iter().zip(results) {
+        let (additions, deletions) =
+            r.unwrap_or_else(|| Err(t!("github.error.branch_worker_panicked").into_owned()))?;
+        stats[i] = Some(DiffStat {
+            additions,
+            deletions,
+        });
+    }
+    Ok(stats)
 }
 
 pub fn merge_pr(path: &Path, number: u64, method: &str) -> Result<(), String> {
@@ -2287,20 +2393,95 @@ mod tests {
         );
     }
 
-    /// fork 來的 PR 其 head 名只是剛好同名，不代表 origin 上的同名 branch 有 PR。
+    fn ref_node(name: &str, prs: u32, date: &str, author: Option<&str>) -> serde_json::Value {
+        serde_json::json!({
+            "name": name,
+            "associatedPullRequests": { "totalCount": prs },
+            "target": {
+                "oid": format!("oid-{name}"),
+                "committedDate": date,
+                "author": author.map(|n| serde_json::json!({ "name": n })),
+            },
+        })
+    }
+
+    fn branches_json(nodes: Vec<serde_json::Value>) -> String {
+        serde_json::json!({ "data": { "repository": {
+            "url": "https://github.com/o/r/",
+            "defaultBranchRef": { "name": "main", "target": { "oid": "oid-main" } },
+            "refs": {
+                "pageInfo": { "hasNextPage": false, "endCursor": null },
+                "nodes": nodes,
+            },
+        } } })
+        .to_string()
+    }
+
+    fn parse_branches(nodes: Vec<serde_json::Value>) -> (Vec<GhBranch>, bool) {
+        let repo = parse_branches_graphql(&branches_json(nodes)).unwrap();
+        into_branches(repo.refs.nodes, "main", &repo.url)
+    }
+
+    /// 只留「不是 default、沒有 OPEN PR、target 是 commit」的 branch，新到舊排序。
     #[test]
-    fn parse_open_pr_heads_skips_cross_repository_prs() {
-        let json = r#"[
-            {"headRefName": "feat/a", "isCrossRepository": false},
-            {"headRefName": "fork-topic", "isCrossRepository": true}
-        ]"#;
+    fn into_branches_filters_and_sorts_newest_first() {
+        let (branches, truncated) = parse_branches(vec![
+            ref_node("main", 0, "2026-01-05T00:00:00Z", Some("A")),
+            ref_node("old", 0, "2026-01-01T00:00:00Z", Some("B")),
+            ref_node("has-pr", 1, "2026-01-06T00:00:00Z", Some("C")),
+            ref_node("new/x", 0, "2026-01-04T00:00:00Z", Some("D")),
+            // 非 Commit 的 target（例如指到 tree 的 ref）：`... on Commit` 回 `{}`
+            serde_json::json!({
+                "name": "weird",
+                "associatedPullRequests": { "totalCount": 0 },
+                "target": {},
+            }),
+        ]);
 
-        let heads = parse_open_pr_heads(json).unwrap();
+        let names: Vec<_> = branches.iter().map(|b| b.name.as_str()).collect();
+        assert_eq!(names, ["new/x", "old"]);
+        assert!(!truncated);
+        assert_eq!(branches[0].head_oid, "oid-new/x");
+        assert_eq!(branches[0].author, "D");
+        assert_eq!(
+            branches[0].url,
+            "https://github.com/o/r/compare/new/x?expand=1"
+        );
+        assert_eq!(branches[0].diff_stat, None);
+    }
 
-        assert_eq!(heads.len(), 1);
-        assert!(heads.contains("feat/a"));
-        assert!(parse_open_pr_heads("[]").unwrap().is_empty());
-        assert!(parse_open_pr_heads("not json").is_err());
+    /// `GitActor.name` 是 nullable：一筆 null 不能讓整頁解析失敗。
+    #[test]
+    fn into_branches_tolerates_null_author() {
+        let (branches, _) = parse_branches(vec![ref_node("a", 0, "2026-01-01T00:00:00Z", None)]);
+
+        assert_eq!(branches[0].author, "");
+    }
+
+    #[test]
+    fn into_branches_truncates_to_limit() {
+        let nodes = (0..=BRANCH_LIMIT)
+            .map(|i| {
+                ref_node(
+                    &format!("b{i:03}"),
+                    0,
+                    &format!("2026-01-01T00:{i:02}:00Z"),
+                    None,
+                )
+            })
+            .collect();
+
+        let (branches, truncated) = parse_branches(nodes);
+
+        assert!(truncated);
+        assert_eq!(branches.len(), BRANCH_LIMIT);
+        // 最舊的那個被截掉
+        assert!(branches.iter().all(|b| b.name != "b000"));
+    }
+
+    #[test]
+    fn parse_branches_graphql_rejects_invalid_json() {
+        assert!(parse_branches_graphql("not json").is_err());
     }
 
     /// `/` 原樣留（endpoint 本來就吃斜線），但 `%` `#` `?` 會壞掉 URL 或被

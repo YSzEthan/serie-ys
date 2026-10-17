@@ -368,6 +368,7 @@ fn help_blocks(
         b(vec![UserEvent::TagCopy], t!("help.github.copy_issue_pr_number_n")),
         b(vec![UserEvent::DetailPaneToggle], t!("help.github.open_related_issue_pr_picker")),
         b(vec![UserEvent::Refresh], t!("help.github.refresh")),
+        b(vec![UserEvent::Fetch], t!("help.github.fetch")),
         b(vec![UserEvent::MergePr], t!("help.github.3_stage_merge_pr_pick_method_delete_branch_confirm")),
         b(vec![UserEvent::ToggleIssueState], t!("help.github.close_reopen_issue_or_pr")),
         b(vec![UserEvent::TogglePrDraft], t!("help.github.mark_pr_ready_back_to_draft")),

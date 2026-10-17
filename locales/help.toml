@@ -361,8 +361,8 @@ zh-TW = "關閉 GitHub view"
 en-US = "Close GitHub view"
 
 [help.github.switch_issue_pr_tab]
-zh-TW = "切換 Issues → PRs → Branches 分頁（Branches 列出 origin 上沒有 OPEN PR 的 branch 與行數差異）"
-en-US = "Cycle Issues → PRs → Branches tab (Branches lists origin branches without an open PR, with line diff)"
+zh-TW = "切換 Issues → PRs → Branches 分頁（Branches 列出 GitHub 上沒有 OPEN PR 的 branch 與行數差異）"
+en-US = "Cycle Issues → PRs → Branches tab (Branches lists branches on GitHub without an open PR, with line diff)"
 
 [help.github.move_down]
 zh-TW = "向下移動"
@@ -431,6 +431,10 @@ en-US = "Open related issue/PR picker"
 [help.github.refresh]
 zh-TW = "重新整理"
 en-US = "Refresh"
+
+[help.github.fetch]
+zh-TW = "fetch 所有 remote（完成後重新載入 Branches）"
+en-US = "Fetch all remotes (reloads Branches when done)"
 
 [help.github.3_stage_merge_pr_pick_method_delete_branch_confirm]
 zh-TW = "三階段 merge PR：選擇方式、刪除 branch、確認"

@@ -6,6 +6,8 @@ use ratatui::{
     Frame,
 };
 
+use rust_i18n::t;
+
 use crate::{github::GhBranch, widget::truncate_line};
 
 use super::timeline::diff_stat_spans;
@@ -61,7 +63,13 @@ fn card_body(branch: &GhBranch) -> Vec<Line<'static>> {
         Style::default().fg(TEXT_COLOR),
     );
     // `diff_stat_spans` 自帶開頭兩格空白，剛好當卡片內縮
-    let stat = Line::from(diff_stat_spans(branch.diff_stat).to_vec());
+    let stat = match branch.diff_stat {
+        Some(stat) => Line::from(diff_stat_spans(stat).to_vec()),
+        None => Line::styled(
+            format!("  {}", t!("github.branches.stat_unavailable")),
+            Style::default().fg(TEXT_COLOR),
+        ),
+    };
     vec![meta, stat]
 }
 
@@ -78,10 +86,10 @@ mod tests {
             head_oid: "0123456789abcdef".to_string(),
             committer_date: "2026-01-02".to_string(),
             author: "alice".to_string(),
-            diff_stat: DiffStat {
+            diff_stat: Some(DiffStat {
                 additions: 12,
                 deletions: 3,
-            },
+            }),
             url: String::new(),
         }
     }
@@ -111,6 +119,19 @@ mod tests {
             "{rows:?}"
         );
         assert!(rows[2].contains("+12 -3 =15"), "{rows:?}");
+    }
+
+    /// 本機沒有 commit（沒 fetch 到）時不能秀 `+0 -0`，要明講算不出來。
+    #[test]
+    fn card_without_local_commit_explains_missing_line_stat() {
+        let mut b = branch("feat/x");
+        b.diff_stat = None;
+
+        let rows = render_to_rows(&b, 60);
+
+        // CJK 在 TestBackend 的 buffer 裡每個字後面會跟一格空白，所以不比對整句翻譯
+        assert!(!rows[2].contains('+'), "{rows:?}");
+        assert!(rows[2].contains("commit"), "{rows:?}");
     }
 
     #[test]

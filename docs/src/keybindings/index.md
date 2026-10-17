@@ -116,7 +116,7 @@
 | 按鍵 | 說明 | 設定鍵名 |
 | --- | --- | --- |
 | <kbd>g</kbd> <kbd>n</kbd> <kbd>Esc</kbd> <kbd>Backspace</kbd> | 關閉 GitHub view | `github_toggle` `cancel` `close` |
-| <kbd>Tab</kbd> | 切換 Issues → PRs → Branches 分頁（Branches 列出 origin 上沒有 OPEN PR 的 branch 與行數差異） | `ref_list` |
+| <kbd>Tab</kbd> | 切換 Issues → PRs → Branches 分頁（Branches 列出 GitHub 上沒有 OPEN PR 的 branch 與行數差異） | `ref_list` |
 | <kbd>Down</kbd> <kbd>j</kbd> <kbd>J</kbd> | 向下移動 | `navigate_down` `select_down` |
 | <kbd>Up</kbd> <kbd>k</kbd> <kbd>K</kbd> | 向上移動 | `navigate_up` `select_up` |
 | <kbd>PageDown</kbd> <kbd>Ctrl-f</kbd> | 向下一頁 | `page_down` |
@@ -134,6 +134,7 @@
 | <kbd>v</kbd> | 複製 issue/PR 編號（#N）（Branches：branch 名稱） | `tag_copy` |
 | <kbd>u</kbd> | 開啟相關 issue/PR 選單 | `detail_pane_toggle` |
 | <kbd>r</kbd> | 重新整理 | `refresh` |
+| <kbd>f</kbd> | fetch 所有 remote（完成後重新載入 Branches） | `fetch` |
 | <kbd>p</kbd> | 三階段 merge PR：選擇方式、刪除 branch、確認 | `merge_pr` |
 | <kbd>X</kbd> | 關閉／重新開啟 issue 或 PR | `toggle_issue_state` |
 | <kbd>P</kbd> | PR 標為可供 review／轉回 draft | `toggle_pr_draft` |

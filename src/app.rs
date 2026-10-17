@@ -745,6 +745,7 @@ impl App<'_> {
                     }
                 }
                 AppEvent::AutoFetchResync => {
+                    self.reload_github_branches();
                     if self.ctx.auto_fetch.mode == auto_fetch::AutoFetch::On {
                         auto_fetch::spawn_resync(
                             self.ec,
@@ -764,6 +765,7 @@ impl App<'_> {
                         );
                     }
                     self.reloader.request_full(Instant::now());
+                    self.reload_github_branches();
                 }
                 AppEvent::OpenRefPicker { options, kind } => {
                     self.status_line_state.open_ref_picker(options, kind);
@@ -1839,6 +1841,14 @@ impl App<'_> {
                 }),
             }
         });
+    }
+
+    /// fetch 之後 Branches 分頁的行數才算得出來（本機終於有那些 commit）；在事件處理當下
+    /// 才看 view，所以 fetch 途中才打開或已關掉 GitHub view 都對。
+    fn reload_github_branches(&mut self) {
+        if let View::GitHub(ref mut view) = self.view {
+            view.reload_branches();
+        }
     }
 
     fn load_github_branches(&self) {

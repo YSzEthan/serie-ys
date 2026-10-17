@@ -422,7 +422,7 @@ impl<'a> GitHubView<'a> {
         }
     }
 
-    fn reload_branches(&mut self) {
+    pub(crate) fn reload_branches(&mut self) {
         if matches!(self.branches_load, LoadState::Loading) {
             return;
         }
@@ -886,7 +886,7 @@ impl<'a> GitHubView<'a> {
             head_oid: "deadbeef".to_string(),
             committer_date: "2026-01-01".to_string(),
             author: "alice".to_string(),
-            diff_stat: DiffStat::default(),
+            diff_stat: None,
             url: String::new(),
         }];
 
@@ -3408,10 +3408,10 @@ mod tests {
             head_oid: "0123456789abcdef".to_string(),
             committer_date: "2026-01-02".to_string(),
             author: "alice".to_string(),
-            diff_stat: DiffStat {
+            diff_stat: Some(DiffStat {
                 additions,
                 deletions,
-            },
+            }),
             url: format!("https://example.com/compare/{name}?expand=1"),
         }
     }
@@ -3442,6 +3442,23 @@ mod tests {
                 GitHubTab::Issues
             ]
         );
+    }
+
+    /// `f` 在 gh view 的三個分頁都是 fetch：Branches 的行數靠本機 commit，要能就地補抓。
+    #[test]
+    fn fetch_key_requests_fetch_on_every_tab() {
+        for tab in [
+            GitHubTab::Issues,
+            GitHubTab::PullRequests,
+            GitHubTab::Branches,
+        ] {
+            let (mut view, rx) = branches_view();
+            view.active_tab = tab;
+
+            view.handle_list_event(UserEvent::Fetch, 1);
+
+            assert!(matches!(rx.try_recv(), Ok(AppEvent::FetchAll)), "{tab:?}");
+        }
     }
 
     #[test]
