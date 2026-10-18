@@ -376,6 +376,10 @@ en-US = "  ⟳ Refetching…"
 zh-TW = " Branches (%{n}) "
 en-US = " Branches (%{n}) "
 
+[github.branches.stat_unavailable]
+zh-TW = "本機沒有此 commit，按 f fetch 後顯示行數"
+en-US = "Commit not fetched locally; press f to fetch and see line counts"
+
 [github.render.branches_truncated]
 zh-TW = "僅顯示最近 %{n} 個 branch"
 en-US = "Showing the %{n} most recent branches only"

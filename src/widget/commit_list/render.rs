@@ -27,6 +27,8 @@ use super::{CommitInfo, FilteredIdx, RawCommitIdx};
 
 const ELLIPSIS: &str = "...";
 const VIRTUAL_ROW_COLOR: Color = Color::Gray;
+/// 被標記的 commit 在 marker 欄的符號（ASCII，不受 glyph 樣式影響）。
+const MARKED_SYMBOL: &str = "*";
 
 pub struct CommitList<'a> {
     ctx: Rc<AppContext>,
@@ -183,6 +185,8 @@ struct VisibleRow<'b> {
     /// HEAD 的實心圓要在渲染時換成空心圓並加粗，而 `TextCell` 沒有
     /// modifier 欄位，只能另外帶著走。
     is_head: bool,
+    /// 使用者用 `mark_toggle` 標記的 commit，marker 欄改畫 `*`。
+    is_marked: bool,
     marker_color: Color,
 }
 
@@ -265,6 +269,7 @@ impl CommitList<'_> {
                 content: RowContent::Virtual,
                 cells,
                 is_head: false,
+                is_marked: false,
                 marker_color: VIRTUAL_ROW_COLOR,
             });
         }
@@ -297,6 +302,7 @@ impl CommitList<'_> {
                 content: RowContent::Commit { info, highlight },
                 cells,
                 is_head,
+                is_marked: state.marked_commit_hash() == Some(&info.commit.commit_hash),
                 marker_color: state.marker_color(raw),
             });
         }
@@ -410,8 +416,9 @@ impl CommitList<'_> {
             if y >= area.bottom() {
                 continue;
             }
+            let symbol = if row.is_marked { MARKED_SYMBOL } else { vert };
             buf[(area.left(), y)]
-                .set_symbol(vert)
+                .set_symbol(symbol)
                 .set_style(Style::default().fg(row.marker_color));
             if row.is_selected {
                 apply_row_bg(buf, area, y, selected_bg);
@@ -1351,6 +1358,27 @@ mod tests {
             // pad = 4）。如果 `graph_area_cell_width()` 還是照 `Double`
             // 的大小算（7），這個 `│` 會落在比這裡再往右一格的位置。
             assert_eq!(buf[(4, 1)].symbol(), "│");
+        }
+
+        /// 標記只換掉 marker 欄那一格的符號：顏色、其他欄、其他列都不動。
+        #[test]
+        fn marked_commit_only_changes_its_marker_symbol() {
+            let commits = text_graph_commits();
+            let repository = Repository::from_commits(commits.clone());
+            let mut state = build_state(&repository, text_graph(&commits), Opts::default());
+            let render = |state: &mut CommitListState<'_>| {
+                render_commit_list_styled(state, 10, GraphStyle::Rounded, GraphWidthType::Single)
+            };
+            let before = render(&mut state);
+
+            state.toggle_mark();
+            let mut after = render(&mut state);
+
+            assert_eq!(before[(4, 1)].symbol(), "│");
+            assert_eq!(after[(4, 1)].symbol(), "*");
+            assert_eq!(after[(4, 1)].fg, before[(4, 1)].fg, "顏色沿用 graph 色");
+            after[(4, 1)].set_symbol("│");
+            assert_eq!(after, before);
         }
 
         /// Issue #29：唯一驗證 junction glyph 真的畫到畫面上的 end-to-end

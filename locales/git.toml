@@ -80,6 +80,10 @@ en-US = "Command exited with non-zero status: %{status}"
 zh-TW = "沒有選到 commit，無法代入 %{marker}"
 en-US = "No commit selected, cannot substitute %{marker}"
 
+[git.external.no_marked_commit]
+zh-TW = "尚未標記 commit，無法代入 {{marked_hash}}（先用 a 標記一個）"
+en-US = "No commit is marked, cannot substitute {{marked_hash}} (press a to mark one)"
+
 [git.external.windows_unsafe_value]
 zh-TW = "無法在 Windows 上安全代入含 %{chars} 的值：%{value}"
 en-US = "Cannot safely substitute a value containing %{chars} on Windows: %{value}"

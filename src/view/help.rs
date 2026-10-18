@@ -299,6 +299,7 @@ fn help_blocks(
         b(vec![UserEvent::GitHubToggle], t!("help.list.open_github_issues_prs")),
         b(vec![UserEvent::Fetch], t!("help.list.fetch_all_remotes")),
         b(vec![UserEvent::Checkout], t!("help.list.checkout_selected_commit_ref")),
+        b(vec![UserEvent::MarkToggle], t!("help.list.toggle_mark")),
         b(vec![UserEvent::Refresh], t!("help.list.refresh")),
         b(vec![UserEvent::ShellToggle], t!("help.list.open_shell")),
     ];
@@ -331,6 +332,7 @@ fn help_blocks(
         // 在 App 層攔下），只是說明頁從來沒列出來。
         b(vec![UserEvent::GitHubToggle], t!("help.detail.open_github_issues_prs")),
         b(vec![UserEvent::HelpToggle], t!("help.detail.open_help")),
+        b(vec![UserEvent::MarkToggle], t!("help.detail.toggle_mark")),
         b(vec![UserEvent::Refresh], t!("help.detail.refresh")),
         b(vec![UserEvent::ShellToggle], t!("help.detail.open_shell")),
     ];
@@ -366,6 +368,7 @@ fn help_blocks(
         b(vec![UserEvent::TagCopy], t!("help.github.copy_issue_pr_number_n")),
         b(vec![UserEvent::DetailPaneToggle], t!("help.github.open_related_issue_pr_picker")),
         b(vec![UserEvent::Refresh], t!("help.github.refresh")),
+        b(vec![UserEvent::Fetch], t!("help.github.fetch")),
         b(vec![UserEvent::MergePr], t!("help.github.3_stage_merge_pr_pick_method_delete_branch_confirm")),
         b(vec![UserEvent::ToggleIssueState], t!("help.github.close_reopen_issue_or_pr")),
         b(vec![UserEvent::TogglePrDraft], t!("help.github.mark_pr_ready_back_to_draft")),
@@ -406,6 +409,7 @@ fn help_blocks(
         b(vec![UserEvent::GoToBottom], t!("help.user_command.go_to_bottom")),
         b(vec![UserEvent::GoToParent], t!("help.user_command.select_parent_commit")),
         b(vec![UserEvent::GoToChild], t!("help.user_command.select_child_commit")),
+        b(vec![UserEvent::MarkToggle], t!("help.user_command.toggle_mark")),
         b(vec![UserEvent::Refresh], t!("help.user_command.refresh")),
         b(vec![UserEvent::Confirm], t!("help.user_command.show_commit_details")),
         b(vec![UserEvent::HelpToggle], t!("help.user_command.open_help")),

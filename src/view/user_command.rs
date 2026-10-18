@@ -43,7 +43,8 @@ pub fn status_hints() -> Vec<HintSpec> {
     ]
 }
 
-type ExecCommandFn = fn(&Commit, &[Ref], usize, Rect, &AppContext) -> Result<String, String>;
+type ExecCommandFn =
+    fn(&Commit, &[Ref], Option<&CommitHash>, usize, Rect, &AppContext) -> Result<String, String>;
 
 #[derive(Debug)]
 pub struct UserCommandView<'a> {
@@ -145,6 +146,9 @@ impl<'a> UserCommandView<'a> {
             UserEvent::Cancel | UserEvent::Close => {
                 self.tx.send(AppEvent::CloseUserCommand);
             }
+            UserEvent::MarkToggle => {
+                self.tx.send(AppEvent::ToggleMark);
+            }
             UserEvent::Refresh => {
                 self.tx.send(AppEvent::Refresh);
             }
@@ -201,6 +205,17 @@ impl<'a> UserCommandView<'a> {
     ) {
         self.update_selected_commit(repository, view_area, exec_command, |state| {
             state.select_prev()
+        });
+    }
+
+    pub fn toggle_mark(
+        &mut self,
+        repository: &Repository,
+        view_area: Rect,
+        exec_command: ExecCommandFn,
+    ) {
+        self.update_selected_commit(repository, view_area, exec_command, |state| {
+            state.toggle_mark()
         });
     }
 
@@ -265,10 +280,12 @@ impl<'a> UserCommandView<'a> {
         update_commit_list_state(commit_list_state);
 
         let selected = commit_list_state.selected_commit_hash().clone();
+        let marked_commit_hash = commit_list_state.marked_commit_hash().cloned();
         let (commit, refs) = repository.commit_refs(&selected);
         self.user_command_output_lines = exec_command(
             commit,
             &refs,
+            marked_commit_hash.as_ref(),
             self.user_command_number,
             view_area,
             &self.ctx,

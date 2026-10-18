@@ -61,6 +61,7 @@
 | <kbd>g</kbd> | 開啟 GitHub issues/PRs | `github_toggle` |
 | <kbd>f</kbd> | fetch 所有 remote | `fetch` |
 | <kbd>Space</kbd> | checkout 選取的 commit/ref | `checkout` |
+| <kbd>a</kbd> | 切換 commit 標記 | `mark_toggle` |
 | <kbd>r</kbd> | 重新整理 | `refresh` |
 | <kbd>/</kbd> | 開啟 Shell | `shell_toggle` |
 
@@ -93,6 +94,7 @@
 | <kbd>Tab</kbd> | 開啟 refs 清單 | `ref_list` |
 | <kbd>g</kbd> | 開啟 GitHub issues/PRs | `github_toggle` |
 | <kbd>F1</kbd> <kbd>?</kbd> | 開啟說明 | `help_toggle` |
+| <kbd>a</kbd> | 切換 commit 標記 | `mark_toggle` |
 | <kbd>r</kbd> | 重新整理 | `refresh` |
 | <kbd>/</kbd> | 開啟 Shell | `shell_toggle` |
 
@@ -114,7 +116,7 @@
 | 按鍵 | 說明 | 設定鍵名 |
 | --- | --- | --- |
 | <kbd>g</kbd> <kbd>n</kbd> <kbd>Esc</kbd> <kbd>Backspace</kbd> | 關閉 GitHub view | `github_toggle` `cancel` `close` |
-| <kbd>Tab</kbd> | 切換 Issues → PRs → Branches 分頁（Branches 列出 origin 上沒有 OPEN PR 的 branch 與行數差異） | `ref_list` |
+| <kbd>Tab</kbd> | 切換 Issues → PRs → Branches 分頁（Branches 列出 GitHub 上沒有 OPEN PR 的 branch 與行數差異） | `ref_list` |
 | <kbd>Down</kbd> <kbd>j</kbd> <kbd>J</kbd> | 向下移動 | `navigate_down` `select_down` |
 | <kbd>Up</kbd> <kbd>k</kbd> <kbd>K</kbd> | 向上移動 | `navigate_up` `select_up` |
 | <kbd>PageDown</kbd> <kbd>Ctrl-f</kbd> | 向下一頁 | `page_down` |
@@ -132,6 +134,7 @@
 | <kbd>v</kbd> | 複製 issue/PR 編號（#N）（Branches：branch 名稱） | `tag_copy` |
 | <kbd>u</kbd> | 開啟相關 issue/PR 選單 | `detail_pane_toggle` |
 | <kbd>r</kbd> | 重新整理 | `refresh` |
+| <kbd>f</kbd> | fetch 所有 remote（完成後重新載入 Branches） | `fetch` |
 | <kbd>p</kbd> | 三階段 merge PR：選擇方式、刪除 branch、確認 | `merge_pr` |
 | <kbd>X</kbd> | 關閉／重新開啟 issue 或 PR | `toggle_issue_state` |
 | <kbd>P</kbd> | PR 標為可供 review／轉回 draft | `toggle_pr_draft` |
@@ -180,6 +183,7 @@
 | <kbd>G</kbd> | 跳到底端 | `go_to_bottom` |
 | <kbd>m</kbd> | 選擇 parent commit | `go_to_parent` |
 | <kbd>M</kbd> | 選擇 child commit | `go_to_child` |
+| <kbd>a</kbd> | 切換 commit 標記 | `mark_toggle` |
 | <kbd>r</kbd> | 重新整理 | `refresh` |
 | <kbd>Enter</kbd> <kbd>y</kbd> | 顯示 commit 詳情 | `confirm` |
 | <kbd>F1</kbd> <kbd>?</kbd> | 開啟說明 | `help_toggle` |

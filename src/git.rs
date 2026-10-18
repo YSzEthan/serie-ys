@@ -1125,54 +1125,15 @@ fn parse_tag_refs(hash: &str, refs: &str) -> Option<Ref> {
     }
 }
 
-/// `origin` 上的一個遠端 branch（remote-tracking ref，是上次 fetch 的快照）。
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct RemoteBranch {
-    pub name: String,
-    pub head_oid: String,
-    pub committer_date: String,
-    pub author: String,
-}
-
-const ORIGIN_REF_PREFIX: &str = "refs/remotes/origin/";
 const BRANCH_QUERY_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 
-/// `refs/remotes/origin/HEAD` 指向的 branch 名；沒設定（例如 `git init` 後
-/// `remote add`、沒跑過 `remote set-head`）時回 `None`。
-pub fn origin_default_branch(path: &Path) -> Option<String> {
-    let output = git_read(path)
-        .args(["symbolic-ref", "--quiet", "refs/remotes/origin/HEAD"])
-        .output()
-        .ok()
-        .filter(|o| o.status.success())?;
-    let target = String::from_utf8(output.stdout).ok()?;
-    target
-        .trim()
-        .strip_prefix(ORIGIN_REF_PREFIX)
-        .map(str::to_owned)
-}
-
-/// 列出 `origin` 的所有 branch（新到舊），排除 `origin/HEAD` 與 default branch。
-pub fn origin_branches(
-    path: &Path,
-    default_branch: &str,
-) -> std::result::Result<Vec<RemoteBranch>, String> {
-    let mut cmd = git_read(path);
-    cmd.args([
-        "for-each-ref",
-        "--sort=-committerdate",
-        "--format=%(refname)%1f%(objectname)%1f%(committerdate:short)%1f%(authorname)",
-        "refs/remotes/origin/",
-    ]);
-    Ok(parse_origin_branches(
-        &git_stdout(cmd, BRANCH_QUERY_TIMEOUT)?,
-        default_branch,
-    ))
-}
-
 /// 帶 timeout 執行並回 stdout；非 0 結束碼統一包成 `git.external.command_failed`。
-fn git_stdout(cmd: Command, timeout: std::time::Duration) -> std::result::Result<String, String> {
-    let output = crate::process::run_with_timeout(cmd, None, timeout)?;
+fn git_stdout(
+    cmd: Command,
+    stdin: Option<&[u8]>,
+    timeout: std::time::Duration,
+) -> std::result::Result<String, String> {
+    let output = crate::process::run_with_timeout(cmd, stdin, timeout)?;
     if !output.status.success() {
         let detail = String::from_utf8_lossy(&output.stderr);
         return Err(t!(
@@ -1185,42 +1146,40 @@ fn git_stdout(cmd: Command, timeout: std::time::Duration) -> std::result::Result
     Ok(String::from_utf8_lossy(&output.stdout).into_owned())
 }
 
-fn parse_origin_branches(output: &str, default_branch: &str) -> Vec<RemoteBranch> {
-    output
+/// `oids` 之中本機有、且型別是 commit 的那些。一次 `cat-file --batch-check`
+/// 查完，不要每個 oid 各開一個行程；不存在的 oid 輸出 `<oid> missing`，不算錯誤。
+pub fn local_commits(path: &Path, oids: &[&str]) -> std::result::Result<FxHashSet<String>, String> {
+    if oids.is_empty() {
+        return Ok(FxHashSet::default());
+    }
+    let mut cmd = git_read(path);
+    cmd.args(["cat-file", "--batch-check=%(objectname) %(objecttype)"]);
+    let input = oids.join("\n") + "\n";
+    let output = git_stdout(cmd, Some(input.as_bytes()), BRANCH_QUERY_TIMEOUT)?;
+    Ok(output
         .lines()
-        .filter_map(|line| {
-            let mut fields = line.split('\x1f');
-            let name = fields.next()?.strip_prefix(ORIGIN_REF_PREFIX)?;
-            if name == "HEAD" || name == default_branch {
-                return None;
-            }
-            Some(RemoteBranch {
-                name: name.to_owned(),
-                head_oid: fields.next()?.to_owned(),
-                committer_date: fields.next()?.to_owned(),
-                author: fields.next()?.to_owned(),
-            })
-        })
-        .collect()
+        .filter_map(|line| line.strip_suffix(" commit"))
+        .map(str::to_owned)
+        .collect())
 }
 
-/// `origin/<default>...origin/<branch>`（三點，相對 merge-base）的 (新增, 刪除) 行數。
-/// 歷史與 default 不相連的 branch（例如 `gh-pages`）沒有 merge-base，三點 diff 會
+/// `base_oid...head_oid`（三點，相對 merge-base）的 (新增, 刪除) 行數。
+/// 歷史與 base 不相連的 branch（例如 `gh-pages`）沒有 merge-base，三點 diff 會
 /// 失敗；這時退回兩點（直接比兩個 tip），不能讓一個孤兒 branch 拖垮整個分頁。
+/// 呼叫端要先確認兩個 oid 都在本機（見 [`local_commits`]）。
 pub fn branch_line_stat(
     path: &Path,
-    default_branch: &str,
-    branch: &str,
+    base_oid: &str,
+    head_oid: &str,
 ) -> std::result::Result<(u32, u32), String> {
-    let base = format!("{ORIGIN_REF_PREFIX}{default_branch}");
-    let head = format!("{ORIGIN_REF_PREFIX}{branch}");
-    numstat(path, format!("{base}...{head}")).or_else(|_| numstat(path, format!("{base}..{head}")))
+    numstat(path, format!("{base_oid}...{head_oid}"))
+        .or_else(|_| numstat(path, format!("{base_oid}..{head_oid}")))
 }
 
 fn numstat(path: &Path, range: String) -> std::result::Result<(u32, u32), String> {
     let mut cmd = git_read(path);
     cmd.args(["diff", "--numstat", "--no-renames"]).arg(range);
-    Ok(parse_numstat(&git_stdout(cmd, BRANCH_QUERY_TIMEOUT)?))
+    Ok(parse_numstat(&git_stdout(cmd, None, BRANCH_QUERY_TIMEOUT)?))
 }
 
 /// binary 檔在 `--numstat` 是 `-\t-\tpath`，解析不出數字就略過不計。
@@ -1743,28 +1702,6 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_origin_branches_skips_head_and_default() {
-        let out = [
-            "refs/remotes/origin/HEAD\x1fa1\x1f2026-01-03\x1fA",
-            "refs/remotes/origin/main\x1fa2\x1f2026-01-02\x1fB",
-            "refs/remotes/origin/feat/x\x1fa3\x1f2026-01-01\x1fC",
-        ]
-        .join("\n");
-
-        let branches = parse_origin_branches(&out, "main");
-
-        assert_eq!(
-            branches,
-            vec![RemoteBranch {
-                name: "feat/x".into(),
-                head_oid: "a3".into(),
-                committer_date: "2026-01-01".into(),
-                author: "C".into(),
-            }]
-        );
-    }
-
-    #[test]
     fn parse_numstat_sums_and_skips_binary() {
         let out = "3\t1\ta.rs\n-\t-\timg.png\n10\t0\tb.rs\n";
         assert_eq!(parse_numstat(out), (13, 1));
@@ -1787,35 +1724,10 @@ mod tests {
         std::fs::write(path.join("b.txt"), "m\nm\nm\n").unwrap();
         git_env(path, &["add", "."], &[]);
         commit_at(path, "M", "2026-01-01T00:00:02+00:00");
-        // 以 refs/remotes/origin/* 模擬 fetch 後的狀態
-        git_env(
-            path,
-            &["update-ref", "refs/remotes/origin/main", "main"],
-            &[],
+        assert_eq!(
+            branch_line_stat(path, &rev_parse(path, "main"), &rev_parse(path, "topic")),
+            Ok((2, 1))
         );
-        git_env(
-            path,
-            &["update-ref", "refs/remotes/origin/topic", "topic"],
-            &[],
-        );
-        git_env(
-            path,
-            &[
-                "symbolic-ref",
-                "refs/remotes/origin/HEAD",
-                "refs/remotes/origin/main",
-            ],
-            &[],
-        );
-
-        assert_eq!(origin_default_branch(path).as_deref(), Some("main"));
-        assert_eq!(branch_line_stat(path, "main", "topic"), Ok((2, 1)));
-        let names: Vec<_> = origin_branches(path, "main")
-            .unwrap()
-            .into_iter()
-            .map(|b| b.name)
-            .collect();
-        assert_eq!(names, ["topic"]);
     }
 
     /// 沒有共同祖先的 branch（如 gh-pages）：三點 diff 無 merge-base，要退回兩點而非報錯。
@@ -1832,25 +1744,28 @@ mod tests {
         std::fs::write(path.join("b.txt"), "x\n").unwrap();
         git_env(path, &["add", "."], &[]);
         commit_at(path, "P", "2026-01-01T00:00:02+00:00");
-        git_env(
-            path,
-            &["update-ref", "refs/remotes/origin/main", "main"],
-            &[],
+        assert_eq!(
+            branch_line_stat(path, &rev_parse(path, "main"), &rev_parse(path, "pages")),
+            Ok((1, 2))
         );
-        git_env(
-            path,
-            &["update-ref", "refs/remotes/origin/pages", "pages"],
-            &[],
-        );
-
-        assert_eq!(branch_line_stat(path, "main", "pages"), Ok((1, 2)));
     }
 
     #[test]
-    fn origin_default_branch_is_none_without_origin_head() {
+    fn local_commits_keeps_only_existing_commits() {
         let dir = tempfile::tempdir().unwrap();
-        git_env(dir.path(), &["init", "-q", "-b", "main"], &[]);
-        assert_eq!(origin_default_branch(dir.path()), None);
+        let path = dir.path();
+        git_env(path, &["init", "-q", "-b", "main"], &[]);
+        std::fs::write(path.join("a.txt"), "1\n").unwrap();
+        git_env(path, &["add", "."], &[]);
+        commit_at(path, "A", "2026-01-01T00:00:01+00:00");
+        let commit = rev_parse(path, "HEAD");
+        let tree = rev_parse(path, "HEAD^{tree}");
+        let missing = "0123456789abcdef0123456789abcdef01234567";
+
+        let found = local_commits(path, &[&commit, &tree, missing]).unwrap();
+
+        assert_eq!(found, FxHashSet::from_iter([commit]));
+        assert!(local_commits(path, &[]).unwrap().is_empty());
     }
 
     /// 只釘不變式，不逐字重抄 `fetch_all_args` 的兩個分支（那樣等於沒測）：
@@ -1968,6 +1883,11 @@ mod tests {
             String::from_utf8_lossy(&out.stderr)
         );
         out
+    }
+
+    fn rev_parse(path: &Path, rev: &str) -> String {
+        let out = git_env(path, &["rev-parse", rev], &[]);
+        String::from_utf8(out.stdout).unwrap().trim().to_owned()
     }
 
     fn commit_at(path: &Path, msg: &str, date: &str) {

@@ -624,6 +624,9 @@ impl App<'_> {
                 AppEvent::SelectChildCommit => {
                     self.select_child_commit();
                 }
+                AppEvent::ToggleMark => {
+                    self.toggle_mark();
+                }
                 AppEvent::SelectChildCommitByHash { hash } => {
                     self.select_commit_by_hash(&hash);
                 }
@@ -742,6 +745,7 @@ impl App<'_> {
                     }
                 }
                 AppEvent::AutoFetchResync => {
+                    self.reload_github_branches();
                     if self.ctx.auto_fetch.mode == auto_fetch::AutoFetch::On {
                         auto_fetch::spawn_resync(
                             self.ec,
@@ -761,6 +765,7 @@ impl App<'_> {
                         );
                     }
                     self.reloader.request_full(Instant::now());
+                    self.reload_github_branches();
                 }
                 AppEvent::OpenRefPicker { options, kind } => {
                     self.status_line_state.open_ref_picker(options, kind);
@@ -1295,6 +1300,7 @@ impl App<'_> {
         let result = build_external_command_parameters_and_exec_command(
             commit,
             &refs,
+            commit_list_state.marked_commit_hash(),
             user_command_number,
             self.view_area,
             &self.ctx,
@@ -1341,6 +1347,7 @@ impl App<'_> {
         let result = build_external_command_parameters_and_exec_command(
             commit,
             &refs,
+            commit_list_state.marked_commit_hash(),
             user_command_number,
             self.view_area,
             &self.ctx,
@@ -1373,6 +1380,7 @@ impl App<'_> {
         match build_external_command_parameters(
             commit,
             &refs,
+            commit_list_state.marked_commit_hash(),
             user_command_number,
             self.view_area,
             &self.ctx,
@@ -1597,6 +1605,7 @@ impl App<'_> {
                 .commit_refs(commit_list_state.selected_commit_hash());
             (Some(commit.clone()), refs)
         };
+        let marked_commit_hash = commit_list_state.marked_commit_hash().cloned();
         let repo_path = self.repository.path().to_path_buf();
         // 在 `mem::take` 之前對還沒被包住的 List/Detail 設旗標——list/detail
         // 底下多擠出一行輸入列，graph 是用終端圖形協定畫的，區域縮小不清
@@ -1609,6 +1618,7 @@ impl App<'_> {
             before_view,
             commit,
             refs,
+            marked_commit_hash,
             repo_path,
             self.ctx.clone(),
             self.ec.sender(),
@@ -1833,6 +1843,14 @@ impl App<'_> {
         });
     }
 
+    /// fetch 之後 Branches 分頁的行數才算得出來（本機終於有那些 commit）；在事件處理當下
+    /// 才看 view，所以 fetch 途中才打開或已關掉 GitHub view 都對。
+    fn reload_github_branches(&mut self) {
+        if let View::GitHub(ref mut view) = self.view {
+            view.reload_branches_after_fetch();
+        }
+    }
+
     fn load_github_branches(&self) {
         let repo_path = self.repository.path().to_path_buf();
         let tx = self.ec.sender();
@@ -1940,6 +1958,43 @@ impl App<'_> {
                 build_external_command_parameters_and_exec_command,
             );
         }
+    }
+
+    /// 標記／取消標記選取的 commit，並用通知回報結果。緊湊模式或 `columns`
+    /// 沒有 marker 欄時畫面上看不到 `*`，通知是唯一的回饋。
+    ///
+    /// user command view 要重跑指令，輸出才會跟著新的 `{{marked_hash}}`，
+    /// 所以三個 view 都走這裡，不各自處理。
+    fn toggle_mark(&mut self) {
+        let Some(before) = self
+            .view
+            .list_state_mut()
+            .map(|state| state.marked_commit_hash().cloned())
+        else {
+            return;
+        };
+        if let View::UserCommand(ref mut view) = self.view {
+            view.toggle_mark(
+                self.repository,
+                self.view_area,
+                build_external_command_parameters_and_exec_command,
+            );
+        } else if let Some(state) = self.view.list_state_mut() {
+            state.toggle_mark();
+        }
+        let after = self
+            .view
+            .list_state_mut()
+            .and_then(|state| state.marked_commit_hash().cloned());
+        // 虛擬行上 `toggle_mark` 是 no-op，標記沒變就不通知。
+        if before == after {
+            return;
+        }
+        let msg = match after {
+            Some(hash) => t!("app.status.marked", hash = hash.as_short_hash()).into_owned(),
+            None => t!("app.status.unmarked").into_owned(),
+        };
+        self.ec.send(AppEvent::NotifyInfo(msg));
     }
 
     fn select_parent_commit(&mut self) {
@@ -2587,12 +2642,20 @@ fn extract_user_command_refresh_by_number(user_command_number: usize, ctx: &AppC
 fn build_external_command_parameters_and_exec_command(
     commit: &Commit,
     refs: &[Ref],
+    marked_commit_hash: Option<&CommitHash>,
     user_command_number: usize,
     view_area: Rect,
     ctx: &AppContext,
 ) -> Result<String, String> {
-    build_external_command_parameters(commit, refs, user_command_number, view_area, ctx)
-        .and_then(exec_user_command)
+    build_external_command_parameters(
+        commit,
+        refs,
+        marked_commit_hash,
+        user_command_number,
+        view_area,
+        ctx,
+    )
+    .and_then(exec_user_command)
 }
 
 /// 兩條路徑共用的核心：把 `Commit` + `Ref` 分類成 `ExternalCommandParameters`
@@ -2603,6 +2666,7 @@ pub(crate) fn external_command_parameters<'a>(
     command: &'a [String],
     commit: &'a Commit,
     refs: &'a [Ref],
+    marked_commit_hash: Option<&'a CommitHash>,
     area_width: u16,
     area_height: u16,
 ) -> ExternalCommandParameters<'a> {
@@ -2634,6 +2698,7 @@ pub(crate) fn external_command_parameters<'a>(
     ExternalCommandParameters {
         command,
         target_hash,
+        marked_hash: marked_commit_hash.map(CommitHash::as_str),
         parent_hashes,
         all_refs,
         branches,
@@ -2648,6 +2713,7 @@ pub(crate) fn external_command_parameters<'a>(
 fn build_external_command_parameters<'a>(
     commit: &'a Commit,
     refs: &'a [Ref],
+    marked_commit_hash: Option<&'a CommitHash>,
     user_command_number: usize,
     view_area: Rect,
     ctx: &'a AppContext,
@@ -2661,6 +2727,7 @@ fn build_external_command_parameters<'a>(
         command,
         commit,
         refs,
+        marked_commit_hash,
         area_width,
         area_height,
     ))

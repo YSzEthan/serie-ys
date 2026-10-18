@@ -26,7 +26,7 @@
 user_command_1 = ["d"]
 user_command_2 = ["shift-d"]
 user_command_3 = ["b"]
-user_command_4 = ["a"]
+user_command_4 = ["e"]
 
 [core.user_command]
 # Inline 指令（預設）
@@ -38,6 +38,24 @@ commands_3 = { "name" = "delete branch", type = "silent", commands = ["git", "br
 # Suspend 指令，執行後重新載入
 commands_4 = { "name" = "amend commit", type = "suspend", commands = ["git", "commit", "--amend"], refresh = true }
 ```
+
+## 標記 commit
+
+按 <kbd>a</kbd> 標記選取的 commit（`mark_toggle`），指令裡用 `{{marked_hash}}` 取得它。再按一次 <kbd>a</kbd> 取消標記，標記別的 commit 則會取代原本的標記。
+
+標記的 commit 在 marker 欄顯示 `*`（緊湊模式或 `columns` 沒有 marker 欄時看不到，標記時狀態列會顯示通知），重新載入後只要該 commit 還在就會保留。
+
+例如先標記一個 commit，再選另一個 commit 按 <kbd>shift-d</kbd>，就能看兩者的差異：
+
+```toml
+[keybind]
+user_command_2 = ["shift-d"]
+
+[core.user_command]
+commands_2 = { name = "diff from mark", commands = ["git", "--no-pager", "diff", "--color=always", "{{marked_hash}}", "{{target_hash}}"] }
+```
+
+沒有標記 commit 就用了 `{{marked_hash}}` 時，指令不會執行並顯示錯誤，不會把它當成空字串代入。
 
 ## Refresh
 
@@ -53,6 +71,9 @@ commands_4 = { "name" = "amend commit", type = "suspend", commands = ["git", "co
 
 - `{{target_hash}}`
   - 選取的 commit 的 hash。
+  - 範例：`b0ce4cb9c798576af9b4accc9f26ddce5e72063d`
+- `{{marked_hash}}`
+  - 用 <kbd>a</kbd> 標記的 commit 的 hash。沒有標記時指令不會執行並顯示錯誤。
   - 範例：`b0ce4cb9c798576af9b4accc9f26ddce5e72063d`
 - `{{first_parent_hash}}`
   - 選取的 commit 的第一個 parent 的 hash。

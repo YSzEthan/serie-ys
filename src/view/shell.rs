@@ -22,7 +22,7 @@ use crate::{
     config::CursorType,
     event::{AppEvent, Sender, UserEvent, UserEventWithCount},
     external::{exec_shell_command, expand_shell_command_line},
-    git::{Commit, Ref},
+    git::{Commit, CommitHash, Ref},
     view::{ansi_output_to_lines, RefreshViewContext, ShellRefreshViewContext, View},
     widget::{
         output_pane::{OutputPane, OutputPaneState},
@@ -87,6 +87,8 @@ pub struct ShellView<'a> {
     /// 真的含這些 marker 時才報錯，不含（`git status` 這類）照跑。
     commit: Option<Commit>,
     refs: Vec<Ref>,
+    /// 開啟 shell 當下標記的 commit，給 `{{marked_hash}}` 用。
+    marked_commit_hash: Option<CommitHash>,
     /// `{{area_width}}`／`{{area_height}}` marker 展開用的尺寸——每次
     /// `render()` 都會用當下的即時 `area` 覆寫，不是開啟命令列當下算好
     /// 存住的快照。這樣終端機 resize、或這個 view 因為 repo 變動被重建
@@ -125,6 +127,7 @@ impl<'a> ShellView<'a> {
         before: View<'a>,
         commit: Option<Commit>,
         refs: Vec<Ref>,
+        marked_commit_hash: Option<CommitHash>,
         repo_path: PathBuf,
         ctx: Rc<AppContext>,
         tx: Sender,
@@ -133,6 +136,7 @@ impl<'a> ShellView<'a> {
             before,
             commit,
             refs,
+            marked_commit_hash,
             // 第一次 `render()` 會在任何按鍵之前把這兩個補成真的值，見上面
             // 欄位的文件註解。
             area_width: 0,
@@ -308,7 +312,14 @@ impl<'a> ShellView<'a> {
         }
 
         let params = self.commit.as_ref().map(|commit| {
-            external_command_parameters(&[], commit, &self.refs, self.area_width, self.area_height)
+            external_command_parameters(
+                &[],
+                commit,
+                &self.refs,
+                self.marked_commit_hash.as_ref(),
+                self.area_width,
+                self.area_height,
+            )
         });
         let expanded = match expand_shell_command_line(
             &value,

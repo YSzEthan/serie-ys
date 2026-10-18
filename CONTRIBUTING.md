@@ -112,7 +112,7 @@ python3 .github/scripts/prepare_release.py --from "$(git describe --tags --abbre
 
 commit 圖的測試放在 [./tests/graph.rs](./tests/graph.rs)。
 
-執行測試會把渲染結果（`.txt` 快照）與測試用儲存庫輸出到 `./out/graph`。
+執行測試會把渲染結果（`.txt` 快照）輸出到 `./out/graph`。測試用儲存庫預設不輸出；要檢查時用 `SERIE_TEST_DUMP_GRAPH_REPOS=1 cargo test` 執行，儲存庫會複製到 `./out/graph/<測試名稱>`。
 新增測試案例時，請把對應的快照放到 `./tests/graph/` 底下。
 既有圖形有變動時，覆蓋快照並確認沒有非預期的改動 —— 文字快照的 `git diff` 會直接顯示哪些字元移動了。
 

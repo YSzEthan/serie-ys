@@ -810,6 +810,9 @@
         "target_toggle": {
           "$ref": "#/definitions/keybindArray"
         },
+        "mark_toggle": {
+          "$ref": "#/definitions/keybindArray"
+        },
         "refresh": {
           "$ref": "#/definitions/keybindArray"
         },

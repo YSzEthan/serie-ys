@@ -34,6 +34,7 @@ fn libc_setsid() -> i32 {
 
 const USER_COMMAND_MARKER_PREFIX: &str = "{{";
 const USER_COMMAND_TARGET_HASH_MARKER: &str = "{{target_hash}}";
+const USER_COMMAND_MARKED_HASH_MARKER: &str = "{{marked_hash}}";
 const USER_COMMAND_FIRST_PARENT_HASH_MARKER: &str = "{{first_parent_hash}}";
 const USER_COMMAND_PARENT_HASHES_MARKER: &str = "{{parent_hashes}}";
 const USER_COMMAND_REFS_MARKER: &str = "{{refs}}";
@@ -303,6 +304,7 @@ pub fn format_osc8_hyperlink(url: &str, label: &str) -> String {
 pub struct ExternalCommandParameters<'a> {
     pub command: &'a [String],
     pub target_hash: &'a str,
+    pub marked_hash: Option<&'a str>,
     pub parent_hashes: Vec<&'a str>,
     pub all_refs: Vec<&'a str>,
     pub branches: Vec<&'a str>,
@@ -314,7 +316,7 @@ pub struct ExternalCommandParameters<'a> {
 }
 
 pub fn exec_user_command(params: ExternalCommandParameters) -> Result<String, String> {
-    let command = build_user_command(&params);
+    let command = build_user_command(&params)?;
 
     let output = Command::new(&command[0])
         .args(&command[1..])
@@ -335,7 +337,7 @@ pub fn exec_user_command(params: ExternalCommandParameters) -> Result<String, St
 }
 
 pub fn exec_user_command_suspend(params: ExternalCommandParameters) -> Result<(), String> {
-    let command = build_user_command(&params);
+    let command = build_user_command(&params)?;
 
     let output = Command::new(&command[0])
         .args(&command[1..])
@@ -350,7 +352,7 @@ pub fn exec_user_command_suspend(params: ExternalCommandParameters) -> Result<()
     Ok(())
 }
 
-fn build_user_command(params: &ExternalCommandParameters) -> Vec<String> {
+fn build_user_command(params: &ExternalCommandParameters) -> Result<Vec<String>, String> {
     fn to_vec(ss: &[&str]) -> Vec<String> {
         ss.iter().map(|s| s.to_string()).collect()
     }
@@ -369,10 +371,10 @@ fn build_user_command(params: &ExternalCommandParameters) -> Vec<String> {
             USER_COMMAND_REFS_MARKER => command.extend(to_vec(&params.all_refs)),
             USER_COMMAND_PARENT_HASHES_MARKER => command.extend(to_vec(&params.parent_hashes)),
             // 否則就在該單一引數字串內取代標記。
-            _ => command.push(replace_command_arg(arg, params)),
+            _ => command.push(replace_command_arg(arg, params)?),
         }
     }
-    command
+    Ok(command)
 }
 
 /// 需要選到真正 commit 才有值的 marker——Working changes（virtual row）
@@ -382,6 +384,7 @@ fn build_user_command(params: &ExternalCommandParameters) -> Vec<String> {
 /// 跟有沒有選到 commit 無關，見 `replace_markers` 最後兩行。
 const COMMIT_MARKERS: &[&str] = &[
     USER_COMMAND_TARGET_HASH_MARKER,
+    USER_COMMAND_MARKED_HASH_MARKER,
     USER_COMMAND_FIRST_PARENT_HASH_MARKER,
     USER_COMMAND_PARENT_HASHES_MARKER,
     USER_COMMAND_REFS_MARKER,
@@ -409,6 +412,11 @@ fn commit_marker_value(
     };
     match marker {
         USER_COMMAND_TARGET_HASH_MARKER => esc(params.target_hash),
+        // 沒標記就報錯，不展開成空字串：`git log {{marked_hash}}..{{target_hash}}`
+        // 會悄悄變成 `HEAD..abc`，結果錯而且不報錯。
+        USER_COMMAND_MARKED_HASH_MARKER => esc(params
+            .marked_hash
+            .ok_or_else(|| t!("git.external.no_marked_commit").into_owned())?),
         USER_COMMAND_FIRST_PARENT_HASH_MARKER => {
             esc(params.parent_hashes.first().copied().unwrap_or(""))
         }
@@ -432,7 +440,8 @@ fn commit_marker_value(
 ///
 /// `esc` 回傳 `Result` 是為了 Windows shell quoting：某些字元在 `cmd /C`
 /// 底下沒有安全的轉義方式，那條路要能回傳 `Err` 而不是悄悄產出壞字串。
-/// `replace_command_arg` 用的 identity esc 永遠不會走到 `Err` 分支。
+/// identity esc 本身不會回 `Err`；`Err` 只來自缺值的 marker（例如沒標記
+/// commit 卻用了 `{{marked_hash}}`）。
 fn replace_markers(
     s: &str,
     params: Option<&ExternalCommandParameters>,
@@ -463,7 +472,7 @@ fn replace_markers(
     Ok(result)
 }
 
-fn replace_command_arg(s: &str, params: &ExternalCommandParameters) -> String {
+fn replace_command_arg(s: &str, params: &ExternalCommandParameters) -> Result<String, String> {
     replace_markers(
         s,
         Some(params),
@@ -471,7 +480,6 @@ fn replace_command_arg(s: &str, params: &ExternalCommandParameters) -> String {
         params.area_height,
         |v| Ok(v.to_string()),
     )
-    .expect("完整 params + identity esc 永遠不會回 Err")
 }
 
 /// POSIX：任何值都能安全地用單引號包起來，內部單引號轉成 `'\''`
@@ -762,6 +770,7 @@ mod tests {
         ExternalCommandParameters {
             command,
             target_hash: "abc123",
+            marked_hash: None,
             parent_hashes: vec![],
             all_refs: vec![],
             branches: vec![],
@@ -784,7 +793,7 @@ mod tests {
         ];
         let params = params_with_stash(&command, Some("stash@{0}"));
         assert_eq!(
-            build_user_command(&params),
+            build_user_command(&params).unwrap(),
             vec!["git", "stash", "show", "stash@{0}"]
         );
     }
@@ -794,7 +803,46 @@ mod tests {
         // 非 stash commit：{{stash}} 替換為空字串
         let command = ["echo".to_string(), "[{{stash}}]".to_string()];
         let params = params_with_stash(&command, None);
-        assert_eq!(build_user_command(&params), vec!["echo", "[]"]);
+        assert_eq!(build_user_command(&params).unwrap(), vec!["echo", "[]"]);
+    }
+
+    #[test]
+    fn build_user_command_expands_marked_hash_marker() {
+        let command = [
+            "git".to_string(),
+            "diff".to_string(),
+            "{{marked_hash}}".to_string(),
+            "{{target_hash}}".to_string(),
+        ];
+        let mut params = params_with_stash(&command, None);
+        params.marked_hash = Some("deadbeef");
+        assert_eq!(
+            build_user_command(&params).unwrap(),
+            vec!["git", "diff", "deadbeef", "abc123"]
+        );
+    }
+
+    /// 沒標記時要報錯，不能展開成空字串——`{{marked_hash}}..{{target_hash}}`
+    /// 會悄悄變成 `..abc123`，git 當成 `HEAD..abc123` 執行。
+    #[test]
+    fn build_user_command_marked_hash_marker_errors_when_nothing_marked() {
+        let command = [
+            "git".to_string(),
+            "log".to_string(),
+            "{{marked_hash}}..{{target_hash}}".to_string(),
+        ];
+        let params = params_with_stash(&command, None);
+        assert!(build_user_command(&params).is_err());
+    }
+
+    #[test]
+    fn expand_shell_command_line_quotes_marked_hash() {
+        let command: [String; 0] = [];
+        let mut params = params_with_stash(&command, None);
+        params.marked_hash = Some("deadbeef");
+        let expanded =
+            expand_shell_command_line("git diff {{marked_hash}}", Some(&params), 80, 30).unwrap();
+        assert_eq!(expanded, "git diff 'deadbeef'");
     }
 
     /// `replace_command_arg` 的 identity esc 不該轉義任何東西——argv 元素
@@ -805,6 +853,7 @@ mod tests {
         let params = ExternalCommandParameters {
             command: &command,
             target_hash: "abc123",
+            marked_hash: None,
             parent_hashes: vec![],
             all_refs: vec![],
             branches: vec!["it's-a-branch"],
@@ -815,7 +864,7 @@ mod tests {
             area_height: 30,
         };
         assert_eq!(
-            replace_command_arg("{{target_hash}} {{branches}}", &params),
+            replace_command_arg("{{target_hash}} {{branches}}", &params).unwrap(),
             "abc123 it's-a-branch"
         );
     }
@@ -826,6 +875,7 @@ mod tests {
         let params = ExternalCommandParameters {
             command: &command,
             target_hash: "abc123",
+            marked_hash: None,
             parent_hashes: vec![],
             all_refs: vec![],
             branches: vec!["main", "dev"],
@@ -846,6 +896,7 @@ mod tests {
         let params = ExternalCommandParameters {
             command: &command,
             target_hash: "abc123",
+            marked_hash: None,
             parent_hashes: vec![],
             all_refs: vec![],
             branches: vec!["it's-a-branch"],
@@ -868,6 +919,7 @@ mod tests {
         let params = ExternalCommandParameters {
             command: &command,
             target_hash: "deadbeef",
+            marked_hash: None,
             parent_hashes: vec![],
             all_refs: vec![],
             branches: vec![],

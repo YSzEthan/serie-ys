@@ -8,6 +8,14 @@ en-US = "Updated — restart ysgit to apply"
 zh-TW = "已自動 fetch 到新的 commit"
 en-US = "Auto-fetched new commits"
 
+[app.status.marked]
+zh-TW = "已標記 %{hash}"
+en-US = "Marked %{hash}"
+
+[app.status.unmarked]
+zh-TW = "已取消標記"
+en-US = "Mark cleared"
+
 [app.status.no_related]
 zh-TW = "沒有相關的 issue"
 en-US = "No related issues"

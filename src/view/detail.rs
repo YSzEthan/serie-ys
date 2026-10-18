@@ -334,6 +334,9 @@ impl<'a> DetailView<'a> {
             UserEvent::ShellToggle => {
                 self.tx.send(AppEvent::OpenShell);
             }
+            UserEvent::MarkToggle => {
+                self.tx.send(AppEvent::ToggleMark);
+            }
             UserEvent::Refresh => {
                 self.tx.send(AppEvent::Refresh);
             }
