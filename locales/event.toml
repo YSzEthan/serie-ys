@@ -124,6 +124,10 @@ en-US = "Toggle fuzzy match"
 zh-TW = "切換比對欄位"
 en-US = "Toggle match target"
 
+[event.desc.mark_toggle]
+zh-TW = "切換 commit 標記"
+en-US = "Toggle commit mark"
+
 [event.desc.refresh]
 zh-TW = "重新整理"
 en-US = "Refresh"

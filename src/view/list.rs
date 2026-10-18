@@ -245,6 +245,9 @@ impl<'a> ListView<'a> {
                     .to_string();
                 dispatch_checkout(&self.tx, refs, &hash);
             }
+            UserEvent::MarkToggle => {
+                self.tx.send(AppEvent::ToggleMark);
+            }
             UserEvent::Refresh => {
                 self.tx.send(AppEvent::Refresh);
             }
@@ -442,6 +445,7 @@ impl<'a> ListView<'a> {
     pub fn reset_commit_list_with(&mut self, list_context: &ListRefreshViewContext) {
         let ListRefreshViewContext {
             commit_hash,
+            marked_commit_hash,
             selected,
             height,
             scroll_to_top,
@@ -451,6 +455,7 @@ impl<'a> ListView<'a> {
             filter,
         } = list_context;
         let list_state = self.as_mut_list_state();
+        list_state.restore_marked_commit_hash(marked_commit_hash.clone());
         list_state.reset_height(*height);
         list_state.set_show_remote_refs(*show_remote_refs);
         if let Some(options) = search_options {

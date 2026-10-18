@@ -314,12 +314,19 @@ impl<'a> View<'a> {
         before: View<'a>,
         commit: Option<Commit>,
         refs: Vec<Ref>,
+        marked_commit_hash: Option<CommitHash>,
         repo_path: PathBuf,
         ctx: Rc<AppContext>,
         tx: Sender,
     ) -> Self {
         View::Shell(Box::new(ShellView::new(
-            before, commit, refs, repo_path, ctx, tx,
+            before,
+            commit,
+            refs,
+            marked_commit_hash,
+            repo_path,
+            ctx,
+            tx,
         )))
     }
 
@@ -528,6 +535,7 @@ pub enum ViewContext {
 #[derive(Debug, Clone, SmartDefault)]
 pub struct ListRefreshViewContext {
     pub commit_hash: CommitHash,
+    pub marked_commit_hash: Option<CommitHash>,
     pub selected: usize,
     pub height: usize,
     #[default = true]
@@ -548,6 +556,7 @@ impl From<&CommitListState<'_>> for ListRefreshViewContext {
         let scroll_to_top = selected == 0 && offset == 0;
         ListRefreshViewContext {
             commit_hash,
+            marked_commit_hash: list_state.marked_commit_hash().cloned(),
             selected,
             height,
             scroll_to_top,

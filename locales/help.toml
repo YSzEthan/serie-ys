@@ -200,6 +200,10 @@ en-US = "Fetch all remotes"
 zh-TW = "checkout 選取的 commit/ref"
 en-US = "Checkout selected commit/ref"
 
+[help.list.toggle_mark]
+zh-TW = "切換 commit 標記"
+en-US = "Toggle commit mark"
+
 [help.list.refresh]
 zh-TW = "重新整理"
 en-US = "Refresh"
@@ -307,6 +311,10 @@ en-US = "Open GitHub issues/PRs"
 [help.detail.open_help]
 zh-TW = "開啟說明"
 en-US = "Open help"
+
+[help.detail.toggle_mark]
+zh-TW = "切換 commit 標記"
+en-US = "Toggle commit mark"
 
 [help.detail.refresh]
 zh-TW = "重新整理"
@@ -535,6 +543,10 @@ en-US = "Select parent commit"
 [help.user_command.select_child_commit]
 zh-TW = "選擇 child commit"
 en-US = "Select child commit"
+
+[help.user_command.toggle_mark]
+zh-TW = "切換 commit 標記"
+en-US = "Toggle commit mark"
 
 [help.user_command.refresh]
 zh-TW = "重新整理"

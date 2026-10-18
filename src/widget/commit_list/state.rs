@@ -101,6 +101,11 @@ pub struct CommitListState<'a> {
     /// remote-only 過濾交集成 `filtered_indices`。
     pub(super) filter: MatchSet,
 
+    /// 使用者標記的 commit（`mark_toggle`），給 user command 的
+    /// `{{marked_hash}}` 取用。存 hash 不存 index：refresh 之後 index 會
+    /// 失效，hash 可以跨重載還原（`restore_marked_commit_hash`）。
+    marked_commit_hash: Option<CommitHash>,
+
     pub(super) selected: usize,
     pub(super) offset: usize,
     pub(super) total: usize,
@@ -165,6 +170,7 @@ impl<'a> CommitListState<'a> {
             filter_options: MatchOptions::FILTER_DEFAULT,
             filtered_indices: None,
             filter: MatchSet::default(),
+            marked_commit_hash: None,
             selected: 0,
             offset: 0,
             total,
@@ -638,6 +644,31 @@ impl<'a> CommitListState<'a> {
             let margin = self.effective_scrolloff();
             self.selected = (self.selected + 1).min(self.height - 1 - margin);
         }
+    }
+
+    pub fn marked_commit_hash(&self) -> Option<&CommitHash> {
+        self.marked_commit_hash.as_ref()
+    }
+
+    /// 標記選取的 commit；已標記同一個就取消。虛擬行（Working changes）
+    /// 沒有 hash——`selected_commit_hash` 在那時會退回第一個 commit，不擋
+    /// 會標錯。
+    pub fn toggle_mark(&mut self) {
+        if self.total == 0 || self.is_virtual_row_selected() {
+            return;
+        }
+        let selected = self.selected_commit_hash();
+        self.marked_commit_hash = if self.marked_commit_hash() == Some(selected) {
+            None
+        } else {
+            Some(selected.clone())
+        };
+    }
+
+    /// refresh 後還原標記；commit 已經不在新的 repository 就丟掉。
+    pub fn restore_marked_commit_hash(&mut self, marked_commit_hash: Option<CommitHash>) {
+        self.marked_commit_hash =
+            marked_commit_hash.filter(|hash| self.repository.index_of(hash).is_some());
     }
 
     pub fn selected_commit_hash(&self) -> &CommitHash {
@@ -1418,6 +1449,85 @@ mod tests {
         state.reset_height(10);
         state.select_first();
         state
+    }
+
+    // --- commit 標記 -----------------------------------------------------------
+
+    fn three_commit_repository() -> Repository {
+        Repository::from_commits(vec![
+            commit_fixture("first", &["second"]),
+            commit_fixture("second", &["third"]),
+            commit_fixture("third", &[]),
+        ])
+    }
+
+    #[test]
+    fn mark_is_independent_of_selection_and_can_be_replaced_or_removed() {
+        let repository = three_commit_repository();
+        let mut state = build_state_visible_raws(&repository, &[0, 1, 2]);
+        assert_eq!(state.marked_commit_hash(), None);
+
+        let first = state.selected_commit_hash().clone();
+        let status = state.current_list_status();
+        state.toggle_mark();
+        assert_eq!(state.marked_commit_hash(), Some(&first));
+        assert_eq!(state.current_list_status(), status, "標記不該動選取");
+
+        state.select_next();
+        assert_eq!(
+            state.marked_commit_hash(),
+            Some(&first),
+            "移動選取不影響標記"
+        );
+
+        let second = state.selected_commit_hash().clone();
+        state.toggle_mark();
+        assert_eq!(
+            state.marked_commit_hash(),
+            Some(&second),
+            "標記別的 commit 會取代"
+        );
+
+        state.toggle_mark();
+        assert_eq!(state.marked_commit_hash(), None, "同一個再標一次取消");
+    }
+
+    #[test]
+    fn restore_marked_commit_hash_keeps_loaded_hash_and_drops_missing_one() {
+        let repository = three_commit_repository();
+        let mut state = build_state_visible_raws(&repository, &[0, 1, 2]);
+        state.select_next();
+        state.toggle_mark();
+        let marked = state.marked_commit_hash().cloned();
+        assert!(marked.is_some());
+
+        let mut reloaded = build_state_visible_raws(&repository, &[0, 1, 2]);
+        reloaded.restore_marked_commit_hash(marked.clone());
+        assert_eq!(reloaded.marked_commit_hash(), marked.as_ref());
+
+        // refresh 後 commit 不見了（例如 rebase 掉）：標記要丟掉，不能指向不存在的 hash。
+        let shrunk = Repository::from_commits(vec![commit_fixture("first", &[])]);
+        let mut gone = build_state_visible_raws(&shrunk, &[0]);
+        gone.restore_marked_commit_hash(marked);
+        assert_eq!(gone.marked_commit_hash(), None);
+    }
+
+    #[test]
+    fn toggle_mark_ignores_virtual_row() {
+        let repository = three_commit_repository();
+        let mut state = build_state_visible_raws(&repository, &[0, 1, 2]);
+        state.working_changes = Some(some_working_changes());
+        state.total += 1;
+        state.offset = 0;
+        state.selected = 0; // 選在虛擬列上
+        assert!(state.is_virtual_row_selected());
+
+        state.toggle_mark();
+        assert_eq!(
+            state.marked_commit_hash(),
+            None,
+            "虛擬行沒有 hash，不能標記"
+        );
     }
 
     #[test]

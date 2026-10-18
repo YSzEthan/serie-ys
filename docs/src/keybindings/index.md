@@ -61,6 +61,7 @@
 | <kbd>g</kbd> | 開啟 GitHub issues/PRs | `github_toggle` |
 | <kbd>f</kbd> | fetch 所有 remote | `fetch` |
 | <kbd>Space</kbd> | checkout 選取的 commit/ref | `checkout` |
+| <kbd>a</kbd> | 切換 commit 標記 | `mark_toggle` |
 | <kbd>r</kbd> | 重新整理 | `refresh` |
 | <kbd>/</kbd> | 開啟 Shell | `shell_toggle` |
 
@@ -93,6 +94,7 @@
 | <kbd>Tab</kbd> | 開啟 refs 清單 | `ref_list` |
 | <kbd>g</kbd> | 開啟 GitHub issues/PRs | `github_toggle` |
 | <kbd>F1</kbd> <kbd>?</kbd> | 開啟說明 | `help_toggle` |
+| <kbd>a</kbd> | 切換 commit 標記 | `mark_toggle` |
 | <kbd>r</kbd> | 重新整理 | `refresh` |
 | <kbd>/</kbd> | 開啟 Shell | `shell_toggle` |
 
@@ -180,6 +182,7 @@
 | <kbd>G</kbd> | 跳到底端 | `go_to_bottom` |
 | <kbd>m</kbd> | 選擇 parent commit | `go_to_parent` |
 | <kbd>M</kbd> | 選擇 child commit | `go_to_child` |
+| <kbd>a</kbd> | 切換 commit 標記 | `mark_toggle` |
 | <kbd>r</kbd> | 重新整理 | `refresh` |
 | <kbd>Enter</kbd> <kbd>y</kbd> | 顯示 commit 詳情 | `confirm` |
 | <kbd>F1</kbd> <kbd>?</kbd> | 開啟說明 | `help_toggle` |
