@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.9.0](https://github.com/YSzEthan/serie-ys/compare/v4.8.0...v4.9.0) (2026-10-18)
+
+
+### Features
+
+* 升級 Ratatui 0.30.2 與依賴、移植 commit marking、Branches 分頁改用 GitHub 資料來源 (#155) (#156) (#157) (#158) (#159) (#160) ([d901607](https://github.com/YSzEthan/serie-ys/commit/d9016076ee663400e22c825cf04f501f862cdeed))
+
 ## [4.8.0](https://github.com/YSzEthan/serie-ys/compare/v4.7.1...v4.8.0) (2026-10-17)
 
 
