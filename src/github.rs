@@ -1596,11 +1596,13 @@ fn fetch_branch_page(
                 }
             }
         }"#;
+    // 一律 `-f`（純字串）：`-F` 會把 `123`／`true`／`null` 轉成非字串型別，
+    // repo 叫這種名字時 `String!` 變數會被 GitHub 拒絕。
     let owner_f = format!("owner={owner}");
     let name_f = format!("name={name}");
     let query_f = format!("query={query}");
     let mut args = vec![
-        "api", "graphql", "-F", &owner_f, "-F", &name_f, "-f", &query_f,
+        "api", "graphql", "-f", &owner_f, "-f", &name_f, "-f", &query_f,
     ];
     let after_f;
     if let Some(cursor) = after {

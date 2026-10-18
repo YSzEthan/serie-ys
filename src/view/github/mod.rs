@@ -165,6 +165,9 @@ pub struct GitHubView<'a> {
     branches_truncated: bool,
     branches_loaded: bool,
     branches_load: LoadState,
+    /// 載入途中又收到重載要求（例如 fetch 剛完成）：進行中的那次可能已讀到 fetch 前
+    /// 的本機狀態，結果回來後要再跑一次，不能丟掉。
+    branches_reload_pending: bool,
     /// Branches 分頁的作者篩選（`'` 循環切換）；`None` 是所有作者。
     branches_author: Option<String>,
     /// 內容區寬度，`render` 記錄；卡片欄數由它決定，導覽（上下移動、捲動）要用。
@@ -237,6 +240,7 @@ impl<'a> GitHubView<'a> {
             // 開 view 時 `App::open_github` 會同時送出 `LoadGitHubBranches`，所以
             // 一律從 Loading 起跳（跟 `load_state` 同理）。
             branches_load: LoadState::Loading,
+            branches_reload_pending: false,
             branches_author: None,
             width: 0,
             state_filter: data.state_filter,
@@ -412,6 +416,9 @@ impl<'a> GitHubView<'a> {
             self.selected_index = self.selected_index.min(max);
             self.adjust_scroll();
         }
+        if std::mem::take(&mut self.branches_reload_pending) {
+            self.reload_branches();
+        }
     }
 
     /// 開 view 時已預載；只有預載失敗（`branches_loaded` 仍為 false）才會在
@@ -422,12 +429,21 @@ impl<'a> GitHubView<'a> {
         }
     }
 
-    pub(crate) fn reload_branches(&mut self) {
+    fn reload_branches(&mut self) {
         if matches!(self.branches_load, LoadState::Loading) {
             return;
         }
         self.branches_load = LoadState::Loading;
         self.tx.send(AppEvent::LoadGitHubBranches);
+    }
+
+    /// fetch 完成後重載：載入途中的話排隊，等進行中那次回來再跑（見 `branches_reload_pending`）。
+    pub(crate) fn reload_branches_after_fetch(&mut self) {
+        if matches!(self.branches_load, LoadState::Loading) {
+            self.branches_reload_pending = true;
+        } else {
+            self.reload_branches();
+        }
     }
 
     /// 目前分頁的載入狀態；header 的「重新載入中」與空清單的提示都看這個。

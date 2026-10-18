@@ -26,7 +26,7 @@
 user_command_1 = ["d"]
 user_command_2 = ["shift-d"]
 user_command_3 = ["b"]
-user_command_4 = ["a"]
+user_command_4 = ["e"]
 
 [core.user_command]
 # Inline 指令（預設）

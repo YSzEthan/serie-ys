@@ -1847,7 +1847,7 @@ impl App<'_> {
     /// 才看 view，所以 fetch 途中才打開或已關掉 GitHub view 都對。
     fn reload_github_branches(&mut self) {
         if let View::GitHub(ref mut view) = self.view {
-            view.reload_branches();
+            view.reload_branches_after_fetch();
         }
     }
 
