@@ -9,7 +9,8 @@ pub(crate) mod scroll;
 use std::borrow::Cow;
 
 use ratatui::{
-    style::{Color, Style},
+    buffer::{Buffer, CellDiffOption, CellWidth},
+    style::{Color, Modifier, Style},
     text::{Line, Span},
 };
 use unicode_width::UnicodeWidthChar;
@@ -146,9 +147,51 @@ pub(crate) fn split_at_width(s: &str, max: usize) -> (&str, &str) {
     (s, "")
 }
 
+/// 在空白格上也看得出來的 modifier，對應 ratatui-core `buffer/diff.rs` 的
+/// 私有常數 `VISIBLE_ON_BLANK`。
+const VISIBLE_ON_BLANK: Modifier = Modifier::REVERSED
+    .union(Modifier::UNDERLINED)
+    .union(Modifier::SLOW_BLINK)
+    .union(Modifier::RAPID_BLINK)
+    .union(Modifier::CROSSED_OUT);
+
+/// 樣式交界右側那格強制重送，避免終端殘留帶底色的空白格（#163）。
+///
+/// 終端在 x 寫入字元時，若蓋到原本寬字元的一半，會用「目前畫筆樣式」把
+/// 那個寬字元的另一半清成空白。例如舊 frame 在 x 是 CJK 字、新 frame 在 x
+/// 是灰底 inline code、x+1 前後都是預設空白：Ratatui 認為 x+1 沒變而不送，
+/// 終端上卻已被清成灰底，畫面就留下一格殘影。寬字元蓋寬字元時清掉的是
+/// x+2，同樣是「這格的右邊那格」。
+///
+/// 繞過 ratatui-core 0.1.2 `buffer/diff.rs:174-186`：那段只在 previous 帶底色
+/// 時強制送尾格，沒處理 current 帶底色。升級 Ratatui 後要確認還需不需要。
+pub(crate) fn force_update_after_style_edges(buf: &mut Buffer) {
+    let width = buf.area.width as usize;
+    for row in buf.content.chunks_mut(width.max(1)) {
+        let mut x = 0;
+        while x < row.len() {
+            let w = usize::from(row[x].cell_width().max(1));
+            let next = x + w;
+            if next >= row.len() {
+                break;
+            }
+            let (cur, right) = (&row[x], &row[next]);
+            let edge = cur.bg != right.bg
+                || cur.modifier.intersection(VISIBLE_ON_BLANK)
+                    != right.modifier.intersection(VISIBLE_ON_BLANK);
+            if edge && right.diff_option == CellDiffOption::None {
+                row[next].set_diff_option(CellDiffOption::AlwaysUpdate);
+            }
+            x = next;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use ratatui::layout::Rect;
+
     use crate::color::ColorTheme;
 
     fn pairs(v: &[(&str, &'static str)]) -> Vec<(String, &'static str)> {
@@ -267,5 +310,62 @@ mod tests {
             console::measure_text_width(&text) <= 12,
             "截斷後仍超寬：{text}"
         );
+    }
+
+    fn diff_xs(prev: &Buffer, next: &Buffer) -> Vec<u16> {
+        prev.diff(next).iter().map(|(x, _, _)| *x).collect()
+    }
+
+    /// 寬字元前半被灰底窄字元蓋掉：終端會用灰底清掉後半格，x=1 必須重送。
+    #[test]
+    fn narrow_styled_cell_over_wide_char_refreshes_right_cell() {
+        let area = Rect::new(0, 0, 4, 1);
+        let mut prev = Buffer::empty(area);
+        prev.set_string(0, 0, "中", Style::default());
+        let mut next = Buffer::empty(area);
+        next.set_string(0, 0, "a", Style::default().bg(Color::DarkGray));
+
+        assert!(
+            !diff_xs(&prev, &next).contains(&1),
+            "前提：未修正時不送 x=1"
+        );
+        force_update_after_style_edges(&mut next);
+        assert!(diff_xs(&prev, &next).contains(&1));
+    }
+
+    /// 寬字元蓋寬字元：終端清掉的是 x=2，要重送的也是 x=2。
+    #[test]
+    fn wide_styled_cell_over_wide_char_refreshes_cell_after_it() {
+        let area = Rect::new(0, 0, 4, 1);
+        let mut prev = Buffer::empty(area);
+        prev.set_string(0, 0, "a字", Style::default());
+        let mut next = Buffer::empty(area);
+        next.set_string(0, 0, "中", Style::default().bg(Color::DarkGray));
+
+        force_update_after_style_edges(&mut next);
+        assert!(diff_xs(&prev, &next).contains(&2));
+    }
+
+    /// 樣式相同的相鄰格不標記，避免每個 frame 整片重送。
+    #[test]
+    fn same_style_neighbors_are_left_alone() {
+        let area = Rect::new(0, 0, 4, 1);
+        let mut buf = Buffer::empty(area);
+        buf.set_string(0, 0, "ab", Style::default().bg(Color::DarkGray));
+
+        force_update_after_style_edges(&mut buf);
+        assert_eq!(buf[(1, 0)].diff_option, CellDiffOption::None);
+        assert_eq!(buf[(2, 0)].diff_option, CellDiffOption::AlwaysUpdate);
+    }
+
+    /// 列尾的交界不能標到下一列的開頭。
+    #[test]
+    fn row_end_does_not_spill_into_next_row() {
+        let area = Rect::new(0, 0, 2, 2);
+        let mut buf = Buffer::empty(area);
+        buf.set_string(1, 0, "a", Style::default().bg(Color::DarkGray));
+
+        force_update_after_style_edges(&mut buf);
+        assert_eq!(buf[(0, 1)].diff_option, CellDiffOption::None);
     }
 }
