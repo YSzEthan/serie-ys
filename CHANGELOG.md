@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.9.2](https://github.com/YSzEthan/serie-ys/compare/v4.9.1...v4.9.2) (2026-10-19)
+
+
+### Bug Fixes
+
+* 修正 gh 介面 PR 預覽 inline code 右側殘留灰格 (#163) (#164) ([6eccb05](https://github.com/YSzEthan/serie-ys/commit/6eccb05b0f428bf57b8679232ec08e09fd0defa1))
+
 ## [4.9.1](https://github.com/YSzEthan/serie-ys/compare/v4.9.0...v4.9.1) (2026-10-19)
 
 
