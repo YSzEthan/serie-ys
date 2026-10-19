@@ -39,6 +39,7 @@ use crate::{
     view::{dispatch_delete_branch, LabelMode, RefreshViewContext, RefsOrigin, View, ViewContext},
     widget::{
         commit_list::{CommitInfo, CommitListState, MatchOptions, RawCommitIdx},
+        force_update_after_style_edges,
         pending_overlay::PendingOverlay,
     },
     CompactType, GraphWidthType, RemoteOnly,
@@ -1163,6 +1164,8 @@ impl App<'_> {
             let overlay = PendingOverlay::notice(message, &self.ctx.color_theme);
             f.render_widget(overlay, f.area());
         }
+
+        force_update_after_style_edges(f.buffer_mut());
     }
 }
 
