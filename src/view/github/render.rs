@@ -1,7 +1,7 @@
-use std::borrow::Cow;
+use std::{borrow::Cow, num::NonZeroU16};
 
 use ratatui::{
-    buffer::CellDiffOption,
+    buffer::{Buffer, CellDiffOption},
     layout::{Constraint, Layout, Rect},
     style::{Color, Modifier, Style},
     text::{Line, Span},
@@ -22,6 +22,23 @@ use super::{
 /// 要跟 `render_issue_line` / `render_pr_line` 保持同步——如果 indicator
 /// 寬度或 Paragraph padding 改了，這個常數也要跟著調整。
 const LIST_LINK_COL_OFFSET: u16 = 3;
+
+/// 在 `(x, y)` 寫入 OSC 8 超連結，後面 `width - 1` 格標成 Skip。
+///
+/// 第一格必須設 `ForcedWidth`：Ratatui 的 diff 會用 symbol 的顯示寬度決定
+/// 要跳過幾格，而整串 escape（含 URL）會被算成幾十格寬，diff 就跳過 label
+/// 之後那些格子不更新，舊畫面（Branches 卡片、graph 圖片）會殘留在畫面上。
+fn set_osc8_link(buf: &mut Buffer, x: u16, y: u16, url: &str, label: &str, width: u16) {
+    let Some(forced) = NonZeroU16::new(width) else {
+        return;
+    };
+    buf[(x, y)]
+        .set_symbol(&crate::external::format_osc8_hyperlink(url, label))
+        .set_diff_option(CellDiffOption::ForcedWidth(forced));
+    for i in 1..width {
+        buf[(x + i, y)].set_diff_option(CellDiffOption::Skip);
+    }
+}
 
 impl<'a> GitHubView<'a> {
     pub fn render(&mut self, f: &mut Frame, area: Rect, marquee_frame: u64) {
@@ -239,11 +256,7 @@ impl<'a> GitHubView<'a> {
             if label_width > remaining {
                 continue;
             }
-            let payload = crate::external::format_osc8_hyperlink(&row.url, &label);
-            buf[(x, y)].set_symbol(&payload);
-            for j in 1..label_width {
-                buf[(x + j, y)].set_diff_option(CellDiffOption::Skip);
-            }
+            set_osc8_link(buf, x, y, &row.url, &label, label_width);
         }
     }
 
@@ -492,14 +505,16 @@ impl<'a> GitHubView<'a> {
         if x >= inner.right() {
             return;
         }
-        let payload = crate::external::format_osc8_hyperlink(&ov.url, &ov.label);
         let label_width = console::measure_text_width(&ov.label) as u16;
-        let buf = f.buffer_mut();
-        buf[(x, y)].set_symbol(&payload);
         let remaining = inner.right() - x;
-        for i in 1..label_width.min(remaining) {
-            buf[(x + i, y)].set_diff_option(CellDiffOption::Skip);
-        }
+        set_osc8_link(
+            f.buffer_mut(),
+            x,
+            y,
+            &ov.url,
+            &ov.label,
+            label_width.min(remaining),
+        );
     }
 
     fn render_checkbox_preview(&self, f: &mut Frame, area: Rect) {
@@ -818,4 +833,26 @@ fn render_pr_line(
 /// 之間要不要留空白）改了，這裡忘記同步就會悄悄跟畫面上的實際寬度脫鉤。
 fn labels_display_width(labels: &[crate::github::GhLabel], mode: LabelMode) -> usize {
     row_label_spans(labels, mode).iter().map(Span::width).sum()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// 舊畫面整列都是字，新畫面只有 `#1` 超連結：label 之後的格子必須
+    /// 出現在 diff 裡被清掉，不能因為 escape 字串很長就被跳過。
+    #[test]
+    fn osc8_link_does_not_hide_trailing_cells_from_diff() {
+        let area = Rect::new(0, 0, 80, 1);
+        let mut prev = Buffer::empty(area);
+        prev.set_string(0, 0, "x".repeat(80), Style::default());
+        let mut next = Buffer::empty(area);
+        set_osc8_link(&mut next, 0, 0, "https://github.com/o/r/issues/1", "#1", 2);
+
+        let updated: Vec<u16> = prev.diff(&next).iter().map(|(x, _, _)| *x).collect();
+
+        assert!(updated.contains(&0), "{updated:?}");
+        assert!(!updated.contains(&1), "{updated:?}");
+        assert!((2..80).all(|x| updated.contains(&x)), "{updated:?}");
+    }
 }
