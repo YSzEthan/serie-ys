@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.9.1](https://github.com/YSzEthan/serie-ys/compare/v4.9.0...v4.9.1) (2026-10-19)
+
+
+### Bug Fixes
+
+* 修正 gh 介面切換分頁後殘留 Branches 卡片與 graph 殘影 (#161) (#162) ([d064753](https://github.com/YSzEthan/serie-ys/commit/d06475307410ded65abda819af7e6b311e54b65f))
+
 ## [4.9.0](https://github.com/YSzEthan/serie-ys/compare/v4.8.0...v4.9.0) (2026-10-18)
 
 
