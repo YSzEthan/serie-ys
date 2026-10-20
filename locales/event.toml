@@ -188,6 +188,10 @@ en-US = "Toggle details pane"
 zh-TW = "fetch 所有 remote"
 en-US = "Fetch all remotes"
 
+[event.desc.pull]
+zh-TW = "pull（只做 fast-forward）"
+en-US = "Pull (fast-forward only)"
+
 [event.desc.checkout]
 zh-TW = "checkout 選取的 commit/ref"
 en-US = "Checkout selected commit/ref"
@@ -207,6 +211,10 @@ en-US = "Toggle PR draft state"
 [event.desc.toggle_commit_log]
 zh-TW = "展開／收合 commit log"
 en-US = "Expand/collapse commit log"
+
+[event.desc.toggle_label_mode]
+zh-TW = "切換 label 顯示名稱／色塊"
+en-US = "Toggle label names/color swatches"
 
 [event.desc.check_update]
 zh-TW = "檢查更新"

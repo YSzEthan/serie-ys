@@ -15,7 +15,7 @@ use crate::{
     app::AppContext,
     color::ColorTheme,
     config::CoreConfig,
-    event::{AppEvent, Sender, UserEvent, UserEventWithCount},
+    event::{AppEvent, KeyScope, Sender, UserEvent, UserEventWithCount},
     keybind::KeyBind,
     view::View,
 };
@@ -36,67 +36,52 @@ fn b(events: Vec<UserEvent>, desc: Cow<'static, str>) -> BindingSpec {
     BindingSpec { events, desc }
 }
 
-/// 說明頁的分區。用 enum 而非字串當 key，是為了讓「新增一個分區」在
-/// `title()` 與 `source_files()` 兩個窮盡 match 同時不編譯 —— 兩份可能
-/// 不同步的清單被壓成一份不可能不同步的。
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum HelpBlock {
-    Common,
-    Help,
-    List,
-    Detail,
-    Refs,
-    GitHub,
-    CreateTag,
-    DeleteTag,
-    DeleteRef,
-    UserCommand,
-    Shell,
-    ReleaseNotes,
+/// 說明頁的分區：`None` 是共通鍵（由事件迴圈處理，不屬於任何畫面），
+/// `Some(scope)` 是該畫面的 keymap。直接用 [`KeyScope`] 當 key，是為了讓
+/// 「新增一個畫面」在 `block_title()` 與 `block_source_files()` 兩個窮盡
+/// match 同時不編譯 —— 不另外維護一份跟 `View`／`KeyScope` 平行的清單。
+type HelpBlock = Option<KeyScope>;
+
+fn block_title(block: HelpBlock) -> Cow<'static, str> {
+    match block {
+        None => t!("help.block.common"),
+        Some(KeyScope::Help) => t!("help.block.help"),
+        Some(KeyScope::List) => t!("help.block.list"),
+        Some(KeyScope::Detail) => t!("help.block.detail"),
+        Some(KeyScope::Refs) => t!("help.block.refs"),
+        Some(KeyScope::GitHub) => t!("help.block.github"),
+        Some(KeyScope::CreateTag) => t!("help.block.create_tag"),
+        Some(KeyScope::DeleteTag) => t!("help.block.delete_tag"),
+        Some(KeyScope::DeleteRef) => t!("help.block.delete_ref"),
+        Some(KeyScope::UserCommand) => t!("help.block.user_command"),
+        Some(KeyScope::Shell) => t!("help.block.shell"),
+        Some(KeyScope::ReleaseNotes) => t!("help.block.release_notes"),
+    }
 }
 
-impl HelpBlock {
-    fn title(self) -> Cow<'static, str> {
-        match self {
-            HelpBlock::Common => t!("help.block.common"),
-            HelpBlock::Help => t!("help.block.help"),
-            HelpBlock::List => t!("help.block.list"),
-            HelpBlock::Detail => t!("help.block.detail"),
-            HelpBlock::Refs => t!("help.block.refs"),
-            HelpBlock::GitHub => t!("help.block.github"),
-            HelpBlock::CreateTag => t!("help.block.create_tag"),
-            HelpBlock::DeleteTag => t!("help.block.delete_tag"),
-            HelpBlock::DeleteRef => t!("help.block.delete_ref"),
-            HelpBlock::UserCommand => t!("help.block.user_command"),
-            HelpBlock::Shell => t!("help.block.shell"),
-            HelpBlock::ReleaseNotes => t!("help.block.release_notes"),
-        }
-    }
-
-    /// 實作這個分區 keymap 的原始碼。一致性測試據此比對宣稱與實作。
-    #[cfg(test)]
-    fn source_files(self) -> &'static [&'static str] {
-        match self {
-            // 共通鍵由事件迴圈直接處理，不屬於任何 view
-            HelpBlock::Common => &["src/app.rs"],
-            HelpBlock::Help => &["src/view/help.rs"],
-            HelpBlock::List => &["src/view/list.rs"],
-            HelpBlock::Detail => &["src/view/detail.rs"],
-            HelpBlock::Refs => &["src/view/refs.rs"],
-            HelpBlock::GitHub => &[
-                "src/view/github/mod.rs",
-                "src/view/github/event.rs",
-                "src/view/github/render.rs",
-                "src/view/github/preview.rs",
-                "src/view/github/timeline.rs",
-            ],
-            HelpBlock::CreateTag => &["src/view/create_tag.rs"],
-            HelpBlock::DeleteTag => &["src/view/delete_tag.rs"],
-            HelpBlock::DeleteRef => &["src/view/delete_ref.rs"],
-            HelpBlock::UserCommand => &["src/view/user_command.rs"],
-            HelpBlock::Shell => &["src/view/shell.rs"],
-            HelpBlock::ReleaseNotes => &["src/view/release_notes.rs"],
-        }
+/// 實作這個分區 keymap 的原始碼。一致性測試據此比對宣稱與實作。
+#[cfg(test)]
+fn block_source_files(block: HelpBlock) -> &'static [&'static str] {
+    match block {
+        // 共通鍵由事件迴圈直接處理，不屬於任何 view
+        None => &["src/app.rs"],
+        Some(KeyScope::Help) => &["src/view/help.rs"],
+        Some(KeyScope::List) => &["src/view/list.rs"],
+        Some(KeyScope::Detail) => &["src/view/detail.rs"],
+        Some(KeyScope::Refs) => &["src/view/refs.rs"],
+        Some(KeyScope::GitHub) => &[
+            "src/view/github/mod.rs",
+            "src/view/github/event.rs",
+            "src/view/github/render.rs",
+            "src/view/github/preview.rs",
+            "src/view/github/timeline.rs",
+        ],
+        Some(KeyScope::CreateTag) => &["src/view/create_tag.rs"],
+        Some(KeyScope::DeleteTag) => &["src/view/delete_tag.rs"],
+        Some(KeyScope::DeleteRef) => &["src/view/delete_ref.rs"],
+        Some(KeyScope::UserCommand) => &["src/view/user_command.rs"],
+        Some(KeyScope::Shell) => &["src/view/shell.rs"],
+        Some(KeyScope::ReleaseNotes) => &["src/view/release_notes.rs"],
     }
 }
 
@@ -225,7 +210,7 @@ fn build_rows(
     let mut rows: Vec<HelpRow> = Vec::new();
     let n = blocks.len();
     for (i, (block, specs)) in blocks.into_iter().enumerate() {
-        push_block(&mut rows, &block.title(), specs, color_theme, keybind);
+        push_block(&mut rows, &block_title(block), specs, color_theme, keybind);
         if i + 1 < n {
             rows.push(HelpRow::default());
         }
@@ -298,6 +283,7 @@ fn help_blocks(
         b(vec![UserEvent::RemoteRefsToggle], t!("help.list.toggle_remote_refs")),
         b(vec![UserEvent::GitHubToggle], t!("help.list.open_github_issues_prs")),
         b(vec![UserEvent::Fetch], t!("help.list.fetch_all_remotes")),
+        b(vec![UserEvent::Pull], t!("help.list.pull_fast_forward_only")),
         b(vec![UserEvent::Checkout], t!("help.list.checkout_selected_commit_ref")),
         b(vec![UserEvent::MarkToggle], t!("help.list.toggle_mark")),
         b(vec![UserEvent::Refresh], t!("help.list.refresh")),
@@ -373,7 +359,7 @@ fn help_blocks(
         b(vec![UserEvent::ToggleIssueState], t!("help.github.close_reopen_issue_or_pr")),
         b(vec![UserEvent::TogglePrDraft], t!("help.github.mark_pr_ready_back_to_draft")),
         b(vec![UserEvent::ToggleCommitLog], t!("help.github.expand_collapse_commit_log")),
-        b(vec![UserEvent::CreateTag], t!("help.github.toggle_label_names_color_swatches")),
+        b(vec![UserEvent::ToggleLabelMode], t!("help.github.toggle_label_names_color_swatches")),
     ];
 
     let create_tag = vec![
@@ -434,18 +420,18 @@ fn help_blocks(
     ];
 
     vec![
-        (HelpBlock::Common,       common),
-        (HelpBlock::Help,         help),
-        (HelpBlock::List,         list),
-        (HelpBlock::Detail,       detail),
-        (HelpBlock::Refs,         refs),
-        (HelpBlock::GitHub,       github),
-        (HelpBlock::CreateTag,    create_tag),
-        (HelpBlock::DeleteTag,    delete_tag),
-        (HelpBlock::DeleteRef,    delete_ref),
-        (HelpBlock::UserCommand,  user_command),
-        (HelpBlock::Shell,        shell),
-        (HelpBlock::ReleaseNotes, release_notes),
+        (None,                         common),
+        (Some(KeyScope::Help),         help),
+        (Some(KeyScope::List),         list),
+        (Some(KeyScope::Detail),       detail),
+        (Some(KeyScope::Refs),         refs),
+        (Some(KeyScope::GitHub),       github),
+        (Some(KeyScope::CreateTag),    create_tag),
+        (Some(KeyScope::DeleteTag),    delete_tag),
+        (Some(KeyScope::DeleteRef),    delete_ref),
+        (Some(KeyScope::UserCommand),  user_command),
+        (Some(KeyScope::Shell),        shell),
+        (Some(KeyScope::ReleaseNotes), release_notes),
     ]
 }
 
@@ -550,7 +536,7 @@ mod tests {
                     if keybind.keys_for_event(*event).is_empty() {
                         unbound.push(format!(
                             "「{}」的『{}』列出 {:?}，但沒有任何按鍵綁定",
-                            block.title(),
+                            block_title(block),
                             spec.desc,
                             event
                         ));
@@ -591,27 +577,27 @@ mod tests {
                     if keybind.display_key(*event).is_none() {
                         problems.push(format!(
                             "「{}」的狀態列提示『{desc}』用了 {event:?}，但它沒有綁定按鍵",
-                            block.title()
+                            block_title(block)
                         ));
                     }
                     if !claimed.contains(&event_name(*event)) {
                         problems.push(format!(
                             "「{}」的狀態列提示『{desc}』用了 {event:?}，但說明頁沒有列出",
-                            block.title()
+                            block_title(block)
                         ));
                     }
                 }
             }
         };
 
-        check(HelpBlock::Detail, status_hints_for(DetailPane::Info));
-        check(HelpBlock::Detail, status_hints_for(DetailPane::Files));
+        check(Some(KeyScope::Detail), status_hints_for(DetailPane::Info));
+        check(Some(KeyScope::Detail), status_hints_for(DetailPane::Files));
         check(
-            HelpBlock::UserCommand,
+            Some(KeyScope::UserCommand),
             crate::view::user_command::status_hints(),
         );
         check(
-            HelpBlock::GitHub,
+            Some(KeyScope::GitHub),
             crate::view::github::GitHubView::every_status_hint(),
         );
 
@@ -624,11 +610,10 @@ mod tests {
         let mut missing = Vec::new();
         for (block, specs) in blocks() {
             // 說明頁分區的資料就住在本檔，自我比對是恆真式，沒有驗證價值
-            if block == HelpBlock::Help {
+            if block == Some(KeyScope::Help) {
                 continue;
             }
-            let sources: BTreeSet<String> = block
-                .source_files()
+            let sources: BTreeSet<String> = block_source_files(block)
                 .iter()
                 .flat_map(|f| events_in_source(&read_source(f)))
                 .collect();
@@ -638,9 +623,9 @@ mod tests {
                     if !sources.contains(&name) && !app_level_ok(block, *event) {
                         missing.push(format!(
                             "「{}」宣稱 {:?}，但 {:?} 裡找不到",
-                            block.title(),
+                            block_title(block),
                             event,
-                            block.source_files()
+                            block_source_files(block)
                         ));
                     }
                 }
@@ -657,14 +642,14 @@ mod tests {
     fn source_events_are_all_claimed() {
         let mut unclaimed = Vec::new();
         for (block, specs) in blocks() {
-            if block == HelpBlock::Help || block == HelpBlock::Common {
+            if matches!(block, None | Some(KeyScope::Help)) {
                 continue;
             }
             let claimed: BTreeSet<String> = specs
                 .iter()
                 .flat_map(|s| s.events.iter().map(|e| event_name(*e)))
                 .collect();
-            for file in block.source_files() {
+            for file in block_source_files(block) {
                 for name in events_in_source(&read_source(file)) {
                     if !claimed.contains(&name)
                         && !NOT_USER_FACING.contains(&name.as_str())
@@ -672,7 +657,7 @@ mod tests {
                     {
                         unclaimed.push(format!(
                             "{file} 處理 UserEvent::{name}，但「{}」沒有列出",
-                            block.title()
+                            block_title(block)
                         ));
                     }
                 }
@@ -681,11 +666,78 @@ mod tests {
         assert!(unclaimed.is_empty(), "\n{}", unclaimed.join("\n"));
     }
 
+    /// `KeyScope::consumes` 是「同一顆鍵能不能綁給兩個事件」的唯一依據，它必須
+    /// 跟說明頁一致：每個畫面的說明頁分區列出的非全域事件，恰好就是
+    /// `consumes` 為真的事件。說明頁又被 `claimed_events_exist_in_source` 與
+    /// `source_events_are_all_claimed` 釘在原始碼上，所以 `consumes` 也就不會
+    /// 跟實作脫節。
+    ///
+    /// `KeyScope::Help` 分區的原始碼比對是恆真式（資料與實作同住 `help.rs`，
+    /// 兩支掃描測試都跳過它），這一層只有 consumes ⇔ 說明頁的保障。
+    #[test]
+    fn scope_consumes_matches_help() {
+        let all: Vec<UserEvent> = KeyBind::new(None)
+            .bindings()
+            .iter()
+            .map(|(e, _)| *e)
+            .chain([UserEvent::UserCommand(1)])
+            .collect();
+
+        let mut problems = Vec::new();
+        for (block, specs) in blocks() {
+            let Some(scope) = block else { continue };
+            // `UserCommand` 條目依使用者設定動態產生，預設設定下說明頁列不出來
+            let relevant =
+                |e: &UserEvent| !e.is_global() && !dynamically_claimed(block, &event_name(*e));
+            let claimed: BTreeSet<String> = specs
+                .iter()
+                .flat_map(|s| s.events.iter())
+                .filter(|e| relevant(e))
+                .map(|e| event_name(*e))
+                .collect();
+            let consumed: BTreeSet<String> = all
+                .iter()
+                .filter(|e| relevant(e) && scope.consumes(**e))
+                .map(|e| event_name(*e))
+                .collect();
+            for name in claimed.difference(&consumed) {
+                problems.push(format!(
+                    "「{}」說明頁列出 {name}，但 KeyScope::{scope:?}.consumes 不含它",
+                    block_title(block)
+                ));
+            }
+            for name in consumed.difference(&claimed) {
+                problems.push(format!(
+                    "KeyScope::{scope:?}.consumes 含 {name}，但「{}」說明頁沒有列出",
+                    block_title(block)
+                ));
+            }
+        }
+        assert!(problems.is_empty(), "\n{}", problems.join("\n"));
+    }
+
+    /// 全域事件由 app 層攔截，不屬於任何畫面；若某個 `consumes` 又把它算進去，
+    /// 同一個事件就有兩套互相矛盾的歸屬。
+    #[test]
+    fn global_events_belong_to_no_scope() {
+        let keybind = KeyBind::new(None);
+        for (event, _) in keybind.bindings().iter().filter(|(e, _)| e.is_global()) {
+            for scope in KeyScope::ALL {
+                assert!(
+                    !scope.consumes(*event),
+                    "{scope:?} 不該處理全域事件 {event:?}"
+                );
+            }
+        }
+    }
+
     /// 這些 event 由 `App` 的事件迴圈直接處理，不會進 view —— 但只在
     /// `is_browsing_view()` 的三個 view 生效（見 `view::views::is_browsing_view`）。
     fn app_level_ok(block: HelpBlock, event: UserEvent) -> bool {
-        matches!(block, HelpBlock::List | HelpBlock::Detail | HelpBlock::Refs)
-            && matches!(event, UserEvent::HelpToggle | UserEvent::GitHubToggle)
+        matches!(
+            block,
+            Some(KeyScope::List | KeyScope::Detail | KeyScope::Refs)
+        ) && matches!(event, UserEvent::HelpToggle | UserEvent::GitHubToggle)
     }
 
     /// mdBook 上的鍵位頁。內容由本測試產生 —— 那是全 repo 唯一有讀者的鍵位文件
@@ -724,7 +776,7 @@ mod tests {
         );
 
         for (block, specs) in help_blocks(keybind, core_config) {
-            out.push_str(&format!("\n### {}\n\n", block.title()));
+            out.push_str(&format!("\n### {}\n\n", block_title(block)));
             out.push_str("| 按鍵 | 說明 | 設定鍵名 |\n| --- | --- | --- |\n");
             for spec in specs {
                 let keys: Vec<String> = spec
@@ -780,7 +832,7 @@ mod tests {
     /// list.rs 也處理 `UserCommand(n)` 以開啟該畫面）。若某份 keybind 沒有任何
     /// user command 綁定，這兩個分區就列不出 `UserCommand`，故在此豁免。
     fn dynamically_claimed(block: HelpBlock, name: &str) -> bool {
-        matches!(block, HelpBlock::UserCommand | HelpBlock::List) && name == "UserCommand"
+        matches!(block, Some(KeyScope::UserCommand | KeyScope::List)) && name == "UserCommand"
     }
 
     /// 出現在原始碼但不該出現在說明頁的 event。

@@ -184,6 +184,18 @@ en-US = "Fetch failed"
 zh-TW = "自動 fetch 中…"
 en-US = "Auto-fetching…"
 
+[app.pull.pending]
+zh-TW = "正在 pull…"
+en-US = "Pulling…"
+
+[app.pull.done]
+zh-TW = "Pull 完成"
+en-US = "Pull complete"
+
+[app.pull.failed]
+zh-TW = "Pull 失敗"
+en-US = "Pull failed"
+
 [app.checkout.pending]
 zh-TW = "正在 checkout '%{target}'…"
 en-US = "Checking out '%{target}'…"

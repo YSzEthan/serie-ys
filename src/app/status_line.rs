@@ -674,7 +674,7 @@ impl StatusLineState {
     }
 
     fn handle_ref_picker_key(&mut self, key: KeyEvent) {
-        if let Some(UserEvent::Cancel) = self.ctx.keybind.get(&key) {
+        if self.ctx.keybind.has(&key, UserEvent::Cancel) {
             self.line = StatusLine::None;
             return;
         }
@@ -697,10 +697,9 @@ impl StatusLineState {
     }
 
     fn handle_related_picker_key(&mut self, key: KeyEvent) {
-        if matches!(
-            self.ctx.keybind.get(&key),
-            Some(UserEvent::Cancel | UserEvent::DetailPaneToggle)
-        ) {
+        if self.ctx.keybind.has(&key, UserEvent::Cancel)
+            || self.ctx.keybind.has(&key, UserEvent::DetailPaneToggle)
+        {
             self.line = StatusLine::None;
             return;
         }
@@ -719,7 +718,7 @@ impl StatusLineState {
     }
 
     fn handle_checkout_picker_key(&mut self, key: KeyEvent) {
-        if let Some(UserEvent::Cancel) = self.ctx.keybind.get(&key) {
+        if self.ctx.keybind.has(&key, UserEvent::Cancel) {
             self.line = StatusLine::None;
             return;
         }
@@ -738,7 +737,7 @@ impl StatusLineState {
     }
 
     fn handle_child_picker_key(&mut self, key: KeyEvent) {
-        if let Some(UserEvent::Cancel) = self.ctx.keybind.get(&key) {
+        if self.ctx.keybind.has(&key, UserEvent::Cancel) {
             self.line = StatusLine::None;
             return;
         }
@@ -757,7 +756,7 @@ impl StatusLineState {
     }
 
     fn handle_delete_branch_picker_key(&mut self, key: KeyEvent) {
-        if let Some(UserEvent::Cancel) = self.ctx.keybind.get(&key) {
+        if self.ctx.keybind.has(&key, UserEvent::Cancel) {
             self.line = StatusLine::None;
             return;
         }
@@ -775,28 +774,24 @@ impl StatusLineState {
     }
 
     fn handle_delete_branch_confirm_key(&mut self, key: KeyEvent) {
-        let user_event = self.ctx.keybind.get(&key);
-        if matches!(user_event, Some(UserEvent::Cancel)) {
+        if self.ctx.keybind.has(&key, UserEvent::Cancel) {
             self.line = StatusLine::None;
             return;
         }
         let StatusLine::DeleteBranchConfirm { name } = &self.line else {
             return;
         };
+        let force = if self.ctx.keybind.has(&key, UserEvent::Confirm) {
+            false
+        } else if matches!(key.code, KeyCode::Char('f') | KeyCode::Char('F')) {
+            true
+        } else {
+            return;
+        };
         let name = name.clone();
-        match user_event {
-            Some(UserEvent::Confirm) => {
-                self.line = StatusLine::None;
-                self.tx
-                    .send(AppEvent::DeleteBranchRequested { name, force: false });
-            }
-            _ if matches!(key.code, KeyCode::Char('f') | KeyCode::Char('F')) => {
-                self.line = StatusLine::None;
-                self.tx
-                    .send(AppEvent::DeleteBranchRequested { name, force: true });
-            }
-            _ => {}
-        }
+        self.line = StatusLine::None;
+        self.tx
+            .send(AppEvent::DeleteBranchRequested { name, force });
     }
 
     fn handle_merge_pr_prompt_key(&mut self, key: KeyEvent) {
@@ -847,7 +842,7 @@ impl StatusLineState {
                 delete_local,
                 delete_remote,
             } => {
-                let is_confirm = matches!(self.ctx.keybind.get(&key), Some(UserEvent::Confirm))
+                let is_confirm = self.ctx.keybind.has(&key, UserEvent::Confirm)
                     || matches!(key.code, KeyCode::Enter);
                 if is_confirm {
                     self.line = StatusLine::None;
@@ -862,7 +857,7 @@ impl StatusLineState {
                         delete_local_branch,
                         delete_remote_branch,
                     });
-                } else if matches!(self.ctx.keybind.get(&key), Some(UserEvent::Cancel)) {
+                } else if self.ctx.keybind.has(&key, UserEvent::Cancel) {
                     self.line = StatusLine::None;
                 }
                 return;
@@ -878,7 +873,7 @@ impl StatusLineState {
                 local_delete,
                 stage,
             };
-        } else if matches!(self.ctx.keybind.get(&key), Some(UserEvent::Cancel)) {
+        } else if self.ctx.keybind.has(&key, UserEvent::Cancel) {
             // 這顆鍵不是本階段的答案 → 才輪到全域 cancel
             self.line = StatusLine::None;
         }
@@ -887,12 +882,12 @@ impl StatusLineState {
     /// 解讀 y/n 確認鍵。cancel 必須先判 — 預設 `cancel = ["esc", "n"]` 含 `n`，
     /// 順序反了「no」就會被當成確認。把這個順序依賴收在這裡，呼叫端不必再記。
     fn yes_no_answer(&self, key: KeyEvent) -> Answer {
-        if matches!(self.ctx.keybind.get(&key), Some(UserEvent::Cancel))
+        if self.ctx.keybind.has(&key, UserEvent::Cancel)
             || matches!(key.code, KeyCode::Char('n') | KeyCode::Char('N'))
         {
             return Answer::Cancel;
         }
-        if matches!(self.ctx.keybind.get(&key), Some(UserEvent::Confirm))
+        if self.ctx.keybind.has(&key, UserEvent::Confirm)
             || matches!(
                 key.code,
                 KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y')
@@ -1296,7 +1291,7 @@ mod tests {
 
     /// 建構測試用 `AppContext`。`keybind` 必須用 `KeyBind::new(None)`（讀
     /// `assets/default-keybind.toml`），不能用 `KeyBind::default()`——那是
-    /// 一張空 map，會讓 `self.ctx.keybind.get(&key)` 對所有鍵都回 `None`，
+    /// 一張空 map，會讓 `self.ctx.keybind.has(&key, _)` 對所有鍵都回 `false`，
     /// 測出來的綠燈/紅燈都是巧合，不是邏輯真的對或錯。以下幾條測試要驗的
     /// 正是「靠預設鍵位撐著的順序依賴」（例如 `f` 綁在 `fetch` 而非沒綁到
     /// 任何東西），換一份空 keybind 根本測不出這些依賴存不存在。

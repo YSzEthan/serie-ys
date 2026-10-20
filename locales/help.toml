@@ -196,6 +196,10 @@ en-US = "Open GitHub issues/PRs"
 zh-TW = "fetch 所有 remote"
 en-US = "Fetch all remotes"
 
+[help.list.pull_fast_forward_only]
+zh-TW = "pull 目前 branch（只做 fast-forward）"
+en-US = "Pull current branch (fast-forward only)"
+
 [help.list.checkout_selected_commit_ref]
 zh-TW = "checkout 選取的 commit/ref"
 en-US = "Checkout selected commit/ref"

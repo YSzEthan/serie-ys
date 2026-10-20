@@ -37,10 +37,11 @@ enum CaptureState {
     /// `key_event_to_config_string` 回 `None`：這顆鍵寫不進設定檔，留在
     /// 捕捉畫面顯示原因，不返回清單。
     Rejected,
-    /// 捕捉到的鍵目前歸別的 action。`y` 搶過來，其他鍵取消整次捕捉。
+    /// 捕捉到的鍵目前歸別的 action（可能不只一個：不同畫面各有一個，目標
+    /// 跟它們都衝突時全部會被搶）。`y` 搶過來，其他鍵取消整次捕捉。
     Conflict {
         key: KeyEvent,
-        victim: UserEvent,
+        victims: Vec<UserEvent>,
     },
 }
 
@@ -99,6 +100,15 @@ fn describe(action: UserEvent, user_commands: &BTreeMap<usize, String>) -> Cow<'
         },
         _ => action.description().unwrap_or_default(),
     }
+}
+
+/// `owners`（某顆鍵目前綁著的全部事件）裡，綁給 `target` 會被搶走的那些。
+fn conflicting_owners(owners: &[UserEvent], target: UserEvent) -> Vec<UserEvent> {
+    owners
+        .iter()
+        .copied()
+        .filter(|o| o.conflicts_with(target))
+        .collect()
 }
 
 impl KeyBindEditorState {
@@ -260,16 +270,14 @@ impl KeyBindEditorState {
             return Flow::Continue;
         }
 
-        match effective.get(&normalized).copied() {
-            Some(owner) if owner != target => {
-                if let Some(c) = &mut self.capture {
-                    c.state = CaptureState::Conflict {
-                        key: normalized,
-                        victim: owner,
-                    };
-                }
-            }
-            _ => self.commit_capture(target, mode, normalized, &effective, draft),
+        let victims = conflicting_owners(effective.events(&normalized), target);
+        if victims.is_empty() {
+            self.commit_capture(target, mode, normalized, &effective, draft);
+        } else if let Some(c) = &mut self.capture {
+            c.state = CaptureState::Conflict {
+                key: normalized,
+                victims,
+            };
         }
         Flow::Continue
     }
@@ -280,10 +288,10 @@ impl KeyBindEditorState {
     /// action（使用者自己的檔案或這個 session 設過的），那個 action 的
     /// 陣列也要一起更新——不寫的話同一顆鍵在檔案裡會出現兩次，下次啟動
     /// 直接載入失敗。搶自純內建預設的 action 不用寫：`current_patch` 本來
-    /// 就不含它的 entry，`assign` 的效果在下次啟動時会由同一套邏輯自動
-    /// 重算出來。受害者最多一個——`current_patch` 內部無衝突（不變式），
-    /// 一顆鍵在裡面只可能有一個 owner，`current.get(&key)` 直接查得到，
-    /// 不需要整份 `bindings()` 快照再逐條 diff。
+    /// 就不含它的 entry，`assign` 的效果在下次啟動時會由同一套邏輯自動
+    /// 重算出來。`current_patch` 內部無衝突（不變式），
+    /// `current.events(&key)` 直接查得到，不需要整份 `bindings()` 快照再
+    /// 逐條 diff。受害者可能不只一個（不同畫面各一個）。
     fn commit_capture(
         &mut self,
         target: UserEvent,
@@ -302,13 +310,13 @@ impl KeyBindEditorState {
         };
 
         let mut current = self.current_patch();
-        let victim = current.get(&key).copied().filter(|v| *v != target);
+        let victims = conflicting_owners(current.events(&key), target);
         current.assign(target, new_keys.clone());
 
         self.overrides.insert(target, Some(new_keys));
         self.sync(target, draft);
 
-        if let Some(victim) = victim {
+        for victim in victims {
             self.overrides
                 .insert(victim, Some(current.key_events(victim).to_vec()));
             self.sync(victim, draft);
@@ -461,10 +469,18 @@ fn render_capture_dialog(
     let message = match &capture.state {
         CaptureState::Waiting => t!("wizard.keybind.waiting"),
         CaptureState::Rejected => t!("wizard.keybind.rejected"),
-        CaptureState::Conflict { key, victim } => {
+        CaptureState::Conflict { key, victims } => {
             let key_str = key_event_to_config_string(*key).unwrap_or_default();
-            let victim_name = victim.config_name().unwrap_or_default();
-            let victim_desc = describe(*victim, user_commands);
+            let victim_name = victims
+                .iter()
+                .map(|v| v.config_name().unwrap_or_default())
+                .collect::<Vec<_>>()
+                .join(", ");
+            let victim_desc = victims
+                .iter()
+                .map(|v| describe(*v, user_commands))
+                .collect::<Vec<_>>()
+                .join(" / ");
             t!(
                 "wizard.keybind.conflict",
                 key_str = key_str,
@@ -575,28 +591,8 @@ mod tests {
             .map(|v| v.as_ref().map(ToString::to_string))
     }
 
-    fn navigate_down_row(state: &KeyBindEditorState) -> usize {
-        state
-            .actions
-            .iter()
-            .position(|&e| e == UserEvent::NavigateDown)
-            .unwrap()
-    }
-
-    fn refresh_row(state: &KeyBindEditorState) -> usize {
-        state
-            .actions
-            .iter()
-            .position(|&e| e == UserEvent::Refresh)
-            .unwrap()
-    }
-
-    fn quit_row(state: &KeyBindEditorState) -> usize {
-        state
-            .actions
-            .iter()
-            .position(|&e| e == UserEvent::Quit)
-            .unwrap()
+    fn row_of(state: &KeyBindEditorState, event: UserEvent) -> usize {
+        state.actions.iter().position(|&e| e == event).unwrap()
     }
 
     #[test]
@@ -613,18 +609,17 @@ mod tests {
     fn enter_replaces_all_bindings() {
         let mut state = KeyBindEditorState::new(&test_defaults());
         let mut draft = test_draft();
-        state.list.select(Some(navigate_down_row(&state)));
+        state
+            .list
+            .select(Some(row_of(&state, UserEvent::NavigateDown)));
 
         state.on_key(key(KeyCode::Enter), &mut draft);
         state.on_key(ctrl_key('n'), &mut draft);
 
         let effective = state.effective();
-        assert_eq!(
-            effective.get(&ctrl_key('n')),
-            Some(&UserEvent::NavigateDown)
-        );
-        assert_eq!(effective.get(&char_key('j')), None);
-        assert_eq!(effective.get(&key(KeyCode::Down)), None);
+        assert_eq!(effective.events(&ctrl_key('n')), &[UserEvent::NavigateDown]);
+        assert!(effective.events(&char_key('j')).is_empty());
+        assert!(effective.events(&key(KeyCode::Down)).is_empty());
 
         let config_key = ConfigKey {
             table: KEYBIND,
@@ -637,31 +632,29 @@ mod tests {
     fn append_keeps_existing_keys_and_adds_one() {
         let mut state = KeyBindEditorState::new(&test_defaults());
         let mut draft = test_draft();
-        state.list.select(Some(navigate_down_row(&state)));
+        state
+            .list
+            .select(Some(row_of(&state, UserEvent::NavigateDown)));
 
         state.on_key(char_key('a'), &mut draft);
         state.on_key(ctrl_key('n'), &mut draft);
 
         let effective = state.effective();
+        assert_eq!(effective.events(&char_key('j')), &[UserEvent::NavigateDown]);
         assert_eq!(
-            effective.get(&char_key('j')),
-            Some(&UserEvent::NavigateDown)
+            effective.events(&key(KeyCode::Down)),
+            &[UserEvent::NavigateDown]
         );
-        assert_eq!(
-            effective.get(&key(KeyCode::Down)),
-            Some(&UserEvent::NavigateDown)
-        );
-        assert_eq!(
-            effective.get(&ctrl_key('n')),
-            Some(&UserEvent::NavigateDown)
-        );
+        assert_eq!(effective.events(&ctrl_key('n')), &[UserEvent::NavigateDown]);
     }
 
     #[test]
     fn append_an_already_bound_key_is_a_no_op_not_a_duplicate() {
         let mut state = KeyBindEditorState::new(&test_defaults());
         let mut draft = test_draft();
-        state.list.select(Some(navigate_down_row(&state)));
+        state
+            .list
+            .select(Some(row_of(&state, UserEvent::NavigateDown)));
 
         state.on_key(char_key('a'), &mut draft);
         state.on_key(char_key('j'), &mut draft); // j 已經是 navigate_down 的鍵
@@ -675,7 +668,7 @@ mod tests {
     fn x_disables_the_action() {
         let mut state = KeyBindEditorState::new(&test_defaults());
         let mut draft = test_draft();
-        state.list.select(Some(refresh_row(&state)));
+        state.list.select(Some(row_of(&state, UserEvent::Refresh)));
 
         state.on_key(char_key('x'), &mut draft);
 
@@ -697,7 +690,7 @@ mod tests {
     fn r_reverts_to_default_and_removes_the_key() {
         let mut state = KeyBindEditorState::new(&test_defaults());
         let mut draft = test_draft();
-        state.list.select(Some(refresh_row(&state)));
+        state.list.select(Some(row_of(&state, UserEvent::Refresh)));
 
         state.on_key(char_key('x'), &mut draft);
         state.on_key(char_key('r'), &mut draft);
@@ -720,22 +713,19 @@ mod tests {
     fn reverting_a_steal_gives_the_key_back_to_its_original_owner() {
         let mut state = KeyBindEditorState::new(&test_defaults());
         let mut draft = test_draft();
-        state.list.select(Some(quit_row(&state)));
+        state.list.select(Some(row_of(&state, UserEvent::Quit)));
         state.on_key(key(KeyCode::Enter), &mut draft);
         state.on_key(char_key('r'), &mut draft); // r 鍵，refresh 的預設鍵：會撞見衝突
         state.on_key(char_key('y'), &mut draft); // 搶過來
 
-        assert_eq!(
-            state.effective().get(&char_key('r')),
-            Some(&UserEvent::Quit)
-        );
+        assert_eq!(state.effective().events(&char_key('r')), &[UserEvent::Quit]);
 
-        state.list.select(Some(quit_row(&state)));
+        state.list.select(Some(row_of(&state, UserEvent::Quit)));
         state.on_key(char_key('r'), &mut draft); // 還原 quit
 
         assert_eq!(
-            state.effective().get(&char_key('r')),
-            Some(&UserEvent::Refresh)
+            state.effective().events(&char_key('r')),
+            &[UserEvent::Refresh]
         );
     }
 
@@ -751,12 +741,7 @@ mod tests {
         // quit 目前的自訂鍵是 z；接下來把 z 搶給 fetch。
         let mut state = KeyBindEditorState::new(&defaults);
         let mut draft = test_draft();
-        let fetch_row = state
-            .actions
-            .iter()
-            .position(|&e| e == UserEvent::Fetch)
-            .unwrap();
-        state.list.select(Some(fetch_row));
+        state.list.select(Some(row_of(&state, UserEvent::Fetch)));
         state.on_key(key(KeyCode::Enter), &mut draft);
         state.on_key(char_key('z'), &mut draft); // z 目前歸 quit：會撞見衝突
         state.on_key(char_key('y'), &mut draft); // 搶過來
@@ -771,13 +756,63 @@ mod tests {
         );
     }
 
+    /// `shift-p` 預設歸 GitHub 介面的 `toggle_pr_draft`；`go_to_head` 只在
+    /// commit 清單有效，兩者可以共用，不需要確認。
+    #[test]
+    fn binding_a_key_owned_by_another_scope_needs_no_confirmation() {
+        let shift_p = KeyEvent::new(KeyCode::Char('P'), KeyModifiers::SHIFT);
+        let mut state = KeyBindEditorState::new(&test_defaults());
+        let mut draft = test_draft();
+        state.list.select(Some(row_of(&state, UserEvent::GoToHead)));
+        state.on_key(key(KeyCode::Enter), &mut draft);
+        state.on_key(shift_p, &mut draft);
+
+        assert!(state.capture.is_none(), "不衝突就直接指派，不進確認");
+        assert_eq!(
+            state.effective().events(&shift_p),
+            &[UserEvent::GoToHead, UserEvent::TogglePrDraft]
+        );
+    }
+
+    /// `t` 預設同時歸 commit 清單的 `create_tag` 與 GitHub 介面的
+    /// `toggle_label_mode`。`fetch` 兩個畫面都處理，所以兩者都會被搶；
+    /// 但它們都是純內建預設，不該被寫進設定檔。
+    #[test]
+    fn stealing_from_several_scopes_lists_every_victim_and_writes_only_customized_ones() {
+        let mut state = KeyBindEditorState::new(&test_defaults());
+        let mut draft = test_draft();
+        state.list.select(Some(row_of(&state, UserEvent::Fetch)));
+        state.on_key(key(KeyCode::Enter), &mut draft);
+        state.on_key(char_key('t'), &mut draft);
+
+        assert!(matches!(
+            state.capture.as_ref().map(|c| &c.state),
+            Some(CaptureState::Conflict { victims, .. })
+                if victims == &[UserEvent::CreateTag, UserEvent::ToggleLabelMode]
+        ));
+
+        state.on_key(char_key('y'), &mut draft);
+
+        assert_eq!(
+            state.effective().events(&char_key('t')),
+            &[UserEvent::Fetch]
+        );
+        for victim in ["create_tag", "toggle_label_mode"] {
+            let config_key = ConfigKey {
+                table: KEYBIND,
+                key: victim.into(),
+            };
+            assert_eq!(edited_value(&draft, &config_key), None, "{victim}");
+        }
+    }
+
     /// 搶自純內建預設的 action：不用改寫它的陣列——`current_patch` 本來就
     /// 沒有它的 entry，下次啟動時同一套 `assign` 邏輯會自動算出同樣結果。
     #[test]
     fn stealing_from_a_default_only_action_does_not_touch_its_file_entry() {
         let mut state = KeyBindEditorState::new(&test_defaults());
         let mut draft = test_draft();
-        state.list.select(Some(quit_row(&state)));
+        state.list.select(Some(row_of(&state, UserEvent::Quit)));
         state.on_key(key(KeyCode::Enter), &mut draft);
         state.on_key(char_key('r'), &mut draft); // r，refresh 的預設鍵，refresh 從未被使用者自訂
 
@@ -792,7 +827,7 @@ mod tests {
     fn conflict_prompts_and_y_commits_the_steal() {
         let mut state = KeyBindEditorState::new(&test_defaults());
         let mut draft = test_draft();
-        state.list.select(Some(quit_row(&state)));
+        state.list.select(Some(row_of(&state, UserEvent::Quit)));
         state.on_key(key(KeyCode::Enter), &mut draft);
         state.on_key(char_key('r'), &mut draft);
 
@@ -804,17 +839,14 @@ mod tests {
         state.on_key(char_key('y'), &mut draft);
 
         assert!(state.capture.is_none());
-        assert_eq!(
-            state.effective().get(&char_key('r')),
-            Some(&UserEvent::Quit)
-        );
+        assert_eq!(state.effective().events(&char_key('r')), &[UserEvent::Quit]);
     }
 
     #[test]
     fn conflict_any_other_key_cancels_the_whole_capture() {
         let mut state = KeyBindEditorState::new(&test_defaults());
         let mut draft = test_draft();
-        state.list.select(Some(quit_row(&state)));
+        state.list.select(Some(row_of(&state, UserEvent::Quit)));
         state.on_key(key(KeyCode::Enter), &mut draft);
         state.on_key(char_key('r'), &mut draft);
 
@@ -823,8 +855,8 @@ mod tests {
         assert!(state.capture.is_none());
         assert!(draft.edits.is_empty());
         assert_eq!(
-            state.effective().get(&char_key('r')),
-            Some(&UserEvent::Refresh)
+            state.effective().events(&char_key('r')),
+            &[UserEvent::Refresh]
         );
     }
 
@@ -835,21 +867,23 @@ mod tests {
         // 不是零衝突。
         let mut state = KeyBindEditorState::new(&test_defaults());
         let mut draft = test_draft();
-        state.list.select(Some(navigate_down_row(&state)));
+        state
+            .list
+            .select(Some(row_of(&state, UserEvent::NavigateDown)));
         state.on_key(key(KeyCode::Enter), &mut draft);
         state.on_key(ctrl_key('d'), &mut draft);
 
         assert!(matches!(
             state.capture.as_ref().map(|c| &c.state),
-            Some(CaptureState::Conflict { key, victim })
-                if *key == ctrl_key('d') && *victim == UserEvent::HalfPageDown
+            Some(CaptureState::Conflict { key, victims })
+                if *key == ctrl_key('d') && victims == &[UserEvent::HalfPageDown]
         ));
 
         state.on_key(char_key('y'), &mut draft);
 
         assert_eq!(
-            state.effective().get(&ctrl_key('d')),
-            Some(&UserEvent::NavigateDown)
+            state.effective().events(&ctrl_key('d')),
+            &[UserEvent::NavigateDown]
         );
     }
 
@@ -857,7 +891,9 @@ mod tests {
     fn ctrl_c_cancels_the_capture() {
         let mut state = KeyBindEditorState::new(&test_defaults());
         let mut draft = test_draft();
-        state.list.select(Some(navigate_down_row(&state)));
+        state
+            .list
+            .select(Some(row_of(&state, UserEvent::NavigateDown)));
         state.on_key(key(KeyCode::Enter), &mut draft);
         state.on_key(ctrl_key('c'), &mut draft);
 
@@ -869,7 +905,9 @@ mod tests {
     fn release_and_repeat_events_are_ignored_during_capture() {
         let mut state = KeyBindEditorState::new(&test_defaults());
         let mut draft = test_draft();
-        state.list.select(Some(navigate_down_row(&state)));
+        state
+            .list
+            .select(Some(row_of(&state, UserEvent::NavigateDown)));
         state.on_key(key(KeyCode::Enter), &mut draft);
 
         let mut release = ctrl_key('n');
@@ -880,8 +918,8 @@ mod tests {
         assert!(state.capture.is_some());
         state.on_key(ctrl_key('n'), &mut draft);
         assert_eq!(
-            state.effective().get(&ctrl_key('n')),
-            Some(&UserEvent::NavigateDown)
+            state.effective().events(&ctrl_key('n')),
+            &[UserEvent::NavigateDown]
         );
     }
 
@@ -889,7 +927,9 @@ mod tests {
     fn unwritable_key_is_rejected_and_stays_in_capture() {
         let mut state = KeyBindEditorState::new(&test_defaults());
         let mut draft = test_draft();
-        state.list.select(Some(navigate_down_row(&state)));
+        state
+            .list
+            .select(Some(row_of(&state, UserEvent::NavigateDown)));
         state.on_key(key(KeyCode::Enter), &mut draft);
 
         state.on_key(key(KeyCode::Null), &mut draft);

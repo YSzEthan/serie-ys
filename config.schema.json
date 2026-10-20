@@ -855,6 +855,9 @@
         "fetch": {
           "$ref": "#/definitions/keybindArray"
         },
+        "pull": {
+          "$ref": "#/definitions/keybindArray"
+        },
         "checkout": {
           "$ref": "#/definitions/keybindArray"
         },
@@ -871,6 +874,9 @@
           "$ref": "#/definitions/keybindArray"
         },
         "toggle_commit_log": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "toggle_label_mode": {
           "$ref": "#/definitions/keybindArray"
         },
         "check_update": {

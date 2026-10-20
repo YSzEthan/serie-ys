@@ -175,6 +175,7 @@ pub enum AppEvent {
     },
     HidePendingOverlay,
     FetchAll,
+    Pull,
     CheckoutCommit {
         target: String,
     },
@@ -1088,11 +1089,13 @@ pub enum UserEvent {
     TaskListToggle,
     DetailPaneToggle,
     Fetch,
+    Pull,
     Checkout,
     MergePr,
     ToggleIssueState,
     TogglePrDraft,
     ToggleCommitLog,
+    ToggleLabelMode,
     CheckUpdate,
     Unknown,
 }
@@ -1151,11 +1154,13 @@ impl UserEvent {
             UserEvent::TaskListToggle => "task_list_toggle",
             UserEvent::DetailPaneToggle => "detail_pane_toggle",
             UserEvent::Fetch => "fetch",
+            UserEvent::Pull => "pull",
             UserEvent::Checkout => "checkout",
             UserEvent::MergePr => "merge_pr",
             UserEvent::ToggleIssueState => "toggle_issue_state",
             UserEvent::TogglePrDraft => "toggle_pr_draft",
             UserEvent::ToggleCommitLog => "toggle_commit_log",
+            UserEvent::ToggleLabelMode => "toggle_label_mode",
             UserEvent::CheckUpdate => "check_update",
             UserEvent::Unknown => return None,
         };
@@ -1218,11 +1223,13 @@ impl UserEvent {
             UserEvent::TaskListToggle => t!("event.desc.task_list_toggle"),
             UserEvent::DetailPaneToggle => t!("event.desc.detail_pane_toggle"),
             UserEvent::Fetch => t!("event.desc.fetch"),
+            UserEvent::Pull => t!("event.desc.pull"),
             UserEvent::Checkout => t!("event.desc.checkout"),
             UserEvent::MergePr => t!("event.desc.merge_pr"),
             UserEvent::ToggleIssueState => t!("event.desc.toggle_issue_state"),
             UserEvent::TogglePrDraft => t!("event.desc.toggle_pr_draft"),
             UserEvent::ToggleCommitLog => t!("event.desc.toggle_commit_log"),
+            UserEvent::ToggleLabelMode => t!("event.desc.toggle_label_mode"),
             UserEvent::CheckUpdate => t!("event.desc.check_update"),
             UserEvent::Unknown => return None,
         };
@@ -1304,11 +1311,13 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "task_list_toggle" => Ok(UserEvent::TaskListToggle),
                         "detail_pane_toggle" => Ok(UserEvent::DetailPaneToggle),
                         "fetch" => Ok(UserEvent::Fetch),
+                        "pull" => Ok(UserEvent::Pull),
                         "checkout" => Ok(UserEvent::Checkout),
                         "merge_pr" => Ok(UserEvent::MergePr),
                         "toggle_issue_state" => Ok(UserEvent::ToggleIssueState),
                         "toggle_pr_draft" => Ok(UserEvent::TogglePrDraft),
                         "toggle_commit_log" => Ok(UserEvent::ToggleCommitLog),
+                        "toggle_label_mode" => Ok(UserEvent::ToggleLabelMode),
                         "check_update" => Ok(UserEvent::CheckUpdate),
                         _ => {
                             let msg = t!("event.err.unknown_user_event", value = value);
@@ -1352,6 +1361,254 @@ impl UserEvent {
                 | UserEvent::HalfPageUp
                 | UserEvent::HalfPageDown
         )
+    }
+}
+
+/// 事件被處理的畫面，跟 `View` 的 variant 一一對應（`View::Default` 除外）。
+///
+/// 同一顆鍵可以綁給不同畫面各自處理的事件（commit 清單的 `CreateTag` 與 GitHub
+/// 介面的 `ToggleLabelMode` 共用 `t`）。只有「同一個畫面都處理」或「其中一個是
+/// 全域事件」才算衝突，見 [`UserEvent::conflicts_with`]。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum KeyScope {
+    List,
+    Detail,
+    Refs,
+    GitHub,
+    CreateTag,
+    DeleteTag,
+    DeleteRef,
+    Help,
+    UserCommand,
+    Shell,
+    ReleaseNotes,
+}
+
+impl KeyScope {
+    pub const ALL: [KeyScope; 11] = [
+        KeyScope::List,
+        KeyScope::Detail,
+        KeyScope::Refs,
+        KeyScope::GitHub,
+        KeyScope::CreateTag,
+        KeyScope::DeleteTag,
+        KeyScope::DeleteRef,
+        KeyScope::Help,
+        KeyScope::UserCommand,
+        KeyScope::Shell,
+        KeyScope::ReleaseNotes,
+    ];
+
+    /// 這個畫面是否處理 `event`。不含全域事件（見 [`UserEvent::is_global`]）。
+    ///
+    /// 新增事件、或讓某個 view 多處理一個事件時，這張表要同步改；
+    /// `view::help` 的 `scope_consumes_matches_help` 測試會比對它與說明頁。
+    pub fn consumes(self, event: UserEvent) -> bool {
+        use UserEvent as E;
+        match self {
+            KeyScope::List => matches!(
+                event,
+                E::NavigateDown
+                    | E::NavigateUp
+                    | E::NavigateRight
+                    | E::SelectDown
+                    | E::SelectUp
+                    | E::GoToTop
+                    | E::GoToBottom
+                    | E::GoToHead
+                    | E::GoToParent
+                    | E::GoToChild
+                    | E::GoToNext
+                    | E::GoToPrevious
+                    | E::RefList
+                    | E::Search
+                    | E::Filter
+                    | E::FuzzyToggle
+                    | E::IgnoreCaseToggle
+                    | E::TargetToggle
+                    | E::ShortCopy
+                    | E::FullCopy
+                    | E::BranchCopy
+                    | E::FullBranchCopy
+                    | E::TagCopy
+                    | E::CreateTag
+                    | E::DeleteTag
+                    | E::DeleteRef
+                    | E::RemoteRefsToggle
+                    | E::Fetch
+                    | E::Pull
+                    | E::Checkout
+                    | E::MarkToggle
+                    | E::Refresh
+                    | E::ShellToggle
+                    | E::UserCommand(_)
+            ),
+            KeyScope::Detail => matches!(
+                event,
+                E::Close
+                    | E::DetailPaneToggle
+                    | E::NavigateDown
+                    | E::NavigateUp
+                    | E::NavigateRight
+                    | E::NavigateLeft
+                    | E::SelectDown
+                    | E::SelectUp
+                    | E::HalfPageDown
+                    | E::HalfPageUp
+                    | E::PageDown
+                    | E::PageUp
+                    | E::GoToNext
+                    | E::GoToPrevious
+                    | E::GoToParent
+                    | E::GoToChild
+                    | E::ShortCopy
+                    | E::FullCopy
+                    | E::BranchCopy
+                    | E::FullBranchCopy
+                    | E::TagCopy
+                    | E::RemoteRefsToggle
+                    | E::RefList
+                    | E::MarkToggle
+                    | E::Refresh
+                    | E::ShellToggle
+            ),
+            KeyScope::Refs => matches!(
+                event,
+                E::RefList
+                    | E::NavigateDown
+                    | E::NavigateUp
+                    | E::NavigateRight
+                    | E::NavigateLeft
+                    | E::SelectDown
+                    | E::SelectUp
+                    | E::Checkout
+                    | E::DeleteRef
+                    | E::DeleteTag
+                    | E::Refresh
+            ),
+            KeyScope::GitHub => matches!(
+                event,
+                E::Close
+                    | E::RefList
+                    | E::NavigateDown
+                    | E::NavigateUp
+                    | E::NavigateRight
+                    | E::NavigateLeft
+                    | E::SelectDown
+                    | E::SelectUp
+                    | E::PageDown
+                    | E::PageUp
+                    | E::HalfPageDown
+                    | E::HalfPageUp
+                    | E::GoToTop
+                    | E::GoToBottom
+                    | E::Search
+                    | E::Filter
+                    | E::ShortCopy
+                    | E::FullCopy
+                    | E::TagCopy
+                    | E::DetailPaneToggle
+                    | E::Refresh
+                    | E::Fetch
+                    | E::MergePr
+                    | E::ToggleIssueState
+                    | E::TogglePrDraft
+                    | E::ToggleCommitLog
+                    | E::ToggleLabelMode
+            ),
+            KeyScope::CreateTag => matches!(
+                event,
+                E::NavigateDown | E::NavigateUp | E::NavigateRight | E::NavigateLeft
+            ),
+            KeyScope::DeleteTag => matches!(
+                event,
+                E::NavigateDown
+                    | E::NavigateUp
+                    | E::NavigateRight
+                    | E::NavigateLeft
+                    | E::SelectDown
+                    | E::SelectUp
+            ),
+            KeyScope::DeleteRef => {
+                matches!(event, E::NavigateDown | E::NavigateRight | E::NavigateLeft)
+            }
+            KeyScope::Help => matches!(
+                event,
+                E::Close
+                    | E::NavigateLeft
+                    | E::NavigateDown
+                    | E::NavigateUp
+                    | E::SelectDown
+                    | E::SelectUp
+            ),
+            KeyScope::UserCommand => matches!(
+                event,
+                E::Close
+                    | E::NavigateDown
+                    | E::NavigateUp
+                    | E::SelectDown
+                    | E::SelectUp
+                    | E::PageDown
+                    | E::PageUp
+                    | E::HalfPageDown
+                    | E::HalfPageUp
+                    | E::GoToTop
+                    | E::GoToBottom
+                    | E::GoToParent
+                    | E::GoToChild
+                    | E::MarkToggle
+                    | E::Refresh
+                    | E::UserCommand(_)
+            ),
+            // Shell 只處理全域的 Confirm／Cancel，其他按鍵一律當文字輸入。
+            KeyScope::Shell => false,
+            KeyScope::ReleaseNotes => matches!(
+                event,
+                E::Close
+                    | E::NavigateLeft
+                    | E::NavigateDown
+                    | E::NavigateUp
+                    | E::SelectDown
+                    | E::SelectUp
+                    | E::PageDown
+                    | E::PageUp
+                    | E::HalfPageDown
+                    | E::HalfPageUp
+            ),
+        }
+    }
+}
+
+impl UserEvent {
+    /// 不經 view 分派、由 app 層或狀態列提示攔截的事件（`App::handle_key`、
+    /// `global_app_event`、`StatusLineState` 的各個 `handle_*_key`）。它們不屬於
+    /// 任何 [`KeyScope`]，所以跟所有其他事件都衝突。
+    ///
+    /// `HelpToggle`、`GitHubToggle`、`CheckUpdate` 實際只在 browsing view
+    /// （List／Detail／Refs）被攔，列為全域是保守做法、跟現況一致。
+    /// `DetailPaneToggle`（related picker）不列：picker 只從 GitHub 介面開，
+    /// GitHub 畫面本來就處理它。
+    pub fn is_global(self) -> bool {
+        matches!(
+            self,
+            UserEvent::ForceQuit
+                | UserEvent::Quit
+                | UserEvent::HelpToggle
+                | UserEvent::GitHubToggle
+                | UserEvent::CheckUpdate
+                | UserEvent::Cancel
+                | UserEvent::Confirm
+        )
+    }
+
+    /// 這兩個事件能不能綁同一顆鍵。keybind 載入、`assign`、wizard 都只問這個。
+    pub fn conflicts_with(self, other: UserEvent) -> bool {
+        self != other
+            && (self.is_global()
+                || other.is_global()
+                || KeyScope::ALL
+                    .iter()
+                    .any(|s| s.consumes(self) && s.consumes(other)))
     }
 }
 
@@ -1781,11 +2038,13 @@ mod tests {
             UserEvent::TaskListToggle,
             UserEvent::DetailPaneToggle,
             UserEvent::Fetch,
+            UserEvent::Pull,
             UserEvent::Checkout,
             UserEvent::MergePr,
             UserEvent::ToggleIssueState,
             UserEvent::TogglePrDraft,
             UserEvent::ToggleCommitLog,
+            UserEvent::ToggleLabelMode,
             UserEvent::CheckUpdate,
         ];
 

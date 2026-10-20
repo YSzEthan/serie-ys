@@ -1,4 +1,4 @@
-use std::{fmt, ops::Deref};
+use std::fmt;
 
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use rust_i18n::t;
@@ -8,7 +8,7 @@ use serde::{
     Deserialize,
 };
 
-use crate::event::UserEvent;
+use crate::event::{KeyScope, UserEvent};
 
 const DEFAULT_KEY_BIND: &str = include_str!("../assets/default-keybind.toml");
 
@@ -20,16 +20,9 @@ pub struct KeyBind {
     bindings: Vec<(UserEvent, Vec<KeyEvent>)>,
     /// 由 `bindings` 導出的查表快取，只在 `rebuild()` 一處寫入。熱路徑
     /// （每一次按鍵）走這裡，維持 O(1)；`bindings` 只在 wizard、help、docs
-    /// 產生器這些非熱路徑被線性掃描。
-    map: FxHashMap<KeyEvent, UserEvent>,
-}
-
-impl Deref for KeyBind {
-    type Target = FxHashMap<KeyEvent, UserEvent>;
-
-    fn deref(&self) -> &Self::Target {
-        &self.map
-    }
+    /// 產生器這些非熱路徑被線性掃描。同一顆鍵可以對到多個事件（它們分屬不同
+    /// 畫面，見 [`UserEvent::conflicts_with`]），順序是 `bindings` 的宣告順序。
+    map: FxHashMap<KeyEvent, Vec<UserEvent>>,
 }
 
 impl KeyBind {
@@ -58,14 +51,15 @@ impl KeyBind {
 
     /// 唯一的寫入點：把 `keys` 指派給 `event`，取代它原本的全部綁定。
     ///
-    /// 先把 `keys` 從其他任何 action 身上拿掉，再指派——不做這一步，
-    /// `bindings` 內部會自相矛盾（同一顆鍵同時屬於兩個 action），
-    /// `rebuild()` 的結果就要看 Vec 順序決定，而不是「最後指派的人算數」。
-    /// 做了這一步之後，`map[k] == e ⟺ k ∈ bindings 裡 e 那條 Vec` 這條
-    /// 不變式恆成立，無法表示違反它的狀態。
+    /// 先把 `keys` 從跟 `event` 衝突的 action 身上拿掉，再指派——不做這一步，
+    /// `bindings` 內部會自相矛盾（同一顆鍵同時屬於兩個會互相干擾的 action），
+    /// 要看 Vec 順序決定誰贏，而不是「最後指派的人算數」。不衝突的 action
+    /// （分屬不同畫面）保留原本的鍵。做了這一步之後，`map[k]` 內的事件兩兩不
+    /// 衝突、且 `e ∈ map[k] ⟺ k ∈ bindings 裡 e 那條 Vec` 這兩條不變式恆成立，
+    /// 無法表示違反它們的狀態。
     pub fn assign(&mut self, event: UserEvent, keys: Vec<KeyEvent>) {
         for (e, existing) in self.bindings.iter_mut() {
-            if *e != event {
+            if e.conflicts_with(event) {
                 existing.retain(|k| !keys.contains(k));
             }
         }
@@ -84,11 +78,35 @@ impl KeyBind {
     }
 
     fn rebuild(&mut self) {
-        self.map = self
-            .bindings
+        let mut map: FxHashMap<KeyEvent, Vec<UserEvent>> = FxHashMap::default();
+        for (e, keys) in &self.bindings {
+            for k in keys {
+                map.entry(*k).or_default().push(*e);
+            }
+        }
+        self.map = map;
+    }
+
+    /// 這顆鍵綁著的全部事件（可能不只一個，它們分屬不同畫面）。
+    pub fn events(&self, key: &KeyEvent) -> &[UserEvent] {
+        self.map.get(key).map_or(&[], Vec::as_slice)
+    }
+
+    /// 這顆鍵是否綁著 `event`。
+    pub fn has(&self, key: &KeyEvent, event: UserEvent) -> bool {
+        self.events(key).contains(&event)
+    }
+
+    /// 在 `scope` 這個畫面按下 `key` 該觸發哪個事件：全域事件優先，其次是
+    /// 該畫面處理的事件。兩者都沒有就退回第一個候選——view 收到自己不處理的
+    /// 事件會忽略、輸入模式則當成文字，跟過去「一鍵一事件」時的行為一致。
+    pub fn resolve(&self, key: &KeyEvent, scope: Option<KeyScope>) -> Option<UserEvent> {
+        let candidates = self.events(key);
+        candidates
             .iter()
-            .flat_map(|(e, keys)| keys.iter().map(move |k| (*k, *e)))
-            .collect();
+            .find(|e| e.is_global() || scope.is_some_and(|s| s.consumes(**e)))
+            .or_else(|| candidates.first())
+            .copied()
     }
 
     /// 狀態列提示要顯示的那一個鍵：宣告順序的第一個。未綁定、或字串化後為
@@ -165,7 +183,7 @@ impl<'de> Deserialize<'de> for KeyBind {
             {
                 let mut bindings: Vec<(UserEvent, Vec<KeyEvent>)> = Vec::new();
                 // 只用來偵測衝突，真值是 `bindings`。
-                let mut owner: FxHashMap<KeyEvent, UserEvent> = FxHashMap::default();
+                let mut owner: FxHashMap<KeyEvent, Vec<UserEvent>> = FxHashMap::default();
 
                 while let Some((user_event, key_strings)) =
                     map.next_entry::<UserEvent, Vec<String>>()?
@@ -196,7 +214,13 @@ impl<'de> Deserialize<'de> for KeyBind {
                                 return Err(serde::de::Error::custom(msg));
                             }
                         };
-                        if let Some(conflict_user_event) = owner.insert(key_event, user_event) {
+                        // 同一個 event 把同一顆鍵寫兩次也算（`conflicts_with` 對自己回
+                        // `false`，這裡要另外擋，否則 `map` 會有重複候選）。
+                        let owners = owner.entry(key_event).or_default();
+                        if let Some(conflict_user_event) = owners
+                            .iter()
+                            .find(|o| **o == user_event || o.conflicts_with(user_event))
+                        {
                             let msg = t!(
                                 "cli.keybind.multiple_events",
                                 key = format!("{key_event:?}"),
@@ -205,6 +229,7 @@ impl<'de> Deserialize<'de> for KeyBind {
                             );
                             return Err(serde::de::Error::custom(msg));
                         }
+                        owners.push(user_event);
                         key_events.push(key_event);
                     }
                     bindings.push((user_event, key_events));
@@ -447,7 +472,7 @@ pub fn key_event_to_config_string(key_event: KeyEvent) -> Option<String> {
 }
 
 /// `KeyEvent` 的 `PartialEq` 本身就是這裡要的判準：它在比較前先各自跑一次
-/// `normalize_case`（大寫字元 ⟺ 有 SHIFT），跟執行期 `map.get(&key)` 查表
+/// `normalize_case`（大寫字元 ⟺ 有 SHIFT），跟執行期 `map.get(key)` 查表
 /// 用的是同一套等價關係——不必在這裡另外重新推理一次「這兩個算不算同一顆
 /// 鍵」。
 fn round_trip_checked(key_event: KeyEvent, s: String) -> Option<String> {
@@ -459,15 +484,145 @@ fn round_trip_checked(key_event: KeyEvent, s: String) -> Option<String> {
 mod tests {
     use super::*;
 
+    fn shift_p() -> KeyEvent {
+        KeyEvent::new(KeyCode::Char('P'), KeyModifiers::SHIFT)
+    }
+
     /// 預設 TOML 由 `KeyBind::new()` 以 `.expect()` 解析 — 未知的 event 名稱或
-    /// 同一按鍵綁到兩個 event，都只會在啟動時 panic。這裡把它拉進 CI。
+    /// 同一按鍵綁到兩個互相衝突的 event，都只會在啟動時 panic。這裡把它拉進 CI。
     #[test]
     fn default_keybind_parses() {
         let keybind = KeyBind::new(None);
         assert_eq!(
-            keybind.get(&KeyEvent::new(KeyCode::Char('P'), KeyModifiers::SHIFT)),
-            Some(&UserEvent::TogglePrDraft),
+            keybind.resolve(&shift_p(), None),
+            Some(UserEvent::TogglePrDraft),
         );
+    }
+
+    /// 同一顆鍵、不同畫面各自處理的事件，可以出現在同一份設定檔；按下時依目前
+    /// 畫面決定觸發哪一個。
+    #[test]
+    fn different_scopes_can_share_a_key_in_one_file() {
+        let toml = r#"
+            go_to_head = ["shift-p"]
+            toggle_pr_draft = ["shift-p"]
+        "#;
+        let keybind = KeyBind::new(Some(toml::from_str(toml).unwrap()));
+
+        assert_eq!(
+            keybind.resolve(&shift_p(), Some(KeyScope::List)),
+            Some(UserEvent::GoToHead)
+        );
+        assert_eq!(
+            keybind.resolve(&shift_p(), Some(KeyScope::GitHub)),
+            Some(UserEvent::TogglePrDraft)
+        );
+    }
+
+    /// 預設的 `t`：commit 清單是建立 tag，GitHub 介面是切換 label 顯示。
+    #[test]
+    fn default_t_means_create_tag_in_list_and_label_mode_in_github() {
+        let keybind = KeyBind::new(None);
+        let t = KeyEvent::new(KeyCode::Char('t'), KeyModifiers::empty());
+
+        assert_eq!(
+            keybind.resolve(&t, Some(KeyScope::List)),
+            Some(UserEvent::CreateTag)
+        );
+        assert_eq!(
+            keybind.resolve(&t, Some(KeyScope::GitHub)),
+            Some(UserEvent::ToggleLabelMode)
+        );
+    }
+
+    /// 預設的 `p`：commit 清單是 pull，GitHub 介面維持 merge PR。
+    #[test]
+    fn default_p_means_pull_in_list_and_merge_pr_in_github() {
+        let keybind = KeyBind::new(None);
+        let p = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::empty());
+
+        assert_eq!(
+            keybind.resolve(&p, Some(KeyScope::List)),
+            Some(UserEvent::Pull)
+        );
+        assert_eq!(
+            keybind.resolve(&p, Some(KeyScope::GitHub)),
+            Some(UserEvent::MergePr)
+        );
+    }
+
+    /// 目前畫面不處理這顆鍵綁的任何事件時，退回第一個候選——view 會忽略它，
+    /// 輸入模式（shell、搜尋框）則當成文字。
+    #[test]
+    fn resolve_falls_back_to_first_candidate_when_scope_consumes_none() {
+        let keybind = KeyBind::new(None);
+        let t = KeyEvent::new(KeyCode::Char('t'), KeyModifiers::empty());
+
+        assert_eq!(
+            keybind.resolve(&t, Some(KeyScope::Shell)),
+            Some(UserEvent::CreateTag)
+        );
+        assert_eq!(keybind.resolve(&t, None), Some(UserEvent::CreateTag));
+    }
+
+    /// 全域事件不分畫面都優先。
+    #[test]
+    fn resolve_prefers_global_events() {
+        let keybind = KeyBind::new(None);
+        let esc = KeyEvent::new(KeyCode::Esc, KeyModifiers::empty());
+
+        for scope in KeyScope::ALL {
+            assert_eq!(keybind.resolve(&esc, Some(scope)), Some(UserEvent::Cancel));
+        }
+    }
+
+    /// 同一份檔案內，同畫面的兩個事件、或一方是全域事件，共用一顆鍵都要拒絕。
+    #[test]
+    fn same_scope_or_global_sharing_in_one_file_is_rejected() {
+        // Fetch 與 TogglePrDraft 都在 GitHub 介面
+        let same_scope = r#"
+            fetch = ["shift-p"]
+            toggle_pr_draft = ["shift-p"]
+        "#;
+        assert!(toml::from_str::<KeyBind>(same_scope).is_err());
+
+        // Quit 是全域事件
+        let global = r#"
+            quit = ["x"]
+            fetch = ["x"]
+        "#;
+        assert!(toml::from_str::<KeyBind>(global).is_err());
+    }
+
+    /// 同一個事件把同一顆鍵寫兩次，`map` 會有重複候選，所以仍然拒絕。
+    #[test]
+    fn same_event_listing_a_key_twice_is_rejected() {
+        let toml = r#"navigate_up = ["k", "k"]"#;
+        assert!(toml::from_str::<KeyBind>(toml).is_err());
+    }
+
+    /// 使用者設定蓋過內建預設時，只搶「會互相干擾」的事件：分屬不同畫面的保留
+    /// 原本的鍵。
+    #[test]
+    fn assign_only_steals_from_conflicting_events() {
+        let mut keybind = KeyBind::new(None);
+
+        keybind.assign(UserEvent::GoToHead, vec![shift_p()]);
+        assert_eq!(
+            keybind.events(&shift_p()),
+            &[UserEvent::GoToHead, UserEvent::TogglePrDraft]
+        );
+
+        // MergePr 與 TogglePrDraft 同在 GitHub 介面（要失去這顆鍵），
+        // 跟 GoToHead（commit 清單）不衝突（保留）
+        keybind.assign(UserEvent::MergePr, vec![shift_p()]);
+        assert_eq!(
+            keybind.events(&shift_p()),
+            &[UserEvent::GoToHead, UserEvent::MergePr]
+        );
+        assert!(!keybind
+            .key_events(UserEvent::TogglePrDraft)
+            .contains(&shift_p()));
     }
 
     #[rustfmt::skip]
@@ -540,7 +695,10 @@ mod tests {
 
         let actual: KeyBind = toml::from_str(toml).unwrap();
 
-        assert_eq!(*actual, expected);
+        // 這份 toml 裡的事件互不衝突，所以每顆鍵恰好一個事件
+        let expected: FxHashMap<KeyEvent, Vec<UserEvent>> =
+            expected.into_iter().map(|(k, e)| (k, vec![e])).collect();
+        assert_eq!(actual.map, expected);
     }
 
     /// `display_key` 取的是**設定檔宣告順序的第一個鍵**，不是 `keys_for_event`
@@ -671,16 +829,22 @@ mod tests {
         let keybind = KeyBind::new(Some(patch));
 
         assert_eq!(
-            keybind.get(&KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL)),
-            Some(&UserEvent::NavigateDown),
+            keybind.resolve(
+                &KeyEvent::new(KeyCode::Char('n'), KeyModifiers::CONTROL),
+                None
+            ),
+            Some(UserEvent::NavigateDown),
         );
         // 預設的 j／down 不再生效
         assert_eq!(
-            keybind.get(&KeyEvent::new(KeyCode::Char('j'), KeyModifiers::empty())),
+            keybind.resolve(
+                &KeyEvent::new(KeyCode::Char('j'), KeyModifiers::empty()),
+                None
+            ),
             None,
         );
         assert_eq!(
-            keybind.get(&KeyEvent::new(KeyCode::Down, KeyModifiers::empty())),
+            keybind.resolve(&KeyEvent::new(KeyCode::Down, KeyModifiers::empty()), None),
             None
         );
     }
@@ -695,7 +859,10 @@ mod tests {
             Vec::<String>::new()
         );
         assert_eq!(
-            keybind.get(&KeyEvent::new(KeyCode::Char('r'), KeyModifiers::empty())),
+            keybind.resolve(
+                &KeyEvent::new(KeyCode::Char('r'), KeyModifiers::empty()),
+                None
+            ),
             None,
         );
     }
@@ -709,8 +876,11 @@ mod tests {
         let keybind = KeyBind::new(Some(patch));
 
         assert_eq!(
-            keybind.get(&KeyEvent::new(KeyCode::Char('r'), KeyModifiers::empty())),
-            Some(&UserEvent::Quit),
+            keybind.resolve(
+                &KeyEvent::new(KeyCode::Char('r'), KeyModifiers::empty()),
+                None
+            ),
+            Some(UserEvent::Quit),
         );
         assert!(!keybind
             .keys_for_event(UserEvent::Refresh)

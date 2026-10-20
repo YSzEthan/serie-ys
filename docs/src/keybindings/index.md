@@ -60,6 +60,7 @@
 | <kbd>o</kbd> | 切換 remote refs | `remote_refs_toggle` |
 | <kbd>g</kbd> | 開啟 GitHub issues/PRs | `github_toggle` |
 | <kbd>f</kbd> | fetch 所有 remote | `fetch` |
+| <kbd>p</kbd> | pull 目前 branch（只做 fast-forward） | `pull` |
 | <kbd>Space</kbd> | checkout 選取的 commit/ref | `checkout` |
 | <kbd>a</kbd> | 切換 commit 標記 | `mark_toggle` |
 | <kbd>r</kbd> | 重新整理 | `refresh` |
@@ -139,7 +140,7 @@
 | <kbd>X</kbd> | 關閉／重新開啟 issue 或 PR | `toggle_issue_state` |
 | <kbd>P</kbd> | PR 標為可供 review／轉回 draft | `toggle_pr_draft` |
 | <kbd>z</kbd> | 展開／收合 commit log | `toggle_commit_log` |
-| <kbd>t</kbd> | 切換 label 顯示名稱／色塊 | `create_tag` |
+| <kbd>t</kbd> | 切換 label 顯示名稱／色塊 | `toggle_label_mode` |
 
 ### 建立 Tag
 
