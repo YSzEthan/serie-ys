@@ -175,6 +175,7 @@ pub enum AppEvent {
     },
     HidePendingOverlay,
     FetchAll,
+    Pull,
     CheckoutCommit {
         target: String,
     },
@@ -1088,6 +1089,7 @@ pub enum UserEvent {
     TaskListToggle,
     DetailPaneToggle,
     Fetch,
+    Pull,
     Checkout,
     MergePr,
     ToggleIssueState,
@@ -1152,6 +1154,7 @@ impl UserEvent {
             UserEvent::TaskListToggle => "task_list_toggle",
             UserEvent::DetailPaneToggle => "detail_pane_toggle",
             UserEvent::Fetch => "fetch",
+            UserEvent::Pull => "pull",
             UserEvent::Checkout => "checkout",
             UserEvent::MergePr => "merge_pr",
             UserEvent::ToggleIssueState => "toggle_issue_state",
@@ -1220,6 +1223,7 @@ impl UserEvent {
             UserEvent::TaskListToggle => t!("event.desc.task_list_toggle"),
             UserEvent::DetailPaneToggle => t!("event.desc.detail_pane_toggle"),
             UserEvent::Fetch => t!("event.desc.fetch"),
+            UserEvent::Pull => t!("event.desc.pull"),
             UserEvent::Checkout => t!("event.desc.checkout"),
             UserEvent::MergePr => t!("event.desc.merge_pr"),
             UserEvent::ToggleIssueState => t!("event.desc.toggle_issue_state"),
@@ -1307,6 +1311,7 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "task_list_toggle" => Ok(UserEvent::TaskListToggle),
                         "detail_pane_toggle" => Ok(UserEvent::DetailPaneToggle),
                         "fetch" => Ok(UserEvent::Fetch),
+                        "pull" => Ok(UserEvent::Pull),
                         "checkout" => Ok(UserEvent::Checkout),
                         "merge_pr" => Ok(UserEvent::MergePr),
                         "toggle_issue_state" => Ok(UserEvent::ToggleIssueState),
@@ -1431,6 +1436,7 @@ impl KeyScope {
                     | E::DeleteRef
                     | E::RemoteRefsToggle
                     | E::Fetch
+                    | E::Pull
                     | E::Checkout
                     | E::MarkToggle
                     | E::Refresh
@@ -2032,6 +2038,7 @@ mod tests {
             UserEvent::TaskListToggle,
             UserEvent::DetailPaneToggle,
             UserEvent::Fetch,
+            UserEvent::Pull,
             UserEvent::Checkout,
             UserEvent::MergePr,
             UserEvent::ToggleIssueState,

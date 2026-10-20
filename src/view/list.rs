@@ -230,6 +230,9 @@ impl<'a> ListView<'a> {
             UserEvent::Fetch => {
                 self.tx.send(AppEvent::FetchAll);
             }
+            UserEvent::Pull => {
+                self.tx.send(AppEvent::Pull);
+            }
             UserEvent::DeleteRef if !self.as_list_state().is_virtual_row_selected() => {
                 let refs = self.as_list_state().selected_commit_refs();
                 let (local, _remote) = partition_branches(refs.iter().copied());

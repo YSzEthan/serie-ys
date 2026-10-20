@@ -283,6 +283,7 @@ fn help_blocks(
         b(vec![UserEvent::RemoteRefsToggle], t!("help.list.toggle_remote_refs")),
         b(vec![UserEvent::GitHubToggle], t!("help.list.open_github_issues_prs")),
         b(vec![UserEvent::Fetch], t!("help.list.fetch_all_remotes")),
+        b(vec![UserEvent::Pull], t!("help.list.pull_fast_forward_only")),
         b(vec![UserEvent::Checkout], t!("help.list.checkout_selected_commit_ref")),
         b(vec![UserEvent::MarkToggle], t!("help.list.toggle_mark")),
         b(vec![UserEvent::Refresh], t!("help.list.refresh")),

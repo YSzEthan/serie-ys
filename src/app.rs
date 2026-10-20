@@ -667,6 +667,9 @@ impl App<'_> {
                 AppEvent::FetchAll => {
                     self.fetch_all();
                 }
+                AppEvent::Pull => {
+                    self.pull();
+                }
                 AppEvent::CheckoutCommit { target } => {
                     self.checkout_commit(target);
                 }
@@ -2208,6 +2211,43 @@ impl App<'_> {
         );
     }
 
+    /// 把目前 branch 快轉到 upstream，只做 fast-forward：分岔時 git 報錯、本地
+    /// 不動，不會產生 merge commit 或衝突。
+    ///
+    /// - `--no-rebase`：使用者設了 `pull.rebase=true` 時，git 在 fetch 之前就會
+    ///   跑 clean-worktree 檢查，tracked 檔有改動就報 `cannot pull with rebase`，
+    ///   即使快轉其實做得到。加了它一定走 merge 路徑，再由 `--ff-only` 限制只
+    ///   能快轉。
+    /// - `-c advice.diverging=false`：分岔是最常見的失敗，git 會先印約 9 行
+    ///   `hint:`，狀態列會把它們接成一行，真正的 `fatal: Not possible to
+    ///   fast-forward` 就被擠掉。
+    ///
+    /// `on_success` 刻意不送 `AutoFetchResync`：auto-fetch 的基準是所有 remote
+    /// 的 ls-remote 指紋，pull 只 fetch upstream 所在的 remote，在這裡重算會把
+    /// 其他 remote 的新內容當成已經看過而漏 fetch。代價是下一輪 auto-fetch 會
+    /// 多跑一次（跳出「自動 fetch 中…」overlay 與成功通知），而且
+    /// `AutoFetchResync` 順帶的 `reload_github_branches()` 也不會觸發。
+    fn pull(&self) {
+        spawn_git_task(
+            self.ec,
+            GitTask {
+                repo: self.repository.path(),
+                args: &[
+                    "-c",
+                    "advice.diverging=false",
+                    "pull",
+                    "--no-rebase",
+                    "--ff-only",
+                ],
+                pending_msg: t!("app.pull.pending").into_owned(),
+                success_msg: t!("app.pull.done").into_owned(),
+                error_prefix: t!("app.pull.failed"),
+                timeout: GIT_PULL_TIMEOUT,
+                on_success: None,
+            },
+        );
+    }
+
     fn checkout_commit(&self, target: String) {
         spawn_git_task(
             self.ec,
@@ -2500,6 +2540,15 @@ const GIT_FETCH_TIMEOUT: Duration = Duration::from_secs(60);
 /// 大到任何合法操作都碰不到，這裡只防真的卡死（例如掛掉的 smudge/clean
 /// filter）。
 const GIT_CHECKOUT_TIMEOUT: Duration = Duration::from_secs(1800);
+
+/// `pull --ff-only` 的逾時預算。`git pull` 的 fetch 與 merge 都是它另外開的
+/// 子行程，`run_with_timeout` 的 `kill()` 只殺得到 `git pull` 本身，所以逾時只
+/// 決定「什麼時候不再等」，不是中止操作。
+///
+/// 太短會對其實會成功的 pull 回報假失敗（錯誤路徑不送 `AutoRefresh`）。如果
+/// 將來 `run_with_timeout` 改成殺整個 process group，merge 階段被 SIGKILL 會
+/// 留下 `.git/index.lock`，到時要改送 SIGTERM。
+const GIT_PULL_TIMEOUT: Duration = Duration::from_secs(1800);
 
 /// `spawn_git_task` 的參數包——原本 7 個位置參數裡 `pending_msg`／
 /// `success_msg`／`error_prefix` 三個相鄰同型別，寫反編譯器抓不到（跟

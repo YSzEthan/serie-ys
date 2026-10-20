@@ -324,6 +324,9 @@ auto-fetch 共用同一個設定。
 prune 仍然交給你自己的 git `fetch.prune`／`remote.<name>.prune` 設定決定
 ——這樣沒有動過這個開關的人，手動 `f` 的行為完全不受影響。
 
+`p`（`git pull --ff-only`）不受這個設定影響，它的 fetch 階段照你自己的 git
+`fetch.prune` 設定。
+
 - 型別：`string`（enum）
 - 預設值：`off`
 - 可選值：

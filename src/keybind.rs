@@ -535,6 +535,22 @@ mod tests {
         );
     }
 
+    /// 預設的 `p`：commit 清單是 pull，GitHub 介面維持 merge PR。
+    #[test]
+    fn default_p_means_pull_in_list_and_merge_pr_in_github() {
+        let keybind = KeyBind::new(None);
+        let p = KeyEvent::new(KeyCode::Char('p'), KeyModifiers::empty());
+
+        assert_eq!(
+            keybind.resolve(&p, Some(KeyScope::List)),
+            Some(UserEvent::Pull)
+        );
+        assert_eq!(
+            keybind.resolve(&p, Some(KeyScope::GitHub)),
+            Some(UserEvent::MergePr)
+        );
+    }
+
     /// 目前畫面不處理這顆鍵綁的任何事件時，退回第一個候選——view 會忽略它，
     /// 輸入模式（shell、搜尋框）則當成文字。
     #[test]

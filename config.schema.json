@@ -855,6 +855,9 @@
         "fetch": {
           "$ref": "#/definitions/keybindArray"
         },
+        "pull": {
+          "$ref": "#/definitions/keybindArray"
+        },
         "checkout": {
           "$ref": "#/definitions/keybindArray"
         },
