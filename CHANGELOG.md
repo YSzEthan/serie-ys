@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.10.0](https://github.com/YSzEthan/serie-ys/compare/v4.9.2...v4.10.0) (2026-10-20)
+
+
+### Features
+
+* 按鍵衝突改依畫面判斷，並新增 p = git pull --ff-only (#165) (#166) (#167) ([2de90d5](https://github.com/YSzEthan/serie-ys/commit/2de90d56efafb23ead83fc627a57f319656a0e54))
+
 ## [4.9.2](https://github.com/YSzEthan/serie-ys/compare/v4.9.1...v4.9.2) (2026-10-19)
 
 
