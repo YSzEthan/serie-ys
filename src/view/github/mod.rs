@@ -129,9 +129,8 @@ enum LoadState {
 /// GitHub 模式列表 labels 的顯示方式，`t` 切換。色塊模式讓標題有更多空間，
 /// 代價是看不到 label 名稱——preview 永遠顯示完整名稱，不受這個設定影響。
 ///
-/// 沒有另外分配鍵位：`t` 在 GitHub 模式下沒有既有用途（`create_tag` 只在
-/// commit 清單有意義），直接重用 `UserEvent::CreateTag` 觸發，省一個新的
-/// config 鍵名，`t` 在 commit 清單仍照舊是建立 tag。
+/// 由 `UserEvent::ToggleLabelMode` 觸發，預設鍵 `t`——跟 commit 清單的
+/// `create_tag` 同鍵，不衝突：兩者分屬不同畫面（見 `KeyScope`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum LabelMode {
     #[default]
@@ -208,7 +207,7 @@ pub struct GitHubView<'a> {
     /// commit／CI 區塊是逐筆顯示還是收合成單一摘要列，預設收合。全有全無
     /// （`z` 切換整個區塊），不是逐筆切換。
     expand_commits: bool,
-    /// labels 顯示名稱還是色塊，`t` 切換（重用 `CreateTag`，理由見上面
+    /// labels 顯示名稱還是色塊，`t` 切換（`ToggleLabelMode`，見上面
     /// `LabelMode` 的註解）。session 內由 `App::github_label_mode` 保存
     /// （關掉 GitHub 模式再開仍維持），重啟 serie 回預設。
     label_mode: LabelMode,
@@ -1042,8 +1041,12 @@ impl<'a> GitHubView<'a> {
 
     /// 只在色塊模式下顯示——名稱模式是預設，不需要提示佔狀態列空間。
     fn label_mode_hint(&self) -> Option<HintSpec> {
-        (self.label_mode == LabelMode::Swatches)
-            .then(|| h(&[UserEvent::CreateTag], t!("common.hint.show_label_names")))
+        (self.label_mode == LabelMode::Swatches).then(|| {
+            h(
+                &[UserEvent::ToggleLabelMode],
+                t!("common.hint.show_label_names"),
+            )
+        })
     }
 
     pub fn jump_to_issue(&mut self, number: u64) -> bool {
@@ -3164,16 +3167,16 @@ mod tests {
     fn label_compact_toggle_flips_on_both_tabs_and_both_foci() {
         let mut pr_view = view_with_body("body".to_string());
         assert_eq!(pr_view.label_mode, LabelMode::Names);
-        pr_view.handle_list_event(UserEvent::CreateTag, 1);
+        pr_view.handle_list_event(UserEvent::ToggleLabelMode, 1);
         assert_eq!(pr_view.label_mode, LabelMode::Swatches);
-        pr_view.handle_preview_event(UserEvent::CreateTag, 1);
+        pr_view.handle_preview_event(UserEvent::ToggleLabelMode, 1);
         assert_eq!(pr_view.label_mode, LabelMode::Names);
 
         let mut issue_view = view_with_issue("issue body".to_string());
         assert_eq!(issue_view.label_mode, LabelMode::Names);
-        issue_view.handle_list_event(UserEvent::CreateTag, 1);
+        issue_view.handle_list_event(UserEvent::ToggleLabelMode, 1);
         assert_eq!(issue_view.label_mode, LabelMode::Swatches);
-        issue_view.handle_preview_event(UserEvent::CreateTag, 1);
+        issue_view.handle_preview_event(UserEvent::ToggleLabelMode, 1);
         assert_eq!(issue_view.label_mode, LabelMode::Names);
     }
 
@@ -3189,7 +3192,7 @@ mod tests {
         assert_eq!(view.label_mode, LabelMode::Names);
 
         view.handle_event(
-            UserEventWithCount::new(UserEvent::CreateTag, 1),
+            UserEventWithCount::new(UserEvent::ToggleLabelMode, 1),
             KeyEvent::from(KeyCode::Char('t')),
         );
 
@@ -3211,7 +3214,7 @@ mod tests {
         let has_hint = |view: &GitHubView<'_>| {
             view.status_hints()
                 .iter()
-                .any(|(events, _)| events.contains(&UserEvent::CreateTag))
+                .any(|(events, _)| events.contains(&UserEvent::ToggleLabelMode))
         };
 
         assert!(!has_hint(&view), "names mode must not show the hint");

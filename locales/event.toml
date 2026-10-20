@@ -208,6 +208,10 @@ en-US = "Toggle PR draft state"
 zh-TW = "展開／收合 commit log"
 en-US = "Expand/collapse commit log"
 
+[event.desc.toggle_label_mode]
+zh-TW = "切換 label 顯示名稱／色塊"
+en-US = "Toggle label names/color swatches"
+
 [event.desc.check_update]
 zh-TW = "檢查更新"
 en-US = "Check for updates"

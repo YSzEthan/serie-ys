@@ -13,6 +13,22 @@
   `navigate_down` 生效了。
 - 把快捷鍵設成 `[]` 即可停用該 action（是上一條規則的特例：取代成空陣列）。
 
+## 同一顆鍵綁給多個 action
+
+同一顆鍵可以綁給**分屬不同畫面**的 action。例如預設的 `t`，在 commit 清單是 `create_tag`（建立 tag），在 GitHub 介面是 `toggle_label_mode`（切換 label 顯示）；按下時依你目前所在的畫面決定觸發哪一個。
+
+以下情況不行，因為按下去分不出要做哪一個：
+
+- 兩個 action 在**同一個畫面**都有作用（例如 `fetch` 與 `toggle_pr_draft` 在 GitHub 介面都有作用）。
+- 其中一個是**全域** action：`force_quit`、`quit`、`help_toggle`、`github_toggle`、`check_update`、`cancel`、`confirm`。
+
+撞鍵時的處理依來源而定：
+
+- 同一份設定檔裡撞鍵：啟動時報錯。
+- 設定檔跟內建預設撞鍵：以你的設定為準，內建預設的 action 會失去那顆鍵。
+
+每個 action 在哪些畫面有作用，請看[預設快捷鍵](./index.md)裡各畫面的分區。
+
 ## 按鍵格式
 
 可以使用以下格式定義快捷鍵。

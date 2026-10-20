@@ -6,7 +6,7 @@ use tui_input::Input;
 
 use crate::{
     app::AppContext,
-    event::{EventController, Sender, UserEventWithCount},
+    event::{EventController, KeyScope, Sender, UserEventWithCount},
     git::{Commit, CommitExtra, CommitHash, FileChange, Ref, RefType, Repository, WorkingChanges},
     view::{
         create_tag::CreateTagView, delete_ref::DeleteRefView, delete_tag::DeleteTagView,
@@ -118,6 +118,25 @@ impl<'a> View<'a> {
             View::Detail(view) => view.request_graph_clear(),
             View::Shell(view) => view.request_graph_clear(),
             _ => {}
+        }
+    }
+
+    /// 目前這個畫面處理哪一組按鍵事件，`KeyBind::resolve` 據此從同一顆鍵綁的
+    /// 多個事件中挑出該觸發的那一個。
+    pub fn scope(&self) -> Option<KeyScope> {
+        match self {
+            View::Default => None,
+            View::List(_) => Some(KeyScope::List),
+            View::Detail(_) => Some(KeyScope::Detail),
+            View::UserCommand(_) => Some(KeyScope::UserCommand),
+            View::Refs(_) => Some(KeyScope::Refs),
+            View::CreateTag(_) => Some(KeyScope::CreateTag),
+            View::DeleteTag(_) => Some(KeyScope::DeleteTag),
+            View::DeleteRef(_) => Some(KeyScope::DeleteRef),
+            View::Help(_) => Some(KeyScope::Help),
+            View::GitHub(_) => Some(KeyScope::GitHub),
+            View::ReleaseNotes(_) => Some(KeyScope::ReleaseNotes),
+            View::Shell(_) => Some(KeyScope::Shell),
         }
     }
 

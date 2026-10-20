@@ -1054,7 +1054,7 @@ impl App<'_> {
 
         // 處理 pending overlay——Esc 會把它藏起來
         if self.pending_message.is_some() {
-            if let Some(UserEvent::Cancel) = self.ctx.keybind.get(&key) {
+            if self.ctx.keybind.has(&key, UserEvent::Cancel) {
                 self.pending_message = None;
                 self.ec.send(AppEvent::NotifyInfo(
                     t!("app.pending.continues_in_background").into_owned(),
@@ -1067,7 +1067,7 @@ impl App<'_> {
 
         // Picker 會攔截輸入；ForceQuit（Ctrl-C）例外放行，讓
         // 使用者在 picker 中仍能離開程式。
-        if !matches!(self.ctx.keybind.get(&key), Some(UserEvent::ForceQuit))
+        if !self.ctx.keybind.has(&key, UserEvent::ForceQuit)
             && self.status_line_state.handle_intercepting_key(key)
         {
             return;
@@ -1077,7 +1077,7 @@ impl App<'_> {
             return;
         }
 
-        let user_event = self.ctx.keybind.get(&key);
+        let user_event = self.ctx.keybind.resolve(&key, self.view.scope());
 
         if let Some(UserEvent::Cancel) = user_event {
             // 清掉數字前綴並取消這個事件
@@ -1110,7 +1110,7 @@ impl App<'_> {
             Some(ue) => {
                 self.key_state.reset_quit_press();
                 let prefix = self.key_state.take_count();
-                let event_with_count = process_numeric_prefix(&prefix, *ue, key);
+                let event_with_count = process_numeric_prefix(&prefix, ue, key);
                 if let Some(app_event) = global_app_event(
                     event_with_count.event,
                     self.view.is_browsing_view(),
