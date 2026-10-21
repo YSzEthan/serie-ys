@@ -13,17 +13,10 @@ from __future__ import annotations
 
 import contextlib
 import io
-import os
 import sys
 
-# 有幾條測試餵的是格式不合的 subject，會走進 `classify()` 的 `warn()`。
-# 在 Actions 上 `warn()` 印的是 `::warning::` 工作流程指令，runner 會把它
-# 收成一則真的 annotation——這次改動的重點就是讓 warning 有訊號，測試自己
-# 每跑一次就放一則假的進去剛好把訊號洗掉。先摘掉這個環境變數。
-os.environ.pop("GITHUB_ACTIONS", None)
-
-from check_subject import check, first_meaningful_line  # noqa: E402
-from prepare_release import (  # noqa: E402
+from check_subject import check, first_meaningful_line
+from prepare_release import (
     BUMP_RANK,
     TYPE_TABLE,
     Commit,

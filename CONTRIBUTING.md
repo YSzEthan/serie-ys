@@ -48,8 +48,9 @@ commit 圖是用一般文字繪製的，沒有終端協議需要支援。顯示�
 fix: gh CLI 呼叫加 timeout，並優化 GitHub 資料載入效率 (#57) (#58)
 ```
 
-版號由 [.github/scripts/prepare_release.py](.github/scripts/prepare_release.py) 從
-merge 進 `main` 的 commit type 推算。判準是**這個 commit 有沒有改到使用者下載的執行檔**：
+發版時，維護者在本機執行 [.github/scripts/prepare_release.py](.github/scripts/prepare_release.py)，
+它從上一個 tag 之後 merge 進 `main` 的 commit type 推算版號與 CHANGELOG。判準是
+**這個 commit 有沒有改到使用者下載的執行檔**：
 
 | type | 版號 | CHANGELOG 區塊 |
 | --- | --- | --- |
@@ -88,16 +89,34 @@ merge 進 `main` 的 commit type 推算。判準是**這個 commit 有沒有改�
   PR 有多個 commit 的話 subject 取自 PR 標題而不是 commit 訊息，本機 hook 看不到，
   所以這道獨立檢查不能少。
 
-`main` 上的 release workflow 不會因為格式不合而中止，只留 warning annotation；
-「這次 push 沒有升版號」同樣只留 warning。**CI 綠燈不等於有發版**，看 annotation。
+發版腳本不會因為格式不合而中止，只在 stderr 留 warning 並略過該 commit。
 
-merge 前想自己確認會發出什麼版本：
+想自己確認下一版會是什麼：
 
 ```sh
 python3 .github/scripts/prepare_release.py --from "$(git describe --tags --abbrev=0)" --dry-run
 ```
 
 `pre-push` hook 會自動跑這一行，只提示不擋推。
+
+### 發版
+
+CI 不會自動累計版號。只有推 `vX.Y.Z` tag 才會 build 四個平台並建立 GitHub Release
+（[release.yml](.github/workflows/release.yml)）；`main` 上的 push 只跑 test。
+
+流程：
+
+1. 在最新的 `main` 上跑 `prepare_release.py --from <上一個 tag>`，它會更新
+   `Cargo.toml`、`Cargo.lock` 與 `CHANGELOG.md`
+2. 把這三個檔案 commit 成 `chore: release vX.Y.Z`，開 PR 並 merge
+3. 對 **PR 的 merge commit** 打 tag 並推送：`git tag vX.Y.Z <merge commit> && git push origin vX.Y.Z`
+
+tag 必須打在 merge commit 上，不能用「當下的 `origin/main`」——兩者之間若又有別的 PR
+進來，tag 會落在 CHANGELOG 沒列到的變更上。程式內建的 release notes 讀的是內嵌的
+`CHANGELOG.md`，所以發版 commit 一定要比 tag 先進 `main`。
+
+release workflow 的 `verify` job 會擋下三種情況：tag 與 `Cargo.toml` 版號不一致、
+`CHANGELOG.md` 沒有該版區塊、tag 指向的 commit 不在 `main` 上。
 
 ### 持續整合
 
