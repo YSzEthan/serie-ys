@@ -381,6 +381,7 @@ fn help_blocks(
         b(vec![UserEvent::Confirm], t!("help.delete_ref.confirm_delete_ref")),
         b(vec![UserEvent::Cancel], t!("help.delete_ref.cancel")),
         b(vec![UserEvent::NavigateRight, UserEvent::NavigateLeft, UserEvent::NavigateDown], t!("help.delete_ref.toggle_yes_no")),
+        b(vec![UserEvent::NavigateUp, UserEvent::NavigateDown], t!("help.delete_ref.move_cursor")),
     ];
 
     let mut user_command = vec![

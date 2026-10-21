@@ -228,9 +228,33 @@ en-US = " Also delete from origin"
 zh-TW = "正在刪除 remote branch '%{name}'…"
 en-US = "Deleting remote branch '%{name}'…"
 
-[view.delete_ref.done_remote_branch]
-zh-TW = "已刪除 remote branch '%{name}'"
-en-US = "Remote branch '%{name}' deleted"
+[view.delete_ref.checking_remote]
+zh-TW = "正在檢查遠端分支…"
+en-US = "Checking remote branch…"
+
+[view.delete_ref.step_ok]
+zh-TW = "已刪除 %{kind} '%{name}'"
+en-US = "Deleted %{kind} '%{name}'"
+
+[view.delete_ref.step_failed]
+zh-TW = "刪除 %{kind} '%{name}' 失敗：%{e}"
+en-US = "Failed to delete %{kind} '%{name}': %{e}"
+
+[view.delete_ref.opt_local]
+zh-TW = " 本機分支 %{name}"
+en-US = " Local branch %{name}"
+
+[view.delete_ref.opt_remote]
+zh-TW = " GitHub 上的分支 %{name}"
+en-US = " Remote branch %{name} on GitHub"
+
+[view.delete_ref.opt_tracking]
+zh-TW = " 本機追蹤分支 %{name}"
+en-US = " Local tracking branch %{name}"
+
+[view.delete_ref.remote_unknown]
+zh-TW = "無法連線 remote，未列出 GitHub 分支"
+en-US = "Cannot reach remote; GitHub branch not listed"
 
 [view.delete_ref.title_branch]
 zh-TW = " 刪除 Branch"

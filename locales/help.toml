@@ -508,6 +508,10 @@ en-US = "Cancel"
 zh-TW = "切換是／否"
 en-US = "Toggle yes/no"
 
+[help.delete_ref.move_cursor]
+zh-TW = "移動游標（刪 remote branch 時選項目）"
+en-US = "Move cursor (pick items when deleting a remote branch)"
+
 [help.user_command.close_user_command]
 zh-TW = "關閉 user command"
 en-US = "Close user command"
