@@ -68,6 +68,10 @@ en-US = "Delete local branch '%{head_ref}' after merge (%{method})? "
 zh-TW = "merge（%{method}）後要刪除 remote branch '%{head_ref}' 嗎？"
 en-US = "Delete remote branch '%{head_ref}' after merge (%{method})? "
 
+[app.status.merge_ask_delete_tracking]
+zh-TW = "merge（%{method}）後要刪除本機追蹤分支 '%{tracking_ref}' 嗎？"
+en-US = "Delete local tracking branch '%{tracking_ref}' after merge (%{method})? "
+
 [app.status.merge_local_yes]
 zh-TW = "，刪除 local branch：是"
 en-US = ", delete local branch: yes"
@@ -84,9 +88,17 @@ en-US = ", delete remote branch: yes"
 zh-TW = "，刪除 remote branch：否"
 en-US = ", delete remote branch: no"
 
+[app.status.merge_tracking_yes]
+zh-TW = "，刪除本機追蹤分支：是"
+en-US = ", delete local tracking branch: yes"
+
+[app.status.merge_tracking_no]
+zh-TW = "，刪除本機追蹤分支：否"
+en-US = ", delete local tracking branch: no"
+
 [app.status.merge_confirm]
-zh-TW = "以 %{method} merge #%{number}%{local}%{remote}  "
-en-US = "Merge #%{number} with %{method}%{local}%{remote}  "
+zh-TW = "以 %{method} merge #%{number}%{local}%{remote}%{tracking}  "
+en-US = "Merge #%{number} with %{method}%{local}%{remote}%{tracking}  "
 
 [app.github.issue_not_in_list]
 zh-TW = "目前清單沒有 issue #%{number}（請檢查狀態過濾）"
@@ -243,6 +255,18 @@ en-US = ", remote branch '%{head_ref}' deleted"
 [app.merge.remote_delete_failed]
 zh-TW = "，但刪除 remote branch '%{head_ref}' 失敗：%{e}"
 en-US = ", but failed to delete remote branch '%{head_ref}': %{e}"
+
+[app.merge.deleting_tracking]
+zh-TW = "正在刪除本機追蹤分支…"
+en-US = "Deleting local tracking branch…"
+
+[app.merge.tracking_deleted]
+zh-TW = "，已刪除本機追蹤分支 '%{name}'"
+en-US = ", local tracking branch '%{name}' deleted"
+
+[app.merge.tracking_delete_failed]
+zh-TW = "，但刪除本機追蹤分支 '%{name}' 失敗：%{e}"
+en-US = ", but failed to delete local tracking branch '%{name}': %{e}"
 
 [app.merge.conflicts]
 zh-TW = "PR #%{number} 有衝突，請先解決再 merge"

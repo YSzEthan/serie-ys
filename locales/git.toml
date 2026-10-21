@@ -179,3 +179,7 @@ en-US = "Invalid remote branch name format: %{name}"
 [git.branch.delete_remote_failed]
 zh-TW = "刪除 remote branch 失敗"
 en-US = "Failed to delete remote branch"
+
+[git.branch.delete_tracking_failed]
+zh-TW = "刪除本機追蹤分支失敗"
+en-US = "Failed to delete local tracking branch"
