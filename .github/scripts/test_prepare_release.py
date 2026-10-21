@@ -23,6 +23,8 @@ from prepare_release import (
     build_changelog_block,
     bump_version,
     classify,
+    entry_link,
+    squashed_pr_commit,
     subject_problem,
 )
 
@@ -142,6 +144,20 @@ expect(
 )
 expect("* 新功能 ([0000000]" in block, "沒有 PR 編號時應退回 commit 連結")
 expect("## [1.1.0]" in block and "(2026-08-12)" in block, "版本標題或日期缺漏")
+
+
+# --- squashed_pr_commit：發版併進功能 PR 時，模擬 squash 後的 commit ------
+
+one = squashed_pr_commit(42, [c("feat: 新功能 (#41)")], None)
+expect(one.subject == "feat: 新功能 (#41) (#42)", f"單一 commit 應沿用自己的 subject：{one.subject}")
+expect("/pull/42)" in entry_link("o/r", one, {}), "合成 commit 應連到 PR")
+
+many = squashed_pr_commit(
+    42, [c("feat: 前半"), c("fix: 後半", "BREAKING CHANGE: 改了設定格式")], "feat: 整體 (#41)"
+)
+expect(many.subject == "feat: 整體 (#41) (#42)", f"多個 commit 應改用 PR 標題：{many.subject}")
+bump, _, _ = classify([many])
+expect(bump == "major", "合成 commit 要保留各 commit body 的 BREAKING CHANGE footer")
 
 
 # --- bump_version ---------------------------------------------------------

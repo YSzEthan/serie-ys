@@ -104,16 +104,17 @@ python3 .github/scripts/prepare_release.py --from "$(git describe --tags --abbre
 CI 不會自動累計版號。只有推 `vX.Y.Z` tag 才會 build 四個平台並建立 GitHub Release
 （[release.yml](.github/workflows/release.yml)）；`main` 上的 push 只跑 test。
 
-流程：
+發版變更併進最後一個功能 PR：
 
-1. 在最新的 `main` 上跑 `prepare_release.py --from <上一個 tag>`，它會更新
-   `Cargo.toml`、`Cargo.lock` 與 `CHANGELOG.md`
-2. 把這三個檔案 commit 成 `chore: release vX.Y.Z`，開 PR 並 merge
-3. 對 **PR 的 merge commit** 打 tag 並推送：`git tag vX.Y.Z <merge commit> && git push origin vX.Y.Z`
+1. branch rebase 到最新 `origin/main`，跑 `prepare_release.py --from <上一個 tag> --pr <PR 編號>`，
+   更新 `Cargo.toml`、`Cargo.lock`、`CHANGELOG.md`
+2. amend 進最後一個 commit，`git push --force-with-lease`，CI 過了再 merge。之後別改 PR 標題或加 commit
+3. 對 **PR 的 merge commit** 打 tag：`git tag vX.Y.Z <merge commit> && git push origin vX.Y.Z`
 
-tag 必須打在 merge commit 上，不能用「當下的 `origin/main`」——兩者之間若又有別的 PR
-進來，tag 會落在 CHANGELOG 沒列到的變更上。程式內建的 release notes 讀的是內嵌的
-`CHANGELOG.md`，所以發版 commit 一定要比 tag 先進 `main`。
+沒有功能 PR 時，在 `main` 上跑（不加 `--pr`），commit 成 `chore: release vX.Y.Z` 開 PR，merge 後同樣打 tag。
+
+tag 不能打在當下的 `origin/main`，否則可能落在 CHANGELOG 沒列到的變更上；跑完腳本到 merge 之間
+`main` 若往前，也要重跑。release notes 讀內嵌的 `CHANGELOG.md`，所以發版 commit 要比 tag 先進 `main`。
 
 release workflow 的 `verify` job 會擋下三種情況：tag 與 `Cargo.toml` 版號不一致、
 `CHANGELOG.md` 沒有該版區塊、tag 指向的 commit 不在 `main` 上。
