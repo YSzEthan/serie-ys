@@ -814,12 +814,18 @@ impl App<'_> {
                         &head_ref,
                         &head_ref_oid,
                     );
+                    let tracking_ref = tracking_ref_to_delete(
+                        &self.repository.all_refs(),
+                        &head_ref,
+                        remote_deletable,
+                    );
                     self.status_line_state.open_merge_pr_prompt(
                         number,
                         head_ref,
                         state,
                         remote_deletable,
                         local_delete,
+                        tracking_ref,
                     );
                 }
                 AppEvent::OpenToggleStatePrompt {
@@ -865,6 +871,7 @@ impl App<'_> {
                     method,
                     delete_local_branch,
                     delete_remote_branch,
+                    delete_tracking_ref,
                 } => {
                     spawn_merge_pr(
                         self.repository.path(),
@@ -874,6 +881,7 @@ impl App<'_> {
                         method,
                         delete_local_branch,
                         delete_remote_branch,
+                        delete_tracking_ref,
                     );
                 }
                 AppEvent::ToggleItemStateRequested {
@@ -2297,6 +2305,29 @@ fn local_branch_delete_check(
     })
 }
 
+/// merge PR 後可一併刪除的本機 remote-tracking ref：`Some("origin/<head_ref>")`
+/// = 可以問；`None` = 跳過（remote 不可刪，或本機沒有這條 ref）。
+///
+/// 綁 `remote_deletable` 是為了擋 fork PR 與 head 是 default branch——fork 的
+/// head 叫 `main` 時 `origin/main` 剛好存在，不能誤刪。remote 名寫死 `origin`：
+/// 多 remote（origin 是自己的 fork、gh default 是 upstream）時可能指錯 remote，
+/// 但刪 tracking ref 下次 fetch 就回來，不會掉資料，刻意接受。不比對
+/// `headRefOid`：tracking ref 過期正是使用者想清掉的情況。
+fn tracking_ref_to_delete(
+    all_refs: &[&Ref],
+    head_ref: &str,
+    remote_deletable: bool,
+) -> Option<String> {
+    if !remote_deletable {
+        return None;
+    }
+    let name = format!("origin/{head_ref}");
+    all_refs
+        .iter()
+        .any(|r| matches!(r, Ref::RemoteBranch { name: n, .. } if *n == name))
+        .then_some(name)
+}
+
 fn spawn_merge_pr(
     repo: &Path,
     ec: &EventController,
@@ -2305,8 +2336,9 @@ fn spawn_merge_pr(
     method: MergeMethod,
     delete_local_branch: Option<(String, bool)>,
     delete_remote_branch: Option<String>,
+    delete_tracking_ref: Option<String>,
 ) {
-    use crate::git::{delete_branch, delete_branch_force};
+    use crate::git::{delete_branch, delete_branch_force, delete_remote_tracking_ref};
 
     let repo_path = repo.to_path_buf();
     let tx = ec.sender();
@@ -2327,6 +2359,7 @@ fn spawn_merge_pr(
                 )
                 .into_owned();
                 let mut has_failure = false;
+                let mut refs_changed = false;
 
                 if let Some((name, force_safe)) = delete_local_branch {
                     tx.send(AppEvent::ShowPendingOverlay {
@@ -2340,14 +2373,7 @@ fn spawn_merge_pr(
                     match result {
                         Ok(()) => {
                             message.push_str(&t!("app.merge.local_deleted", name = name));
-                            // 刪分支動到 refs，當 Full（比照 `spawn_git_task`）。
-                            // 這個流程只會在 `View::GitHub` 開著時觸發，它的
-                            // `can_swap()` 是 false——背景載入照跑，換資料延到
-                            // 使用者關閉 GitHub view 之後（見 `App::try_swap`）。
-                            tx.send(AppEvent::AutoRefresh {
-                                scope: Scope::Full,
-                                at: Instant::now(),
-                            });
+                            refs_changed = true;
                         }
                         Err(e) => {
                             has_failure = true;
@@ -2385,6 +2411,40 @@ fn spawn_merge_pr(
                             ));
                         }
                     }
+                }
+
+                // 必須排在 local 之後：`git branch -d x` 會拿 upstream `origin/x`
+                // 判斷 merged，先刪 tracking 會讓 squash merge 的 local 安全刪除
+                // 退回跟 HEAD 比而報 not fully merged。
+                if let Some(name) = delete_tracking_ref {
+                    tx.send(AppEvent::ShowPendingOverlay {
+                        message: t!("app.merge.deleting_tracking").into_owned(),
+                    });
+                    match delete_remote_tracking_ref(&repo_path, &name) {
+                        Ok(()) => {
+                            message.push_str(&t!("app.merge.tracking_deleted", name = name));
+                            refs_changed = true;
+                        }
+                        Err(e) => {
+                            has_failure = true;
+                            message.push_str(&t!(
+                                "app.merge.tracking_delete_failed",
+                                name = name,
+                                e = e
+                            ));
+                        }
+                    }
+                }
+
+                if refs_changed {
+                    // 刪分支動到 refs，當 Full（比照 `spawn_git_task`）。
+                    // 這個流程只會在 `View::GitHub` 開著時觸發，它的
+                    // `can_swap()` 是 false——背景載入照跑，換資料延到
+                    // 使用者關閉 GitHub view 之後（見 `App::try_swap`）。
+                    tx.send(AppEvent::AutoRefresh {
+                        scope: Scope::Full,
+                        at: Instant::now(),
+                    });
                 }
 
                 tx.send(AppEvent::HidePendingOverlay);
@@ -3032,6 +3092,37 @@ mod tests {
             resolve_shell_command(&cfg, None),
             vec!["sh".to_string(), "-i".to_string(), "-c".to_string()]
         );
+    }
+
+    fn remote_branch(name: &str) -> Ref {
+        Ref::RemoteBranch {
+            name: name.into(),
+            target: CommitHash::from("aaa111"),
+        }
+    }
+
+    #[test]
+    fn tracking_ref_to_delete_some_when_remote_deletable_and_ref_exists() {
+        let r = remote_branch("origin/feature/x");
+        let refs: Vec<&Ref> = vec![&r];
+        assert_eq!(
+            tracking_ref_to_delete(&refs, "feature/x", true),
+            Some("origin/feature/x".to_string())
+        );
+    }
+
+    #[test]
+    fn tracking_ref_to_delete_none_when_remote_not_deletable() {
+        let r = remote_branch("origin/main");
+        let refs: Vec<&Ref> = vec![&r];
+        assert_eq!(tracking_ref_to_delete(&refs, "main", false), None);
+    }
+
+    #[test]
+    fn tracking_ref_to_delete_none_when_ref_missing_or_other_remote() {
+        let r = remote_branch("upstream/feature/x");
+        let refs: Vec<&Ref> = vec![&r];
+        assert_eq!(tracking_ref_to_delete(&refs, "feature/x", true), None);
     }
 
     #[test]

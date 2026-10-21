@@ -1697,6 +1697,17 @@ pub fn delete_remote_branch(path: &Path, branch_name: &str) -> std::result::Resu
     )
 }
 
+/// 刪本機的 remote-tracking ref（如 `origin/feature/x`）。用 `update-ref -d` 而非
+/// `branch -d -r`：ref 已被 fetch --prune 清掉時它仍回 0（冪等），不會把「已經不在」
+/// 報成失敗。
+pub fn delete_remote_tracking_ref(path: &Path, name: &str) -> std::result::Result<(), String> {
+    run_git_command(
+        path,
+        &["update-ref", "-d", &format!("refs/remotes/{name}")],
+        &t!("git.branch.delete_tracking_failed"),
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

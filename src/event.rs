@@ -323,6 +323,8 @@ pub enum AppEvent {
         delete_local_branch: Option<(String, bool)>,
         /// `Some(head_ref)` = 要刪遠端的這條 branch；`None` = 不刪。
         delete_remote_branch: Option<String>,
+        /// `Some("origin/<head_ref>")` = 要刪本機的 remote-tracking ref；`None` = 不刪。
+        delete_tracking_ref: Option<String>,
     },
     ToggleItemStateRequested {
         number: u64,

@@ -158,21 +158,28 @@ enum MergePrStage {
         method: MergeMethod,
         delete_local: BranchDelete,
     },
-    Confirm {
+    AskDeleteTracking {
         method: MergeMethod,
         delete_local: BranchDelete,
         delete_remote: BranchDelete,
     },
+    Confirm {
+        method: MergeMethod,
+        delete_local: BranchDelete,
+        delete_remote: BranchDelete,
+        delete_tracking: BranchDelete,
+    },
 }
 
-/// merge PR 時（本地或遠端）head branch 的處置，local 與 remote 共用同一組
+/// merge PR 時（本地、遠端、本機追蹤分支）head branch 的處置，三者共用同一組
 /// 三態語意。三個狀態而非兩個 bool——「不可刪」與「使用者按了 y/n」疊在一起
 /// 會出現不可達的組合（不可刪卻標記要刪），寫成三態就沒有這種狀態。分支名
 /// 本來就活在 `MergePrPrompt.head_ref`，`Confirmed` 不必再帶一份。
 #[derive(Debug, Clone, Copy)]
 enum BranchDelete {
     /// 不可刪（remote：fork／head 是 default branch／head==base；
-    /// local：找不到同名分支，或該分支正是目前 HEAD），UI 直接跳過這一問
+    /// local：找不到同名分支，或該分支正是目前 HEAD；
+    /// tracking：remote 不可刪，或本機沒有 `origin/<head_ref>`），UI 直接跳過這一問
     NotOffered,
     /// 使用者按 n
     Declined,
@@ -180,17 +187,24 @@ enum BranchDelete {
     Confirmed,
 }
 
-/// `PickMethod` 選完 method 後的下一站：local 排在 remote 之前，兩者各自
-/// 依 `*_deletable` 獨立決定跳過與否（issue #126 定案）。
+/// 每一題各自依 `*_deletable` 獨立決定跳過與否（issue #126、#168 定案），
+/// 順序固定 local → remote → tracking，鏈上每一站只看自己那題能不能問。
+/// `PickMethod` 選完 method 後的下一站。
 fn next_stage_after_pick_method(
     method: MergeMethod,
     local_deletable: bool,
     remote_deletable: bool,
+    tracking_deletable: bool,
 ) -> MergePrStage {
     if local_deletable {
         MergePrStage::AskDeleteLocal { method }
     } else {
-        next_stage_after_ask_local(method, BranchDelete::NotOffered, remote_deletable)
+        next_stage_after_ask_local(
+            method,
+            BranchDelete::NotOffered,
+            remote_deletable,
+            tracking_deletable,
+        )
     }
 }
 
@@ -198,6 +212,7 @@ fn next_stage_after_ask_local(
     method: MergeMethod,
     delete_local: BranchDelete,
     remote_deletable: bool,
+    tracking_deletable: bool,
 ) -> MergePrStage {
     if remote_deletable {
         MergePrStage::AskDeleteRemote {
@@ -205,15 +220,38 @@ fn next_stage_after_ask_local(
             delete_local,
         }
     } else {
+        next_stage_after_ask_remote(
+            method,
+            delete_local,
+            BranchDelete::NotOffered,
+            tracking_deletable,
+        )
+    }
+}
+
+fn next_stage_after_ask_remote(
+    method: MergeMethod,
+    delete_local: BranchDelete,
+    delete_remote: BranchDelete,
+    tracking_deletable: bool,
+) -> MergePrStage {
+    if tracking_deletable {
+        MergePrStage::AskDeleteTracking {
+            method,
+            delete_local,
+            delete_remote,
+        }
+    } else {
         MergePrStage::Confirm {
             method,
             delete_local,
-            delete_remote: BranchDelete::NotOffered,
+            delete_remote,
+            delete_tracking: BranchDelete::NotOffered,
         }
     }
 }
 
-/// `AskDeleteLocal`／`AskDeleteRemote` 共用的 y/n 判斷。
+/// `AskDelete*` 共用的 y/n 判斷。
 fn branch_delete_answer(code: KeyCode) -> Option<BranchDelete> {
     match code {
         KeyCode::Char('y') | KeyCode::Char('Y') => Some(BranchDelete::Confirmed),
@@ -269,6 +307,9 @@ enum StatusLine {
         /// `app::local_branch_delete_check` 依 `headRefOid` 算好帶進來，
         /// 不是使用者選項，決定送出 `MergePrRequested` 時要不要強刪。
         local_delete: Option<bool>,
+        /// `Some("origin/<head_ref>")` = 本機有這條追蹤分支且可以問；`None` 跳過
+        /// `AskDeleteTracking`，見 `app::tracking_ref_to_delete`。
+        tracking_ref: Option<String>,
         stage: MergePrStage,
     },
     ToggleStatePrompt {
@@ -392,6 +433,7 @@ impl StatusLineState {
         state: StateFilter,
         remote_deletable: bool,
         local_delete: Option<bool>,
+        tracking_ref: Option<String>,
     ) {
         self.line = StatusLine::MergePrPrompt {
             number,
@@ -399,6 +441,7 @@ impl StatusLineState {
             state,
             remote_deletable,
             local_delete,
+            tracking_ref,
             stage: MergePrStage::PickMethod,
         };
     }
@@ -801,15 +844,18 @@ impl StatusLineState {
             state,
             remote_deletable,
             local_delete,
+            ref tracking_ref,
             stage,
         } = self.line
         else {
             return;
         };
         let head_ref = head_ref.clone();
+        let tracking_ref = tracking_ref.clone();
+        let tracking_deletable = tracking_ref.is_some();
 
         // 每個 stage 先消化自己的答案鍵（優先於全域 cancel，因為 cancel 預設含 'n'，
-        // 會與 AskDeleteLocal/AskDeleteRemote 的「no」撞鍵），回傳「下一個 stage」；
+        // 會與 AskDelete* 的「no」撞鍵），回傳「下一個 stage」；
         // Confirm 是終點（執行/取消），自行早退。
         let next = match stage {
             MergePrStage::PickMethod => match key.code {
@@ -819,28 +865,48 @@ impl StatusLineState {
                 _ => None,
             }
             .map(|method| {
-                next_stage_after_pick_method(method, local_delete.is_some(), remote_deletable)
+                next_stage_after_pick_method(
+                    method,
+                    local_delete.is_some(),
+                    remote_deletable,
+                    tracking_deletable,
+                )
             }),
 
             MergePrStage::AskDeleteLocal { method } => {
                 branch_delete_answer(key.code).map(|delete_local| {
-                    next_stage_after_ask_local(method, delete_local, remote_deletable)
+                    next_stage_after_ask_local(
+                        method,
+                        delete_local,
+                        remote_deletable,
+                        tracking_deletable,
+                    )
                 })
             }
 
             MergePrStage::AskDeleteRemote {
                 method,
                 delete_local,
-            } => branch_delete_answer(key.code).map(|delete_remote| MergePrStage::Confirm {
+            } => branch_delete_answer(key.code).map(|delete_remote| {
+                next_stage_after_ask_remote(method, delete_local, delete_remote, tracking_deletable)
+            }),
+
+            MergePrStage::AskDeleteTracking {
                 method,
                 delete_local,
                 delete_remote,
+            } => branch_delete_answer(key.code).map(|delete_tracking| MergePrStage::Confirm {
+                method,
+                delete_local,
+                delete_remote,
+                delete_tracking,
             }),
 
             MergePrStage::Confirm {
                 method,
                 delete_local,
                 delete_remote,
+                delete_tracking,
             } => {
                 let is_confirm = self.ctx.keybind.has(&key, UserEvent::Confirm)
                     || matches!(key.code, KeyCode::Enter);
@@ -850,12 +916,15 @@ impl StatusLineState {
                         .then(|| (head_ref.clone(), local_delete == Some(true)));
                     let delete_remote_branch =
                         matches!(delete_remote, BranchDelete::Confirmed).then(|| head_ref.clone());
+                    let delete_tracking_ref =
+                        tracking_ref.filter(|_| matches!(delete_tracking, BranchDelete::Confirmed));
                     self.tx.send(AppEvent::MergePrRequested {
                         number,
                         state,
                         method,
                         delete_local_branch,
                         delete_remote_branch,
+                        delete_tracking_ref,
                     });
                 } else if self.ctx.keybind.has(&key, UserEvent::Cancel) {
                     self.line = StatusLine::None;
@@ -871,6 +940,7 @@ impl StatusLineState {
                 state,
                 remote_deletable,
                 local_delete,
+                tracking_ref,
                 stage,
             };
         } else if self.ctx.keybind.has(&key, UserEvent::Cancel) {
@@ -1067,9 +1137,15 @@ impl StatusLineState {
             StatusLine::MergePrPrompt {
                 number,
                 head_ref,
+                tracking_ref,
                 stage,
                 ..
-            } => self.render_merge_pr_line(*number, head_ref, *stage),
+            } => self.render_merge_pr_line(
+                *number,
+                head_ref,
+                tracking_ref.as_deref().unwrap_or_default(),
+                *stage,
+            ),
             StatusLine::ToggleStatePrompt {
                 number,
                 kind,
@@ -1203,9 +1279,20 @@ impl StatusLineState {
         &self,
         number: u64,
         head_ref: &str,
+        tracking_ref: &str,
         stage: MergePrStage,
     ) -> Line<'static> {
         let hint_fg = self.ctx.color_theme.status_interactive_fg;
+        // 三個 `AskDelete*` 只有提示文字不同，後面的 y/n/Esc 一樣。
+        let yes_no = |prompt: Cow<'static, str>| {
+            Line::from(vec![
+                prompt.into_owned().into(),
+                format!("[y] {}", t!("common.yes")).fg(hint_fg),
+                " / ".into(),
+                format!("[n] {}", t!("common.no")).fg(hint_fg),
+                format!("  {}", esc_cancel()).fg(hint_fg),
+            ])
+        };
         match stage {
             MergePrStage::PickMethod => Line::from(vec![
                 t!(
@@ -1219,34 +1306,26 @@ impl StatusLineState {
                 "[r] rebase  ".fg(hint_fg),
                 esc_cancel().fg(hint_fg),
             ]),
-            MergePrStage::AskDeleteLocal { method } => Line::from(vec![
-                t!(
-                    "app.status.merge_ask_delete_local",
-                    head_ref = head_ref,
-                    method = method.display()
-                )
-                .into(),
-                format!("[y] {}", t!("common.yes")).fg(hint_fg),
-                " / ".into(),
-                format!("[n] {}", t!("common.no")).fg(hint_fg),
-                format!("  {}", esc_cancel()).fg(hint_fg),
-            ]),
-            MergePrStage::AskDeleteRemote { method, .. } => Line::from(vec![
-                t!(
-                    "app.status.merge_ask_delete_remote",
-                    head_ref = head_ref,
-                    method = method.display()
-                )
-                .into(),
-                format!("[y] {}", t!("common.yes")).fg(hint_fg),
-                " / ".into(),
-                format!("[n] {}", t!("common.no")).fg(hint_fg),
-                format!("  {}", esc_cancel()).fg(hint_fg),
-            ]),
+            MergePrStage::AskDeleteLocal { method } => yes_no(t!(
+                "app.status.merge_ask_delete_local",
+                head_ref = head_ref,
+                method = method.display()
+            )),
+            MergePrStage::AskDeleteRemote { method, .. } => yes_no(t!(
+                "app.status.merge_ask_delete_remote",
+                head_ref = head_ref,
+                method = method.display()
+            )),
+            MergePrStage::AskDeleteTracking { method, .. } => yes_no(t!(
+                "app.status.merge_ask_delete_tracking",
+                tracking_ref = tracking_ref,
+                method = method.display()
+            )),
             MergePrStage::Confirm {
                 method,
                 delete_local,
                 delete_remote,
+                delete_tracking,
             } => {
                 let local = match delete_local {
                     BranchDelete::Confirmed => t!("app.status.merge_local_yes"),
@@ -1258,12 +1337,18 @@ impl StatusLineState {
                     BranchDelete::Declined => t!("app.status.merge_remote_no"),
                     BranchDelete::NotOffered => Cow::Borrowed(""),
                 };
+                let tracking = match delete_tracking {
+                    BranchDelete::Confirmed => t!("app.status.merge_tracking_yes"),
+                    BranchDelete::Declined => t!("app.status.merge_tracking_no"),
+                    BranchDelete::NotOffered => Cow::Borrowed(""),
+                };
                 let prompt = t!(
                     "app.status.merge_confirm",
                     number = number,
                     method = method.display(),
                     local = local,
-                    remote = remote
+                    remote = remote,
+                    tracking = tracking
                 )
                 .into_owned();
                 confirm_line(prompt, t!("common.hint.run"), &self.ctx)
@@ -1518,12 +1603,13 @@ mod tests {
     }
 
     fn merge_pr_prompt() -> StatusLine {
-        merge_pr_prompt_with_deletable(true, Some(false))
+        merge_pr_prompt_with_deletable(true, Some(false), None)
     }
 
     fn merge_pr_prompt_with_deletable(
         remote_deletable: bool,
         local_delete: Option<bool>,
+        tracking_ref: Option<&str>,
     ) -> StatusLine {
         StatusLine::MergePrPrompt {
             number: 42,
@@ -1531,6 +1617,7 @@ mod tests {
             state: StateFilter::Open,
             remote_deletable,
             local_delete,
+            tracking_ref: tracking_ref.map(String::from),
             stage: MergePrStage::PickMethod,
         }
     }
@@ -1573,6 +1660,7 @@ mod tests {
                     method: MergeMethod::Squash,
                     delete_local: BranchDelete::Declined,
                     delete_remote: BranchDelete::Declined,
+                    delete_tracking: BranchDelete::NotOffered,
                 },
                 ..
             }
@@ -1610,6 +1698,7 @@ mod tests {
                     method: MergeMethod::Squash,
                     delete_local: BranchDelete::Confirmed,
                     delete_remote: BranchDelete::Confirmed,
+                    delete_tracking: BranchDelete::NotOffered,
                 },
                 ..
             }
@@ -1632,7 +1721,7 @@ mod tests {
     #[test]
     fn merge_pr_prompt_neither_deletable_skips_both_ask_stages() {
         let (mut state, rx) = test_state();
-        state.line = merge_pr_prompt_with_deletable(false, None);
+        state.line = merge_pr_prompt_with_deletable(false, None, None);
 
         state.handle_merge_pr_prompt_key(char_key('s'));
         assert!(matches!(
@@ -1642,6 +1731,7 @@ mod tests {
                     method: MergeMethod::Squash,
                     delete_local: BranchDelete::NotOffered,
                     delete_remote: BranchDelete::NotOffered,
+                    delete_tracking: BranchDelete::NotOffered,
                 },
                 ..
             }
@@ -1663,7 +1753,7 @@ mod tests {
     #[test]
     fn merge_pr_prompt_local_not_deletable_skips_ask_delete_local_stage() {
         let (mut state, rx) = test_state();
-        state.line = merge_pr_prompt_with_deletable(true, None);
+        state.line = merge_pr_prompt_with_deletable(true, None, None);
 
         state.handle_merge_pr_prompt_key(char_key('s'));
         assert!(matches!(
@@ -1694,7 +1784,7 @@ mod tests {
     #[test]
     fn merge_pr_prompt_remote_not_deletable_skips_ask_delete_remote_stage() {
         let (mut state, rx) = test_state();
-        state.line = merge_pr_prompt_with_deletable(false, Some(false));
+        state.line = merge_pr_prompt_with_deletable(false, Some(false), None);
 
         state.handle_merge_pr_prompt_key(char_key('s'));
         state.handle_merge_pr_prompt_key(char_key('y')); // local
@@ -1705,6 +1795,7 @@ mod tests {
                     method: MergeMethod::Squash,
                     delete_local: BranchDelete::Confirmed,
                     delete_remote: BranchDelete::NotOffered,
+                    delete_tracking: BranchDelete::NotOffered,
                 },
                 ..
             }
@@ -1718,6 +1809,116 @@ mod tests {
                 delete_remote_branch: None,
                 ..
             }) if local == "feature/x"
+        ));
+    }
+
+    /// L → R → T 三題走完，tracking 選 y 要把 `tracking_ref` 原樣帶出去。
+    #[test]
+    fn merge_pr_prompt_asks_tracking_after_remote_and_sends_tracking_ref() {
+        let (mut state, rx) = test_state();
+        state.line = merge_pr_prompt_with_deletable(true, Some(false), Some("origin/feature/x"));
+
+        state.handle_merge_pr_prompt_key(char_key('s'));
+        state.handle_merge_pr_prompt_key(char_key('y')); // local
+        state.handle_merge_pr_prompt_key(char_key('y')); // remote
+        assert!(matches!(
+            state.line,
+            StatusLine::MergePrPrompt {
+                stage: MergePrStage::AskDeleteTracking { .. },
+                ..
+            }
+        ));
+
+        state.handle_merge_pr_prompt_key(char_key('y')); // tracking
+        state.handle_merge_pr_prompt_key(key(KeyCode::Enter));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AppEvent::MergePrRequested {
+                delete_local_branch: Some(_),
+                delete_remote_branch: Some(_),
+                delete_tracking_ref: Some(t),
+                ..
+            }) if t == "origin/feature/x"
+        ));
+    }
+
+    /// local 不可問時鏈是 R → T → Confirm。
+    #[test]
+    fn merge_pr_prompt_local_not_deletable_still_asks_remote_then_tracking() {
+        let (mut state, _rx) = test_state();
+        state.line = merge_pr_prompt_with_deletable(true, None, Some("origin/feature/x"));
+
+        state.handle_merge_pr_prompt_key(char_key('s'));
+        assert!(matches!(
+            state.line,
+            StatusLine::MergePrPrompt {
+                stage: MergePrStage::AskDeleteRemote { .. },
+                ..
+            }
+        ));
+        state.handle_merge_pr_prompt_key(char_key('y'));
+        assert!(matches!(
+            state.line,
+            StatusLine::MergePrPrompt {
+                stage: MergePrStage::AskDeleteTracking { .. },
+                ..
+            }
+        ));
+    }
+
+    /// 三題獨立：remote 選 n、tracking 選 y 只清本機追蹤分支。
+    #[test]
+    fn merge_pr_prompt_remote_no_tracking_yes_deletes_only_tracking() {
+        let (mut state, rx) = test_state();
+        state.line = merge_pr_prompt_with_deletable(true, None, Some("origin/feature/x"));
+
+        state.handle_merge_pr_prompt_key(char_key('s'));
+        state.handle_merge_pr_prompt_key(char_key('n')); // remote
+        state.handle_merge_pr_prompt_key(char_key('y')); // tracking
+        state.handle_merge_pr_prompt_key(key(KeyCode::Enter));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AppEvent::MergePrRequested {
+                delete_remote_branch: None,
+                delete_tracking_ref: Some(t),
+                ..
+            }) if t == "origin/feature/x"
+        ));
+    }
+
+    /// `AskDeleteTracking` 的 `n` 是答案（不是取消），要推進到 Confirm 且不刪。
+    #[test]
+    fn merge_pr_prompt_tracking_no_advances_to_confirm_without_deleting() {
+        let (mut state, rx) = test_state();
+        state.line = merge_pr_prompt_with_deletable(false, None, Some("origin/feature/x"));
+
+        state.handle_merge_pr_prompt_key(char_key('s'));
+        assert!(matches!(
+            state.line,
+            StatusLine::MergePrPrompt {
+                stage: MergePrStage::AskDeleteTracking { .. },
+                ..
+            }
+        ));
+        state.handle_merge_pr_prompt_key(char_key('n'));
+        assert!(matches!(
+            state.line,
+            StatusLine::MergePrPrompt {
+                stage: MergePrStage::Confirm {
+                    delete_tracking: BranchDelete::Declined,
+                    ..
+                },
+                ..
+            }
+        ));
+
+        state.handle_merge_pr_prompt_key(key(KeyCode::Enter));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AppEvent::MergePrRequested {
+                delete_tracking_ref: None,
+                ..
+            })
         ));
     }
 
