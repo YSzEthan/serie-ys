@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.11.0](https://github.com/YSzEthan/serie-ys/compare/v4.10.0...v4.11.0) (2026-10-21)
+
+
+### Features
+
+* gh 介面 merge PR 多問是否刪除本機追蹤分支 (#168) (#169) ([82ca756](https://github.com/YSzEthan/serie-ys/commit/82ca7567ada5086becfb30a22ed900d340539db3))
+
 ## [4.10.0](https://github.com/YSzEthan/serie-ys/compare/v4.9.2...v4.10.0) (2026-10-20)
 
 
