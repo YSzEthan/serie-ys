@@ -1,12 +1,15 @@
 #!/usr/bin/env python3
-"""在 main 上依 conventional commits 計算下一個版本，更新 Cargo.toml 並產生 CHANGELOG 區塊。
+"""依 conventional commits 計算下一個版本，更新 Cargo.toml／Cargo.lock 並產生 CHANGELOG 區塊。
+
+由維護者在本機發版時執行（流程見 CONTRIBUTING.md 的「發版」）；CI 不會跑它的
+計算部分，只用 `--print-section` 取 Release 內文。
 
 用法：
-  prepare_release.py --from v1.9.0                # 正式模式：寫入 Cargo.toml / CHANGELOG.md
+  prepare_release.py --from v1.9.0                # 正式模式：寫入 Cargo.toml / Cargo.lock / CHANGELOG.md
   prepare_release.py --from v1.9.0 --dry-run       # 只印出計算結果，不寫檔
 
 沒有任何 commit 觸發 bump 時，印出 NO_BUMP 並以 exit code 0 結束——這不是錯誤，
-是「這次 push 不用發版」的正常結果。
+是「這批 commit 不用發版」的正常結果。
 """
 
 from __future__ import annotations
@@ -118,14 +121,11 @@ def build_pr_map(base: str) -> dict[str, int]:
 
 
 def warn(message: str) -> None:
-    """留一則警告。在 GitHub Actions 上是 annotation，本機是普通 stderr。
-
-    一律走 stderr：runner 兩條串流都會解析 workflow command，而 stdout 有
-    別的用途——`--print-section` 的輸出會被重導向成 GitHub Release 內文
-    （見 `release.yml` 的 upload job），警告混進去就會出現在發版說明裡。
+    """留一則警告。一律走 stderr：stdout 有別的用途——`--print-section` 的輸出
+    會被重導向成 GitHub Release 內文（見 `release.yml` 的 upload job），警告
+    混進去就會出現在發版說明裡。
     """
-    prefix = "::warning::" if os.environ.get("GITHUB_ACTIONS") else "warning: "
-    print(f"{prefix}{message}", file=sys.stderr)
+    print(f"warning: {message}", file=sys.stderr)
 
 
 def subject_problem(subject: str) -> str | None:
@@ -229,9 +229,9 @@ def find_lock_version(lines: list[str], package_name: str) -> tuple[int, str]:
     """回傳 Cargo.lock 裡 package_name 的 [[package]] 區塊中 version 欄位的
     (行號, 版本字串)。
 
-    直接文字取代，不呼叫 `cargo`——CI runner 是全新環境，沒有本機 registry
-    cache，`cargo metadata --offline` 連 index 都讀不到會直接失敗；而這裡
-    要做的只是把本 package 自己的 version 欄位同步成新版號，純本地文字操作，
+    直接文字取代，不呼叫 `cargo`——沒有 registry cache 的環境下
+    `cargo metadata --offline` 連 index 都讀不到會直接失敗；而這裡要做的
+    只是把本 package 自己的 version 欄位同步成新版號，純本地文字操作，
     不需要真的做依賴解析。
     """
     in_block = False
@@ -292,9 +292,9 @@ def build_changelog_block(
 
 def extract_changelog_section(version: str) -> str:
     """回傳 CHANGELOG.md 裡 `## [version]` 那個區塊的內容（含標題，到下一個
-    `## [` 前為止）。供 release.yml 的 upload job 取出當次版本的區塊當
-    GitHub Release 的說明文字，不用另外傳遞任何中間產物——`prepare` job
-    已經 commit 過的 CHANGELOG.md 就是唯一真相。
+    `## [` 前為止）。供 release.yml 的 verify／upload job 取出當次版本的
+    區塊當 GitHub Release 的說明文字，不用另外傳遞任何中間產物——tag 所在
+    commit 裡的 CHANGELOG.md 就是唯一真相。
     """
     text = CHANGELOG.read_text()
     marker = f"## [{version}]"
@@ -315,14 +315,6 @@ def detect_repo() -> str:
     if not m:
         raise SystemExit(f"無法從 remote URL 解析 owner/repo：{url}")
     return m.group(1)
-
-
-def emit_github_output(name: str, value: str) -> None:
-    path = os.environ.get("GITHUB_OUTPUT")
-    if not path:
-        return
-    with open(path, "a") as f:
-        f.write(f"{name}={value}\n")
 
 
 def main() -> int:
@@ -352,11 +344,11 @@ def main() -> int:
     bump, sections, breaking = classify(commits)
 
     if bump is None:
-        # 沒有這則警告，「發版」與「漏發版」在 run 頁面上長得一模一樣，
-        # 都是綠燈——只能等有人發現 tag 沒出來。
+        # 不能只靜默印 NO_BUMP：使用者會以為腳本壞了，而不是這批 commit
+        # 真的都不升版號。
         quiet = "／".join(t for t, (_, level) in TYPE_TABLE.items() if level is None)
         warn(
-            f"這次 push 沒有觸發發版：{args.base}..HEAD 的 {len(commits)} 個 commit "
+            f"沒有需要發版的變更：{args.base}..HEAD 的 {len(commits)} 個 commit "
             f"沒有任何一個會升版號（只有 {quiet} 這類，或格式不合被略過）。"
         )
         print("NO_BUMP")
@@ -392,9 +384,6 @@ def main() -> int:
     if not text.startswith(header):
         raise SystemExit("CHANGELOG.md 開頭不是預期的 '# Changelog\\n\\n'")
     CHANGELOG.write_text(header + block + "\n" + text[len(header):])
-
-    emit_github_output("version", new_version)
-    emit_github_output("tag", f"v{new_version}")
 
     return 0
 

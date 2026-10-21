@@ -1,16 +1,19 @@
 name: Release
 
+# 只有推 `vX.Y.Z` tag 才 build 與發版。版號、CHANGELOG 由維護者在本機跑
+# `.github/scripts/prepare_release.py` 產生，經 PR 進 main 後再把 tag 打在
+# merge commit 上；CI 不自動算版號，也不 commit 回 main。
 on:
   push:
-    branches:
-      - main
+    tags:
+      - "v[0-9]+.[0-9]+.[0-9]+"
 
 concurrency:
   group: release
   cancel-in-progress: false
 
 permissions:
-  contents: write
+  contents: read
 
 env:
   CARGO_TERM_COLOR: always
@@ -19,38 +22,35 @@ jobs:
   test:
     uses: ./.github/workflows/build.yml
 
-  prepare:
-    needs: test
+  verify:
     runs-on: ubuntu-latest
-    outputs:
-      tag: ${{ steps.version.outputs.tag }}
     steps:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          fetch-tags: true
 
-      - name: Compute next version and update CHANGELOG
-        id: version
+      - name: Tag matches Cargo.toml
         run: |
-          LAST_TAG=$(git describe --tags --abbrev=0)
-          python3 .github/scripts/prepare_release.py --from "$LAST_TAG"
+          CARGO_VERSION=$(grep -m1 '^version' Cargo.toml | cut -d '"' -f 2)
+          if [ "v$CARGO_VERSION" != "$GITHUB_REF_NAME" ]; then
+            echo "::error::tag $GITHUB_REF_NAME 與 Cargo.toml 版號 v$CARGO_VERSION 不一致"
+            exit 1
+          fi
 
-      - name: Commit and tag
-        if: steps.version.outputs.tag != ''
-        env:
-          TAG: ${{ steps.version.outputs.tag }}
+      # 與 upload job 取 Release body 用同一條規則，缺區塊就在這裡擋下，
+      # 不要等 build 完才發現沒有說明文字。
+      - name: CHANGELOG has this version
+        run: python3 .github/scripts/prepare_release.py --print-section "${GITHUB_REF_NAME#v}" > /dev/null
+
+      - name: Tag is on main
         run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          git add Cargo.toml Cargo.lock CHANGELOG.md
-          git commit -m "chore: release $TAG"
-          git tag "$TAG"
-          git push --atomic origin HEAD:main "$TAG"
+          if ! git merge-base --is-ancestor "$GITHUB_SHA" origin/main; then
+            echo "::error::$GITHUB_REF_NAME 指向的 commit 不在 main 上"
+            exit 1
+          fi
 
   build:
-    needs: prepare
-    if: needs.prepare.outputs.tag != ''
+    needs: [test, verify]
     strategy:
       fail-fast: false
       matrix:
@@ -74,8 +74,6 @@ jobs:
     runs-on: ${{ matrix.t.runner }}
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.tag }}
       - name: Setup rust target
         run: rustup target add ${{ matrix.t.target }}
       - uses: Swatinem/rust-cache@v2
@@ -90,8 +88,7 @@ jobs:
       - name: Stage
         shell: bash
         run: |
-          VER="${{ needs.prepare.outputs.tag }}"
-          VER="${VER#v}"
+          VER="${GITHUB_REF_NAME#v}"
           ASSET="ysgit_${VER}-${{ matrix.t.label }}${{ matrix.t.bin_ext }}"
           cp "target/${{ matrix.t.target }}/release/ysgit${{ matrix.t.bin_ext }}" "$ASSET"
           echo "ASSET=$ASSET" >> "$GITHUB_ENV"
@@ -102,19 +99,15 @@ jobs:
           if-no-files-found: error
 
   upload:
-    needs: [prepare, build]
+    needs: build
     permissions:
       contents: write
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-        with:
-          ref: ${{ needs.prepare.outputs.tag }}
       - name: Extract release notes from CHANGELOG.md
-        env:
-          TAG: ${{ needs.prepare.outputs.tag }}
         run: |
-          python3 .github/scripts/prepare_release.py --print-section "${TAG#v}" > release-notes.md
+          python3 .github/scripts/prepare_release.py --print-section "${GITHUB_REF_NAME#v}" > release-notes.md
       - uses: actions/download-artifact@v4
         with:
           path: releases
@@ -124,7 +117,7 @@ jobs:
         run: cd releases && sha256sum * > checksum.txt
       - uses: softprops/action-gh-release@v2.0.4
         with:
-          tag_name: ${{ needs.prepare.outputs.tag }}
+          tag_name: ${{ github.ref_name }}
           body_path: release-notes.md
           files: releases/*
           make_latest: true

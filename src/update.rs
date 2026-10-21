@@ -36,8 +36,9 @@ const SEEN_VERSION_MARKER_FILE_NAME: &str = ".ysgit.seen_version";
 
 /// release.yml 的 upload job 把 `CHANGELOG.md` 裡當次版本的區塊原封不動當
 /// GitHub Release 的 body（見 `prepare_release.py::extract_changelog_section`）。
-/// `prepare` job 先 commit CHANGELOG＋打 tag，`build` job 才 checkout 該 tag
-/// 編譯，所以編譯進這個 binary 的 CHANGELOG.md 必然已經含當前版本的區塊——
+/// 發版 commit（含 CHANGELOG）先進 main、tag 打在其上，`build` job 才 checkout
+/// 該 tag 編譯（`verify` job 會擋沒有該版區塊的 tag），所以編譯進這個 binary 的
+/// CHANGELOG.md 必然已經含當前版本的區塊——
 /// 不必打 GitHub API 就能在本機重現同一份內容，離線也能顯示。
 const CHANGELOG: &str = include_str!("../CHANGELOG.md");
 
