@@ -23,8 +23,8 @@ use crate::{
         ExternalCommandParameters,
     },
     git::{
-        background_command, fill_working_changes_stats, Commit, CommitHash, FetchPrune, Head, Ref,
-        RefType, Repository, WorkingChanges,
+        background_command, fill_working_changes_stats, remote_branch_state, Commit, CommitHash,
+        FetchPrune, Head, Ref, RefType, RemoteState, Repository, WorkingChanges,
     },
     github::{
         delete_remote_branch as gh_delete_remote_branch, is_merge_conflict_error, merge_pr,
@@ -488,7 +488,17 @@ impl App<'_> {
                     self.close_delete_tag();
                 }
                 AppEvent::OpenDeleteRef { ref_name, ref_type } => {
-                    self.open_delete_ref(ref_name, ref_type);
+                    if ref_type == RefType::RemoteBranch {
+                        self.check_remote_then_open_delete_ref(ref_name);
+                    } else {
+                        self.open_delete_ref(ref_name, ref_type, RemoteState::Gone);
+                    }
+                }
+                AppEvent::OpenDeleteRefReady {
+                    ref_name,
+                    remote_state,
+                } => {
+                    self.open_delete_ref(ref_name, RefType::RemoteBranch, remote_state);
                 }
                 AppEvent::CloseDeleteRef => {
                     self.close_delete_ref();
@@ -1549,19 +1559,52 @@ impl App<'_> {
         }
     }
 
-    fn open_delete_ref(&mut self, ref_name: String, ref_type: RefType) {
+    /// `ls-remote` 會打網路，丟到背景 thread 查完才開刪除對話框（`OpenDeleteRefReady`）。
+    fn check_remote_then_open_delete_ref(&mut self, ref_name: String) {
+        let Some((remote, branch)) = ref_name.split_once('/') else {
+            self.open_delete_ref(ref_name, RefType::RemoteBranch, RemoteState::Unknown);
+            return;
+        };
+        let (remote, branch) = (remote.to_string(), branch.to_string());
+        let repo_path = self.repository.path().to_path_buf();
+        let tx = self.ec.sender();
+        tx.send(AppEvent::ShowPendingOverlay {
+            message: t!("view.delete_ref.checking_remote").into_owned(),
+        });
+        std::thread::spawn(move || {
+            let remote_state = remote_branch_state(&repo_path, &remote, &branch);
+            tx.send(AppEvent::HidePendingOverlay);
+            tx.send(AppEvent::OpenDeleteRefReady {
+                ref_name,
+                remote_state,
+            });
+        });
+    }
+
+    fn open_delete_ref(&mut self, ref_name: String, ref_type: RefType, remote_state: RemoteState) {
         if let View::Refs(ref mut view) = self.view {
             let refs_origin = view.origin();
             let Some(commit_list_state) = view.take_list_state() else {
                 return;
             };
             let ref_list_state = view.take_ref_list_state();
+            let local_branch = (ref_type == RefType::RemoteBranch)
+                .then(|| {
+                    local_branch_for_remote(
+                        &self.repository.all_refs(),
+                        self.repository.head(),
+                        &ref_name,
+                    )
+                })
+                .flatten();
             self.view = View::of_delete_ref(
                 commit_list_state,
                 ref_list_state,
                 self.repository.path().to_path_buf(),
                 ref_name,
                 ref_type,
+                local_branch,
+                remote_state,
                 refs_origin,
                 self.ctx.clone(),
                 self.ec.sender(),
@@ -2328,6 +2371,21 @@ fn tracking_ref_to_delete(
         .then_some(name)
 }
 
+/// 刪 `origin/001` 時可一併刪的本機分支：`Some("001")` = 本機有同名分支。
+///
+/// 依名稱比對，不是依 upstream（`Ref::Branch` 沒存 upstream）。目前 checkout 的
+/// 分支排除——`git branch -D` 一定會失敗，列出來只會換來錯誤訊息。
+fn local_branch_for_remote(all_refs: &[&Ref], head: &Head, remote_ref: &str) -> Option<String> {
+    let (_, branch) = remote_ref.split_once('/')?;
+    if matches!(head, Head::Branch { name } if name == branch) {
+        return None;
+    }
+    all_refs
+        .iter()
+        .any(|r| matches!(r, Ref::Branch { name, .. } if name == branch))
+        .then(|| branch.to_string())
+}
+
 fn spawn_merge_pr(
     repo: &Path,
     ec: &EventController,
@@ -2869,6 +2927,36 @@ mod tests {
         let dummy_key_event = KeyEvent::from(KeyCode::Enter); // 邏輯中不會用到 KeyEvent
         let actual = process_numeric_prefix(numeric_prefix, user_event, dummy_key_event);
         assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn local_branch_for_remote_matches_by_name_and_skips_head() {
+        let target = CommitHash::from("abc");
+        let branch = |n: &str| Ref::Branch {
+            name: n.to_string(),
+            target: target.clone(),
+        };
+        let (b001, bfeat, bmain) = (branch("001"), branch("feat/x"), branch("main"));
+        let refs = [&b001, &bfeat, &bmain];
+        let on_main = Head::Branch {
+            name: "main".into(),
+        };
+
+        assert_eq!(
+            local_branch_for_remote(&refs, &on_main, "origin/001"),
+            Some("001".into())
+        );
+        assert_eq!(
+            local_branch_for_remote(&refs, &on_main, "origin/feat/x"),
+            Some("feat/x".into())
+        );
+        // 本機沒有同名分支
+        assert_eq!(local_branch_for_remote(&refs, &on_main, "origin/zzz"), None);
+        // 同名分支就是目前 checkout 的 HEAD
+        assert_eq!(
+            local_branch_for_remote(&refs, &on_main, "origin/main"),
+            None
+        );
     }
 
     /// 打字時 `g` 與 `?` 必須進得了輸入框。

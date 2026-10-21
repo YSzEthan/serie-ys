@@ -168,6 +168,7 @@
 | <kbd>Enter</kbd> <kbd>y</kbd> | 確認刪除 ref | `confirm` |
 | <kbd>n</kbd> <kbd>Esc</kbd> | 取消 | `cancel` |
 | <kbd>Right</kbd> <kbd>l</kbd> <kbd>Left</kbd> <kbd>h</kbd> <kbd>Down</kbd> <kbd>j</kbd> | 切換是／否 | `navigate_right` `navigate_left` `navigate_down` |
+| <kbd>Up</kbd> <kbd>k</kbd> <kbd>Down</kbd> <kbd>j</kbd> | 移動游標（刪 remote branch 時選項目） | `navigate_up` `navigate_down` |
 
 ### User command
 

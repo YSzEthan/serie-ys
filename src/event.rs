@@ -67,6 +67,11 @@ pub enum AppEvent {
         ref_name: String,
         ref_type: crate::git::RefType,
     },
+    /// remote branch 的 `ls-remote` 檢查完成（背景 thread 送出），可以開刪除對話框。
+    OpenDeleteRefReady {
+        ref_name: String,
+        remote_state: crate::git::RemoteState,
+    },
     CloseDeleteRef,
     OpenHelp,
     CloseHelp,
@@ -1531,9 +1536,10 @@ impl KeyScope {
                     | E::SelectDown
                     | E::SelectUp
             ),
-            KeyScope::DeleteRef => {
-                matches!(event, E::NavigateDown | E::NavigateRight | E::NavigateLeft)
-            }
+            KeyScope::DeleteRef => matches!(
+                event,
+                E::NavigateDown | E::NavigateUp | E::NavigateRight | E::NavigateLeft
+            ),
             KeyScope::Help => matches!(
                 event,
                 E::Close

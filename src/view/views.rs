@@ -7,7 +7,10 @@ use tui_input::Input;
 use crate::{
     app::AppContext,
     event::{EventController, KeyScope, Sender, UserEventWithCount},
-    git::{Commit, CommitExtra, CommitHash, FileChange, Ref, RefType, Repository, WorkingChanges},
+    git::{
+        Commit, CommitExtra, CommitHash, FileChange, Ref, RefType, RemoteState, Repository,
+        WorkingChanges,
+    },
     view::{
         create_tag::CreateTagView, delete_ref::DeleteRefView, delete_tag::DeleteTagView,
         detail::DetailView, github::GitHubView, help::HelpView, list::ListView, refs::RefsView,
@@ -289,6 +292,8 @@ impl<'a> View<'a> {
         repo_path: PathBuf,
         ref_name: String,
         ref_type: RefType,
+        local_branch: Option<String>,
+        remote_state: RemoteState,
         refs_origin: RefsOrigin,
         ctx: Rc<AppContext>,
         tx: Sender,
@@ -299,6 +304,8 @@ impl<'a> View<'a> {
             repo_path,
             ref_name,
             ref_type,
+            local_branch,
+            remote_state,
             refs_origin,
             ctx,
             tx,

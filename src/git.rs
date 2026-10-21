@@ -1708,6 +1708,71 @@ pub fn delete_remote_tracking_ref(path: &Path, name: &str) -> std::result::Resul
     )
 }
 
+/// 讀 remote-tracking ref 目前指向的 oid（`name` 如 `origin/x`）。
+pub fn remote_tracking_oid(path: &Path, name: &str) -> Option<String> {
+    let output = Command::new("git")
+        .args([
+            "rev-parse",
+            "--verify",
+            "-q",
+            &format!("refs/remotes/{name}"),
+        ])
+        .current_dir(path)
+        .output()
+        .ok()?;
+    output
+        .status
+        .success()
+        .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
+}
+
+/// 把 remote-tracking ref 指回 `oid`。`push --delete` 會順手清掉追蹤 ref，
+/// 使用者不想刪它時，push 前先記 oid、push 後用這個放回去。
+pub fn restore_remote_tracking_ref(
+    path: &Path,
+    name: &str,
+    oid: &str,
+) -> std::result::Result<(), String> {
+    run_git_command(
+        path,
+        &["update-ref", &format!("refs/remotes/{name}"), oid],
+        &t!("git.branch.delete_tracking_failed"),
+    )
+}
+
+/// GitHub（遠端）上某個 branch 是否還在。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RemoteState {
+    Exists,
+    Gone,
+    /// `ls-remote` 失敗（離線、認證失敗等）——無法確認。
+    Unknown,
+}
+
+/// `git ls-remote --heads <remote> refs/heads/<branch>`。會打網路，只能在背景 thread 呼叫。
+pub fn remote_branch_state(path: &Path, remote: &str, branch: &str) -> RemoteState {
+    let output = background_command(
+        path,
+        [
+            "ls-remote",
+            "--heads",
+            remote,
+            &format!("refs/heads/{branch}"),
+        ],
+    )
+    .output();
+    match output {
+        Ok(o) if o.status.success() => {
+            if o.stdout.iter().all(u8::is_ascii_whitespace) {
+                RemoteState::Gone
+            } else {
+                RemoteState::Exists
+            }
+        }
+        _ => RemoteState::Unknown,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
