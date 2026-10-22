@@ -1,5 +1,17 @@
 # Changelog
 
+## [4.12.0](https://github.com/YSzEthan/serie-ys/compare/v4.11.0...v4.12.0) (2026-10-22)
+
+
+### Features
+
+* refs 介面刪除 remote branch 可分別勾選本機分支、GitHub 分支、本機追蹤分支 (#172) (#173) ([e7a437a](https://github.com/YSzEthan/serie-ys/commit/e7a437a1040047885b46830a36a7156c6d537079))
+
+
+### CI
+
+* 版號改手動維護，打 tag 才 build 並發版 (#170) (#171) ([c01f8e9](https://github.com/YSzEthan/serie-ys/commit/c01f8e933043c547d01c6362afd57aac1e0d44a3))
+
 ## [4.11.0](https://github.com/YSzEthan/serie-ys/compare/v4.10.0...v4.11.0) (2026-10-21)
 
 
