@@ -76,6 +76,9 @@ graph_max_width_percent = 50  # 超寬 graph 最多佔清單寬度的百分比�
 date_format = "%Y-%m-%d %H:%M:%S %z"
 date_local = true
 
+[ui.github]
+diff_stat_target = 10000  # PR 變更行數的目標數，顯示 Δ = 目標 − 總和，達到時紅色標示（≥1）
+
 # 介面配色。顏色可以是 ANSI 色名（"red"、"dark-gray"⋯）、"reset"（沿用終端機
 # 預設色），或 "#rrggbb"／0-255 的數字（256 色代碼）。
 [color]

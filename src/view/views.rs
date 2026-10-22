@@ -320,10 +320,13 @@ impl<'a> View<'a> {
         before: View<'a>,
         data: crate::github::GitHubData,
         label_mode: LabelMode,
+        diff_stat_target: u32,
         tx: Sender,
     ) -> Self {
         View::GitHub(Box::new(
-            GitHubView::new(before, data, tx).with_label_mode(label_mode),
+            GitHubView::new(before, data, tx)
+                .with_label_mode(label_mode)
+                .with_diff_stat_target(diff_stat_target),
         ))
     }
 

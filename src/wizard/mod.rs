@@ -252,6 +252,8 @@ struct ResolvedDefaults {
     /// 目前有效值，同 `list_scrolloff` 沒有 CLI 旗標。
     list_graph_edge_max_rows: usize,
     list_graph_max_width_percent: u16,
+    /// `ui.github.diff_stat_target` 目前有效值，同樣沒有 CLI 旗標。
+    github_diff_stat_target: u32,
     /// `true` = 設定檔載入失敗（讀不到／解析失敗／garde 驗證不過），
     /// `theme`／`keybind_patch` 都是內建硬預設，不是使用者的真實設定——
     /// 顏色編輯器與 keybind 編輯器都要據此在畫面上講清楚，不能默默顯示
@@ -311,6 +313,7 @@ impl ResolvedDefaults {
             list_scrolloff: ui.list.scrolloff,
             list_graph_edge_max_rows: ui.list.graph_edge_max_rows,
             list_graph_max_width_percent: ui.list.graph_max_width_percent,
+            github_diff_stat_target: ui.github.diff_stat_target,
             config_is_fallback: false,
         }
     }
@@ -393,6 +396,7 @@ const CORE_UPDATE: &[&str] = &["core", "update"];
 const CORE_AUTO_FETCH: &[&str] = &["core", "auto_fetch"];
 const CORE_FETCH: &[&str] = &["core", "fetch"];
 const UI_LIST: &[&str] = &["ui", "list"];
+const UI_GITHUB: &[&str] = &["ui", "github"];
 const COLOR: &[&str] = &["color"];
 const COLOR_GRAPH: &[&str] = &["color", "graph"];
 const KEYBIND: &[&str] = &["keybind"];
@@ -561,6 +565,8 @@ enum NumberField {
     ListGraphEdgeMaxRows,
     /// `ui.list.graph_max_width_percent`（截斷時的欄寬上限）。
     ListGraphMaxWidthPercent,
+    /// `ui.github.diff_stat_target`（GitHub view PR 變更行數 `Δ` 的目標數）。
+    GithubDiffStatTarget,
 }
 
 impl NumberField {
@@ -590,6 +596,10 @@ impl NumberField {
                 table: UI_LIST,
                 key: "graph_max_width_percent".into(),
             },
+            NumberField::GithubDiffStatTarget => ConfigKey {
+                table: UI_GITHUB,
+                key: "diff_stat_target".into(),
+            },
         }
     }
 
@@ -601,6 +611,7 @@ impl NumberField {
             NumberField::ListScrolloff => "[SCROLLOFF]",
             NumberField::ListGraphEdgeMaxRows => "[GRAPH_EDGE_MAX_ROWS]",
             NumberField::ListGraphMaxWidthPercent => "[GRAPH_MAX_WIDTH_PERCENT]",
+            NumberField::GithubDiffStatTarget => "[DIFF_STAT_TARGET]",
         }
     }
 
@@ -614,6 +625,7 @@ impl NumberField {
             NumberField::ListGraphMaxWidthPercent => {
                 t!("wizard.number.help.list_graph_max_width_percent")
             }
+            NumberField::GithubDiffStatTarget => t!("wizard.number.help.github_diff_stat_target"),
         }
     }
 
@@ -649,6 +661,11 @@ impl NumberField {
                 min: 10,
                 max: 100,
             },
+            NumberField::GithubDiffStatTarget => NumberSpec {
+                title: t!("wizard.number.title.github_diff_stat_target"),
+                min: 1,
+                max: u32::MAX as usize,
+            },
         }
     }
 
@@ -668,6 +685,9 @@ impl NumberField {
             NumberField::ListGraphMaxWidthPercent => {
                 Some(config::UiListConfig::default().graph_max_width_percent as usize)
             }
+            NumberField::GithubDiffStatTarget => {
+                Some(config::UiGithubConfig::default().diff_stat_target as usize)
+            }
         }
     }
 
@@ -682,6 +702,7 @@ impl NumberField {
             NumberField::ListGraphMaxWidthPercent => {
                 Some(defaults.list_graph_max_width_percent as usize)
             }
+            NumberField::GithubDiffStatTarget => Some(defaults.github_diff_stat_target as usize),
         }
     }
 
@@ -703,7 +724,7 @@ impl NumberField {
             return t!("wizard.number.unlimited").into_owned();
         };
         match self {
-            NumberField::MaxCount => n.to_string(),
+            NumberField::MaxCount | NumberField::GithubDiffStatTarget => n.to_string(),
             NumberField::UpdateInterval => t!("wizard.number.hours", n = n).into_owned(),
             NumberField::AutoFetchInterval => t!("wizard.number.seconds", n = n).into_owned(),
             NumberField::ListScrolloff | NumberField::ListGraphEdgeMaxRows => {
@@ -725,7 +746,8 @@ impl NumberField {
             }
             NumberField::ListScrolloff
             | NumberField::ListGraphEdgeMaxRows
-            | NumberField::ListGraphMaxWidthPercent => {}
+            | NumberField::ListGraphMaxWidthPercent
+            | NumberField::GithubDiffStatTarget => {}
         }
         draft
             .edits
@@ -848,6 +870,9 @@ const ROWS: &[RowAction] = &[
     ))),
     RowAction::Edit(Editor::Dialog(Dialog::Number(
         NumberField::ListGraphMaxWidthPercent,
+    ))),
+    RowAction::Edit(Editor::Dialog(Dialog::Number(
+        NumberField::GithubDiffStatTarget,
     ))),
     RowAction::Edit(Editor::Dialog(Dialog::ColorMenu)),
     RowAction::Edit(Editor::Dialog(Dialog::KeyBindMenu)),
@@ -2032,6 +2057,30 @@ mod tests {
         );
     }
 
+    #[test]
+    fn apply_touched_settings_writes_github_diff_stat_target() {
+        let mut s = test_state();
+        assert_eq!(
+            NumberField::GithubDiffStatTarget.current_label(&s.draft, &s.defaults),
+            "10000"
+        );
+        NumberField::GithubDiffStatTarget.commit(&mut s.draft, Some(700));
+        let updated = apply_touched_settings(&s.draft, "").unwrap();
+        assert!(updated.contains("[ui.github]"), "{updated}");
+        assert!(updated.contains("diff_stat_target = 700"), "{updated}");
+        assert_eq!(
+            NumberField::GithubDiffStatTarget.current_label(&s.draft, &s.defaults),
+            "700"
+        );
+
+        NumberField::GithubDiffStatTarget.commit(&mut s.draft, None);
+        assert_eq!(
+            NumberField::GithubDiffStatTarget.current_label(&s.draft, &s.defaults),
+            "10000",
+            "清空後顯示內建預設"
+        );
+    }
+
     // ── 新架構釘住的不變式：ConfigKey 對應表、空 edits、PATH 的隔離 ──
 
     /// 每個項目全部碰過一遍，寫回、再用真正的設定檔 parser（不是自己重抄
@@ -2063,6 +2112,7 @@ mod tests {
         NumberField::UpdateInterval.commit(&mut s.draft, Some(12));
         NumberField::AutoFetchInterval.commit(&mut s.draft, Some(45));
         NumberField::ListScrolloff.commit(&mut s.draft, Some(7));
+        NumberField::GithubDiffStatTarget.commit(&mut s.draft, Some(4321));
 
         let updated = apply_touched_settings(&s.draft, "").unwrap();
         let core = config::parse_core(&updated).unwrap();
@@ -2092,6 +2142,7 @@ mod tests {
             ui.list.scrolloff, 7,
             "ListScrolloff 沒有 draft.args 可比對，直接比寫回的值"
         );
+        assert_eq!(ui.github.diff_stat_target, 4321);
     }
 
     /// 新架構才有的保證：`edits` 是空的，`apply_touched_settings` 一次

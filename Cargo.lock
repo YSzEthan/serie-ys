@@ -3394,7 +3394,7 @@ checksum = "ea6fc2961e4ef194dcbfe56bb845534d0dc8098940c7e5c012a258bfec6701bd"
 
 [[package]]
 name = "ysgit"
-version = "4.12.1"
+version = "4.13.0"
 dependencies = [
  "ansi-to-tui",
  "arboard",

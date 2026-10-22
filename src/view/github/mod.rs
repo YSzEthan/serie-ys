@@ -211,6 +211,9 @@ pub struct GitHubView<'a> {
     /// `LabelMode` 的註解）。session 內由 `App::github_label_mode` 保存
     /// （關掉 GitHub 模式再開仍維持），重啟 serie 回預設。
     label_mode: LabelMode,
+    /// `ui.github.diff_stat_target`，PR 變更行數 `Δ` 的基準。由
+    /// `View::of_github` 從 `AppContext` 帶入，view 存活期間不變。
+    diff_stat_target: u32,
 
     tx: Sender,
 }
@@ -262,6 +265,7 @@ impl<'a> GitHubView<'a> {
             preview_height: 0,
             expand_commits: false,
             label_mode: LabelMode::default(),
+            diff_stat_target: crate::config::UiGithubConfig::default().diff_stat_target,
             tx,
         }
     }
@@ -319,6 +323,11 @@ impl<'a> GitHubView<'a> {
     /// 直接寫進型別，不用靠註解自律；其餘地方一律用 `toggle_label_mode`。
     pub(crate) fn with_label_mode(mut self, mode: LabelMode) -> Self {
         self.label_mode = mode;
+        self
+    }
+
+    pub(crate) fn with_diff_stat_target(mut self, target: u32) -> Self {
+        self.diff_stat_target = target;
         self
     }
 
@@ -1253,6 +1262,7 @@ impl<'a> GitHubView<'a> {
             body_rev: self.body_rev,
             entry: self.timeline.get(&(kind, number)),
             expand_commits: self.expand_commits,
+            diff_stat_target: self.diff_stat_target,
             item,
         }
     }

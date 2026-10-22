@@ -425,6 +425,9 @@ pub struct UiConfig {
     #[garde(dive)]
     #[nested]
     pub detail: UiDetailConfig,
+    #[garde(dive)]
+    #[nested]
+    pub github: UiGithubConfig,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
@@ -532,6 +535,16 @@ pub struct UiDetailConfig {
     #[garde(skip)]
     #[default = true]
     pub date_local: bool,
+}
+
+/// GitHub view 的顯示設定。
+#[optional(derives = [Deserialize])]
+#[derive(Debug, Clone, PartialEq, Eq, SmartDefault, Validate)]
+pub struct UiGithubConfig {
+    /// PR 變更行數的目標數：顯示 `Δ(目標 − 總和)`，總和達到目標時改紅色粗體。
+    #[garde(range(min = 1))]
+    #[default = 10_000]
+    pub diff_stat_target: u32,
 }
 
 /// Detail／Diff／使用者自訂指令三個 pane 各自的高度。
@@ -886,6 +899,9 @@ mod tests {
                     date_format: "%Y-%m-%d %H:%M:%S %z".into(),
                     date_local: true,
                 },
+                github: UiGithubConfig {
+                    diff_stat_target: 10_000,
+                },
             },
             color: ColorTheme::default(),
             keybind: None,
@@ -930,6 +946,8 @@ mod tests {
             [ui.detail]
             date_format = "%Y/%m/%d %H:%M:%S"
             date_local = false
+            [ui.github]
+            diff_stat_target = 5000
             [color.graph]
             branches = ["#ff0000", "#00ff00", "#0000ff"]
         "##;
@@ -1039,6 +1057,9 @@ mod tests {
                 detail: UiDetailConfig {
                     date_format: "%Y/%m/%d %H:%M:%S".into(),
                     date_local: false,
+                },
+                github: UiGithubConfig {
+                    diff_stat_target: 5000,
                 },
             },
             color: ColorTheme {

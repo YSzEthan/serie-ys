@@ -459,6 +459,20 @@
             }
           },
           "additionalProperties": false
+        },
+        "github": {
+          "type": "object",
+          "description": "Settings for the GitHub view.",
+          "properties": {
+            "diff_stat_target": {
+              "type": "integer",
+              "description": "Target size for a pull request's changed lines. The GitHub view shows the delta (target minus total); once the total reaches the target it is highlighted in red.",
+              "minimum": 1,
+              "maximum": 4294967295,
+              "default": 10000
+            }
+          },
+          "additionalProperties": false
         }
       },
       "additionalProperties": false

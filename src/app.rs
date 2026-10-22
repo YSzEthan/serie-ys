@@ -1716,7 +1716,13 @@ impl App<'_> {
         let filter = data.state_filter;
 
         let before_view = std::mem::take(&mut self.view);
-        self.view = View::of_github(before_view, data, self.github_label_mode, self.ec.sender());
+        self.view = View::of_github(
+            before_view,
+            data,
+            self.github_label_mode,
+            self.ctx.ui_config.github.diff_stat_target,
+            self.ec.sender(),
+        );
         self.refresh_github(filter);
         // Branches 也在開 view 時一起預載，切到分頁時資料多半已經好了
         self.load_github_branches();
