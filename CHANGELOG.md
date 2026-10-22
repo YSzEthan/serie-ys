@@ -1,5 +1,17 @@
 # Changelog
 
+## [4.12.1](https://github.com/YSzEthan/serie-ys/compare/v4.12.0...v4.12.1) (2026-10-22)
+
+
+### Bug Fixes
+
+* 刪除 remote branch 與追蹤 ref 改用 push :ref／branch -Dr 並放行 origin ref hook (#178) (#179) ([2f99797](https://github.com/YSzEthan/serie-ys/commit/2f9979753e3fbbf7b15caf15f821bfb789c1bba2))
+
+
+### CI
+
+* 發版改為併進最後一個功能 PR (#176) (#177) ([e77d443](https://github.com/YSzEthan/serie-ys/commit/e77d4437969f4aa0a245b235e102e7daab74cc34))
+
 ## [4.12.0](https://github.com/YSzEthan/serie-ys/compare/v4.11.0...v4.12.0) (2026-10-22)
 
 
