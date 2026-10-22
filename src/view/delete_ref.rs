@@ -35,9 +35,9 @@ use crate::{
 pub enum RemoteOpt {
     /// 本機同名分支（`git branch -D <name>`）。
     Local(String),
-    /// GitHub 上的分支（`git push <remote> --delete <branch>`）。
+    /// GitHub 上的分支（`git push <remote> :refs/heads/<branch>`）。
     Remote,
-    /// 本機追蹤 ref（`git update-ref -d refs/remotes/<remote>/<branch>`，冪等：
+    /// 本機追蹤 ref（`git branch -Dr <remote>/<branch>`，冪等：
     /// Remote 那步已讓 git 順手清掉時也算成功）。
     Tracking,
 }
@@ -593,6 +593,57 @@ mod tests {
         assert_eq!((out.succeeded, out.failed), (1, 0), "{}", out.message);
         assert!(!has_ref(&work, "refs/remotes/origin/001"));
         assert!(remote_has_001(&work));
+    }
+
+    /// 擋刪 `refs/remotes/origin/*` 的 reference-transaction hook，除非
+    /// `GIT_ALLOW_ORIGIN_REF_DELETE=1`。掛在 repo 層級的 `core.hooksPath`，
+    /// 不受全域設定影響。
+    #[cfg(unix)]
+    fn install_origin_guard_hook(root: &Path, work: &Path) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let hooks = root.join("hooks");
+        std::fs::create_dir_all(&hooks).unwrap();
+        let hook = hooks.join("reference-transaction");
+        std::fs::write(
+            &hook,
+            "#!/bin/sh\n\
+             [ \"$1\" = prepared ] || exit 0\n\
+             [ \"$GIT_ALLOW_ORIGIN_REF_DELETE\" = 1 ] && exit 0\n\
+             while read -r old new ref; do\n\
+             \x20 case \"$new $ref\" in\n\
+             \x20   0000*\" refs/remotes/origin/\"*) echo \"blocked: $ref\" >&2; exit 1;;\n\
+             \x20 esac\n\
+             done\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&hook, std::fs::Permissions::from_mode(0o755)).unwrap();
+        git(work, &["config", "core.hooksPath", hooks.to_str().unwrap()]);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn guarded_repo_still_deletes_tracking_ref() {
+        let (root, work) = setup();
+        install_origin_guard_hook(root.path(), &work);
+        // 前置：hook 確實有擋（不帶 env 刪不掉）
+        let blocked = Command::new("git")
+            .args(["update-ref", "-d", "refs/remotes/origin/001"])
+            .current_dir(&work)
+            .output()
+            .unwrap();
+        assert!(!blocked.status.success(), "hook 沒生效：{blocked:?}");
+
+        let steps = [
+            RemoteOpt::Local("001".into()),
+            RemoteOpt::Remote,
+            RemoteOpt::Tracking,
+        ];
+        let out = run_remote_steps(&work, "origin/001", &steps);
+        assert_eq!((out.succeeded, out.failed), (3, 0), "{}", out.message);
+        assert!(!has_ref(&work, "refs/heads/001"));
+        assert!(!has_ref(&work, "refs/remotes/origin/001"));
+        assert!(!remote_has_001(&work));
     }
 
     #[test]
