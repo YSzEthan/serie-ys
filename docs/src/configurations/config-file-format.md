@@ -84,6 +84,9 @@ graph_max_width_percent = 50
 date_format = "%Y-%m-%d %H:%M:%S %z"
 date_local = true
 
+[ui.github]
+diff_stat_target = 10000
+
 [color]
 fg = "reset"
 bg = "reset"
@@ -549,6 +552,16 @@ merge 密集的 repo（例如 linux）改用 `--order topo`，圖寬約只有預
 - 型別：`u16`
 - 預設值：`50`
 - 範圍：`10`～`100`
+
+### `ui.github.diff_stat_target`
+
+GitHub view 的 PR 變更行數目標數。`base ← head` 那一列與 branches 卡片顯示
+`+新增 -刪除 =總和 Δ差值`，其中 `Δ` 是目標數減總和：還沒達標時綠色，
+達到或超過時（`Δ` ≤ 0）`=總和` 與 `Δ` 改紅色加粗，提醒這個 PR 該拆分。
+
+- 型別：`u32`
+- 預設值：`10000`
+- 最小值：`1`
 
 ### `ui.detail.date_format`
 

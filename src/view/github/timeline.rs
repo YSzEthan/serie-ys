@@ -479,17 +479,20 @@ fn review_state_label(state: &str) -> Cow<'static, str> {
     }
 }
 
-/// 總和達到這個門檻，代表這個 PR 通常該拆分——用紅色加粗標示出來。
-const DIFF_STAT_DANGER: u32 = 10_000;
-
-/// `base ← head` 那一列的變更行數：`+新增 -刪除 =總和`。總和達到
-/// [`DIFF_STAT_DANGER`] 時改紅色加粗。
-pub(super) fn diff_stat_spans(stat: DiffStat) -> [Span<'static>; 3] {
+/// `base ← head` 那一列的變更行數：`+新增 -刪除 =總和 Δ(目標-總和)`。總和
+/// 達到 `target`（Δ ≤ 0）代表這個 PR 通常該拆分——`=總和` 與 `Δ` 都改紅色
+/// 加粗；還沒到時 `Δ` 綠色。
+pub(super) fn diff_stat_spans(stat: DiffStat, target: u32) -> [Span<'static>; 4] {
     let total = stat.additions.saturating_add(stat.deletions);
-    let total_style = if total >= DIFF_STAT_DANGER {
-        Style::default().fg(Color::Red).add_modifier(Modifier::BOLD)
+    let remaining = i64::from(target) - i64::from(total);
+    let (total_style, remaining_style) = if remaining <= 0 {
+        let danger = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
+        (danger, danger)
     } else {
-        Style::default().fg(Color::White)
+        (
+            Style::default().fg(Color::White),
+            Style::default().fg(Color::Green),
+        )
     };
     [
         Span::styled(
@@ -501,6 +504,7 @@ pub(super) fn diff_stat_spans(stat: DiffStat) -> [Span<'static>; 3] {
             Style::default().fg(Color::Red),
         ),
         Span::styled(format!(" ={total}"), total_style),
+        Span::styled(format!(" Δ{remaining}"), remaining_style),
     ]
 }
 
@@ -546,39 +550,83 @@ mod tests {
         assert_eq!(mergeable_marker(None), None);
     }
 
+    const TARGET: u32 = 10_000;
+
     #[test]
     fn diff_stat_spans_colors_additions_and_deletions() {
-        let spans = diff_stat_spans(DiffStat {
-            additions: 600,
-            deletions: 71,
-        });
+        let spans = diff_stat_spans(
+            DiffStat {
+                additions: 600,
+                deletions: 71,
+            },
+            TARGET,
+        );
         assert_eq!(spans[0].content, "  +600");
         assert_eq!(spans[0].style.fg, Some(Color::Green));
         assert_eq!(spans[1].content, " -71");
         assert_eq!(spans[1].style.fg, Some(Color::Red));
         assert_eq!(spans[2].content, " =671");
+        assert_eq!(spans[3].content, " Δ9329");
     }
 
     #[test]
-    fn diff_stat_spans_total_below_danger_threshold_is_white() {
-        let spans = diff_stat_spans(DiffStat {
-            additions: 9999,
-            deletions: 0,
-        });
+    fn diff_stat_spans_below_target_is_white_total_and_green_delta() {
+        let spans = diff_stat_spans(
+            DiffStat {
+                additions: 9999,
+                deletions: 0,
+            },
+            TARGET,
+        );
         assert_eq!(spans[2].content, " =9999");
         assert_eq!(spans[2].style.fg, Some(Color::White));
         assert!(!spans[2].style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(spans[3].content, " Δ1");
+        assert_eq!(spans[3].style.fg, Some(Color::Green));
+        assert!(!spans[3].style.add_modifier.contains(Modifier::BOLD));
     }
 
     #[test]
-    fn diff_stat_spans_total_at_danger_threshold_is_red_and_bold() {
-        let spans = diff_stat_spans(DiffStat {
-            additions: 9000,
-            deletions: 1000,
-        });
+    fn diff_stat_spans_at_target_is_red_and_bold() {
+        let spans = diff_stat_spans(
+            DiffStat {
+                additions: 9000,
+                deletions: 1000,
+            },
+            TARGET,
+        );
         assert_eq!(spans[2].content, " =10000");
-        assert_eq!(spans[2].style.fg, Some(Color::Red));
-        assert!(spans[2].style.add_modifier.contains(Modifier::BOLD));
+        assert_eq!(spans[3].content, " Δ0");
+        for span in &spans[2..] {
+            assert_eq!(span.style.fg, Some(Color::Red));
+            assert!(span.style.add_modifier.contains(Modifier::BOLD));
+        }
+    }
+
+    #[test]
+    fn diff_stat_spans_over_target_shows_negative_delta() {
+        let spans = diff_stat_spans(
+            DiffStat {
+                additions: 9000,
+                deletions: 1500,
+            },
+            TARGET,
+        );
+        assert_eq!(spans[3].content, " Δ-500");
+        assert_eq!(spans[3].style.fg, Some(Color::Red));
+    }
+
+    #[test]
+    fn diff_stat_spans_uses_custom_target() {
+        let spans = diff_stat_spans(
+            DiffStat {
+                additions: 600,
+                deletions: 71,
+            },
+            700,
+        );
+        assert_eq!(spans[3].content, " Δ29");
+        assert_eq!(spans[3].style.fg, Some(Color::Green));
     }
 
     #[test]

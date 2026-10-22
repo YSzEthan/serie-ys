@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.13.0](https://github.com/YSzEthan/serie-ys/compare/v4.12.1...v4.13.0) (2026-10-22)
+
+
+### Features
+
+* GitHub view 變更行數加上與目標數的差值 Δ，目標數可在精靈設定 (#181) (#182) ([#182](https://github.com/YSzEthan/serie-ys/pull/182))
+
 ## [4.12.1](https://github.com/YSzEthan/serie-ys/compare/v4.12.0...v4.12.1) (2026-10-22)
 
 

@@ -84,7 +84,7 @@ pub(super) fn build_preview_content(
         if let Some((text, color)) = mergeable_marker(input.entry.and_then(|e| e.mergeable)) {
             spans.push(Span::styled(text, Style::default().fg(color)));
         }
-        spans.extend(diff_stat_spans(diff_stat));
+        spans.extend(diff_stat_spans(diff_stat, input.diff_stat_target));
         lines.push(Line::from(spans));
     }
 
@@ -161,6 +161,8 @@ pub(super) struct PreviewInput<'v> {
     pub(super) body_rev: u64,
     pub(super) entry: Option<&'v TimelineEntry>,
     pub(super) expand_commits: bool,
+    /// `ui.github.diff_stat_target`，PR 變更行數 `Δ` 的基準。
+    pub(super) diff_stat_target: u32,
     pub(super) item: Option<SelectedItem<'v>>,
 }
 
@@ -187,6 +189,7 @@ impl PreviewInput<'_> {
             rev: self.entry.map_or(0, |e| e.rev),
             expand_commits: self.expand_commits,
             body_rev: self.body_rev,
+            diff_stat_target: self.diff_stat_target,
             width: self.width,
         }
     }
@@ -235,6 +238,7 @@ struct PreviewKey {
     rev: u64,
     expand_commits: bool,
     body_rev: u64,
+    diff_stat_target: u32,
     width: u16,
 }
 
@@ -444,6 +448,7 @@ mod tests {
             body_rev: 0,
             entry: Some(entry),
             expand_commits: true,
+            diff_stat_target: 10_000,
             item: Some(SelectedItem {
                 title: "t",
                 state: "OPEN",

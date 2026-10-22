@@ -424,7 +424,13 @@ impl<'a> GitHubView<'a> {
                 width,
                 height: branches::CARD_HEIGHT,
             };
-            branches::render_card(f, card_area, branch, vis_i == self.selected_index);
+            branches::render_card(
+                f,
+                card_area,
+                branch,
+                vis_i == self.selected_index,
+                self.diff_stat_target,
+            );
         }
 
         if footer {
