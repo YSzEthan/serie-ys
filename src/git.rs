@@ -1551,8 +1551,22 @@ fn run_git_command(
     args: &[&str],
     error_prefix: &str,
 ) -> std::result::Result<(), String> {
+    run_git_command_env(path, args, &[], error_prefix)
+}
+
+/// 刪 `refs/remotes/origin/*` 時帶上的環境變數。放行 repo 內擋刪 origin ref 的
+/// reference-transaction hook（約定同 dotfiles 的 `gtbrD`／`gh()`）。
+const ALLOW_ORIGIN_REF_DELETE: (&str, &str) = ("GIT_ALLOW_ORIGIN_REF_DELETE", "1");
+
+fn run_git_command_env(
+    path: &Path,
+    args: &[&str],
+    envs: &[(&str, &str)],
+    error_prefix: &str,
+) -> std::result::Result<(), String> {
     let output = Command::new("git")
         .args(args)
+        .envs(envs.iter().copied())
         .current_dir(path)
         .output()
         .map_err(|e| t!("git.exec_failed", subcommand = args[0], error = e).into_owned())?;
@@ -1690,20 +1704,26 @@ pub fn delete_remote_branch(path: &Path, branch_name: &str) -> std::result::Resu
         return Err(t!("git.branch.invalid_remote_name", name = branch_name).into_owned());
     }
     let (remote, branch) = (parts[0], parts[1]);
-    run_git_command(
+    // 寫完整 ref：遠端有同名 tag 時短名稱會報 `dst refspec matches more than one`
+    run_git_command_env(
         path,
-        &["push", remote, "--delete", branch],
+        &["push", remote, &format!(":refs/heads/{branch}")],
+        &[ALLOW_ORIGIN_REF_DELETE],
         &t!("git.branch.delete_remote_failed"),
     )
 }
 
-/// 刪本機的 remote-tracking ref（如 `origin/feature/x`）。用 `update-ref -d` 而非
-/// `branch -d -r`：ref 已被 fetch --prune 清掉時它仍回 0（冪等），不會把「已經不在」
-/// 報成失敗。
+/// 刪本機的 remote-tracking ref（如 `origin/feature/x`）。`branch -Dr` 在 ref 不存在時
+/// 會報錯，但 `push :ref` 會順手清掉追蹤 ref、背景 fetch --prune 也會清，「已經不在」
+/// 不是失敗，所以先查 oid，不在就直接當成功（冪等）。
 pub fn delete_remote_tracking_ref(path: &Path, name: &str) -> std::result::Result<(), String> {
-    run_git_command(
+    if remote_tracking_oid(path, name).is_none() {
+        return Ok(());
+    }
+    run_git_command_env(
         path,
-        &["update-ref", "-d", &format!("refs/remotes/{name}")],
+        &["branch", "-Dr", name],
+        &[ALLOW_ORIGIN_REF_DELETE],
         &t!("git.branch.delete_tracking_failed"),
     )
 }
@@ -1726,7 +1746,7 @@ pub fn remote_tracking_oid(path: &Path, name: &str) -> Option<String> {
         .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
-/// 把 remote-tracking ref 指回 `oid`。`push --delete` 會順手清掉追蹤 ref，
+/// 把 remote-tracking ref 指回 `oid`。`push :ref` 會順手清掉追蹤 ref，
 /// 使用者不想刪它時，push 前先記 oid、push 後用這個放回去。
 pub fn restore_remote_tracking_ref(
     path: &Path,
