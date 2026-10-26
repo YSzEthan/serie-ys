@@ -1,5 +1,12 @@
 # Changelog
 
+## [4.14.0](https://github.com/YSzEthan/serie-ys/compare/v4.13.0...v4.14.0) (2026-10-27)
+
+
+### Features
+
+* GitHub view merge PR 改為表單彈窗加確認彈窗 (#183) (#184) ([#184](https://github.com/YSzEthan/serie-ys/pull/184))
+
 ## [4.13.0](https://github.com/YSzEthan/serie-ys/compare/v4.12.1...v4.13.0) (2026-10-22)
 
 

@@ -96,6 +96,10 @@ en-US = "hunk"
 zh-TW = "merge PR"
 en-US = "merge PR"
 
+[common.hint.next]
+zh-TW = "下一步"
+en-US = "next"
+
 [common.hint.move]
 zh-TW = "移動"
 en-US = "move"
