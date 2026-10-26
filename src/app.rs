@@ -1175,6 +1175,7 @@ impl App<'_> {
             &self.key_state.numeric_prefix,
             self.reloader.full_status(),
         );
+        self.status_line_state.render_popup(f, view_area);
 
         if let Some(message) = &self.pending_message {
             let overlay =

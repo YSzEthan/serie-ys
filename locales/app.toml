@@ -56,50 +56,6 @@ en-US = "Updated to %{tag}."
 zh-TW = "錯誤：%{msg}"
 en-US = "Error: %{msg}"
 
-[app.status.merge_pick]
-zh-TW = "Merge PR #%{number}（%{head_ref}）："
-en-US = "Merge PR #%{number} (%{head_ref}): "
-
-[app.status.merge_ask_delete_local]
-zh-TW = "merge（%{method}）後要刪除 local branch '%{head_ref}' 嗎？"
-en-US = "Delete local branch '%{head_ref}' after merge (%{method})? "
-
-[app.status.merge_ask_delete_remote]
-zh-TW = "merge（%{method}）後要刪除 remote branch '%{head_ref}' 嗎？"
-en-US = "Delete remote branch '%{head_ref}' after merge (%{method})? "
-
-[app.status.merge_ask_delete_tracking]
-zh-TW = "merge（%{method}）後要刪除本機追蹤分支 '%{tracking_ref}' 嗎？"
-en-US = "Delete local tracking branch '%{tracking_ref}' after merge (%{method})? "
-
-[app.status.merge_local_yes]
-zh-TW = "，刪除 local branch：是"
-en-US = ", delete local branch: yes"
-
-[app.status.merge_local_no]
-zh-TW = "，刪除 local branch：否"
-en-US = ", delete local branch: no"
-
-[app.status.merge_remote_yes]
-zh-TW = "，刪除 remote branch：是"
-en-US = ", delete remote branch: yes"
-
-[app.status.merge_remote_no]
-zh-TW = "，刪除 remote branch：否"
-en-US = ", delete remote branch: no"
-
-[app.status.merge_tracking_yes]
-zh-TW = "，刪除本機追蹤分支：是"
-en-US = ", delete local tracking branch: yes"
-
-[app.status.merge_tracking_no]
-zh-TW = "，刪除本機追蹤分支：否"
-en-US = ", delete local tracking branch: no"
-
-[app.status.merge_confirm]
-zh-TW = "以 %{method} merge #%{number}%{local}%{remote}%{tracking}  "
-en-US = "Merge #%{number} with %{method}%{local}%{remote}%{tracking}  "
-
 [app.github.issue_not_in_list]
 zh-TW = "目前清單沒有 issue #%{number}（請檢查狀態過濾）"
 en-US = "Issue #%{number} not in current list (check state filter)"
@@ -219,6 +175,30 @@ en-US = "Checked out '%{target}'"
 [app.checkout.failed]
 zh-TW = "Checkout 失敗"
 en-US = "Checkout failed"
+
+[app.merge.dialog.title]
+zh-TW = "Merge PR #%{number}"
+en-US = "Merge PR #%{number}"
+
+[app.merge.dialog.method]
+zh-TW = "合併方式"
+en-US = "Method"
+
+[app.merge.dialog.confirm_title]
+zh-TW = "確認 merge PR #%{number}"
+en-US = "Confirm merge PR #%{number}"
+
+[app.merge.dialog.confirm_summary]
+zh-TW = "即將以 %{method} merge PR #%{number}"
+en-US = "About to merge PR #%{number} with %{method}"
+
+[app.merge.dialog.keep_branches]
+zh-TW = "不刪除任何分支"
+en-US = "No branches will be deleted"
+
+[app.merge.dialog.delete_prefix]
+zh-TW = "刪除："
+en-US = "Delete: "
 
 [app.merge.pending]
 zh-TW = "正在 merge PR #%{number}…"

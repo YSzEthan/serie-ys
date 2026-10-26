@@ -136,7 +136,7 @@
 | <kbd>u</kbd> | 開啟相關 issue/PR 選單 | `detail_pane_toggle` |
 | <kbd>r</kbd> | 重新整理 | `refresh` |
 | <kbd>f</kbd> | fetch 所有 remote（完成後重新載入 Branches） | `fetch` |
-| <kbd>p</kbd> | 三階段 merge PR：選擇方式、刪除 branch、確認 | `merge_pr` |
+| <kbd>p</kbd> | merge PR：彈窗選擇合併方式與要刪除的 branch，再確認 | `merge_pr` |
 | <kbd>X</kbd> | 關閉／重新開啟 issue 或 PR | `toggle_issue_state` |
 | <kbd>P</kbd> | PR 標為可供 review／轉回 draft | `toggle_pr_draft` |
 | <kbd>z</kbd> | 展開／收合 commit log | `toggle_commit_log` |
@@ -217,8 +217,6 @@
 | 按鍵 | 出現位置 | 動作 |
 | --- | ----- | ------ |
 | <kbd>1</kbd>–<kbd>9</kbd> | Ref／checkout／相關／branch 選擇器 | 選第 n 項 |
-| <kbd>m</kbd> <kbd>s</kbd> <kbd>r</kbd> | Merge PR 提示（第 1 步） | merge/squash/rebase |
-| <kbd>y</kbd> <kbd>n</kbd> | Merge PR 提示（第 2 步） | merge 後是否刪除該 branch |
 | <kbd>f</kbd> | 刪除 branch 確認 | 強制刪除 |
 | <kbd>Tab</kbd> <kbd>Shift-Tab</kbd> | 建立 Tag 對話框 | 在欄位間移動 |
 | <kbd>Space</kbd> | 建立 Tag 對話框（checkbox） | 切換勾選狀態 |

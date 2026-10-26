@@ -355,7 +355,7 @@ fn help_blocks(
         b(vec![UserEvent::DetailPaneToggle], t!("help.github.open_related_issue_pr_picker")),
         b(vec![UserEvent::Refresh], t!("help.github.refresh")),
         b(vec![UserEvent::Fetch], t!("help.github.fetch")),
-        b(vec![UserEvent::MergePr], t!("help.github.3_stage_merge_pr_pick_method_delete_branch_confirm")),
+        b(vec![UserEvent::MergePr], t!("help.github.merge_pr_form_then_confirm")),
         b(vec![UserEvent::ToggleIssueState], t!("help.github.close_reopen_issue_or_pr")),
         b(vec![UserEvent::TogglePrDraft], t!("help.github.mark_pr_ready_back_to_draft")),
         b(vec![UserEvent::ToggleCommitLog], t!("help.github.expand_collapse_commit_log")),
@@ -756,8 +756,6 @@ mod tests {
 | 按鍵 | 出現位置 | 動作 |
 | --- | ----- | ------ |
 | <kbd>1</kbd>–<kbd>9</kbd> | Ref／checkout／相關／branch 選擇器 | 選第 n 項 |
-| <kbd>m</kbd> <kbd>s</kbd> <kbd>r</kbd> | Merge PR 提示（第 1 步） | merge/squash/rebase |
-| <kbd>y</kbd> <kbd>n</kbd> | Merge PR 提示（第 2 步） | merge 後是否刪除該 branch |
 | <kbd>f</kbd> | 刪除 branch 確認 | 強制刪除 |
 | <kbd>Tab</kbd> <kbd>Shift-Tab</kbd> | 建立 Tag 對話框 | 在欄位間移動 |
 | <kbd>Space</kbd> | 建立 Tag 對話框（checkbox） | 切換勾選狀態 |

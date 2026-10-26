@@ -440,9 +440,9 @@ en-US = "Refresh"
 zh-TW = "fetch 所有 remote（完成後重新載入 Branches）"
 en-US = "Fetch all remotes (reloads Branches when done)"
 
-[help.github.3_stage_merge_pr_pick_method_delete_branch_confirm]
-zh-TW = "三階段 merge PR：選擇方式、刪除 branch、確認"
-en-US = "Merge PR in 3 stages: select method, delete branch, confirm"
+[help.github.merge_pr_form_then_confirm]
+zh-TW = "merge PR：彈窗選擇合併方式與要刪除的 branch，再確認"
+en-US = "Merge PR: pick method and branches to delete in a popup, then confirm"
 
 [help.github.close_reopen_issue_or_pr]
 zh-TW = "關閉／重新開啟 issue 或 PR"
