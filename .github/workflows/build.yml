@@ -23,7 +23,7 @@ jobs:
     outputs:
       msrv: ${{ steps.get-msrv.outputs.msrv }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Get MSRV
         id: get-msrv
         run: |
@@ -35,7 +35,7 @@ jobs:
   release-script:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Test release script
         run: python3 .github/scripts/test_prepare_release.py
 
@@ -48,7 +48,7 @@ jobs:
           - ${{ needs.prepare.outputs.msrv }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - uses: dtolnay/rust-toolchain@master
         with:
           toolchain: ${{ matrix.versions }}
