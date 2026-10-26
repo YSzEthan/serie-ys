@@ -17,7 +17,7 @@ jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
       - name: Check PR title
         env:
           # 經環境變數傳入，不要直接內插進 shell —— 標題是使用者可控字串。
