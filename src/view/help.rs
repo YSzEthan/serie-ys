@@ -336,7 +336,7 @@ fn help_blocks(
 
     let github = vec![
         b(vec![UserEvent::GitHubToggle, UserEvent::Cancel, UserEvent::Close], t!("help.github.close_github_view")),
-        b(vec![UserEvent::RefList], t!("help.github.switch_issue_pr_tab")),
+        b(vec![UserEvent::RefList, UserEvent::RefListPrev], t!("help.github.switch_issue_pr_tab")),
         b(vec![UserEvent::NavigateDown, UserEvent::SelectDown], t!("help.github.move_down")),
         b(vec![UserEvent::NavigateUp, UserEvent::SelectUp], t!("help.github.move_up")),
         b(vec![UserEvent::PageDown], t!("help.github.page_down")),

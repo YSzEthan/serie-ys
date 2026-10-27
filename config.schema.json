@@ -818,6 +818,9 @@
           "description": "Alias of 'ref_list'.",
           "$ref": "#/definitions/keybindArray"
         },
+        "ref_list_prev": {
+          "$ref": "#/definitions/keybindArray"
+        },
         "search": {
           "$ref": "#/definitions/keybindArray"
         },

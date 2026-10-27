@@ -104,6 +104,10 @@ en-US = "Confirm"
 zh-TW = "開啟／關閉 refs 清單"
 en-US = "Open/close refs list"
 
+[event.desc.ref_list_prev]
+zh-TW = "GitHub 介面反向切換分頁"
+en-US = "Previous tab in GitHub view"
+
 [event.desc.search]
 zh-TW = "開始搜尋"
 en-US = "Start search"
