@@ -1,5 +1,24 @@
 # Changelog
 
+## [4.15.0](https://github.com/YSzEthan/serie-ys/compare/v4.14.0...v4.15.0) (2026-10-27)
+
+
+### Features
+
+* dev merge 後自動發 beta pre-release，新增 --beta 選項決定是否接受測試版 (#187) (#188) ([e5f4899](https://github.com/YSzEthan/serie-ys/commit/e5f4899c2accea1cfe0e4124fb0213cf6f57cb38))
+* GitHub view 分頁支援 Shift+Tab 反向切換 (#191) (#192) ([dab2f0e](https://github.com/YSzEthan/serie-ys/commit/dab2f0e7890473557d6bb0dfe59985af6bcd9709))
+* GitHub view 新增 CI 監測 tab，只輪詢進行中的 PR (#193) (#194) ([134feb7](https://github.com/YSzEthan/serie-ys/commit/134feb7e01f3873fea4ee4eb21b1a8f7ab3f9b9d))
+
+
+### Bug Fixes
+
+* merge PR 表單在勾選項上方加「合併後一併刪除：」說明 (#189) ([afc0650](https://github.com/YSzEthan/serie-ys/commit/afc0650e11b36c437a046b5f9b00486ae0e79fcd))
+
+
+### CI
+
+* 升級 GitHub Actions 以消除 Node.js 20 deprecation 警告 (#185) (#186) ([ba22e84](https://github.com/YSzEthan/serie-ys/commit/ba22e84632f361bd3f5e0f03180d5dd0b56a5e31))
+
 ## [4.14.0](https://github.com/YSzEthan/serie-ys/compare/v4.13.0...v4.14.0) (2026-10-27)
 
 
