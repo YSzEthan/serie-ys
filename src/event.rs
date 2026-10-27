@@ -1074,6 +1074,7 @@ pub enum UserEvent {
     GoToPrevious,
     Confirm,
     RefList,
+    RefListPrev,
     Search,
     Filter,
     UserCommand(usize),
@@ -1139,6 +1140,7 @@ impl UserEvent {
             UserEvent::GoToPrevious => "go_to_previous",
             UserEvent::Confirm => "confirm",
             UserEvent::RefList => "ref_list",
+            UserEvent::RefListPrev => "ref_list_prev",
             UserEvent::Search => "search",
             UserEvent::Filter => "filter",
             UserEvent::UserCommand(n) => return Some(format!("user_command_{n}")),
@@ -1208,6 +1210,7 @@ impl UserEvent {
             UserEvent::GoToPrevious => t!("event.desc.go_to_previous"),
             UserEvent::Confirm => t!("event.desc.confirm"),
             UserEvent::RefList => t!("event.desc.ref_list"),
+            UserEvent::RefListPrev => t!("event.desc.ref_list_prev"),
             UserEvent::Search => t!("event.desc.search"),
             UserEvent::Filter => t!("event.desc.filter"),
             UserEvent::UserCommand(_) => return None,
@@ -1297,6 +1300,7 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "go_to_previous" => Ok(UserEvent::GoToPrevious),
                         "confirm" => Ok(UserEvent::Confirm),
                         "ref_list" | "ref_list_toggle" => Ok(UserEvent::RefList),
+                        "ref_list_prev" => Ok(UserEvent::RefListPrev),
                         "search" => Ok(UserEvent::Search),
                         "filter" => Ok(UserEvent::Filter),
                         "ignore_case_toggle" => Ok(UserEvent::IgnoreCaseToggle),
@@ -1497,6 +1501,7 @@ impl KeyScope {
                 event,
                 E::Close
                     | E::RefList
+                    | E::RefListPrev
                     | E::NavigateDown
                     | E::NavigateUp
                     | E::NavigateRight
@@ -2024,6 +2029,7 @@ mod tests {
             UserEvent::GoToPrevious,
             UserEvent::Confirm,
             UserEvent::RefList,
+            UserEvent::RefListPrev,
             UserEvent::Search,
             UserEvent::Filter,
             UserEvent::UserCommand(1),

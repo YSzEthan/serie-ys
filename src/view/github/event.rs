@@ -156,6 +156,14 @@ impl<'a> GitHubView<'a> {
         }
     }
 
+    fn switch_tab(&mut self, tab: GitHubTab) {
+        self.active_tab = tab;
+        self.selected_index = 0;
+        self.offset = 0;
+        self.preview_offset = 0;
+        self.ensure_branches_loaded();
+    }
+
     pub(super) fn handle_list_event(&mut self, event: UserEvent, count: usize) {
         if self.active_tab == GitHubTab::Branches && self.handle_branches_event(event, count) {
             return;
@@ -165,12 +173,12 @@ impl<'a> GitHubView<'a> {
                 self.tx.send(AppEvent::CloseGitHub);
             }
             UserEvent::RefList => {
-                self.active_tab = self.active_tab.next();
-                self.selected_index = 0;
-                self.offset = 0;
-                self.preview_offset = 0;
+                self.switch_tab(self.active_tab.next());
                 self.bump_generation();
-                self.ensure_branches_loaded();
+            }
+            UserEvent::RefListPrev => {
+                self.switch_tab(self.active_tab.prev());
+                self.bump_generation();
             }
             UserEvent::NavigateDown | UserEvent::SelectDown => {
                 let max = self.current_list_len().saturating_sub(1);
@@ -521,14 +529,9 @@ impl<'a> GitHubView<'a> {
                 self.preview_offset = 0;
                 self.adjust_scroll();
             }
-            UserEvent::RefList => {
-                // Tab 鍵：Issues → PRs → Branches 循環（保留查詢字串）
-                self.active_tab = self.active_tab.next();
-                self.selected_index = 0;
-                self.offset = 0;
-                self.preview_offset = 0;
-                self.ensure_branches_loaded();
-            }
+            // 切分頁時保留查詢字串
+            UserEvent::RefList => self.switch_tab(self.active_tab.next()),
+            UserEvent::RefListPrev => self.switch_tab(self.active_tab.prev()),
             _ => {
                 // 把按鍵轉發給 tui-input；只有值真的變了才重建
                 let before = self.search_input.value().to_string();

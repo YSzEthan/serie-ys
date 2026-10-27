@@ -365,8 +365,8 @@ zh-TW = "關閉 GitHub view"
 en-US = "Close GitHub view"
 
 [help.github.switch_issue_pr_tab]
-zh-TW = "切換 Issues → PRs → Branches 分頁（Branches 列出 GitHub 上沒有 OPEN PR 的 branch 與行數差異）"
-en-US = "Cycle Issues → PRs → Branches tab (Branches lists branches on GitHub without an open PR, with line diff)"
+zh-TW = "切換 Issues → PRs → Branches 分頁，Shift-Tab 反向（Branches 列出 GitHub 上沒有 OPEN PR 的 branch 與行數差異）"
+en-US = "Cycle Issues → PRs → Branches tab, Shift-Tab reverses (Branches lists branches on GitHub without an open PR, with line diff)"
 
 [help.github.move_down]
 zh-TW = "向下移動"

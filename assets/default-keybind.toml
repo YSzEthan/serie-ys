@@ -31,6 +31,7 @@ go_to_next = ["]"]
 go_to_previous = ["["]
 confirm = ["enter", "y"]
 ref_list = ["tab"]
+ref_list_prev = ["backtab"]
 search = [":"]
 filter = ["'"]
 

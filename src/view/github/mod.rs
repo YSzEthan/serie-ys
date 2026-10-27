@@ -99,6 +99,15 @@ impl GitHubTab {
             GitHubTab::Branches => GitHubTab::Issues,
         }
     }
+
+    /// Shift-Tab 的反向順序：Issues → Branches → PRs → Issues。
+    fn prev(self) -> GitHubTab {
+        match self {
+            GitHubTab::Issues => GitHubTab::Branches,
+            GitHubTab::PullRequests => GitHubTab::Issues,
+            GitHubTab::Branches => GitHubTab::PullRequests,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -807,7 +816,10 @@ impl<'a> GitHubView<'a> {
                 }
                 if self.active_tab == GitHubTab::Branches {
                     return vec![
-                        h(&[UserEvent::RefList], t!("common.hint.switch_tab")),
+                        h(
+                            &[UserEvent::RefList, UserEvent::RefListPrev],
+                            t!("common.hint.switch_tab"),
+                        ),
                         h(&[UserEvent::Search], t!("common.hint.search")),
                         h(&[UserEvent::Refresh], t!("common.hint.refresh")),
                         h(&[UserEvent::Filter], t!("common.hint.author_filter")),
@@ -819,7 +831,10 @@ impl<'a> GitHubView<'a> {
                 }
                 // contextual action 隨選取項目變動、使用者猜不到，排在靜態提示之前，
                 // 讓被終端寬度切掉的是 help 裡查得到的那些。
-                let mut hints = vec![h(&[UserEvent::RefList], t!("common.hint.switch_tab"))];
+                let mut hints = vec![h(
+                    &[UserEvent::RefList, UserEvent::RefListPrev],
+                    t!("common.hint.switch_tab"),
+                )];
                 hints.extend(self.action_hints());
                 hints.extend([
                     h(&[UserEvent::Search], t!("common.hint.search")),
@@ -3488,6 +3503,27 @@ mod tests {
 
             assert!(matches!(rx.try_recv(), Ok(AppEvent::FetchAll)), "{tab:?}");
         }
+    }
+
+    #[test]
+    fn tab_prev_is_inverse_of_next() {
+        for tab in [
+            GitHubTab::Issues,
+            GitHubTab::PullRequests,
+            GitHubTab::Branches,
+        ] {
+            assert_eq!(tab.next().prev(), tab);
+            assert_eq!(tab.prev().next(), tab);
+        }
+    }
+
+    #[test]
+    fn ref_list_prev_cycles_tabs_backwards() {
+        let (mut view, _rx) = branches_view();
+        view.active_tab = GitHubTab::Issues;
+
+        view.handle_list_event(UserEvent::RefListPrev, 1);
+        assert_eq!(view.active_tab, GitHubTab::Branches);
     }
 
     #[test]
