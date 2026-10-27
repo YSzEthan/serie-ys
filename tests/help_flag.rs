@@ -58,6 +58,7 @@ fn help_output_lists_every_flag_including_the_new_path_browser() {
         "--update-interval",
         "--auto-restart",
         "--release-notes",
+        "--beta",
         "--auto-fetch",
         "--auto-fetch-interval",
         "--fetch-prune",

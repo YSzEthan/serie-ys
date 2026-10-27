@@ -16,6 +16,7 @@ mode = "check"
 interval_hours = 6
 auto_restart = "off"
 release_notes = "on"
+beta = "off"
 
 [core.auto_fetch]
 mode = "off"
@@ -285,6 +286,20 @@ Commit 圖形的邊線風格。
 
 - 型別：`string`（enum）
 - 預設值：`on`
+- 可選值：
+  - `off`
+  - `on`
+
+命令列參數指定的值優先。
+
+### `core.update.beta`
+
+更新檢查是否接受測試版。測試版是 `dev` 分支每次 merge 後自動發的
+pre-release（版號形如 `4.12.2-beta.7`）；關閉時只看正式版。正式版發佈後
+版號較大，會自然取代測試版。
+
+- 型別：`string`（enum）
+- 預設值：`off`
 - 可選值：
   - `off`
   - `on`

@@ -41,7 +41,7 @@ use graph::Graph;
 use reload::Reloader;
 use rust_i18n::t;
 use serde::Deserialize;
-use update::{AutoRestart, ReleaseNotes, UpdateMode};
+use update::{AutoRestart, Beta, ReleaseNotes, UpdateMode};
 
 /// ysgit - Git Graph in Terminal
 #[derive(Parser)]
@@ -127,6 +127,9 @@ struct Args {
     #[arg(long, value_name = "TYPE", help = t!("cli.help.release_notes"))]
     release_notes: Option<ReleaseNotes>,
 
+    #[arg(long, value_name = "TYPE", help = t!("cli.help.beta"))]
+    beta: Option<Beta>,
+
     #[arg(long, value_name = "TYPE", help = t!("cli.help.auto_fetch"))]
     auto_fetch: Option<AutoFetch>,
 
@@ -197,6 +200,7 @@ impl Args {
             update_interval,
             auto_restart,
             release_notes,
+            beta,
             auto_fetch,
             auto_fetch_interval,
             fetch_prune,
@@ -230,6 +234,7 @@ impl Args {
                 "--release-notes",
                 release_notes.as_ref().map(wizard::variant_name),
             ),
+            ("--beta", beta.as_ref().map(wizard::variant_name)),
             (
                 "--auto-fetch",
                 auto_fetch.as_ref().map(wizard::variant_name),
@@ -678,12 +683,14 @@ pub fn run() -> Result<()> {
             interval_hours: args.update_interval,
             auto_restart: args.auto_restart,
             release_notes: args.release_notes,
+            beta: args.beta,
         },
         update::UpdateOverrides {
             mode: core_config.update.mode,
             interval_hours: core_config.update.interval_hours,
             auto_restart: core_config.update.auto_restart,
             release_notes: core_config.update.release_notes,
+            beta: core_config.update.beta,
         },
     );
     let auto_fetch_settings = auto_fetch::resolve(
@@ -1034,16 +1041,18 @@ fn run_self_update(args: &Args) -> Result<()> {
             interval_hours: args.update_interval,
             auto_restart: args.auto_restart,
             release_notes: args.release_notes,
+            beta: args.beta,
         },
         update::UpdateOverrides {
             mode: core_update.mode,
             interval_hours: core_update.interval_hours,
             auto_restart: core_update.auto_restart,
             release_notes: core_update.release_notes,
+            beta: core_update.beta,
         },
     );
 
-    let latest = update::check_for_update()?;
+    let latest = update::check_for_update(settings.beta)?;
     update::mark_checked();
 
     let Some(tag) = latest else {
@@ -1134,6 +1143,8 @@ mod tests {
             "on",
             "--release-notes",
             "off",
+            "--beta",
+            "on",
             "--auto-fetch",
             "on",
             "--auto-fetch-interval",
@@ -1159,6 +1170,7 @@ mod tests {
         assert_eq!(reparsed.update_interval, args.update_interval);
         assert_eq!(reparsed.auto_restart, args.auto_restart);
         assert_eq!(reparsed.release_notes, args.release_notes);
+        assert_eq!(reparsed.beta, args.beta);
         assert_eq!(reparsed.auto_fetch, args.auto_fetch);
         assert_eq!(reparsed.auto_fetch_interval, args.auto_fetch_interval);
         assert_eq!(reparsed.fetch_prune, args.fetch_prune);

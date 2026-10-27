@@ -1,0 +1,121 @@
+name: Beta
+
+# push 到 dev（PR merge）就自動 build 四平台並發 pre-release `vX.Y.Z-beta.N`，
+# 給 `--beta on` 的客戶端更新。跟 `release.yml` 完全分開：正式版仍然只在
+# 維護者推 `vX.Y.Z` tag 時才發。
+#
+# 版號只在 CI 裡蓋上去，不寫回 repo——dev 的 `Cargo.toml` 一直是上一個正式版號：
+# - 基底是 patch + 1：`4.12.1-beta.N` 的 semver 比 `4.12.1` 小，停在 4.12.1
+#   的使用者永遠不會把它當成新版。
+# - N 用 `GITHUB_RUN_NUMBER`，單調遞增、不會撞 tag。
+# - 之後真正的 `4.12.2`（或更大）一定比任何 `4.12.2-beta.N` 大，自然取代。
+#
+# tag 由 softprops/action-gh-release 依 `target_commitish` 自動建立，不會
+# 觸發 `release.yml`（它的 tag 條件只收 `vX.Y.Z`）。
+on:
+  push:
+    branches:
+      - dev
+
+concurrency:
+  group: beta
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  test:
+    uses: ./.github/workflows/build.yml
+
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.v.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - id: v
+        run: |
+          CARGO_VERSION=$(grep -m1 '^version' Cargo.toml | cut -d '"' -f 2)
+          IFS=. read -r MAJOR MINOR PATCH <<< "$CARGO_VERSION"
+          echo "version=${MAJOR}.${MINOR}.$((PATCH + 1))-beta.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: [test, version]
+    strategy:
+      fail-fast: false
+      matrix:
+        t:
+          - target: aarch64-apple-darwin
+            runner: macos-latest
+            bin_ext: ""
+            label: macos-arm64
+          - target: x86_64-apple-darwin
+            runner: macos-latest
+            bin_ext: ""
+            label: macos-x64
+          - target: x86_64-unknown-linux-gnu
+            runner: ubuntu-latest
+            bin_ext: ""
+            label: linux
+          - target: x86_64-pc-windows-msvc
+            runner: windows-latest
+            bin_ext: ".exe"
+            label: windows
+    runs-on: ${{ matrix.t.runner }}
+    env:
+      VERSION: ${{ needs.version.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+      - name: Stamp beta version
+        shell: bash
+        run: |
+          awk -v v="$VERSION" '!d && /^version = /{print "version = \"" v "\""; d=1; next} 1' Cargo.toml > Cargo.toml.new
+          mv Cargo.toml.new Cargo.toml
+      - name: Setup rust target
+        run: rustup target add ${{ matrix.t.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.t.target }}
+      - name: Build
+        uses: houseabsolute/actions-rust-cross@v1.0.0
+        with:
+          command: build
+          target: ${{ matrix.t.target }}
+          args: "--release"
+      - name: Stage
+        shell: bash
+        run: |
+          ASSET="ysgit_${VERSION}-${{ matrix.t.label }}${{ matrix.t.bin_ext }}"
+          cp "target/${{ matrix.t.target }}/release/ysgit${{ matrix.t.bin_ext }}" "$ASSET"
+          echo "ASSET=$ASSET" >> "$GITHUB_ENV"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: release-${{ matrix.t.target }}
+          path: ${{ env.ASSET }}
+          if-no-files-found: error
+
+  upload:
+    needs: [version, build]
+    permissions:
+      contents: write
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: releases
+          pattern: release-*
+          merge-multiple: true
+      - name: Checksum
+        run: cd releases && sha256sum * > checksum.txt
+      - uses: softprops/action-gh-release@v3
+        with:
+          tag_name: v${{ needs.version.outputs.version }}
+          target_commitish: ${{ github.sha }}
+          prerelease: true
+          make_latest: false
+          generate_release_notes: true
+          files: releases/*

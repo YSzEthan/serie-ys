@@ -202,6 +202,18 @@ _可選值：_ `off`、`on`
 
 設定檔對應鍵是 `core.update.release_notes`，命令列參數指定的值優先。
 
+## --beta \<TYPE\>
+
+更新檢查是否接受測試版（`dev` 分支每次 merge 後自動發的 pre-release，
+版號形如 `4.12.2-beta.7`）。
+
+_可選值：_ `off`、`on`
+
+預設關閉，只看正式版。開啟後 `-U` 與背景檢查都會納入測試版；正式版發佈後
+版號較大，會自然取代測試版。
+
+設定檔對應鍵是 `core.update.beta`，命令列參數指定的值優先。
+
 ## --auto-fetch \<TYPE\>
 
 背景定期偵測 git remote 是否有新內容，有就自動 `git fetch --all`（是否多帶
