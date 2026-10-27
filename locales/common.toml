@@ -239,3 +239,11 @@ en-US = "branch name"
 [common.hint.author_filter]
 zh-TW = "篩選作者"
 en-US = "filter author"
+
+[common.hint.ci_rerun]
+zh-TW = "重跑 CI"
+en-US = "re-run CI"
+
+[common.hint.open_checks]
+zh-TW = "開 checks"
+en-US = "open checks"

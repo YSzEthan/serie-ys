@@ -128,6 +128,10 @@ en-US = "Maximum percentage of the list width a very wide graph may take"
 zh-TW = "GitHub PR 變更行數的目標數（顯示 Δ = 目標 − 總和）"
 en-US = "Target size for GitHub PR changed lines (shows Δ = target − total)"
 
+[wizard.number.help.github_ci_interval]
+zh-TW = "GitHub CI 監測 tab 的輪詢間隔"
+en-US = "Polling interval of the GitHub CI tab"
+
 [wizard.number.title.update_interval]
 zh-TW = "自動更新的檢查間隔（小時，1–48）"
 en-US = "Auto-update check interval (hours, 1–48)"
@@ -151,6 +155,10 @@ en-US = "Maximum percentage of the list width a very wide graph may take (10–1
 [wizard.number.title.github_diff_stat_target]
 zh-TW = "GitHub PR 變更行數的目標數，總和達到時以紅色標示（≥1）"
 en-US = "Target for GitHub PR changed lines; the total turns red once reached (≥1)"
+
+[wizard.number.title.github_ci_interval]
+zh-TW = "GitHub CI 監測 tab 的輪詢間隔（秒，5–300）"
+en-US = "Polling interval of the GitHub CI tab (seconds, 5–300)"
 
 [wizard.number.unlimited]
 zh-TW = "不限制"

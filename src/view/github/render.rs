@@ -10,10 +10,10 @@ use ratatui::{
 };
 use rust_i18n::t;
 
-use crate::github::{GhIssue, GhPullRequest};
+use crate::github::{CiState, GhIssue, GhPullRequest};
 
 use super::{
-    branches,
+    branches, ci,
     preview::{borrow_lines, RowData},
     GitHubFocus, GitHubTab, GitHubView, LabelMode, LoadState,
 };
@@ -45,7 +45,7 @@ impl<'a> GitHubView<'a> {
         self.height = area.height as usize;
         self.width = area.width as usize;
         // 視窗縮放會改變卡片欄數與可見列數，先把選取重新捲進畫面
-        if self.active_tab == GitHubTab::Branches {
+        if self.active_tab.is_card_tab() {
             self.adjust_scroll();
         }
         // render 是溢出狀態的唯一真相來源——在進入時重置，讓跳過 render_list
@@ -71,6 +71,8 @@ impl<'a> GitHubView<'a> {
 
         if self.active_tab == GitHubTab::Branches {
             self.render_branches(f, content_area);
+        } else if self.active_tab == GitHubTab::Ci {
+            self.render_ci(f, content_area);
         } else {
             let [list_area, preview_area] =
                 Layout::horizontal([Constraint::Percentage(40), Constraint::Percentage(60)])
@@ -108,6 +110,12 @@ impl<'a> GitHubView<'a> {
         let issues_label = t!("github.render.tab_issues", n = self.issues.len());
         let prs_label = t!("github.render.tab_prs", n = self.pull_requests.len());
         let branches_label = t!("github.render.tab_branches", n = self.branches.len());
+        let pending_ci = self
+            .ci
+            .iter()
+            .filter(|e| e.state() == CiState::Pending)
+            .count();
+        let ci_label = t!("github.render.tab_ci", n = pending_ci);
         let tab_style = |tab: GitHubTab| {
             if self.active_tab == tab {
                 Style::default().fg(Color::Black).bg(Color::Cyan).bold()
@@ -122,6 +130,8 @@ impl<'a> GitHubView<'a> {
             Span::styled(prs_label, tab_style(GitHubTab::PullRequests)),
             Span::raw(" "),
             Span::styled(branches_label, tab_style(GitHubTab::Branches)),
+            Span::raw(" "),
+            Span::styled(ci_label, tab_style(GitHubTab::Ci)),
             Span::raw("  "),
             // state filter 只管 issue／PR；Branches 分頁的 `'` 是作者篩選
             Span::styled(
@@ -130,6 +140,8 @@ impl<'a> GitHubView<'a> {
                         Some(author) => format!("[@{author}]"),
                         None => t!("github.render.all_authors").into_owned(),
                     }
+                } else if self.active_tab == GitHubTab::Ci {
+                    String::new()
                 } else {
                     format!("[{filter_label}]")
                 },
@@ -274,7 +286,7 @@ impl<'a> GitHubView<'a> {
                 .map(|p| labels_display_width(&p.labels, self.label_mode))
                 .max()
                 .unwrap_or(0),
-            GitHubTab::Branches => 0,
+            GitHubTab::Branches | GitHubTab::Ci => 0,
         }
     }
 
@@ -353,8 +365,8 @@ impl<'a> GitHubView<'a> {
                         rows.push(row);
                     }
                 }
-                // Branches 走 `render_branches`，不經過列表列
-                GitHubTab::Branches => {}
+                // Branches、CI 走卡片版面，不經過列表列
+                GitHubTab::Branches | GitHubTab::Ci => {}
             }
         } else {
             let indices = self.current_filtered_indices();
@@ -383,11 +395,52 @@ impl<'a> GitHubView<'a> {
                         rows.push(row);
                     }
                 }
-                GitHubTab::Branches => {}
+                GitHubTab::Branches | GitHubTab::Ci => {}
             }
         }
         self.selected_row_overflows.set(overflow);
         rows
+    }
+
+    /// 卡片分頁共用的排版：依寬度排成多欄固定高度的卡片，回傳每張可見卡片的
+    /// (可視索引, 區域)。
+    fn card_slots(&self, cards_area: Rect) -> Vec<(usize, Rect)> {
+        let cols = self.branch_columns();
+        let card_width = cards_area.width / cols as u16;
+        let visible_rows = (cards_area.height / branches::CARD_HEIGHT) as usize;
+        // `offset` 對齊列首（見 `adjust_branch_scroll`）；縮放後也在這裡再對齊一次
+        let first = self.offset / cols * cols;
+        (first..self.current_list_len())
+            .take(visible_rows * cols)
+            .enumerate()
+            .map(|(slot, vis_i)| {
+                let (row, col) = ((slot / cols) as u16, (slot % cols) as u16);
+                // 除不盡的寬度由最後一欄吃掉，整列才會貼滿
+                let width = if col as usize == cols - 1 {
+                    cards_area.width - col * card_width
+                } else {
+                    card_width
+                };
+                let area = Rect {
+                    x: cards_area.x + col * card_width,
+                    y: cards_area.y + row * branches::CARD_HEIGHT,
+                    width,
+                    height: branches::CARD_HEIGHT,
+                };
+                (vis_i, area)
+            })
+            .collect()
+    }
+
+    /// CI 分頁：沿用 Branches 的卡片版面，沒有 preview。
+    fn render_ci(&self, f: &mut Frame, area: Rect) {
+        f.render_widget(Clear, area);
+        for (vis_i, card_area) in self.card_slots(area) {
+            let Some(entry) = self.ci.get(self.actual_index(vis_i)) else {
+                break;
+            };
+            ci::render_card(f, card_area, entry, vis_i == self.selected_index);
+        }
     }
 
     /// Branches 分頁：內容區依寬度排成多欄固定高度的卡片，沒有 preview。
@@ -401,28 +454,9 @@ impl<'a> GitHubView<'a> {
             ..area
         };
 
-        let cols = self.branch_columns();
-        let card_width = cards_area.width / cols as u16;
-        let visible_rows = (cards_area.height / branches::CARD_HEIGHT) as usize;
-        // `offset` 對齊列首（見 `adjust_branch_scroll`）；縮放後也在這裡再對齊一次
-        let first = self.offset / cols * cols;
-        let shown = (first..self.current_list_len()).take(visible_rows * cols);
-        for (slot, vis_i) in shown.enumerate() {
+        for (vis_i, card_area) in self.card_slots(cards_area) {
             let Some(branch) = self.branches.get(self.actual_index(vis_i)) else {
                 break;
-            };
-            let (row, col) = ((slot / cols) as u16, (slot % cols) as u16);
-            // 除不盡的寬度由最後一欄吃掉，整列才會貼滿
-            let width = if col as usize == cols - 1 {
-                cards_area.width - col * card_width
-            } else {
-                card_width
-            };
-            let card_area = Rect {
-                x: cards_area.x + col * card_width,
-                y: cards_area.y + row * branches::CARD_HEIGHT,
-                width,
-                height: branches::CARD_HEIGHT,
             };
             branches::render_card(
                 f,

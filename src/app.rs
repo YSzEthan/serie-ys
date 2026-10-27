@@ -575,6 +575,34 @@ impl App<'_> {
                         view.set_branches(result);
                     }
                 }
+                AppEvent::LoadGitHubCi { generation } => {
+                    self.load_github_ci(generation);
+                }
+                AppEvent::GitHubCiLoaded { generation, result } => {
+                    if let View::GitHub(ref mut view) = self.view {
+                        view.set_ci(generation, result, Instant::now());
+                    }
+                }
+                AppEvent::OpenCiRerunPrompt {
+                    number,
+                    failed_runs,
+                    all_runs,
+                } => {
+                    self.status_line_state
+                        .open_ci_rerun_prompt(number, failed_runs, all_runs);
+                }
+                AppEvent::CiRerunRequested {
+                    number,
+                    run_ids,
+                    scope,
+                } => {
+                    self.rerun_github_ci(number, run_ids, scope);
+                }
+                AppEvent::GitHubCiRerunDone { number, result } => {
+                    if let View::GitHub(ref mut view) = self.view {
+                        view.on_ci_rerun_done(number, result, Instant::now());
+                    }
+                }
                 AppEvent::LoadGitHubTimeline {
                     number,
                     kind,
@@ -1722,6 +1750,7 @@ impl App<'_> {
             data,
             self.github_label_mode,
             self.ctx.ui_config.github.diff_stat_target,
+            Duration::from_secs(self.ctx.ui_config.github.ci_interval_secs),
             self.ec.sender(),
         );
         self.refresh_github(filter);
@@ -1922,6 +1951,40 @@ impl App<'_> {
             tx.send(AppEvent::GitHubBranchesLoaded {
                 result: crate::github::list_unpr_branches(&repo_path),
             });
+        });
+    }
+
+    /// 快取與重跑觀察期都在 view 手上；view 不在了（關閉）就不必載入，也不會有回應。
+    fn load_github_ci(&mut self, generation: u64) {
+        let View::GitHub(ref mut view) = self.view else {
+            return;
+        };
+        let (cache, observing) = view.ci_snapshot(Instant::now());
+        let repo_path = self.repository.path().to_path_buf();
+        let tx = self.ec.sender();
+        std::thread::spawn(move || {
+            tx.send(AppEvent::GitHubCiLoaded {
+                generation,
+                result: crate::github::load_ci(&repo_path, &cache, &observing),
+            });
+        });
+    }
+
+    /// 期間用 `pending_message` overlay 擋住按鍵，防止重複送出。
+    fn rerun_github_ci(
+        &mut self,
+        number: u64,
+        run_ids: Vec<u64>,
+        scope: crate::github::RerunScope,
+    ) {
+        self.pending_message = Some(t!("app.github.ci_rerunning").into_owned());
+
+        let repo_path = self.repository.path().to_path_buf();
+        let tx = self.ec.sender();
+        std::thread::spawn(move || {
+            let result = crate::github::rerun_ci(&repo_path, &run_ids, scope);
+            tx.send(AppEvent::HidePendingOverlay);
+            tx.send(AppEvent::GitHubCiRerunDone { number, result });
         });
     }
 

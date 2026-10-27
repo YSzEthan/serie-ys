@@ -117,7 +117,7 @@
 | 按鍵 | 說明 | 設定鍵名 |
 | --- | --- | --- |
 | <kbd>g</kbd> <kbd>n</kbd> <kbd>Esc</kbd> <kbd>Backspace</kbd> | 關閉 GitHub view | `github_toggle` `cancel` `close` |
-| <kbd>Tab</kbd> <kbd>Shift-Tab</kbd> | 切換 Issues → PRs → Branches 分頁，Shift-Tab 反向（Branches 列出 GitHub 上沒有 OPEN PR 的 branch 與行數差異） | `ref_list` `ref_list_prev` |
+| <kbd>Tab</kbd> <kbd>Shift-Tab</kbd> | 切換 Issues → PRs → Branches → CI 分頁，Shift-Tab 反向（Branches 列出 GitHub 上沒有 OPEN PR 的 branch 與行數差異；CI 監測 head branch 在本地的 open PR 的 CI 狀態） | `ref_list` `ref_list_prev` |
 | <kbd>Down</kbd> <kbd>j</kbd> <kbd>J</kbd> | 向下移動 | `navigate_down` `select_down` |
 | <kbd>Up</kbd> <kbd>k</kbd> <kbd>K</kbd> | 向上移動 | `navigate_up` `select_up` |
 | <kbd>PageDown</kbd> <kbd>Ctrl-f</kbd> | 向下一頁 | `page_down` |
@@ -126,8 +126,8 @@
 | <kbd>Ctrl-u</kbd> | 向上半頁 | `half_page_up` |
 | <kbd>i</kbd> | 跳到頂端 | `go_to_top` |
 | <kbd>G</kbd> | 跳到底端 | `go_to_bottom` |
-| <kbd>Enter</kbd> <kbd>y</kbd> <kbd>Right</kbd> <kbd>l</kbd> | 預覽內容／切換 checkbox（Branches：Right/l 移到右側卡片，Enter 無作用） | `confirm` `navigate_right` |
-| <kbd>Left</kbd> <kbd>h</kbd> | 返回／取消（Branches：移到左側卡片，不關閉） | `navigate_left` |
+| <kbd>Enter</kbd> <kbd>y</kbd> <kbd>Right</kbd> <kbd>l</kbd> | 預覽內容／切換 checkbox（Branches：Right/l 移到右側卡片，Enter 無作用；CI：Enter 開啟 PR 的 checks 頁，Right/l 移到右側卡片） | `confirm` `navigate_right` |
+| <kbd>Left</kbd> <kbd>h</kbd> | 返回／取消（Branches、CI：移到左側卡片，不關閉） | `navigate_left` |
 | <kbd>:</kbd> | 搜尋／輸入純數字跳到 #N | `search` |
 | <kbd>'</kbd> | 過濾（Branches：依作者篩選） | `filter` |
 | <kbd>c</kbd> | 複製 issue/PR URL（Branches：compare URL） | `short_copy` |
@@ -139,6 +139,7 @@
 | <kbd>p</kbd> | merge PR：彈窗選擇合併方式與要刪除的 branch，再確認 | `merge_pr` |
 | <kbd>X</kbd> | 關閉／重新開啟 issue 或 PR | `toggle_issue_state` |
 | <kbd>P</kbd> | PR 標為可供 review／轉回 draft | `toggle_pr_draft` |
+| <kbd>x</kbd> | 重跑 CI（CI 分頁，選擇只重跑失敗或全部） | `ci_rerun` |
 | <kbd>z</kbd> | 展開／收合 commit log | `toggle_commit_log` |
 | <kbd>t</kbd> | 切換 label 顯示名稱／色塊 | `toggle_label_mode` |
 

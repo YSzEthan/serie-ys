@@ -116,6 +116,30 @@ pub enum AppEvent {
     GitHubBranchesLoaded {
         result: Result<(Vec<crate::github::GhBranch>, bool), String>,
     },
+    /// CI 監測 tab 的載入。快取與重跑觀察期都在 view 手上，由 `App` 收到事件
+    /// 時向 view 取（`GitHubView::ci_snapshot`），事件本身只帶 generation。
+    LoadGitHubCi {
+        generation: u64,
+    },
+    GitHubCiLoaded {
+        generation: u64,
+        result: Result<Vec<crate::github::CiEntry>, String>,
+    },
+    /// 開重跑 CI 的選擇 prompt；兩份 run id 已由 view 依卡片的 check 算好。
+    OpenCiRerunPrompt {
+        number: u64,
+        failed_runs: Vec<u64>,
+        all_runs: Vec<u64>,
+    },
+    CiRerunRequested {
+        number: u64,
+        run_ids: Vec<u64>,
+        scope: crate::github::RerunScope,
+    },
+    GitHubCiRerunDone {
+        number: u64,
+        result: Result<usize, String>,
+    },
     LoadGitHubTimeline {
         number: u64,
         kind: crate::github::GhItemKind,
@@ -1102,6 +1126,7 @@ pub enum UserEvent {
     MergePr,
     ToggleIssueState,
     TogglePrDraft,
+    CiRerun,
     ToggleCommitLog,
     ToggleLabelMode,
     CheckUpdate,
@@ -1167,6 +1192,7 @@ impl UserEvent {
             UserEvent::Checkout => "checkout",
             UserEvent::MergePr => "merge_pr",
             UserEvent::ToggleIssueState => "toggle_issue_state",
+            UserEvent::CiRerun => "ci_rerun",
             UserEvent::TogglePrDraft => "toggle_pr_draft",
             UserEvent::ToggleCommitLog => "toggle_commit_log",
             UserEvent::ToggleLabelMode => "toggle_label_mode",
@@ -1237,6 +1263,7 @@ impl UserEvent {
             UserEvent::Checkout => t!("event.desc.checkout"),
             UserEvent::MergePr => t!("event.desc.merge_pr"),
             UserEvent::ToggleIssueState => t!("event.desc.toggle_issue_state"),
+            UserEvent::CiRerun => t!("event.desc.ci_rerun"),
             UserEvent::TogglePrDraft => t!("event.desc.toggle_pr_draft"),
             UserEvent::ToggleCommitLog => t!("event.desc.toggle_commit_log"),
             UserEvent::ToggleLabelMode => t!("event.desc.toggle_label_mode"),
@@ -1326,6 +1353,7 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "checkout" => Ok(UserEvent::Checkout),
                         "merge_pr" => Ok(UserEvent::MergePr),
                         "toggle_issue_state" => Ok(UserEvent::ToggleIssueState),
+                        "ci_rerun" => Ok(UserEvent::CiRerun),
                         "toggle_pr_draft" => Ok(UserEvent::TogglePrDraft),
                         "toggle_commit_log" => Ok(UserEvent::ToggleCommitLog),
                         "toggle_label_mode" => Ok(UserEvent::ToggleLabelMode),
@@ -1524,6 +1552,7 @@ impl KeyScope {
                     | E::Fetch
                     | E::MergePr
                     | E::ToggleIssueState
+                    | E::CiRerun
                     | E::TogglePrDraft
                     | E::ToggleCommitLog
                     | E::ToggleLabelMode
@@ -2057,6 +2086,7 @@ mod tests {
             UserEvent::MergePr,
             UserEvent::ToggleIssueState,
             UserEvent::TogglePrDraft,
+            UserEvent::CiRerun,
             UserEvent::ToggleCommitLog,
             UserEvent::ToggleLabelMode,
             UserEvent::CheckUpdate,

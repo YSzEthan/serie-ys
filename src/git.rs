@@ -1163,6 +1163,16 @@ pub fn local_commits(path: &Path, oids: &[&str]) -> std::result::Result<FxHashSe
         .collect())
 }
 
+/// 本機所有 local branch 的名稱（`refs/heads/*`）。
+pub fn local_branch_names(path: &Path) -> std::result::Result<FxHashSet<String>, String> {
+    let mut cmd = git_read(path);
+    cmd.args(["for-each-ref", "--format=%(refname:short)", "refs/heads"]);
+    Ok(git_stdout(cmd, None, BRANCH_QUERY_TIMEOUT)?
+        .lines()
+        .map(str::to_owned)
+        .collect())
+}
+
 /// `base_oid...head_oid`（三點，相對 merge-base）的 (新增, 刪除) 行數。
 /// 歷史與 base 不相連的 branch（例如 `gh-pages`）沒有 merge-base，三點 diff 會
 /// 失敗；這時退回兩點（直接比兩個 tip），不能讓一個孤兒 branch 拖垮整個分頁。
