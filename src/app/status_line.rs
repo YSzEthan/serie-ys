@@ -1233,6 +1233,12 @@ impl StatusLineState {
                     ),
                     style_at(0),
                 ))];
+                if !rows.is_empty() {
+                    lines.push(Line::from(Span::styled(
+                        t!("app.merge.dialog.delete_after"),
+                        Style::default().fg(fg).add_modifier(Modifier::DIM),
+                    )));
+                }
                 lines.extend(rows.iter().enumerate().map(|(i, &(opt, checked))| {
                     let checkbox = if checked { "[x]" } else { "[ ]" };
                     Line::from(Span::styled(

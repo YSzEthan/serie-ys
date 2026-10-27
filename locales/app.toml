@@ -184,6 +184,10 @@ en-US = "Merge PR #%{number}"
 zh-TW = "合併方式"
 en-US = "Method"
 
+[app.merge.dialog.delete_after]
+zh-TW = "合併後一併刪除："
+en-US = "Also delete after merge:"
+
 [app.merge.dialog.confirm_title]
 zh-TW = "確認 merge PR #%{number}"
 en-US = "Confirm merge PR #%{number}"
