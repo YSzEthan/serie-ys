@@ -212,6 +212,10 @@ en-US = "Toggle issue open/closed state"
 zh-TW = "切換 PR draft 狀態"
 en-US = "Toggle PR draft state"
 
+[event.desc.ci_rerun]
+zh-TW = "重跑 CI（CI 分頁，選擇只重跑失敗或全部）"
+en-US = "Re-run CI (CI tab; choose failed only or all)"
+
 [event.desc.toggle_commit_log]
 zh-TW = "展開／收合 commit log"
 en-US = "Expand/collapse commit log"

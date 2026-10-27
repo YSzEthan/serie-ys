@@ -395,3 +395,23 @@ en-US = "branch name"
 [github.render.all_authors]
 zh-TW = "[所有作者]"
 en-US = "[all authors]"
+
+[github.render.tab_ci]
+zh-TW = " CI (%{n}) "
+en-US = " CI (%{n}) "
+
+[github.ci.no_checks]
+zh-TW = "尚無 CI"
+en-US = "No CI yet"
+
+[github.flash.ci_nothing_to_rerun]
+zh-TW = "沒有可重跑的 Actions run（進行中，或僅第三方 check）"
+en-US = "No Actions run to re-run (still in progress, or only third-party checks)"
+
+[github.flash.ci_rerun_started]
+zh-TW = "已重跑 #%{number} 的 %{count} 個 Actions run"
+en-US = "Re-ran %{count} Actions run(s) for #%{number}"
+
+[github.flash.ci_rerun_failed]
+zh-TW = "重跑 CI 失敗：%{e}"
+en-US = "Failed to re-run CI: %{e}"

@@ -668,6 +668,7 @@ mod tests {
         GhCheck {
             name: name.to_string(),
             state,
+            run_id: None,
         }
     }
 

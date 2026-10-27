@@ -291,3 +291,19 @@ en-US = "Unknown panic"
 [app.status.list_separator]
 zh-TW = "、"
 en-US = ", "
+
+[app.status.ci_rerun]
+zh-TW = "重跑 #%{number} 的 CI？"
+en-US = "Re-run CI for #%{number}? "
+
+[app.status.ci_rerun_failed]
+zh-TW = "只重跑失敗"
+en-US = "failed only"
+
+[app.status.ci_rerun_all]
+zh-TW = "全部重跑"
+en-US = "all"
+
+[app.github.ci_rerunning]
+zh-TW = "正在重跑 CI…"
+en-US = "Re-running CI…"

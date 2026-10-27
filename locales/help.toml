@@ -365,8 +365,8 @@ zh-TW = "關閉 GitHub view"
 en-US = "Close GitHub view"
 
 [help.github.switch_issue_pr_tab]
-zh-TW = "切換 Issues → PRs → Branches 分頁，Shift-Tab 反向（Branches 列出 GitHub 上沒有 OPEN PR 的 branch 與行數差異）"
-en-US = "Cycle Issues → PRs → Branches tab, Shift-Tab reverses (Branches lists branches on GitHub without an open PR, with line diff)"
+zh-TW = "切換 Issues → PRs → Branches → CI 分頁，Shift-Tab 反向（Branches 列出 GitHub 上沒有 OPEN PR 的 branch 與行數差異；CI 監測 head branch 在本地的 open PR 的 CI 狀態）"
+en-US = "Cycle Issues → PRs → Branches → CI tab, Shift-Tab reverses (Branches lists branches on GitHub without an open PR, with line diff; CI watches the CI status of open PRs whose head branch exists locally)"
 
 [help.github.move_down]
 zh-TW = "向下移動"
@@ -401,12 +401,12 @@ zh-TW = "跳到底端"
 en-US = "Go to bottom"
 
 [help.github.preview_toggle_checkbox]
-zh-TW = "預覽內容／切換 checkbox（Branches：Right/l 移到右側卡片，Enter 無作用）"
-en-US = "Preview / toggle checkbox (Branches: Right/l moves to the right card, Enter does nothing)"
+zh-TW = "預覽內容／切換 checkbox（Branches：Right/l 移到右側卡片，Enter 無作用；CI：Enter 開啟 PR 的 checks 頁，Right/l 移到右側卡片）"
+en-US = "Preview / toggle checkbox (Branches: Right/l moves to the right card, Enter does nothing; CI: Enter opens the PR checks page, Right/l moves to the right card)"
 
 [help.github.back_cancel]
-zh-TW = "返回／取消（Branches：移到左側卡片，不關閉）"
-en-US = "Back / cancel (Branches: moves to the left card, does not close)"
+zh-TW = "返回／取消（Branches、CI：移到左側卡片，不關閉）"
+en-US = "Back / cancel (Branches, CI: moves to the left card, does not close)"
 
 [help.github.search_type_number_to_jump_to_n]
 zh-TW = "搜尋／輸入純數字跳到 #N"
@@ -443,6 +443,10 @@ en-US = "Fetch all remotes (reloads Branches when done)"
 [help.github.merge_pr_form_then_confirm]
 zh-TW = "merge PR：彈窗選擇合併方式與要刪除的 branch，再確認"
 en-US = "Merge PR: pick method and branches to delete in a popup, then confirm"
+
+[help.github.ci_rerun]
+zh-TW = "重跑 CI（CI 分頁，選擇只重跑失敗或全部）"
+en-US = "Re-run CI (CI tab; choose failed only or all)"
 
 [help.github.close_reopen_issue_or_pr]
 zh-TW = "關閉／重新開啟 issue 或 PR"

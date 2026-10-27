@@ -358,6 +358,7 @@ fn help_blocks(
         b(vec![UserEvent::MergePr], t!("help.github.merge_pr_form_then_confirm")),
         b(vec![UserEvent::ToggleIssueState], t!("help.github.close_reopen_issue_or_pr")),
         b(vec![UserEvent::TogglePrDraft], t!("help.github.mark_pr_ready_back_to_draft")),
+        b(vec![UserEvent::CiRerun], t!("help.github.ci_rerun")),
         b(vec![UserEvent::ToggleCommitLog], t!("help.github.expand_collapse_commit_log")),
         b(vec![UserEvent::ToggleLabelMode], t!("help.github.toggle_label_names_color_swatches")),
     ];

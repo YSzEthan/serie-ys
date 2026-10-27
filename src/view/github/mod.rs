@@ -1,4 +1,5 @@
 mod branches;
+mod ci;
 mod event;
 mod preview;
 mod render;
@@ -18,8 +19,8 @@ use tui_input::Input;
 use crate::{
     event::{AppEvent, Sender, UserEvent},
     github::{
-        CheckboxItem, GhBranch, GhIssue, GhItemKind, GhPullRequest, GhTimelinePage, GitHubData,
-        PrDraftAction, StateAction, StateFilter,
+        CheckboxItem, CiEntry, CiState, GhBranch, GhIssue, GhItemKind, GhPullRequest,
+        GhTimelinePage, GitHubData, PrDraftAction, RerunScope, StateAction, StateFilter,
     },
     view::View,
     widget::{h, HintSpec},
@@ -33,6 +34,9 @@ const TIMELINE_LOAD_MORE_THRESHOLD: usize = 5;
 /// 選取停住多久才真的送 timeline 請求；按住 `j` 滑過去的項目不必各打一次 API。
 /// 由 100ms 的 Tick 輪詢，實際延遲是 150～250ms。
 const TIMELINE_DEBOUNCE: Duration = Duration::from_millis(150);
+/// 重跑 CI 之後的觀察期：期間該 PR 不論狀態都重抓，直到看到 Pending。rerun 後
+/// 新的 check 可能還沒建立，這時抓到的還是舊的 Failed，沒有觀察期就會永久釘住。
+const CI_RERUN_OBSERVE: Duration = Duration::from_secs(60);
 
 /// 分隔線關閉的是 timeline 的哪個區段。線條顏色由分隔線*之前*的內容決定，
 /// 不是後面的——由上往下讀時，那才是眼睛在捲動時需要的上下文；標籤文字
@@ -79,34 +83,42 @@ enum GitHubTab {
     Issues,
     PullRequests,
     Branches,
+    Ci,
 }
 
 impl GitHubTab {
-    /// Branches 沒有編號，也沒有 issue／PR 那套 timeline、分頁，所以沒有 kind。
+    /// Branches、CI 沒有 issue／PR 那套 timeline、分頁，所以沒有 kind。
     fn kind(self) -> Option<GhItemKind> {
         match self {
             GitHubTab::Issues => Some(GhItemKind::Issue),
             GitHubTab::PullRequests => Some(GhItemKind::PullRequest),
-            GitHubTab::Branches => None,
+            GitHubTab::Branches | GitHubTab::Ci => None,
         }
     }
 
-    /// Tab 鍵的循環順序：Issues → PRs → Branches → Issues。
+    /// Tab 鍵的循環順序：Issues → PRs → Branches → CI → Issues。
     fn next(self) -> GitHubTab {
         match self {
             GitHubTab::Issues => GitHubTab::PullRequests,
             GitHubTab::PullRequests => GitHubTab::Branches,
-            GitHubTab::Branches => GitHubTab::Issues,
+            GitHubTab::Branches => GitHubTab::Ci,
+            GitHubTab::Ci => GitHubTab::Issues,
         }
     }
 
-    /// Shift-Tab 的反向順序：Issues → Branches → PRs → Issues。
+    /// Shift-Tab 的反向順序：Issues → CI → Branches → PRs → Issues。
     fn prev(self) -> GitHubTab {
         match self {
-            GitHubTab::Issues => GitHubTab::Branches,
+            GitHubTab::Issues => GitHubTab::Ci,
             GitHubTab::PullRequests => GitHubTab::Issues,
             GitHubTab::Branches => GitHubTab::PullRequests,
+            GitHubTab::Ci => GitHubTab::Branches,
         }
+    }
+
+    /// 多欄固定高度卡片的分頁（沒有 preview，左右鍵橫向移動）。
+    fn is_card_tab(self) -> bool {
+        matches!(self, GitHubTab::Branches | GitHubTab::Ci)
     }
 }
 
@@ -166,6 +178,7 @@ pub struct GitHubView<'a> {
     filtered_issue_indices: Vec<usize>,
     filtered_pr_indices: Vec<usize>,
     filtered_branch_indices: Vec<usize>,
+    filtered_ci_indices: Vec<usize>,
 
     /// Branches 分頁的資料與載入狀態，獨立於 issue／PR（見 `AppEvent::LoadGitHubBranches`）。
     /// `branches_loaded` 為 false 表示還沒成功載入過，第一次切進分頁時才送請求。
@@ -178,6 +191,21 @@ pub struct GitHubView<'a> {
     branches_reload_pending: bool,
     /// Branches 分頁的作者篩選（`'` 循環切換）；`None` 是所有作者。
     branches_author: Option<String>,
+    /// CI 分頁：open 且 head branch 在本地的 PR 與它們的 check。只活在 view 裡，
+    /// 關閉 view 即丟棄（見 `github::load_ci` 的流程說明）。
+    ci: Vec<CiEntry>,
+    ci_load: LoadState,
+    /// 下一次輪詢的時間；`None` = 已送出請求（或還沒進過 CI 分頁），等回應再排。
+    ci_due: Option<Instant>,
+    ci_in_flight: bool,
+    /// `r`、重跑後遞增，讓舊回應不能覆蓋較新的狀態。
+    ci_generation: u64,
+    /// `r`：下一次載入不帶快取，整批重抓。
+    ci_refetch_all: bool,
+    /// 重跑觀察期：(PR 編號, 結束時間)，見 `CI_RERUN_OBSERVE`。
+    ci_observe: Vec<(u64, Instant)>,
+    /// `ui.github.ci_interval_secs`（已合併 CLI），輪詢間隔。
+    ci_interval: Duration,
     /// 內容區寬度，`render` 記錄；卡片欄數由它決定，導覽（上下移動、捲動）要用。
     width: usize,
 
@@ -245,6 +273,17 @@ impl<'a> GitHubView<'a> {
             filtered_issue_indices: Vec::new(),
             filtered_pr_indices: Vec::new(),
             filtered_branch_indices: Vec::new(),
+            filtered_ci_indices: Vec::new(),
+            ci: Vec::new(),
+            ci_load: LoadState::Idle,
+            ci_due: None,
+            ci_in_flight: false,
+            ci_generation: 0,
+            ci_refetch_all: false,
+            ci_observe: Vec::new(),
+            ci_interval: Duration::from_secs(
+                crate::config::UiGithubConfig::default().ci_interval_secs,
+            ),
             branches: Vec::new(),
             branches_truncated: false,
             branches_loaded: false,
@@ -284,13 +323,13 @@ impl<'a> GitHubView<'a> {
             GitHubTab::Issues => "issues",
             GitHubTab::PullRequests => "prs",
             // 卡片標題在邊框上，不跑馬燈
-            GitHubTab::Branches => return None,
+            GitHubTab::Branches | GitHubTab::Ci => return None,
         };
         let idx = self.actual_index(self.selected_index);
         let num = match self.active_tab {
             GitHubTab::Issues => self.issues.get(idx).map(|i| i.number)?,
             GitHubTab::PullRequests => self.pull_requests.get(idx).map(|p| p.number)?,
-            GitHubTab::Branches => return None,
+            GitHubTab::Branches | GitHubTab::Ci => return None,
         };
         Some(std::sync::Arc::from(format!("gh:{tab}:{num}")))
     }
@@ -337,6 +376,11 @@ impl<'a> GitHubView<'a> {
 
     pub(crate) fn with_diff_stat_target(mut self, target: u32) -> Self {
         self.diff_stat_target = target;
+        self
+    }
+
+    pub(crate) fn with_ci_interval(mut self, interval: Duration) -> Self {
+        self.ci_interval = interval;
         self
     }
 
@@ -467,6 +511,7 @@ impl<'a> GitHubView<'a> {
     fn list_load_state(&self) -> &LoadState {
         match self.active_tab {
             GitHubTab::Branches => &self.branches_load,
+            GitHubTab::Ci => &self.ci_load,
             GitHubTab::Issues | GitHubTab::PullRequests => &self.load_state,
         }
     }
@@ -528,9 +573,9 @@ impl<'a> GitHubView<'a> {
         let found = match self.active_tab {
             GitHubTab::Issues => self.issues.iter().position(|i| i.number == number),
             GitHubTab::PullRequests => self.pull_requests.iter().position(|p| p.number == number),
-            // branch 沒有編號可跳（prompt Confirm 已擋）；從別的分頁帶過來的
+            // branch、CI 卡片沒有編號可跳（prompt Confirm 已擋）；從別的分頁帶過來的
             // pending_jump 在此丟棄
-            GitHubTab::Branches => {
+            GitHubTab::Branches | GitHubTab::Ci => {
                 self.pending_jump = None;
                 return;
             }
@@ -561,7 +606,7 @@ impl<'a> GitHubView<'a> {
                     filter = filter
                 )
             }
-            GitHubTab::PullRequests | GitHubTab::Branches => {
+            GitHubTab::PullRequests | GitHubTab::Branches | GitHubTab::Ci => {
                 t!(
                     "github.jump.not_found_prs",
                     number = number,
@@ -584,6 +629,164 @@ impl<'a> GitHubView<'a> {
         if self.timeline_due.is_some_and(|due| now >= due) {
             self.timeline_due = None;
             self.request_timeline_for_selected();
+        }
+        // 只在 CI 分頁停留時輪詢；切離分頁或關閉 view 條件自然不成立。全綠也照送：
+        // 要發現新 push、新 PR 與關閉的 PR（沒有東西要抓時載入流程會跳過查 CI）。
+        if self.active_tab == GitHubTab::Ci
+            && !self.ci_in_flight
+            && self.ci_due.is_some_and(|due| now >= due)
+        {
+            self.ci_due = None;
+            self.ci_in_flight = true;
+            if self.ci.is_empty() {
+                self.ci_load = LoadState::Loading;
+            }
+            self.tx.send(AppEvent::LoadGitHubCi {
+                generation: self.ci_generation,
+            });
+        }
+    }
+
+    /// 切進 CI 分頁時立刻排一次載入（`on_tick` 實際送出）。
+    fn schedule_ci_now(&mut self, now: Instant) {
+        if !self.ci_in_flight {
+            self.ci_due = Some(now);
+        }
+    }
+
+    /// 給 `App` 組載入請求用：目前的快取（`r` 之後是空的，整批重抓）與仍在重跑
+    /// 觀察期內的 PR 編號。
+    pub fn ci_snapshot(&mut self, now: Instant) -> (Vec<CiEntry>, Vec<u64>) {
+        self.ci_observe.retain(|&(_, until)| until > now);
+        let observing = self.ci_observe.iter().map(|&(n, _)| n).collect();
+        let cache = if std::mem::take(&mut self.ci_refetch_all) {
+            Vec::new()
+        } else {
+            self.ci.clone()
+        };
+        (cache, observing)
+    }
+
+    /// `generation` 不符（期間 `r` 或重跑讓結果過期）就丟掉，立刻重排；不論符不符都
+    /// 清 in-flight——每個請求恰有一個回應，不清的話下一輪永遠送不出去。
+    pub fn set_ci(&mut self, generation: u64, result: Result<Vec<CiEntry>, String>, now: Instant) {
+        self.ci_in_flight = false;
+        if generation != self.ci_generation {
+            self.ci_due = Some(now);
+            return;
+        }
+        self.ci_due = Some(now + self.ci_interval);
+        match result {
+            Ok(entries) => {
+                self.ci_load = LoadState::Idle;
+                // 抓到 Pending 代表重跑已生效，觀察期可以結束
+                self.ci_observe.retain(|&(n, _)| {
+                    !entries
+                        .iter()
+                        .any(|e| e.number == n && e.state() == CiState::Pending)
+                });
+                // 回應抵達時使用者可能已切到別的分頁，那時 `selected_index` 屬於別人，不能動
+                let on_ci = self.active_tab == GitHubTab::Ci;
+                let selected = if on_ci {
+                    self.selected_ci().map(|e| e.number)
+                } else {
+                    None
+                };
+                self.ci = entries;
+                self.rebuild_filtered_indices();
+                if on_ci {
+                    // 重排後用編號找回原本選中的 PR；找不到就夾範圍
+                    if let Some(pos) = selected.and_then(|n| self.visible_ci_position(n)) {
+                        self.selected_index = pos;
+                    }
+                    let max = self.current_list_len().saturating_sub(1);
+                    self.selected_index = self.selected_index.min(max);
+                    self.adjust_scroll();
+                }
+            }
+            Err(e) if self.ci.is_empty() => self.ci_load = LoadState::Error(e),
+            // 已有舊資料時保留畫面，只用 flash 告知這次重抓失敗
+            Err(e) => {
+                self.ci_load = LoadState::Idle;
+                self.set_flash(e, true);
+            }
+        }
+    }
+
+    /// PR 編號在目前可見清單（含搜尋篩選）中的位置。
+    fn visible_ci_position(&self, number: u64) -> Option<usize> {
+        if self.has_active_filter() {
+            self.filtered_ci_indices
+                .iter()
+                .position(|&i| self.ci[i].number == number)
+        } else {
+            self.ci.iter().position(|e| e.number == number)
+        }
+    }
+
+    /// 重跑完成。`Ok(0)` 是沒東西可重跑，給提示而非成功；成功則讓進行中的舊回應
+    /// 失效、立刻重抓，並進入觀察期。
+    pub fn on_ci_rerun_done(&mut self, number: u64, result: Result<usize, String>, now: Instant) {
+        match result {
+            Ok(0) => self.set_flash(t!("github.flash.ci_nothing_to_rerun").into_owned(), true),
+            Ok(count) => {
+                self.set_flash(
+                    t!(
+                        "github.flash.ci_rerun_started",
+                        number = number,
+                        count = count
+                    )
+                    .into_owned(),
+                    false,
+                );
+                self.ci_generation = self.ci_generation.wrapping_add(1);
+                self.ci_due = Some(now);
+                self.ci_observe.retain(|&(n, _)| n != number);
+                self.ci_observe.push((number, now + CI_RERUN_OBSERVE));
+            }
+            Err(e) => self.set_flash(t!("github.flash.ci_rerun_failed", e = e).into_owned(), true),
+        }
+    }
+
+    /// CI 分頁的 `r`：下一次載入不信任快取，整批重抓。
+    fn refresh_ci(&mut self) {
+        self.ci_refetch_all = true;
+        self.ci_generation = self.ci_generation.wrapping_add(1);
+        if self.ci.is_empty() {
+            self.ci_load = LoadState::Loading;
+        }
+        // 進行中的請求會以舊 generation 回來被丟掉，那時才重排；沒有就現在排
+        self.schedule_ci_now(Instant::now());
+    }
+
+    /// CI 分頁目前選中的卡片。
+    pub(super) fn selected_ci(&self) -> Option<&CiEntry> {
+        self.ci.get(self.actual_index(self.selected_index))
+    }
+
+    /// 選中卡片的重跑選項；兩個選項都沒有可重跑的 run 就只給提示。
+    fn try_ci_rerun(&mut self) {
+        let Some(entry) = self.selected_ci() else {
+            return;
+        };
+        let failed_runs = entry.rerun_run_ids(RerunScope::FailedOnly);
+        let all_runs = entry.rerun_run_ids(RerunScope::All);
+        if failed_runs.is_empty() && all_runs.is_empty() {
+            self.set_flash(t!("github.flash.ci_nothing_to_rerun").into_owned(), true);
+            return;
+        }
+        self.tx.send(AppEvent::OpenCiRerunPrompt {
+            number: entry.number,
+            failed_runs,
+            all_runs,
+        });
+    }
+
+    /// 切進分頁時的收尾：Branches 預載失敗時重試；CI 立刻排一次載入。
+    fn on_enter_tab(&mut self) {
+        self.ensure_branches_loaded();
+        if self.active_tab == GitHubTab::Ci {
+            self.schedule_ci_now(Instant::now());
         }
     }
 
@@ -739,7 +942,7 @@ impl<'a> GitHubView<'a> {
         match self.active_tab {
             GitHubTab::Issues => self.issues_next_cursor.is_some(),
             GitHubTab::PullRequests => self.prs_next_cursor.is_some(),
-            GitHubTab::Branches => false,
+            GitHubTab::Branches | GitHubTab::Ci => false,
         }
     }
 
@@ -826,6 +1029,17 @@ impl<'a> GitHubView<'a> {
                         h(&[UserEvent::ShortCopy], t!("common.hint.copy_url")),
                         h(&[UserEvent::FullCopy], t!("common.hint.create_pr")),
                         h(&[UserEvent::TagCopy], t!("common.hint.branch_name")),
+                        h(&[UserEvent::GitHubToggle], t!("common.hint.close")),
+                    ];
+                }
+                if self.active_tab == GitHubTab::Ci {
+                    return vec![
+                        h(&[UserEvent::RefList], t!("common.hint.switch_tab")),
+                        h(&[UserEvent::CiRerun], t!("common.hint.ci_rerun")),
+                        h(&[UserEvent::Confirm], t!("common.hint.open_checks")),
+                        h(&[UserEvent::Search], t!("common.hint.search")),
+                        h(&[UserEvent::Refresh], t!("common.hint.refresh")),
+                        h(&[UserEvent::ShortCopy], t!("common.hint.copy_url")),
                         h(&[UserEvent::GitHubToggle], t!("common.hint.close")),
                     ];
                 }
@@ -928,6 +1142,14 @@ impl<'a> GitHubView<'a> {
             diff_stat: None,
             url: String::new(),
         }];
+        view.ci = vec![CiEntry {
+            number: 3,
+            title: "t".to_string(),
+            url: String::new(),
+            branch: "topic".to_string(),
+            head_sha: "deadbeef".to_string(),
+            checks: Vec::new(),
+        }];
 
         let mut all = Vec::new();
         for focus in [
@@ -940,6 +1162,7 @@ impl<'a> GitHubView<'a> {
                 GitHubTab::Issues,
                 GitHubTab::PullRequests,
                 GitHubTab::Branches,
+                GitHubTab::Ci,
             ] {
                 for expand in [false, true] {
                     for label_mode in [LabelMode::Names, LabelMode::Swatches] {
@@ -960,8 +1183,9 @@ impl<'a> GitHubView<'a> {
         view.issues.clear();
         view.pull_requests.clear();
         view.branches.clear();
+        view.ci.clear();
         view.focus = GitHubFocus::List;
-        for tab in [GitHubTab::Issues, GitHubTab::Branches] {
+        for tab in [GitHubTab::Issues, GitHubTab::Branches, GitHubTab::Ci] {
             view.active_tab = tab;
             for make_state in [
                 || LoadState::Idle,
@@ -970,6 +1194,7 @@ impl<'a> GitHubView<'a> {
             ] {
                 view.load_state = make_state();
                 view.branches_load = make_state();
+                view.ci_load = make_state();
                 all.extend(view.status_hints());
             }
         }
@@ -1020,7 +1245,7 @@ impl<'a> GitHubView<'a> {
                 .pull_requests
                 .get(idx)
                 .map(|p| (p.number, GhItemKind::PullRequest, p.state.as_str())),
-            GitHubTab::Branches => None,
+            GitHubTab::Branches | GitHubTab::Ci => None,
         }
     }
 
@@ -1099,7 +1324,7 @@ impl<'a> GitHubView<'a> {
                 .pull_requests
                 .get(idx)
                 .is_some_and(|p| !p.linked_issues.is_empty()),
-            GitHubTab::Branches => false,
+            GitHubTab::Branches | GitHubTab::Ci => false,
         }
     }
 
@@ -1111,7 +1336,7 @@ impl<'a> GitHubView<'a> {
                 .pull_requests
                 .get(idx)
                 .map(|p| (p.number, GhItemKind::PullRequest)),
-            GitHubTab::Branches => None,
+            GitHubTab::Branches | GitHubTab::Ci => None,
         }
     }
 
@@ -1123,6 +1348,7 @@ impl<'a> GitHubView<'a> {
                 GitHubTab::Issues => self.issues.len(),
                 GitHubTab::PullRequests => self.pull_requests.len(),
                 GitHubTab::Branches => self.branches.len(),
+                GitHubTab::Ci => self.ci.len(),
             }
         }
     }
@@ -1132,6 +1358,7 @@ impl<'a> GitHubView<'a> {
             GitHubTab::Issues => &self.filtered_issue_indices,
             GitHubTab::PullRequests => &self.filtered_pr_indices,
             GitHubTab::Branches => &self.filtered_branch_indices,
+            GitHubTab::Ci => &self.filtered_ci_indices,
         }
     }
 
@@ -1145,19 +1372,22 @@ impl<'a> GitHubView<'a> {
         branches::columns(self.width)
     }
 
-    /// 上下移動一次跨幾個項目：Branches 是多欄卡片，一次跨一整列。
+    /// 上下移動一次跨幾個項目：Branches、CI 是多欄卡片，一次跨一整列。
     fn nav_step(&self) -> usize {
-        match self.active_tab {
-            GitHubTab::Branches => self.branch_columns(),
-            GitHubTab::Issues | GitHubTab::PullRequests => 1,
+        if self.active_tab.is_card_tab() {
+            self.branch_columns()
+        } else {
+            1
         }
     }
 
-    /// Branches 可見的卡片列數。尾端有「僅顯示最近 N 個」時扣掉那一列，
+    /// 卡片分頁可見的卡片列數。Branches 尾端有「僅顯示最近 N 個」時扣掉那一列，
     /// 要跟 `render_branches` 的版面一致。
     fn branch_visible_rows(&self) -> usize {
         let content = self.height.saturating_sub(3);
-        let footer = self.branches_truncated && content > branches::CARD_HEIGHT as usize;
+        let footer = self.active_tab == GitHubTab::Branches
+            && self.branches_truncated
+            && content > branches::CARD_HEIGHT as usize;
         (content - usize::from(footer)) / branches::CARD_HEIGHT as usize
     }
 
@@ -1199,7 +1429,9 @@ impl<'a> GitHubView<'a> {
     fn list_rows(&self) -> usize {
         let rows = self.height.saturating_sub(3);
         match self.active_tab {
-            GitHubTab::Branches => self.branch_visible_rows() * self.branch_columns(),
+            GitHubTab::Branches | GitHubTab::Ci => {
+                self.branch_visible_rows() * self.branch_columns()
+            }
             GitHubTab::Issues | GitHubTab::PullRequests => rows,
         }
     }
@@ -1208,7 +1440,7 @@ impl<'a> GitHubView<'a> {
         if self.height == 0 {
             return;
         }
-        if self.active_tab == GitHubTab::Branches {
+        if self.active_tab.is_card_tab() {
             self.adjust_branch_scroll();
             return;
         }
@@ -1268,7 +1500,7 @@ impl<'a> GitHubView<'a> {
                     diff_stat: pr.diff_stat,
                 },
             }),
-            GitHubTab::Branches => None,
+            GitHubTab::Branches | GitHubTab::Ci => None,
         };
         PreviewInput {
             tab: self.active_tab,
@@ -1537,6 +1769,7 @@ mod tests {
         crate::github::GhCheck {
             name: name.to_string(),
             state,
+            run_id: None,
         }
     }
 
@@ -3468,12 +3701,12 @@ mod tests {
     }
 
     #[test]
-    fn tab_key_cycles_issues_prs_branches_and_back() {
+    fn tab_key_cycles_issues_prs_branches_ci_and_back() {
         let (mut view, _rx) = branches_view();
         view.active_tab = GitHubTab::Issues;
 
         let mut seen = Vec::new();
-        for _ in 0..3 {
+        for _ in 0..4 {
             view.handle_list_event(UserEvent::RefList, 1);
             seen.push(view.active_tab);
         }
@@ -3483,6 +3716,7 @@ mod tests {
             [
                 GitHubTab::PullRequests,
                 GitHubTab::Branches,
+                GitHubTab::Ci,
                 GitHubTab::Issues
             ]
         );
@@ -3511,6 +3745,7 @@ mod tests {
             GitHubTab::Issues,
             GitHubTab::PullRequests,
             GitHubTab::Branches,
+            GitHubTab::Ci,
         ] {
             assert_eq!(tab.next().prev(), tab);
             assert_eq!(tab.prev().next(), tab);
@@ -3522,8 +3757,15 @@ mod tests {
         let (mut view, _rx) = branches_view();
         view.active_tab = GitHubTab::Issues;
 
-        view.handle_list_event(UserEvent::RefListPrev, 1);
-        assert_eq!(view.active_tab, GitHubTab::Branches);
+        for expected in [
+            GitHubTab::Ci,
+            GitHubTab::Branches,
+            GitHubTab::PullRequests,
+            GitHubTab::Issues,
+        ] {
+            view.handle_list_event(UserEvent::RefListPrev, 1);
+            assert_eq!(view.active_tab, expected);
+        }
     }
 
     #[test]
@@ -3818,11 +4060,12 @@ mod tests {
     #[test]
     fn header_shows_the_selected_author() {
         let mut view = three_authors_view();
-        assert!(render_to_string(&mut view).contains("[所有作者]"));
+        // 四個 tab 標籤加起來已逼近 60 欄，篩選標籤會被切掉，換寬一點的畫面
+        assert!(render_to_string_at_width(&mut view, 80).contains("[所有作者]"));
 
         view.handle_list_event(UserEvent::Filter, 1);
 
-        assert!(render_to_string(&mut view).contains("[@alice]"));
+        assert!(render_to_string_at_width(&mut view, 80).contains("[@alice]"));
     }
 
     fn many_branches_view(n: usize) -> GitHubView<'static> {
@@ -3903,5 +4146,317 @@ mod tests {
         assert_eq!(view.offset % 3, 0);
         assert!(screen.contains("b27"), "got:\n{screen}");
         assert!(!screen.contains("b00"), "got:\n{screen}");
+    }
+
+    // ── CI 分頁 ──
+
+    fn ci_entry(number: u64, checks: &[(crate::github::CheckState, Option<u64>)]) -> CiEntry {
+        CiEntry {
+            number,
+            title: format!("pr{number}"),
+            url: format!("https://x/pull/{number}"),
+            branch: format!("b{number}"),
+            head_sha: "sha".to_string(),
+            checks: checks
+                .iter()
+                .enumerate()
+                .map(|(i, &(state, run_id))| crate::github::GhCheck {
+                    name: format!("c{i}"),
+                    state,
+                    run_id,
+                })
+                .collect(),
+        }
+    }
+
+    fn ci_view() -> (GitHubView<'static>, std::sync::mpsc::Receiver<AppEvent>) {
+        let (tx, rx) = Sender::channel_for_test();
+        let mut view = GitHubView::new(View::Default, GitHubData::default(), tx)
+            .with_ci_interval(Duration::from_secs(15));
+        view.active_tab = GitHubTab::Ci;
+        (view, rx)
+    }
+
+    fn ci_load_requests(rx: &std::sync::mpsc::Receiver<AppEvent>) -> Vec<u64> {
+        rx.try_iter()
+            .filter_map(|e| match e {
+                AppEvent::LoadGitHubCi { generation } => Some(generation),
+                _ => None,
+            })
+            .collect()
+    }
+
+    #[test]
+    fn ci_tick_sends_only_on_ci_tab_when_due_and_idle() {
+        let (mut view, rx) = ci_view();
+        let t0 = Instant::now();
+
+        // 還沒排過（ci_due 為 None）
+        view.on_tick(t0);
+        assert!(ci_load_requests(&rx).is_empty());
+
+        // due 未到
+        view.ci_due = Some(t0 + Duration::from_secs(5));
+        view.on_tick(t0);
+        assert!(ci_load_requests(&rx).is_empty());
+
+        // 非 CI 分頁
+        view.active_tab = GitHubTab::Branches;
+        view.on_tick(t0 + Duration::from_secs(5));
+        assert!(ci_load_requests(&rx).is_empty());
+
+        // in-flight
+        view.active_tab = GitHubTab::Ci;
+        view.ci_in_flight = true;
+        view.on_tick(t0 + Duration::from_secs(5));
+        assert!(ci_load_requests(&rx).is_empty());
+
+        // 到期、閒置：送出並標記 in-flight；同一輪不重送
+        view.ci_in_flight = false;
+        view.on_tick(t0 + Duration::from_secs(5));
+        assert_eq!(ci_load_requests(&rx), vec![0]);
+        view.on_tick(t0 + Duration::from_secs(6));
+        assert!(ci_load_requests(&rx).is_empty());
+    }
+
+    /// 全綠的 PR 也要輪詢：要發現新 push、新 PR 與關閉的 PR。
+    #[test]
+    fn ci_tick_polls_even_when_everything_is_green() {
+        use crate::github::CheckState::Passed;
+        let (mut view, rx) = ci_view();
+        let t0 = Instant::now();
+        view.set_ci(0, Ok(vec![ci_entry(1, &[(Passed, Some(1))])]), t0);
+        assert_eq!(view.ci_due, Some(t0 + Duration::from_secs(15)));
+
+        view.on_tick(t0 + Duration::from_secs(15));
+
+        assert_eq!(ci_load_requests(&rx), vec![0]);
+    }
+
+    #[test]
+    fn entering_ci_tab_schedules_an_immediate_load() {
+        let (mut view, rx) = ci_view();
+        view.active_tab = GitHubTab::Branches;
+
+        view.handle_list_event(UserEvent::RefList, 1);
+        assert_eq!(view.active_tab, GitHubTab::Ci);
+        view.on_tick(Instant::now());
+
+        assert_eq!(ci_load_requests(&rx), vec![0]);
+    }
+
+    #[test]
+    fn ci_stale_generation_is_dropped_and_reschedules_immediately() {
+        use crate::github::CheckState::Passed;
+        let (mut view, _rx) = ci_view();
+        view.ci_in_flight = true;
+        view.ci_generation = 2;
+        let now = Instant::now();
+
+        view.set_ci(1, Ok(vec![ci_entry(1, &[(Passed, None)])]), now);
+
+        assert!(view.ci.is_empty());
+        assert!(
+            !view.ci_in_flight,
+            "每個請求恰有一個回應，一定要清 in-flight"
+        );
+        assert_eq!(view.ci_due, Some(now));
+    }
+
+    /// 回應抵達時使用者已切到別的分頁：不能動到那個分頁的選取位置。
+    #[test]
+    fn ci_response_after_leaving_tab_keeps_other_tab_selection() {
+        use crate::github::CheckState::Passed;
+        let (mut view, _rx) = ci_view();
+        view.active_tab = GitHubTab::Branches;
+        view.selected_index = 5;
+
+        view.set_ci(0, Ok(vec![ci_entry(1, &[(Passed, None)])]), Instant::now());
+
+        assert_eq!(view.selected_index, 5);
+        assert_eq!(view.ci.len(), 1);
+    }
+
+    #[test]
+    fn ci_error_clears_in_flight_and_keeps_old_list() {
+        use crate::github::CheckState::Passed;
+        let (mut view, _rx) = ci_view();
+        let now = Instant::now();
+        view.set_ci(0, Ok(vec![ci_entry(1, &[(Passed, None)])]), now);
+        view.ci_in_flight = true;
+
+        view.set_ci(0, Err("boom".to_string()), now);
+
+        assert!(!view.ci_in_flight);
+        assert_eq!(view.ci.len(), 1);
+        assert_eq!(view.flash_message, Some(("boom".to_string(), true)));
+        assert_eq!(view.ci_due, Some(now + Duration::from_secs(15)));
+
+        // 沒有舊資料時才整頁顯示錯誤
+        let (mut empty, _rx) = ci_view();
+        empty.set_ci(0, Err("boom".to_string()), now);
+        assert!(matches!(empty.ci_load, LoadState::Error(_)));
+    }
+
+    #[test]
+    fn ci_selection_follows_the_pr_number_after_reorder() {
+        use crate::github::CheckState::{Failed, Passed};
+        let (mut view, _rx) = ci_view();
+        let now = Instant::now();
+        view.set_ci(
+            0,
+            Ok(vec![
+                ci_entry(1, &[(Passed, None)]),
+                ci_entry(2, &[(Passed, None)]),
+                ci_entry(3, &[(Passed, None)]),
+            ]),
+            now,
+        );
+        view.selected_index = 2; // #3
+
+        // 重新載入後 #3 變成失敗，排到最前面
+        view.set_ci(
+            0,
+            Ok(vec![
+                ci_entry(3, &[(Failed, None)]),
+                ci_entry(1, &[(Passed, None)]),
+                ci_entry(2, &[(Passed, None)]),
+            ]),
+            now,
+        );
+        assert_eq!(view.selected_index, 0);
+
+        // 選中的 PR 消失：夾在範圍內
+        view.selected_index = 2;
+        view.set_ci(0, Ok(vec![ci_entry(3, &[(Failed, None)])]), now);
+        assert_eq!(view.selected_index, 0);
+    }
+
+    #[test]
+    fn ci_rerun_success_invalidates_inflight_and_starts_observation() {
+        use crate::github::CheckState::Pending;
+        let (mut view, _rx) = ci_view();
+        let now = Instant::now();
+
+        view.on_ci_rerun_done(7, Ok(2), now);
+
+        assert_eq!(view.ci_generation, 1);
+        assert_eq!(view.ci_due, Some(now));
+        let (_, observing) = view.ci_snapshot(now);
+        assert_eq!(observing, vec![7]);
+        let (_, observing) = view.ci_snapshot(now + CI_RERUN_OBSERVE + Duration::from_secs(1));
+        assert!(observing.is_empty(), "觀察期過後就不再強制重抓");
+
+        // 抓到 Pending 即解除
+        view.on_ci_rerun_done(7, Ok(1), now);
+        view.set_ci(2, Ok(vec![ci_entry(7, &[(Pending, Some(1))])]), now);
+        assert!(view.ci_snapshot(now).1.is_empty());
+    }
+
+    #[test]
+    fn ci_rerun_zero_runs_or_error_only_flashes() {
+        let (mut view, _rx) = ci_view();
+        let now = Instant::now();
+
+        view.on_ci_rerun_done(7, Ok(0), now);
+        assert!(matches!(view.flash_message, Some((_, true))));
+        view.on_ci_rerun_done(7, Err("x".to_string()), now);
+
+        assert_eq!(view.ci_generation, 0);
+        assert!(view.ci_due.is_none());
+    }
+
+    #[test]
+    fn ci_refresh_refetches_everything_without_cache() {
+        use crate::github::CheckState::Passed;
+        let (mut view, _rx) = ci_view();
+        let now = Instant::now();
+        view.set_ci(0, Ok(vec![ci_entry(1, &[(Passed, None)])]), now);
+
+        view.handle_list_event(UserEvent::Refresh, 1);
+
+        assert_eq!(view.ci_generation, 1);
+        assert_eq!(view.ci.len(), 1, "畫面上的舊資料不先清掉");
+        assert!(view.ci_snapshot(now).0.is_empty());
+        assert_eq!(view.ci_snapshot(now).0.len(), 1, "只有一次整批重抓");
+    }
+
+    #[test]
+    fn ci_rerun_key_opens_prompt_with_run_sets_or_flashes() {
+        use crate::github::CheckState::{Failed, Passed, Pending};
+        let (mut view, rx) = ci_view();
+        let now = Instant::now();
+        view.set_ci(
+            0,
+            Ok(vec![ci_entry(
+                5,
+                &[(Failed, Some(10)), (Passed, Some(10)), (Passed, Some(11))],
+            )]),
+            now,
+        );
+
+        view.handle_list_event(UserEvent::CiRerun, 1);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AppEvent::OpenCiRerunPrompt { number: 5, failed_runs, all_runs })
+                if failed_runs == vec![10] && all_runs == vec![10, 11]
+        ));
+
+        // 進行中，或只有第三方 check：沒有可重跑的 run
+        view.set_ci(
+            0,
+            Ok(vec![ci_entry(5, &[(Pending, Some(10)), (Failed, None)])]),
+            now,
+        );
+        view.handle_list_event(UserEvent::CiRerun, 1);
+        assert!(rx.try_recv().is_err());
+        assert!(matches!(view.flash_message, Some((_, true))));
+    }
+
+    #[test]
+    fn ci_enter_opens_checks_page_and_search_matches_title_and_branch() {
+        use crate::github::CheckState::Passed;
+        let (mut view, rx) = ci_view();
+        let now = Instant::now();
+        view.set_ci(
+            0,
+            Ok(vec![
+                ci_entry(1, &[(Passed, None)]),
+                ci_entry(2, &[(Passed, None)]),
+            ]),
+            now,
+        );
+
+        view.handle_list_event(UserEvent::Confirm, 1);
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AppEvent::OpenUrl(url)) if url == "https://x/pull/1/checks"
+        ));
+        assert_eq!(view.focus, GitHubFocus::List);
+
+        view.search_input = Input::new("b2".to_string());
+        view.rebuild_filtered_indices();
+        assert_eq!(view.current_list_len(), 1);
+        assert_eq!(view.ci[view.actual_index(0)].number, 2);
+    }
+
+    #[test]
+    fn ci_tab_renders_cards_and_header_counts_pending() {
+        use crate::github::CheckState::{Failed, Passed, Pending};
+        let (mut view, _rx) = ci_view();
+        view.set_ci(
+            0,
+            Ok(vec![
+                ci_entry(1, &[(Pending, Some(1))]),
+                ci_entry(2, &[(Failed, Some(2)), (Passed, Some(2))]),
+            ]),
+            Instant::now(),
+        );
+
+        let screen = render_to_string_at_width(&mut view, 100);
+
+        assert!(screen.contains("CI (1)"), "got:\n{screen}");
+        assert!(screen.contains("#1 pr1"), "got:\n{screen}");
+        assert!(screen.contains("b2 · 1/2"), "got:\n{screen}");
     }
 }
