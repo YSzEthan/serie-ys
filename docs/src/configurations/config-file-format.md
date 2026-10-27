@@ -87,6 +87,7 @@ date_local = true
 
 [ui.github]
 diff_stat_target = 10000
+ci_interval_secs = 15
 
 [color]
 fg = "reset"
@@ -577,6 +578,18 @@ GitHub view 的 PR 變更行數目標數。`base ← head` 那一列與 branches
 - 型別：`u32`
 - 預設值：`10000`
 - 最小值：`1`
+
+### `ui.github.ci_interval_secs`
+
+GitHub view 的 CI 監測 tab 輪詢間隔，單位秒。CI tab 開著時，每隔這段時間重新
+列出 open PR，只重抓 CI 還在跑（或剛 push／新增）的那幾個。太小會很快用掉
+GitHub API 的 rate limit，所以超出範圍時載入設定會直接報錯，不會悄悄調整。
+
+- 型別：`u64`
+- 預設值：`15`
+- 範圍：`5`～`300`
+
+命令列參數 `--github-ci-interval` 指定的值優先。
 
 ### `ui.detail.date_format`
 

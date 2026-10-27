@@ -248,6 +248,14 @@ _可選範圍：_ `30`–`3600`，預設 `600`。
 
 設定檔對應鍵是 `core.auto_fetch.interval_secs`，命令列參數指定的值優先。
 
+## --github-ci-interval \<SECONDS\>
+
+GitHub view 的 CI 監測 tab 輪詢間隔，單位秒。
+
+_可選範圍：_ `5`–`300`，預設 `15`。
+
+設定檔對應鍵是 `ui.github.ci_interval_secs`，命令列參數指定的值優先。
+
 ## --fetch-prune \<TYPE\>
 
 `git fetch --all` 要不要多帶 `--prune`，手動 fetch（`f` 鍵）與上面的

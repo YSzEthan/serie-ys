@@ -547,7 +547,16 @@ pub struct UiGithubConfig {
     #[garde(range(min = 1))]
     #[default = 10_000]
     pub diff_stat_target: u32,
+    /// CI 監測 tab 的輪詢間隔（秒）。太小會打爆 GitHub API rate limit，
+    /// 載入時驗證範圍並報錯，不靜默 clamp。CLI `--github-ci-interval` 優先。
+    #[garde(range(min = GITHUB_CI_INTERVAL_MIN_SECS, max = GITHUB_CI_INTERVAL_MAX_SECS))]
+    #[default = 15]
+    pub ci_interval_secs: u64,
 }
+
+/// `ui.github.ci_interval_secs` 與 `--github-ci-interval` 的合法範圍（秒）。
+pub const GITHUB_CI_INTERVAL_MIN_SECS: u64 = 5;
+pub const GITHUB_CI_INTERVAL_MAX_SECS: u64 = 300;
 
 /// Detail／Diff／使用者自訂指令三個 pane 各自的高度。
 ///
@@ -904,6 +913,7 @@ mod tests {
                 },
                 github: UiGithubConfig {
                     diff_stat_target: 10_000,
+                    ci_interval_secs: 15,
                 },
             },
             color: ColorTheme::default(),
@@ -951,6 +961,7 @@ mod tests {
             date_local = false
             [ui.github]
             diff_stat_target = 5000
+            ci_interval_secs = 30
             [color.graph]
             branches = ["#ff0000", "#00ff00", "#0000ff"]
         "##;
@@ -1064,6 +1075,7 @@ mod tests {
                 },
                 github: UiGithubConfig {
                     diff_stat_target: 5000,
+                    ci_interval_secs: 30,
                 },
             },
             color: ColorTheme {
@@ -1505,6 +1517,27 @@ mod tests {
         // None＝沒設定，garde 對 Option<T> 的 range 是 None 放行、Some 才驗。
         let update = CoreUpdateConfig::default();
         assert!(update.validate().is_ok());
+    }
+
+    #[test]
+    fn github_ci_interval_secs_out_of_range_fails_validation() {
+        for secs in [
+            GITHUB_CI_INTERVAL_MIN_SECS - 1,
+            GITHUB_CI_INTERVAL_MAX_SECS + 1,
+        ] {
+            let github = UiGithubConfig {
+                ci_interval_secs: secs,
+                ..UiGithubConfig::default()
+            };
+            assert!(github.validate().is_err(), "{secs}");
+        }
+        for secs in [GITHUB_CI_INTERVAL_MIN_SECS, GITHUB_CI_INTERVAL_MAX_SECS] {
+            let github = UiGithubConfig {
+                ci_interval_secs: secs,
+                ..UiGithubConfig::default()
+            };
+            assert!(github.validate().is_ok(), "{secs}");
+        }
     }
 
     #[test]

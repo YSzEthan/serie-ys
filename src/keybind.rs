@@ -353,7 +353,8 @@ fn key_event_to_string(key_event: KeyEvent) -> String {
         KeyCode::PageUp => "PageUp",
         KeyCode::PageDown => "PageDown",
         KeyCode::Tab => "Tab",
-        KeyCode::BackTab => "BackTab",
+        // 終端機的 Shift-Tab 是 `BackTab` + SHIFT，修飾鍵會補上 `Shift-`
+        KeyCode::BackTab => "Tab",
         KeyCode::Delete => "Delete",
         KeyCode::Insert => "Insert",
         KeyCode::F(n) => {

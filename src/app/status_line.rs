@@ -16,7 +16,7 @@ use crate::{
     event::{
         AppEvent, AutoFetchClock, CheckoutPickKind, RefCopyKind, RelatedItem, Sender, UserEvent,
     },
-    github::{GhItemKind, MergeMethod, PrDraftAction, StateAction, StateFilter},
+    github::{GhItemKind, MergeMethod, PrDraftAction, RerunScope, StateAction, StateFilter},
     reload::FullStatus,
     view::View,
     widget::{
@@ -283,6 +283,13 @@ enum StatusLine {
         action: PrDraftAction,
         filter_state: StateFilter,
     },
+    /// CI 監測 tab 的重跑選擇：`f` 只重跑失敗、`a` 全部重跑。兩份 run id 都由
+    /// view 依卡片的 check 算好，空的那個選項不出現也不接受。
+    CiRerunPrompt {
+        number: u64,
+        failed_runs: Vec<u64>,
+        all_runs: Vec<u64>,
+    },
     /// 有新版 GitHub Release 可更新。跟其他 y/n prompt 共用
     /// `handle_yes_no_prompt_key`，唯一差異是確認後送的事件不同。
     UpdatePrompt {
@@ -433,6 +440,19 @@ impl StatusLineState {
         };
     }
 
+    pub(super) fn open_ci_rerun_prompt(
+        &mut self,
+        number: u64,
+        failed_runs: Vec<u64>,
+        all_runs: Vec<u64>,
+    ) {
+        self.line = StatusLine::CiRerunPrompt {
+            number,
+            failed_runs,
+            all_runs,
+        };
+    }
+
     pub(super) fn open_update_prompt(&mut self, tag: String) {
         self.line = StatusLine::UpdatePrompt { tag };
     }
@@ -562,7 +582,7 @@ impl StatusLineState {
         self.line = StatusLine::NotificationError(msg);
     }
 
-    /// 回傳 true 表示這是 11 個攔截變體之一（8 個 handler：`ToggleStatePrompt`、
+    /// 回傳 true 表示這是 12 個攔截變體之一（9 個 handler：`ToggleStatePrompt`、
     /// `TogglePrDraftPrompt`、`UpdatePrompt`、`RestartPrompt` 四個共用
     /// `handle_yes_no_prompt_key`，其餘各自一個 handler）、鍵已被吃掉。
     ///
@@ -599,6 +619,10 @@ impl StatusLineState {
                 self.handle_merge_pr_prompt_key(key);
                 true
             }
+            StatusLine::CiRerunPrompt { .. } => {
+                self.handle_ci_rerun_prompt_key(key);
+                true
+            }
             StatusLine::ToggleStatePrompt { .. }
             | StatusLine::TogglePrDraftPrompt { .. }
             | StatusLine::UpdatePrompt { .. }
@@ -629,6 +653,7 @@ impl StatusLineState {
             | StatusLine::DeleteBranchPicker { .. }
             | StatusLine::DeleteBranchConfirm { .. }
             | StatusLine::MergePrPrompt { .. }
+            | StatusLine::CiRerunPrompt { .. }
             | StatusLine::ToggleStatePrompt { .. }
             | StatusLine::TogglePrDraftPrompt { .. }
             | StatusLine::UpdatePrompt { .. }
@@ -647,8 +672,8 @@ impl StatusLineState {
     }
 
     /// 對應 `App::is_input_mode()` 判斷式裡跟狀態列相關的那部分。**故意跟
-    /// `handle_intercepting_key` 涵蓋的變體不同步**：5 個 prompt
-    /// （`MergePrPrompt`/`ToggleStatePrompt`/`TogglePrDraftPrompt`/`UpdatePrompt`/
+    /// `handle_intercepting_key` 涵蓋的變體不同步**：6 個 prompt
+    /// （`MergePrPrompt`/`CiRerunPrompt`/`ToggleStatePrompt`/`TogglePrDraftPrompt`/`UpdatePrompt`/
     /// `RestartPrompt`）不在這份清單裡，因為它們在 `handle_intercepting_key`
     /// 永遠回傳 `true`，唯一能繞過的只有 `ForceQuit`，而 `ForceQuit` 分支根本
     /// 不查這個方法。`MergePrPrompt` 的兩個彈窗一樣靠這個攔截擋鍵。動
@@ -664,6 +689,7 @@ impl StatusLineState {
             | StatusLine::DeleteBranchConfirm { .. } => true,
             StatusLine::None
             | StatusLine::MergePrPrompt { .. }
+            | StatusLine::CiRerunPrompt { .. }
             | StatusLine::ToggleStatePrompt { .. }
             | StatusLine::TogglePrDraftPrompt { .. }
             | StatusLine::UpdatePrompt { .. }
@@ -794,6 +820,35 @@ impl StatusLineState {
         self.line = StatusLine::None;
         self.tx
             .send(AppEvent::DeleteBranchRequested { name, force });
+    }
+
+    fn handle_ci_rerun_prompt_key(&mut self, key: KeyEvent) {
+        if self.ctx.keybind.has(&key, UserEvent::Cancel) {
+            self.line = StatusLine::None;
+            return;
+        }
+        let StatusLine::CiRerunPrompt {
+            number,
+            failed_runs,
+            all_runs,
+        } = &self.line
+        else {
+            return;
+        };
+        let (run_ids, scope) = match key.code {
+            KeyCode::Char('f' | 'F') if !failed_runs.is_empty() => {
+                (failed_runs.clone(), RerunScope::FailedOnly)
+            }
+            KeyCode::Char('a' | 'A') if !all_runs.is_empty() => (all_runs.clone(), RerunScope::All),
+            _ => return,
+        };
+        let number = *number;
+        self.line = StatusLine::None;
+        self.tx.send(AppEvent::CiRerunRequested {
+            number,
+            run_ids,
+            scope,
+        });
     }
 
     fn handle_merge_pr_prompt_key(&mut self, key: KeyEvent) {
@@ -1059,6 +1114,30 @@ impl StatusLineState {
             }
             // 提示全部在彈窗裡（`render_popup`），狀態列留白。
             StatusLine::MergePrPrompt { .. } => Line::raw(""),
+            StatusLine::CiRerunPrompt {
+                number,
+                failed_runs,
+                all_runs,
+            } => {
+                let hint_fg = self.ctx.color_theme.status_interactive_fg;
+                let mut spans: Vec<Span<'static>> =
+                    vec![t!("app.status.ci_rerun", number = number)
+                        .into_owned()
+                        .into()];
+                let options = [
+                    (!failed_runs.is_empty()).then(|| ("f", t!("app.status.ci_rerun_failed"))),
+                    (!all_runs.is_empty()).then(|| ("a", t!("app.status.ci_rerun_all"))),
+                ];
+                for (i, (key, label)) in options.into_iter().flatten().enumerate() {
+                    if i > 0 {
+                        spans.push(" / ".into());
+                    }
+                    spans.push(format!("[{key}] {label}").fg(hint_fg));
+                }
+                spans.push(" / ".into());
+                spans.push(format!("[Esc] {}", t!("common.hint.cancel")).fg(hint_fg));
+                Line::from(spans)
+            }
             StatusLine::ToggleStatePrompt {
                 number,
                 kind,
@@ -1233,6 +1312,12 @@ impl StatusLineState {
                     ),
                     style_at(0),
                 ))];
+                if !rows.is_empty() {
+                    lines.push(Line::from(Span::styled(
+                        t!("app.merge.dialog.delete_after"),
+                        Style::default().fg(fg).add_modifier(Modifier::DIM),
+                    )));
+                }
                 lines.extend(rows.iter().enumerate().map(|(i, &(opt, checked))| {
                     let checkbox = if checked { "[x]" } else { "[ ]" };
                     Line::from(Span::styled(
@@ -1861,6 +1946,47 @@ mod tests {
     }
 
     #[test]
+    fn ci_rerun_prompt_only_accepts_options_that_have_runs() {
+        let (mut state, rx) = test_state();
+        state.line = StatusLine::CiRerunPrompt {
+            number: 3,
+            failed_runs: vec![],
+            all_runs: vec![10, 11],
+        };
+
+        // 沒有可重跑的失敗 run：f 無效，prompt 留著
+        state.handle_ci_rerun_prompt_key(char_key('f'));
+        assert!(matches!(state.line, StatusLine::CiRerunPrompt { .. }));
+        assert!(rx.try_recv().is_err());
+
+        state.handle_ci_rerun_prompt_key(char_key('a'));
+        assert!(matches!(state.line, StatusLine::None));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AppEvent::CiRerunRequested {
+                number: 3,
+                scope: RerunScope::All,
+                run_ids,
+            }) if run_ids == vec![10, 11]
+        ));
+
+        state.line = StatusLine::CiRerunPrompt {
+            number: 3,
+            failed_runs: vec![10],
+            all_runs: vec![10, 11],
+        };
+        state.handle_ci_rerun_prompt_key(char_key('f'));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AppEvent::CiRerunRequested {
+                scope: RerunScope::FailedOnly,
+                run_ids,
+                ..
+            }) if run_ids == vec![10]
+        ));
+    }
+
+    #[test]
     fn yes_no_prompt_confirm_sends_toggle_pr_draft_request() {
         let (mut state, rx) = test_state();
         state.line = StatusLine::TogglePrDraftPrompt {
@@ -1936,10 +2062,10 @@ mod tests {
         assert!(rx.try_recv().is_err());
     }
 
-    /// `StatusLine` 全部 17 個變體各自對 `handle_intercepting_key`／
+    /// `StatusLine` 全部 18 個變體各自對 `handle_intercepting_key`／
     /// `is_input_mode_variant` 的回傳值，把「兩者故意不同步」這件事從一句
     /// 註解變成有東西擋著的不變式（做法比照這個 session 的 `2fa4064` 先
-    /// 例）。5 個 prompt 變體在 handle_intercepting_key 永遠攔截，但
+    /// 例）。6 個 prompt 變體在 handle_intercepting_key 永遠攔截，但
     /// is_input_mode_variant 故意不含它們——見兩個方法各自的文件註解。
     #[test]
     fn intercept_and_input_mode_tables_stay_intentionally_out_of_sync() {
@@ -2013,6 +2139,16 @@ mod tests {
             ),
             ("MergePrPrompt", merge_pr_prompt(), true, false),
             (
+                "CiRerunPrompt",
+                StatusLine::CiRerunPrompt {
+                    number: 0,
+                    failed_runs: vec![],
+                    all_runs: vec![],
+                },
+                true,
+                false,
+            ),
+            (
                 "ToggleStatePrompt",
                 StatusLine::ToggleStatePrompt {
                     number: 0,
@@ -2076,12 +2212,12 @@ mod tests {
 
         assert_eq!(
             cases.len(),
-            17,
-            "StatusLine 有 17 個變體，表格漏列或多列了，先檢查表格本身"
+            18,
+            "StatusLine 有 18 個變體，表格漏列或多列了，先檢查表格本身"
         );
 
         for (label, line, want_intercept, want_input_mode) in cases {
-            // handle_intercepting_key 在 11 個攔截變體上會呼叫對應 handler、
+            // handle_intercepting_key 在 12 個攔截變體上會呼叫對應 handler、
             // 可能改變 self.line 或送事件——這裡只關心它的回傳值，用一個
             // 全新的 state 避免副作用互相汙染。
             let mut for_intercept = make(line.clone());

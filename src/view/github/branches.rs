@@ -25,18 +25,13 @@ pub(super) fn columns(width: usize) -> usize {
 }
 
 /// 邊框以外的文字一律用亮灰色（`Color::Gray`），不用 `DarkGray`，深色背景下才看得清楚。
-const TEXT_COLOR: Color = Color::Gray;
+pub(super) const TEXT_COLOR: Color = Color::Gray;
 
 /// 邊框 2 格 + title 兩側各 1 格空白。
 const TITLE_CHROME: usize = 4;
 
-pub(super) fn render_card(
-    f: &mut Frame,
-    area: Rect,
-    branch: &GhBranch,
-    selected: bool,
-    diff_stat_target: u32,
-) {
+/// 卡片外框：標題放在上框，選中時邊框與標題都是 Cyan。Branches 與 CI 卡片共用。
+pub(super) fn card_block(title: &str, width: u16, selected: bool) -> Block<'static> {
     let (border_color, title_style) = if selected {
         (Color::Cyan, Style::default().fg(Color::Cyan).bold())
     } else {
@@ -46,15 +41,25 @@ pub(super) fn render_card(
     let title = truncate_line(
         // 樣式要放在 span 上：`Line::styled` 只設整行樣式，下面取出 `spans`
         // 組 title 時會丟掉，標題就退回邊框的顏色。
-        Line::from(Span::styled(branch.name.as_str(), title_style)),
-        (area.width as usize).saturating_sub(TITLE_CHROME),
+        Line::from(Span::styled(title.to_owned(), title_style)),
+        (width as usize).saturating_sub(TITLE_CHROME),
     );
-    let block = Block::default()
+    Block::default()
         .borders(Borders::ALL)
         .border_style(Style::default().fg(border_color))
         .title(Line::from(
             [vec![Span::raw(" ")], title.spans, vec![Span::raw(" ")]].concat(),
-        ));
+        ))
+}
+
+pub(super) fn render_card(
+    f: &mut Frame,
+    area: Rect,
+    branch: &GhBranch,
+    selected: bool,
+    diff_stat_target: u32,
+) {
+    let block = card_block(&branch.name, area.width, selected);
 
     f.render_widget(
         Paragraph::new(card_body(branch, diff_stat_target)).block(block),

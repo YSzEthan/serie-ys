@@ -612,6 +612,9 @@ pub enum CheckState {
 pub struct GhCheck {
     pub name: String,
     pub state: CheckState,
+    /// 所屬 GitHub Actions workflow run 的 id（重跑 CI 用）。第三方 App 與
+    /// StatusContext 沒有 `workflowRun`，是 `None`。
+    pub run_id: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Deserialize)]
@@ -699,7 +702,7 @@ const REVIEW_THREADS_SELECTION: &str = r#"pageInfo { hasNextPage endCursor }
 const CHECK_CONTEXT_NODES: &str = r#"__typename
     ... on CheckRun {
         name conclusion databaseId
-        checkSuite { app { slug } workflowRun { event workflow { name } } }
+        checkSuite { app { slug } workflowRun { databaseId event workflow { name } } }
     }
     ... on StatusContext { context state }"#;
 
@@ -1152,6 +1155,10 @@ struct GqlCheckSuite {
     workflow_run: Option<GqlWorkflowRun>,
 }
 impl GqlCheckSuite {
+    fn run_id(&self) -> Option<u64> {
+        self.workflow_run.as_ref().and_then(|w| w.database_id)
+    }
+
     /// 去重範圍 `(app, workflow, event)`，缺的欄位都是 `""`：同名 check 在範圍
     /// 相同時才算同一個。Actions 的 job 靠 workflow 分，第三方 App 沒有
     /// `workflowRun`，靠 `app` 分；同一個 workflow 被 push 與 pull_request
@@ -1172,6 +1179,8 @@ struct GqlApp {
 }
 #[derive(Deserialize)]
 struct GqlWorkflowRun {
+    #[serde(default, rename = "databaseId")]
+    database_id: Option<u64>,
     #[serde(default)]
     event: String,
     workflow: GqlWorkflow,
@@ -1220,7 +1229,8 @@ fn status_context_state(state: &str) -> Option<CheckState> {
 /// 全是 ✓ 的情況；跟 GitHub 網頁一致，不為 head commit 另寫特例。
 fn head_ci_checks(contexts: &[GqlCheckContext]) -> Vec<GhCheck> {
     type Scope<'a> = (&'a str, &'a str, &'a str);
-    let mut latest: FxHashMap<(Scope, &str), (u64, Option<&str>)> = FxHashMap::default();
+    type Latest<'a> = (u64, Option<&'a str>, Option<u64>);
+    let mut latest: FxHashMap<(Scope, &str), Latest> = FxHashMap::default();
     let mut checks = Vec::new();
     for ctx in contexts {
         match ctx {
@@ -1231,11 +1241,11 @@ fn head_ci_checks(contexts: &[GqlCheckContext]) -> Vec<GhCheck> {
                 check_suite,
             } => {
                 let scope = check_suite.as_ref().map_or(("", "", ""), |s| s.scope());
-                let entry = latest
-                    .entry((scope, name.as_str()))
-                    .or_insert((*database_id, conclusion.as_deref()));
+                let run_id = check_suite.as_ref().and_then(|s| s.run_id());
+                let candidate = (*database_id, conclusion.as_deref(), run_id);
+                let entry = latest.entry((scope, name.as_str())).or_insert(candidate);
                 if *database_id > entry.0 {
-                    *entry = (*database_id, conclusion.as_deref());
+                    *entry = candidate;
                 }
             }
             GqlCheckContext::StatusContext { context, state } => {
@@ -1243,6 +1253,7 @@ fn head_ci_checks(contexts: &[GqlCheckContext]) -> Vec<GhCheck> {
                     checks.push(GhCheck {
                         name: context.clone(),
                         state,
+                        run_id: None,
                     });
                 }
             }
@@ -1252,15 +1263,306 @@ fn head_ci_checks(contexts: &[GqlCheckContext]) -> Vec<GhCheck> {
     checks.extend(
         latest
             .into_iter()
-            .filter_map(|((_scope, name), (_, conclusion))| {
+            .filter_map(|((_scope, name), (_, conclusion, run_id))| {
                 check_run_state(conclusion).map(|state| GhCheck {
                     name: name.to_string(),
                     state,
+                    run_id,
                 })
             }),
     );
     checks.sort_by(|a, b| (a.state, &a.name).cmp(&(b.state, &b.name)));
     checks
+}
+
+// ── PR CI 監測 ──
+
+/// 一個 PR 整體的 CI 狀態，由 [`CiEntry::checks`] 推導。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum CiState {
+    /// 尚無任何 check（剛 push、workflow 還沒建立）：非終態，下次一定重抓。
+    Unknown,
+    Pending,
+    Failed,
+    Passed,
+}
+
+impl CiState {
+    /// 已有定論（不必再重抓）的狀態。
+    pub fn is_terminal(self) -> bool {
+        matches!(self, CiState::Passed | CiState::Failed)
+    }
+}
+
+/// CI 監測 tab 的一張卡片：open 且 head branch 在本地的 PR 加上它 head commit 的 check。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CiEntry {
+    pub number: u64,
+    pub title: String,
+    pub url: String,
+    pub branch: String,
+    /// 抓 `checks` 當下的 head commit（取自查詢回傳的 `commit.oid`，不是 `headRefOid`，
+    /// 兩步之間可能有人 push）。與 PR 目前的 head 不同就要重抓。
+    pub head_sha: String,
+    pub checks: Vec<GhCheck>,
+}
+
+/// 重跑哪些 check。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RerunScope {
+    FailedOnly,
+    All,
+}
+
+impl CiEntry {
+    pub fn state(&self) -> CiState {
+        if self.checks.is_empty() {
+            CiState::Unknown
+        } else if self.checks.iter().any(|c| c.state == CheckState::Pending) {
+            CiState::Pending
+        } else if self.checks.iter().any(|c| c.state == CheckState::Failed) {
+            CiState::Failed
+        } else {
+            CiState::Passed
+        }
+    }
+
+    /// 可重跑的 Actions run id（不重複，依 check 出現順序）。`gh run rerun` 對還在
+    /// 跑的 run 會報錯，所以以 run 為單位判斷：
+    ///
+    /// - `FailedOnly`：run 內有 Failed 且沒有 Pending 的 check
+    /// - `All`：run 內所有 check 都已完成
+    ///
+    /// 第三方 App／StatusContext 沒有 `run_id`，不在其中。
+    pub fn rerun_run_ids(&self, scope: RerunScope) -> Vec<u64> {
+        let mut ids: Vec<u64> = Vec::new();
+        for id in self.checks.iter().filter_map(|c| c.run_id) {
+            if ids.contains(&id) {
+                continue;
+            }
+            let mut in_run = self.checks.iter().filter(|c| c.run_id == Some(id));
+            let (pending, failed) = in_run.by_ref().fold((false, false), |(p, f), c| {
+                (
+                    p || c.state == CheckState::Pending,
+                    f || c.state == CheckState::Failed,
+                )
+            });
+            let ok = match scope {
+                RerunScope::FailedOnly => failed && !pending,
+                RerunScope::All => !pending,
+            };
+            if ok {
+                ids.push(id);
+            }
+        }
+        ids
+    }
+}
+
+/// `gh pr list` 取得的 open PR 基本資料（不含 CI）。
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct OpenPrHead {
+    pub number: u64,
+    #[serde(default, deserialize_with = "de_expand_emoji")]
+    pub title: String,
+    #[serde(default)]
+    pub url: String,
+    pub head_ref_name: String,
+    pub head_ref_oid: String,
+    #[serde(default)]
+    pub is_cross_repository: bool,
+}
+
+/// 只留 head branch 在本地且非 fork 的 PR。
+fn filter_local_prs(prs: Vec<OpenPrHead>, local: &FxHashSet<String>) -> Vec<OpenPrHead> {
+    prs.into_iter()
+        .filter(|p| !p.is_cross_repository && local.contains(&p.head_ref_name))
+        .collect()
+}
+
+pub fn list_open_prs_heads(path: &Path) -> Result<Vec<OpenPrHead>, String> {
+    let json = run_gh(
+        path,
+        &[
+            "pr",
+            "list",
+            "--state",
+            "open",
+            "-L",
+            "500",
+            "--json",
+            "number,title,url,headRefName,headRefOid,isCrossRepository",
+        ],
+    )?;
+    let prs: Vec<OpenPrHead> = parse_json(&json)?;
+    Ok(filter_local_prs(
+        prs,
+        &crate::git::local_branch_names(path)?,
+    ))
+}
+
+/// 這一輪要重抓 CI 的 PR 編號：快取沒有的、head 換了的、還沒有定論
+/// （`Pending`／`Unknown`）的，以及仍在重跑觀察期內的。
+pub fn ci_needed(heads: &[OpenPrHead], cache: &[CiEntry], observing: &[u64]) -> Vec<u64> {
+    heads
+        .iter()
+        .filter(|h| {
+            observing.contains(&h.number)
+                || cache
+                    .iter()
+                    .find(|e| e.number == h.number)
+                    .is_none_or(|e| e.head_sha != h.head_ref_oid || !e.state().is_terminal())
+        })
+        .map(|h| h.number)
+        .collect()
+}
+
+/// `fetch_pr_ci` 的單一 PR 結果。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CiChecks {
+    pub number: u64,
+    pub head_sha: String,
+    pub checks: Vec<GhCheck>,
+}
+
+/// 把 open 清單、舊快取與新抓的結果合成新快取：不在 open 清單的自然消失，
+/// 沒重抓的沿用快取（標題等隨清單更新）。排序：Failed／Pending 在前，其餘依 number。
+pub fn merge_ci(heads: Vec<OpenPrHead>, cache: &[CiEntry], fetched: Vec<CiChecks>) -> Vec<CiEntry> {
+    let mut entries: Vec<CiEntry> = heads
+        .into_iter()
+        .filter_map(|h| {
+            let (head_sha, checks) = match fetched.iter().find(|f| f.number == h.number) {
+                Some(f) => (f.head_sha.clone(), f.checks.clone()),
+                None => {
+                    let old = cache.iter().find(|e| e.number == h.number)?;
+                    (old.head_sha.clone(), old.checks.clone())
+                }
+            };
+            Some(CiEntry {
+                number: h.number,
+                title: h.title,
+                url: h.url,
+                branch: h.head_ref_name,
+                head_sha,
+                checks,
+            })
+        })
+        .collect();
+    entries.sort_by_key(|e| {
+        let attention = matches!(e.state(), CiState::Failed | CiState::Pending);
+        (!attention, e.number)
+    });
+    entries
+}
+
+/// CI 監測 tab 的單一載入流程：列 open PR → 與快取 diff → 只抓需要的。
+/// 回傳新的完整快取。
+pub fn load_ci(path: &Path, cache: &[CiEntry], observing: &[u64]) -> Result<Vec<CiEntry>, String> {
+    let heads = list_open_prs_heads(path)?;
+    let needed = ci_needed(&heads, cache, observing);
+    let fetched = if needed.is_empty() {
+        Vec::new()
+    } else {
+        fetch_pr_ci(path, &needed)?
+    };
+    Ok(merge_ci(heads, cache, fetched))
+}
+
+/// 每批查詢最多幾個 PR（alias 數量與回應大小的折衷）。
+const CI_BATCH_SIZE: usize = 20;
+
+fn build_ci_query(numbers: &[u64]) -> String {
+    let fragment = head_commit_ci_fragment();
+    let aliases: String = numbers
+        .iter()
+        .map(|n| format!("p{n}: pullRequest(number:{n}) {{ number {fragment} }}\n"))
+        .collect();
+    format!(
+        r#"query($owner:String!,$name:String!){{
+            repository(owner:$owner,name:$name){{ {aliases} }}
+        }}"#
+    )
+}
+
+#[derive(Deserialize)]
+struct GqlCiPr {
+    number: u64,
+    commits: GqlConnection<GqlHeadCommit>,
+}
+
+/// 解析 alias 批次查詢的回應。`fetch_more` 同 [`parse_timeline_graphql`]，只在
+/// 某個 PR 的 contexts 超過一頁時被呼叫。`head_ci_checks` 在合併所有頁之後才跑。
+/// PR 查不到（alias 為 null，例如剛被刪）就略過。
+fn parse_ci_graphql(
+    json: &str,
+    mut fetch_more: impl FnMut(Target<'_>, &str) -> Result<String, String>,
+) -> Result<Vec<CiChecks>, String> {
+    let resp: GqlRepoResp<FxHashMap<String, Option<GqlCiPr>>> = parse_json(json)?;
+    let mut prs: Vec<GqlCiPr> = resp.data.repository.into_values().flatten().collect();
+    prs.sort_by_key(|p| p.number);
+    prs.into_iter()
+        .map(|pr| {
+            let head_sha = pr
+                .commits
+                .nodes
+                .first()
+                .map(|n| n.commit.oid.clone())
+                .unwrap_or_default();
+            let contexts = collect_head_contexts(pr.commits, &mut fetch_more)?;
+            Ok(CiChecks {
+                number: pr.number,
+                head_sha,
+                checks: head_ci_checks(&contexts),
+            })
+        })
+        .collect()
+}
+
+/// 抓指定 PR 的 head commit CI，每批最多 [`CI_BATCH_SIZE`] 個。
+pub fn fetch_pr_ci(path: &Path, numbers: &[u64]) -> Result<Vec<CiChecks>, String> {
+    let (owner, name) = fetch_repo_name_with_owner(path)?;
+    let owner_f = format!("owner={owner}");
+    let name_f = format!("name={name}");
+    let mut all = Vec::new();
+    for batch in numbers.chunks(CI_BATCH_SIZE) {
+        let query_f = format!("query={}", build_ci_query(batch));
+        let json = run_gh(
+            path,
+            &[
+                "api", "graphql", "-f", &owner_f, "-f", &name_f, "-f", &query_f,
+            ],
+        )?;
+        all.extend(parse_ci_graphql(&json, |target, cursor| {
+            let Target::Contexts { oid } = target else {
+                return Err(t!("github.error.commit_not_found", oid = "").into_owned());
+            };
+            let oid_f = format!("oid={oid}");
+            let cursor_f = format!("after={cursor}");
+            let query_f = format!("query={}", build_contexts_query());
+            run_gh(
+                path,
+                &[
+                    "api", "graphql", "-f", &owner_f, "-f", &name_f, "-f", &oid_f, "-f", &cursor_f,
+                    "-f", &query_f,
+                ],
+            )
+        })?);
+    }
+    Ok(all)
+}
+
+/// 逐一 `gh run rerun`；遇到第一個失敗就停，回傳已重跑的 run 數。
+pub fn rerun_ci(path: &Path, run_ids: &[u64], scope: RerunScope) -> Result<usize, String> {
+    for id in run_ids {
+        let id = id.to_string();
+        let mut args = vec!["run", "rerun", id.as_str()];
+        if scope == RerunScope::FailedOnly {
+            args.push("--failed");
+        }
+        run_gh(path, &args)?;
+    }
+    Ok(run_ids.len())
 }
 
 // ── Checkbox／工作清單 ──
@@ -2273,7 +2575,7 @@ mod tests {
         assert!(first.contains(&format!("contexts(first:{CONTEXTS_PAGE_SIZE})")));
         assert!(first.contains(&head_commit_ci_fragment()));
         assert!(first.contains("app { slug }"));
-        assert!(first.contains("event workflow { name }"));
+        assert!(first.contains("databaseId event workflow { name }"));
 
         let more = build_timeline_query(GhItemKind::PullRequest, false);
         assert!(!more.contains("commits(last:1)"));
@@ -2693,6 +2995,7 @@ mod tests {
         GhCheck {
             name: name.to_string(),
             state,
+            run_id: None,
         }
     }
 
@@ -3243,5 +3546,249 @@ mod tests {
                 check("a", CheckState::Passed)
             ]
         );
+    }
+
+    // ── PR CI 監測 ──
+
+    fn ci_check(name: &str, state: CheckState, run_id: Option<u64>) -> GhCheck {
+        GhCheck {
+            name: name.to_string(),
+            state,
+            run_id,
+        }
+    }
+
+    fn ci_entry(number: u64, sha: &str, checks: Vec<GhCheck>) -> CiEntry {
+        CiEntry {
+            number,
+            title: format!("pr{number}"),
+            url: format!("https://x/pull/{number}"),
+            branch: format!("b{number}"),
+            head_sha: sha.to_string(),
+            checks,
+        }
+    }
+
+    fn head(number: u64, sha: &str) -> OpenPrHead {
+        OpenPrHead {
+            number,
+            title: format!("pr{number}"),
+            url: format!("https://x/pull/{number}"),
+            head_ref_name: format!("b{number}"),
+            head_ref_oid: sha.to_string(),
+            is_cross_repository: false,
+        }
+    }
+
+    #[test]
+    fn ci_state_is_derived_from_checks() {
+        use CheckState::*;
+        let state = |c: Vec<GhCheck>| ci_entry(1, "a", c).state();
+        assert_eq!(state(vec![]), CiState::Unknown);
+        assert_eq!(
+            state(vec![
+                ci_check("a", Passed, None),
+                ci_check("b", Pending, None)
+            ]),
+            CiState::Pending
+        );
+        assert_eq!(
+            state(vec![
+                ci_check("a", Failed, None),
+                ci_check("b", Pending, None)
+            ]),
+            CiState::Pending
+        );
+        assert_eq!(
+            state(vec![
+                ci_check("a", Failed, None),
+                ci_check("b", Passed, None)
+            ]),
+            CiState::Failed
+        );
+        assert_eq!(state(vec![ci_check("a", Passed, None)]), CiState::Passed);
+    }
+
+    #[test]
+    fn ci_needed_selects_uncached_changed_and_unfinished() {
+        use CheckState::*;
+        let cache = vec![
+            ci_entry(1, "s1", vec![ci_check("a", Passed, None)]),
+            ci_entry(2, "s2", vec![ci_check("a", Failed, None)]),
+            ci_entry(3, "s3", vec![ci_check("a", Pending, None)]),
+            ci_entry(4, "s4", vec![]),
+            ci_entry(5, "old", vec![ci_check("a", Passed, None)]),
+            ci_entry(9, "s9", vec![ci_check("a", Passed, None)]),
+        ];
+        let heads = vec![
+            head(1, "s1"),
+            head(2, "s2"),
+            head(3, "s3"),
+            head(4, "s4"),
+            head(5, "new"),
+            head(6, "s6"),
+            head(7, "s7"),
+        ];
+        // 1、2 已有定論且 sha 沒變不進；3 Pending、4 Unknown、5 sha 變、6 新 PR、
+        // 7 在觀察期內都進；9 不在 open 清單，不參與
+        assert_eq!(ci_needed(&heads, &cache, &[7]), vec![3, 4, 5, 6, 7]);
+        // 觀察期內的終態 PR 也算 needed
+        assert_eq!(ci_needed(&heads[..2], &cache, &[2]), vec![2]);
+    }
+
+    #[test]
+    fn merge_ci_drops_closed_prs_keeps_cache_and_sorts() {
+        use CheckState::*;
+        let cache = vec![
+            ci_entry(1, "s1", vec![ci_check("a", Passed, None)]),
+            ci_entry(9, "s9", vec![ci_check("a", Passed, None)]),
+        ];
+        let fetched = vec![
+            CiChecks {
+                number: 2,
+                head_sha: "s2".into(),
+                checks: vec![ci_check("a", Failed, None)],
+            },
+            CiChecks {
+                number: 3,
+                head_sha: "s3".into(),
+                checks: vec![ci_check("a", Passed, None)],
+            },
+        ];
+        let merged = merge_ci(
+            vec![head(1, "s1"), head(2, "s2"), head(3, "s3")],
+            &cache,
+            fetched,
+        );
+        let numbers: Vec<u64> = merged.iter().map(|e| e.number).collect();
+        // Failed 在前，其餘依 number；9 已不在 open 清單
+        assert_eq!(numbers, vec![2, 1, 3]);
+        assert_eq!(merged[1].checks, vec![ci_check("a", Passed, None)]);
+    }
+
+    #[test]
+    fn filter_local_prs_excludes_forks_and_missing_branches() {
+        let mut fork = head(2, "s");
+        fork.is_cross_repository = true;
+        let local: FxHashSet<String> = ["b1", "b2"].iter().map(|s| s.to_string()).collect();
+        let kept = filter_local_prs(vec![head(1, "s"), fork, head(3, "s")], &local);
+        assert_eq!(kept.iter().map(|p| p.number).collect::<Vec<_>>(), vec![1]);
+    }
+
+    #[test]
+    fn rerun_run_ids_per_scope() {
+        use CheckState::*;
+        let entry = ci_entry(
+            1,
+            "s",
+            vec![
+                ci_check("a", Failed, Some(10)),
+                ci_check("b", Passed, Some(10)),
+                ci_check("c", Failed, Some(11)),
+                ci_check("d", Pending, Some(11)),
+                ci_check("e", Passed, Some(12)),
+                ci_check("f", Failed, None),
+            ],
+        );
+        assert_eq!(entry.rerun_run_ids(RerunScope::FailedOnly), vec![10]);
+        assert_eq!(entry.rerun_run_ids(RerunScope::All), vec![10, 12]);
+
+        let third_party = ci_entry(2, "s", vec![ci_check("x", Failed, None)]);
+        assert!(third_party.rerun_run_ids(RerunScope::FailedOnly).is_empty());
+        assert!(third_party.rerun_run_ids(RerunScope::All).is_empty());
+    }
+
+    fn ci_run(
+        workflow: &str,
+        name: &str,
+        id: u64,
+        run_id: u64,
+        conclusion: Option<&str>,
+    ) -> String {
+        let conclusion = conclusion.map_or("null".to_string(), |c| format!(r#""{c}""#));
+        format!(
+            r#"{{"__typename":"CheckRun","name":"{name}","conclusion":{conclusion},
+                "databaseId":{id},
+                "checkSuite":{{"workflowRun":{{"databaseId":{run_id},
+                    "workflow":{{"name":"{workflow}"}}}}}}}}"#
+        )
+    }
+
+    fn ci_pr_json(
+        alias: &str,
+        number: u64,
+        oid: &str,
+        contexts: &[String],
+        next: Option<&str>,
+    ) -> String {
+        let (has_next, cursor) = next.map_or(("false", "null".to_string()), |c| {
+            ("true", format!(r#""{c}""#))
+        });
+        format!(
+            r#""{alias}":{{"number":{number},"commits":{{"nodes":[{{"commit":{{"oid":"{oid}",
+                "statusCheckRollup":{{"contexts":{{
+                    "pageInfo":{{"hasNextPage":{has_next},"endCursor":{cursor}}},
+                    "nodes":[{}]}}}}}}}}]}}}}"#,
+            contexts.join(",")
+        )
+    }
+
+    #[test]
+    fn parse_ci_graphql_follows_pages_dedups_and_carries_run_id() {
+        let first = ci_pr_json(
+            "p1",
+            1,
+            "oid-1",
+            &[ci_run("W", "lint", 1, 100, Some("FAILURE"))],
+            Some("c1"),
+        );
+        let json = format!(
+            r#"{{"data":{{"repository":{{{first},{},"p3":null}}}}}}"#,
+            ci_pr_json(
+                "p2",
+                2,
+                "oid-2",
+                &[ci_run("W", "build", 5, 200, Some("SUCCESS"))],
+                None
+            )
+        );
+        let mut calls = 0;
+        let out = parse_ci_graphql(&json, |target, after| {
+            calls += 1;
+            assert!(matches!(target, Target::Contexts { oid: "oid-1" }));
+            assert_eq!(after, "c1");
+            // 續頁帶來較新的同名 run：舊的 FAILURE 要被蓋掉
+            Ok(format!(
+                r#"{{"data":{{"repository":{{"object":{{"statusCheckRollup":{{"contexts":{{
+                    "pageInfo":{{"hasNextPage":false,"endCursor":null}},
+                    "nodes":[{}]}}}}}}}}}}}}"#,
+                ci_run("W", "lint", 9, 101, Some("SUCCESS"))
+            ))
+        })
+        .unwrap();
+        assert_eq!(calls, 1);
+        assert_eq!(
+            out,
+            vec![
+                CiChecks {
+                    number: 1,
+                    head_sha: "oid-1".into(),
+                    checks: vec![ci_check("lint", CheckState::Passed, Some(101))],
+                },
+                CiChecks {
+                    number: 2,
+                    head_sha: "oid-2".into(),
+                    checks: vec![ci_check("build", CheckState::Passed, Some(200))],
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn build_ci_query_has_one_alias_per_pr() {
+        let q = build_ci_query(&[3, 7]);
+        assert!(q.contains("p3: pullRequest(number:3)"));
+        assert!(q.contains("p7: pullRequest(number:7)"));
+        assert_eq!(q.matches(CHECK_CONTEXT_NODES).count(), 2);
     }
 }

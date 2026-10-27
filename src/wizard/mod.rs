@@ -262,6 +262,8 @@ struct ResolvedDefaults {
     list_graph_max_width_percent: u16,
     /// `ui.github.diff_stat_target` 目前有效值，同樣沒有 CLI 旗標。
     github_diff_stat_target: u32,
+    /// `ui.github.ci_interval_secs` 目前有效值（設定檔的值；CLI 旗標由 `draft.args` 帶）。
+    github_ci_interval: u64,
     /// `true` = 設定檔載入失敗（讀不到／解析失敗／garde 驗證不過），
     /// `theme`／`keybind_patch` 都是內建硬預設，不是使用者的真實設定——
     /// 顏色編輯器與 keybind 編輯器都要據此在畫面上講清楚，不能默默顯示
@@ -323,6 +325,7 @@ impl ResolvedDefaults {
             list_graph_edge_max_rows: ui.list.graph_edge_max_rows,
             list_graph_max_width_percent: ui.list.graph_max_width_percent,
             github_diff_stat_target: ui.github.diff_stat_target,
+            github_ci_interval: ui.github.ci_interval_secs,
             config_is_fallback: false,
         }
     }
@@ -582,6 +585,9 @@ enum NumberField {
     ListGraphMaxWidthPercent,
     /// `ui.github.diff_stat_target`（GitHub view PR 變更行數 `Δ` 的目標數）。
     GithubDiffStatTarget,
+    /// `ui.github.ci_interval_secs`（GitHub view CI 監測 tab 的輪詢間隔），
+    /// 同 `AutoFetchInterval` 有對應的 CLI 旗標 `--github-ci-interval`。
+    GithubCiInterval,
 }
 
 impl NumberField {
@@ -615,6 +621,10 @@ impl NumberField {
                 table: UI_GITHUB,
                 key: "diff_stat_target".into(),
             },
+            NumberField::GithubCiInterval => ConfigKey {
+                table: UI_GITHUB,
+                key: "ci_interval_secs".into(),
+            },
         }
     }
 
@@ -627,6 +637,7 @@ impl NumberField {
             NumberField::ListGraphEdgeMaxRows => "[GRAPH_EDGE_MAX_ROWS]",
             NumberField::ListGraphMaxWidthPercent => "[GRAPH_MAX_WIDTH_PERCENT]",
             NumberField::GithubDiffStatTarget => "[DIFF_STAT_TARGET]",
+            NumberField::GithubCiInterval => "--github-ci-interval <SECONDS>",
         }
     }
 
@@ -641,6 +652,7 @@ impl NumberField {
                 t!("wizard.number.help.list_graph_max_width_percent")
             }
             NumberField::GithubDiffStatTarget => t!("wizard.number.help.github_diff_stat_target"),
+            NumberField::GithubCiInterval => t!("wizard.number.help.github_ci_interval"),
         }
     }
 
@@ -681,6 +693,11 @@ impl NumberField {
                 min: 1,
                 max: u32::MAX as usize,
             },
+            NumberField::GithubCiInterval => NumberSpec {
+                title: t!("wizard.number.title.github_ci_interval"),
+                min: config::GITHUB_CI_INTERVAL_MIN_SECS as usize,
+                max: config::GITHUB_CI_INTERVAL_MAX_SECS as usize,
+            },
         }
     }
 
@@ -703,6 +720,9 @@ impl NumberField {
             NumberField::GithubDiffStatTarget => {
                 Some(config::UiGithubConfig::default().diff_stat_target as usize)
             }
+            NumberField::GithubCiInterval => {
+                Some(config::UiGithubConfig::default().ci_interval_secs as usize)
+            }
         }
     }
 
@@ -718,6 +738,7 @@ impl NumberField {
                 Some(defaults.list_graph_max_width_percent as usize)
             }
             NumberField::GithubDiffStatTarget => Some(defaults.github_diff_stat_target as usize),
+            NumberField::GithubCiInterval => Some(defaults.github_ci_interval as usize),
         }
     }
 
@@ -741,7 +762,9 @@ impl NumberField {
         match self {
             NumberField::MaxCount | NumberField::GithubDiffStatTarget => n.to_string(),
             NumberField::UpdateInterval => t!("wizard.number.hours", n = n).into_owned(),
-            NumberField::AutoFetchInterval => t!("wizard.number.seconds", n = n).into_owned(),
+            NumberField::AutoFetchInterval | NumberField::GithubCiInterval => {
+                t!("wizard.number.seconds", n = n).into_owned()
+            }
             NumberField::ListScrolloff | NumberField::ListGraphEdgeMaxRows => {
                 t!("wizard.number.rows", n = n).into_owned()
             }
@@ -758,6 +781,9 @@ impl NumberField {
             NumberField::UpdateInterval => draft.args.update_interval = value.map(|n| n as u64),
             NumberField::AutoFetchInterval => {
                 draft.args.auto_fetch_interval = value.map(|n| n as u64)
+            }
+            NumberField::GithubCiInterval => {
+                draft.args.github_ci_interval = value.map(|n| n as u64)
             }
             NumberField::ListScrolloff
             | NumberField::ListGraphEdgeMaxRows
@@ -889,6 +915,9 @@ const ROWS: &[RowAction] = &[
     ))),
     RowAction::Edit(Editor::Dialog(Dialog::Number(
         NumberField::GithubDiffStatTarget,
+    ))),
+    RowAction::Edit(Editor::Dialog(Dialog::Number(
+        NumberField::GithubCiInterval,
     ))),
     RowAction::Edit(Editor::Dialog(Dialog::ColorMenu)),
     RowAction::Edit(Editor::Dialog(Dialog::KeyBindMenu)),
@@ -2109,6 +2138,24 @@ mod tests {
             NumberField::GithubDiffStatTarget.current_label(&s.draft, &s.defaults),
             "10000",
             "清空後顯示內建預設"
+        );
+    }
+
+    #[test]
+    fn apply_touched_settings_writes_github_ci_interval() {
+        let mut s = test_state();
+        assert_eq!(
+            NumberField::GithubCiInterval.current_label(&s.draft, &s.defaults),
+            "15 秒"
+        );
+        NumberField::GithubCiInterval.commit(&mut s.draft, Some(30));
+        let updated = apply_touched_settings(&s.draft, "").unwrap();
+        assert!(updated.contains("[ui.github]"), "{updated}");
+        assert!(updated.contains("ci_interval_secs = 30"), "{updated}");
+        assert_eq!(s.draft.args.github_ci_interval, Some(30));
+        assert_eq!(
+            config::parse_ui(&updated).unwrap().github.ci_interval_secs,
+            30
         );
     }
 

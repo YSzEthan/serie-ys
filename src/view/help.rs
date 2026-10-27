@@ -336,7 +336,7 @@ fn help_blocks(
 
     let github = vec![
         b(vec![UserEvent::GitHubToggle, UserEvent::Cancel, UserEvent::Close], t!("help.github.close_github_view")),
-        b(vec![UserEvent::RefList], t!("help.github.switch_issue_pr_tab")),
+        b(vec![UserEvent::RefList, UserEvent::RefListPrev], t!("help.github.switch_issue_pr_tab")),
         b(vec![UserEvent::NavigateDown, UserEvent::SelectDown], t!("help.github.move_down")),
         b(vec![UserEvent::NavigateUp, UserEvent::SelectUp], t!("help.github.move_up")),
         b(vec![UserEvent::PageDown], t!("help.github.page_down")),
@@ -358,6 +358,7 @@ fn help_blocks(
         b(vec![UserEvent::MergePr], t!("help.github.merge_pr_form_then_confirm")),
         b(vec![UserEvent::ToggleIssueState], t!("help.github.close_reopen_issue_or_pr")),
         b(vec![UserEvent::TogglePrDraft], t!("help.github.mark_pr_ready_back_to_draft")),
+        b(vec![UserEvent::CiRerun], t!("help.github.ci_rerun")),
         b(vec![UserEvent::ToggleCommitLog], t!("help.github.expand_collapse_commit_log")),
         b(vec![UserEvent::ToggleLabelMode], t!("help.github.toggle_label_names_color_swatches")),
     ];

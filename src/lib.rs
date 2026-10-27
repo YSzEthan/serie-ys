@@ -143,6 +143,16 @@ struct Args {
     )]
     auto_fetch_interval: Option<u64>,
 
+    #[arg(
+        long,
+        value_name = "SECONDS",
+        value_parser = clap::value_parser!(u64).range(
+            config::GITHUB_CI_INTERVAL_MIN_SECS..=config::GITHUB_CI_INTERVAL_MAX_SECS
+        ),
+        help = t!("cli.help.github_ci_interval")
+    )]
+    github_ci_interval: Option<u64>,
+
     #[arg(long, value_name = "TYPE", help = t!("cli.help.fetch_prune"))]
     fetch_prune: Option<FetchPrune>,
 
@@ -203,6 +213,7 @@ impl Args {
             beta,
             auto_fetch,
             auto_fetch_interval,
+            github_ci_interval,
             fetch_prune,
             locale,
             help: _,
@@ -242,6 +253,10 @@ impl Args {
             (
                 "--auto-fetch-interval",
                 auto_fetch_interval.map(|s| s.to_string()),
+            ),
+            (
+                "--github-ci-interval",
+                github_ci_interval.map(|s| s.to_string()),
             ),
             (
                 "--fetch-prune",
@@ -652,7 +667,11 @@ pub fn run() -> Result<()> {
         return Ok(());
     }
 
-    let (core_config, ui_config, color_theme, keybind_patch) = config::load()?;
+    let (core_config, mut ui_config, color_theme, keybind_patch) = config::load()?;
+    // CLI 優先於設定檔；合併後 `ui_config.github.ci_interval_secs` 就是最終值。
+    if let Some(secs) = args.github_ci_interval {
+        ui_config.github.ci_interval_secs = secs;
+    }
     apply_locale(
         args.locale
             .or(core_config.option.locale)
@@ -1149,6 +1168,8 @@ mod tests {
             "on",
             "--auto-fetch-interval",
             "45",
+            "--github-ci-interval",
+            "20",
             "--fetch-prune",
             "on",
             "--locale",
@@ -1173,6 +1194,7 @@ mod tests {
         assert_eq!(reparsed.beta, args.beta);
         assert_eq!(reparsed.auto_fetch, args.auto_fetch);
         assert_eq!(reparsed.auto_fetch_interval, args.auto_fetch_interval);
+        assert_eq!(reparsed.github_ci_interval, args.github_ci_interval);
         assert_eq!(reparsed.fetch_prune, args.fetch_prune);
         assert_eq!(reparsed.locale, args.locale);
         assert_eq!(reparsed.path, args.path);

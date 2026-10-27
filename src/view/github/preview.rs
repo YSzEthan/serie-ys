@@ -602,6 +602,7 @@ mod tests {
                 .map(|i| GhCheck {
                     name: format!("check{i}"),
                     state: CheckState::Passed,
+                    run_id: None,
                 })
                 .collect(),
             ..Default::default()

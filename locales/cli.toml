@@ -248,6 +248,10 @@ en-US = "Periodically check in the background whether the git remote has new con
 zh-TW = "自動 fetch 的輪詢間隔，單位秒 [default: 600]"
 en-US = "Auto-fetch polling interval in seconds [default: 600]"
 
+[cli.help.github_ci_interval]
+zh-TW = "GitHub view CI 監測 tab 的輪詢間隔，單位秒 [default: 15]"
+en-US = "Polling interval in seconds for the GitHub view's CI tab [default: 15]"
+
 [cli.help.fetch_prune]
 zh-TW = "fetch 時是否加上 --prune（手動 f 與 auto-fetch 共用）；關閉時不加任何 prune 相關旗標，是否 prune 交由 git 自己的 fetch.prune 設定決定 [default: off]"
 en-US = "Whether to add --prune on fetch (shared by manual f and auto-fetch); when off, no prune flag is passed and git's own fetch.prune setting decides [default: off]"
