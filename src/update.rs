@@ -31,6 +31,8 @@ const CHECKSUMS_URL: &str = concat!(
     env!("CARGO_PKG_REPOSITORY"),
     "/releases/latest/download/checksum.txt"
 );
+/// 含測試版（pre-release）的 release 清單；不碰 API、免 token。
+const RELEASES_FEED_URL: &str = concat!(env!("CARGO_PKG_REPOSITORY"), "/releases.atom");
 const UPDATE_CHECK_MARKER_FILE_NAME: &str = ".ysgit.update_check";
 const SEEN_VERSION_MARKER_FILE_NAME: &str = ".ysgit.seen_version";
 
@@ -84,6 +86,15 @@ pub enum ReleaseNotes {
     On,
 }
 
+/// 更新檢查是否接受測試版（`vX.Y.Z-beta.N` pre-release）。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, ValueEnum, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Beta {
+    #[default]
+    Off,
+    On,
+}
+
 /// 檢查間隔的合法範圍（小時）；CLI／設定檔／精靈三處都要用同一組數字。
 pub const MIN_INTERVAL_HOURS: u64 = 1;
 pub const MAX_INTERVAL_HOURS: u64 = 48;
@@ -104,6 +115,7 @@ pub struct UpdateSettings {
     pub interval: Duration,
     pub auto_restart: bool,
     pub release_notes: bool,
+    pub beta: bool,
 }
 
 impl Default for UpdateSettings {
@@ -117,6 +129,7 @@ impl Default for UpdateSettings {
             interval: Duration::from_secs(DEFAULT_INTERVAL_HOURS * 3600),
             auto_restart: false,
             release_notes: true,
+            beta: false,
         }
     }
 }
@@ -131,6 +144,7 @@ pub struct UpdateOverrides {
     pub interval_hours: Option<u64>,
     pub auto_restart: Option<AutoRestart>,
     pub release_notes: Option<ReleaseNotes>,
+    pub beta: Option<Beta>,
 }
 
 /// 唯一的合併入口：CLI > 設定檔 > 內建預設。`YSGIT_NO_UPDATE_CHECK` 在這裡
@@ -160,11 +174,13 @@ pub fn resolve(cli: UpdateOverrides, config: UpdateOverrides) -> UpdateSettings 
         .or(config.release_notes)
         .unwrap_or_default()
         == ReleaseNotes::On;
+    let beta = cli.beta.or(config.beta).unwrap_or_default() == Beta::On;
     UpdateSettings {
         mode,
         interval: Duration::from_secs(interval_hours * 3600),
         auto_restart,
         release_notes,
+        beta,
     }
 }
 
@@ -202,8 +218,9 @@ pub fn spawn_check(ec: &EventController, manual: bool, settings: UpdateSettings)
     }
     let tx = ec.sender();
     let auto_download = settings.mode == UpdateMode::Auto;
+    let beta = settings.beta;
     std::thread::spawn(move || {
-        let result = check_for_update();
+        let result = check_for_update(beta);
         mark_checked();
         match result {
             Ok(Some(tag)) if auto_download => tx.send(AppEvent::UpdateRequested { tag }),
@@ -219,8 +236,18 @@ pub fn spawn_check(ec: &EventController, manual: bool, settings: UpdateSettings)
 }
 
 /// 查詢最新 release，比目前版本新才回傳 tag（`v2.4.1`）。
-pub fn check_for_update() -> Result<Option<String>, String> {
-    let checksums = fetch_checksums()?;
+///
+/// `beta = false` 讀 `releases/latest`（GitHub 不把 pre-release 當 latest）；
+/// `beta = true` 先從 release feed 找出 semver 最大的 tag（含測試版），再讀
+/// 該 tag 的 `checksum.txt`。兩條路之後都是同一套 `pick_asset` → 比版本。
+pub fn check_for_update(beta: bool) -> Result<Option<String>, String> {
+    let checksums = if beta {
+        let feed = fetch_text(RELEASES_FEED_URL)?;
+        let tag = latest_tag_from_feed(&feed).ok_or_else(no_asset_error)?;
+        fetch_text(&format!("{REPO_URL}/releases/download/v{tag}/checksum.txt"))?
+    } else {
+        fetch_text(CHECKSUMS_URL)?
+    };
     let (latest, _asset) =
         pick_asset(&checksums, env::consts::OS, env::consts::ARCH).ok_or_else(no_asset_error)?;
     Ok(newer_than_current(&latest, env!("CARGO_PKG_VERSION")).map(|v| format!("v{v}")))
@@ -787,6 +814,20 @@ fn pick_asset(checksums: &str, os: &str, arch: &str) -> Option<(String, String)>
     })
 }
 
+/// 從 `releases.atom` 找出 semver 最大的 release 版本（含測試版）。
+/// 只收 `/releases/tag/v<semver>` 且能被 `Version::parse` 的字串，其他連結或
+/// 被 captive portal 換成的垃圾內容一律忽略；一個都沒有回 None。
+fn latest_tag_from_feed(feed: &str) -> Option<Version> {
+    const MARKER: &str = "/releases/tag/v";
+    feed.match_indices(MARKER)
+        .filter_map(|(i, _)| {
+            let rest = &feed[i + MARKER.len()..];
+            let end = rest.find(['"', '<', '\'', ' ']).unwrap_or(rest.len());
+            Version::parse(&rest[..end]).ok()
+        })
+        .max()
+}
+
 /// `latest` 比 `current` 新才回 Some。用 semver 比較，不比字串——
 /// `"2.10.0" > "2.9.0"` 字串比較會給錯答案。
 fn newer_than_current(latest: &str, current: &str) -> Option<Version> {
@@ -813,9 +854,9 @@ fn curl(max_time: &str) -> Command {
     cmd
 }
 
-fn fetch_checksums() -> Result<String, String> {
+fn fetch_text(url: &str) -> Result<String, String> {
     let output = curl("15")
-        .arg(CHECKSUMS_URL)
+        .arg(url)
         .output()
         .map_err(|e| curl_spawn_error(&e))?;
 
@@ -1163,18 +1204,21 @@ ca0a1ac34d2e1138b9308820e3a53b6822552268907e87a11a1350b98f1a6ada  ysgit_2.4.1-ma
                 interval_hours: Some(2),
                 auto_restart: Some(AutoRestart::On),
                 release_notes: Some(ReleaseNotes::Off),
+                beta: Some(Beta::On),
             },
             UpdateOverrides {
                 mode: Some(UpdateMode::Off),
                 interval_hours: Some(20),
                 auto_restart: Some(AutoRestart::Off),
                 release_notes: Some(ReleaseNotes::On),
+                beta: Some(Beta::Off),
             },
         );
         assert_eq!(settings.mode, UpdateMode::Auto);
         assert_eq!(settings.interval, Duration::from_secs(2 * 3600));
         assert!(settings.auto_restart);
         assert!(!settings.release_notes);
+        assert!(settings.beta);
     }
 
     #[test]
@@ -1186,8 +1230,10 @@ ca0a1ac34d2e1138b9308820e3a53b6822552268907e87a11a1350b98f1a6ada  ysgit_2.4.1-ma
                 interval_hours: Some(20),
                 auto_restart: Some(AutoRestart::On),
                 release_notes: Some(ReleaseNotes::Off),
+                beta: Some(Beta::On),
             },
         );
+        assert!(settings.beta);
         assert_eq!(settings.mode, UpdateMode::Off);
         assert_eq!(settings.interval, Duration::from_secs(20 * 3600));
         assert!(settings.auto_restart);
@@ -1204,6 +1250,42 @@ ca0a1ac34d2e1138b9308820e3a53b6822552268907e87a11a1350b98f1a6ada  ysgit_2.4.1-ma
         );
         assert!(!settings.auto_restart);
         assert!(settings.release_notes);
+        assert!(!settings.beta);
+    }
+
+    // ── latest_tag_from_feed()：release feed 找最大版本 ──
+
+    #[test]
+    fn latest_tag_from_feed_picks_highest_semver_including_beta() {
+        let feed = r#"<link href="https://github.com/o/r/releases/tag/v4.12.2-beta.7"/>
+            <link href="https://github.com/o/r/releases/tag/v4.12.1"/>
+            <link href="https://github.com/o/r/releases/tag/v4.12.2-beta.10"/>"#;
+        assert_eq!(
+            latest_tag_from_feed(feed),
+            Some(Version::parse("4.12.2-beta.10").unwrap())
+        );
+    }
+
+    #[test]
+    fn latest_tag_from_feed_stable_beats_its_own_beta() {
+        let feed = r#"<link href="/o/r/releases/tag/v4.13.0-beta.3"/>
+            <link href="/o/r/releases/tag/v4.13.0"/>"#;
+        assert_eq!(
+            latest_tag_from_feed(feed),
+            Some(Version::parse("4.13.0").unwrap())
+        );
+    }
+
+    #[test]
+    fn latest_tag_from_feed_garbage_is_none() {
+        assert!(latest_tag_from_feed("<html>captive portal</html>").is_none());
+        assert!(latest_tag_from_feed(r#"href="/releases/tag/vnot-a-version""#).is_none());
+    }
+
+    #[test]
+    fn newer_than_current_beta_is_newer_than_previous_stable() {
+        assert!(newer_than_current("4.12.2-beta.1", "4.12.1").is_some());
+        assert!(newer_than_current("4.12.2-beta.1", "4.12.2").is_none());
     }
 
     // ── extract_release_notes()：CHANGELOG 區塊切割 ──
