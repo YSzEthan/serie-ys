@@ -18,7 +18,7 @@ use crate::{
     color::{ColorTheme, OptionalColorTheme},
     git::FetchPrune,
     keybind::KeyBind,
-    update::{AutoRestart, ReleaseNotes, UpdateMode, MAX_INTERVAL_HOURS, MIN_INTERVAL_HOURS},
+    update::{AutoRestart, Beta, ReleaseNotes, UpdateMode, MAX_INTERVAL_HOURS, MIN_INTERVAL_HOURS},
     CommitOrderType, CompactType, GraphStyle, GraphWidthType, InitialSelection, Locale, Result,
 };
 
@@ -229,6 +229,8 @@ pub struct CoreUpdateConfig {
     pub auto_restart: Option<AutoRestart>,
     #[garde(skip)]
     pub release_notes: Option<ReleaseNotes>,
+    #[garde(skip)]
+    pub beta: Option<Beta>,
 }
 
 /// 自動偵測 git remote 是否有新內容、自動 fetch 的設定，預設關閉。
@@ -849,6 +851,7 @@ mod tests {
                     interval_hours: None,
                     auto_restart: None,
                     release_notes: None,
+                    beta: None,
                 },
                 auto_fetch: CoreAutoFetchConfig {
                     mode: None,
@@ -968,6 +971,7 @@ mod tests {
                     interval_hours: None,
                     auto_restart: None,
                     release_notes: None,
+                    beta: None,
                 },
                 auto_fetch: CoreAutoFetchConfig {
                     mode: None,
@@ -1385,6 +1389,11 @@ mod tests {
     }
 
     #[test]
+    fn beta_schema_enum_matches_every_accepted_cli_value() {
+        assert_schema_enum_matches_every_accepted_cli_value::<Beta>(&["update", "beta"]);
+    }
+
+    #[test]
     fn removed_config_field_does_not_break_sibling_fields() {
         let toml = r#"
             [core.option]
@@ -1462,6 +1471,7 @@ mod tests {
             interval_hours: Some(0),
             auto_restart: None,
             release_notes: None,
+            beta: None,
         };
         assert!(update.validate().is_err());
     }
@@ -1473,6 +1483,7 @@ mod tests {
             interval_hours: Some(MAX_INTERVAL_HOURS + 1),
             auto_restart: None,
             release_notes: None,
+            beta: None,
         };
         assert!(update.validate().is_err());
     }
@@ -1484,6 +1495,7 @@ mod tests {
             interval_hours: Some(MIN_INTERVAL_HOURS),
             auto_restart: None,
             release_notes: None,
+            beta: None,
         };
         assert!(update.validate().is_ok());
     }

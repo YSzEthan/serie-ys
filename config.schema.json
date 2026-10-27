@@ -115,6 +115,15 @@
                 "on"
               ],
               "default": "on"
+            },
+            "beta": {
+              "type": "string",
+              "description": "Whether update checks accept beta builds (pre-releases published automatically from the dev branch). When off, only stable releases are considered. The value specified in the command line argument takes precedence.",
+              "enum": [
+                "off",
+                "on"
+              ],
+              "default": "off"
             }
           },
           "additionalProperties": false

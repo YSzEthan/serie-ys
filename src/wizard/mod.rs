@@ -23,7 +23,7 @@ use crate::{
     config,
     git::FetchPrune,
     keybind,
-    update::{self, AutoRestart, ReleaseNotes, UpdateMode},
+    update::{self, AutoRestart, Beta, ReleaseNotes, UpdateMode},
     Args, CommitOrderType, CompactType, GraphStyle, GraphWidthType, InitialSelection, Locale,
 };
 
@@ -189,6 +189,13 @@ fn release_notes_desc(v: ReleaseNotes) -> Cow<'static, str> {
     }
 }
 
+fn beta_desc(v: Beta) -> Cow<'static, str> {
+    match v {
+        Beta::Off => t!("wizard.value.off"),
+        Beta::On => t!("wizard.value.on"),
+    }
+}
+
 fn auto_fetch_desc(v: AutoFetch) -> Cow<'static, str> {
     match v {
         AutoFetch::Off => t!("wizard.value.off"),
@@ -228,6 +235,7 @@ struct ResolvedDefaults {
     update_interval: u64,
     auto_restart: AutoRestart,
     release_notes: ReleaseNotes,
+    beta: Beta,
     auto_fetch: AutoFetch,
     auto_fetch_interval: u64,
     fetch_prune: FetchPrune,
@@ -300,6 +308,7 @@ impl ResolvedDefaults {
                 .unwrap_or(update::DEFAULT_INTERVAL_HOURS),
             auto_restart: core.update.auto_restart.unwrap_or_default(),
             release_notes: core.update.release_notes.unwrap_or_default(),
+            beta: core.update.beta.unwrap_or_default(),
             auto_fetch: core.auto_fetch.mode.unwrap_or_default(),
             auto_fetch_interval: core
                 .auto_fetch
@@ -412,6 +421,7 @@ enum CycleField {
     UpdateMode,
     AutoRestart,
     ReleaseNotes,
+    Beta,
     FetchPrune,
     AutoFetch,
     Locale,
@@ -430,6 +440,7 @@ impl CycleField {
             CycleField::UpdateMode => (CORE_UPDATE, "mode"),
             CycleField::AutoRestart => (CORE_UPDATE, "auto_restart"),
             CycleField::ReleaseNotes => (CORE_UPDATE, "release_notes"),
+            CycleField::Beta => (CORE_UPDATE, "beta"),
             CycleField::FetchPrune => (CORE_FETCH, "prune"),
             CycleField::AutoFetch => (CORE_AUTO_FETCH, "mode"),
             CycleField::Locale => (CORE_OPTION, "locale"),
@@ -450,6 +461,7 @@ impl CycleField {
             CycleField::UpdateMode => "--update-mode",
             CycleField::AutoRestart => "--auto-restart",
             CycleField::ReleaseNotes => "--release-notes",
+            CycleField::Beta => "--beta",
             CycleField::FetchPrune => "--fetch-prune",
             CycleField::AutoFetch => "--auto-fetch",
             CycleField::Locale => "--locale",
@@ -466,6 +478,7 @@ impl CycleField {
             CycleField::UpdateMode => t!("wizard.cycle.help.update_mode"),
             CycleField::AutoRestart => t!("wizard.cycle.help.auto_restart"),
             CycleField::ReleaseNotes => t!("wizard.cycle.help.release_notes"),
+            CycleField::Beta => t!("wizard.cycle.help.beta"),
             CycleField::FetchPrune => t!("wizard.cycle.help.fetch_prune"),
             CycleField::AutoFetch => t!("wizard.cycle.help.auto_fetch"),
             CycleField::Locale => t!("wizard.cycle.help.locale"),
@@ -500,6 +513,7 @@ impl CycleField {
             CycleField::ReleaseNotes => {
                 cycle_value(&mut args.release_notes, defaults.release_notes, delta)
             }
+            CycleField::Beta => cycle_value(&mut args.beta, defaults.beta, delta),
             CycleField::FetchPrune => {
                 cycle_value(&mut args.fetch_prune, defaults.fetch_prune, delta)
             }
@@ -534,6 +548,7 @@ impl CycleField {
             CycleField::ReleaseNotes => {
                 release_notes_desc(args.release_notes.unwrap_or(defaults.release_notes))
             }
+            CycleField::Beta => beta_desc(args.beta.unwrap_or(defaults.beta)),
             CycleField::FetchPrune => {
                 fetch_prune_desc(args.fetch_prune.unwrap_or(defaults.fetch_prune))
             }
@@ -859,6 +874,7 @@ const ROWS: &[RowAction] = &[
     RowAction::Edit(Editor::Dialog(Dialog::Number(NumberField::UpdateInterval))),
     RowAction::Edit(Editor::Cycle(CycleField::AutoRestart)),
     RowAction::Edit(Editor::Cycle(CycleField::ReleaseNotes)),
+    RowAction::Edit(Editor::Cycle(CycleField::Beta)),
     RowAction::Edit(Editor::Cycle(CycleField::FetchPrune)),
     RowAction::Edit(Editor::Cycle(CycleField::AutoFetch)),
     RowAction::Edit(Editor::Dialog(Dialog::Number(
@@ -1655,6 +1671,21 @@ mod tests {
     }
 
     #[test]
+    fn beta_row_toggles() {
+        let mut s = test_state();
+        let idx = row_of_field(CycleField::Beta);
+        move_to_row(&mut s, idx);
+        assert_eq!(s.draft.args.beta, None);
+
+        s.on_key(key(KeyCode::Right));
+        assert_eq!(
+            s.draft.args.beta,
+            Some(Beta::On),
+            "off 是目前值，第一次按 → 跳過它，切到下一個 on"
+        );
+    }
+
+    #[test]
     fn locale_row_toggles_and_drives_the_wizard_language() {
         let mut s = test_state();
         assert_eq!(s.locale(), Locale::ZhTw, "沒設定時預設繁體中文");
@@ -2102,6 +2133,7 @@ mod tests {
             CycleField::UpdateMode,
             CycleField::AutoRestart,
             CycleField::ReleaseNotes,
+            CycleField::Beta,
             CycleField::FetchPrune,
             CycleField::AutoFetch,
             CycleField::Locale,
@@ -2131,6 +2163,7 @@ mod tests {
         assert_eq!(core.update.interval_hours, s.draft.args.update_interval);
         assert_eq!(core.update.auto_restart, s.draft.args.auto_restart);
         assert_eq!(core.update.release_notes, s.draft.args.release_notes);
+        assert_eq!(core.update.beta, s.draft.args.beta);
         assert_eq!(core.auto_fetch.mode, s.draft.args.auto_fetch);
         assert_eq!(
             core.auto_fetch.interval_secs,

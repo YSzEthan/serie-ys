@@ -88,6 +88,10 @@ en-US = "Auto-restart/launch the new version after an update"
 zh-TW = "更新後跳出 release notes"
 en-US = "Show release notes after an update"
 
+[wizard.cycle.help.beta]
+zh-TW = "更新檢查接受測試版（pre-release）"
+en-US = "Accept beta builds (pre-releases) in update checks"
+
 [wizard.cycle.help.fetch_prune]
 zh-TW = "fetch 時加上 --prune（手動與自動共用）"
 en-US = "Add --prune on fetch (shared by manual and auto fetch)"

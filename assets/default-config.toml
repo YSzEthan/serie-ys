@@ -24,6 +24,7 @@ auto_restart = "off"    # off｜on——on 的話更新完不再詢問，TUI 直
                         # 也會每 30 秒偵測執行檔是否被別的實例或手動部署換掉，換掉且確認可執行
                         # 就在閒置時自動接上新版（跟 mode 無關）
 release_notes = "on"    # off｜on——版本變了第一次啟動要不要自動跳出 release notes；--whats-new 隨時可手動查看
+beta = "off"            # off｜on——更新檢查是否接受測試版（dev 分支自動發的 pre-release）
 
 [core.auto_fetch]
 # 背景定期偵測 git remote 是否有新內容，有就自動 fetch，對應
