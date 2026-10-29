@@ -23,7 +23,7 @@ path = "src/main.rs"
 
 [dependencies]
 ansi-to-tui = "8.0.1"
-arboard = { version = "3.6.1", features = ["wayland-data-control"] }
+arboard = { version = "3.7.0", features = ["wayland-data-control"] }
 base64 = { version = "0.23.1", default-features = false, features = ["std"] }
 chrono = "0.4.44"
 clap = { version = "4.6.0", features = ["derive"] }
@@ -49,7 +49,7 @@ unicode-width = "0.2"
 rust-i18n = "4"
 
 [dev-dependencies]
-rstest = "0.27.0"
+rstest = "0.28.0"
 tempfile = "3.27.0"
 
 [profile.release]
