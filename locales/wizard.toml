@@ -153,8 +153,8 @@ zh-TW = "超寬 graph 最多佔清單寬度的百分比（10–100）"
 en-US = "Maximum percentage of the list width a very wide graph may take (10–100)"
 
 [wizard.number.title.github_diff_stat_target]
-zh-TW = "GitHub PR 變更行數的目標數，總和達到時以紅色標示（≥1）"
-en-US = "Target for GitHub PR changed lines; the total turns red once reached (≥1)"
+zh-TW = "GitHub PR 變更行數的目標數，Δ = 目標 − 總和（≥1）"
+en-US = "Target for GitHub PR changed lines; Δ = target − total (≥1)"
 
 [wizard.number.title.github_ci_interval]
 zh-TW = "GitHub CI 監測 tab 的輪詢間隔（秒，5–300）"
@@ -435,3 +435,35 @@ en-US = " Name   256 colors  [HEX]"
 [wizard.cycle.help.locale]
 zh-TW = "介面語言（畫面提示、說明頁、--help 文字）"
 en-US = "Interface language (screen text, help page, --help output)"
+
+[wizard.dialog.help.diff_stat]
+zh-TW = "GitHub PR 變更行數的目標數與 Δ 顏色門檻"
+en-US = "GitHub PR changed-lines target and Δ color thresholds"
+
+[wizard.hint.edit]
+zh-TW = "編輯"
+en-US = "edit"
+
+[wizard.number.help.github_diff_stat_green]
+zh-TW = "Δ 綠色：已用比例（總和 ÷ 目標）低於此值"
+en-US = "Δ green: used share (total ÷ target) below this"
+
+[wizard.number.help.github_diff_stat_yellow]
+zh-TW = "Δ 黃色：已用比例低於此值"
+en-US = "Δ yellow: used share below this"
+
+[wizard.number.help.github_diff_stat_red]
+zh-TW = "Δ 紅色：已用比例達到此值"
+en-US = "Δ red: used share at or above this"
+
+[wizard.number.title.github_diff_stat_green]
+zh-TW = "已用比例低於此值（%）時 Δ 為綠色（0–1000）"
+en-US = "Δ is green when the used share is below this (%, 0–1000)"
+
+[wizard.number.title.github_diff_stat_yellow]
+zh-TW = "已用比例低於此值（%）時 Δ 為黃色（0–1000）"
+en-US = "Δ is yellow when the used share is below this (%, 0–1000)"
+
+[wizard.number.title.github_diff_stat_red]
+zh-TW = "已用比例達到此值（%）時 Δ 為紅色粗體（0–1000）"
+en-US = "Δ is bold red when the used share reaches this (%, 0–1000)"

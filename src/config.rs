@@ -543,16 +543,33 @@ pub struct UiDetailConfig {
 #[optional(derives = [Deserialize])]
 #[derive(Debug, Clone, PartialEq, Eq, SmartDefault, Validate)]
 pub struct UiGithubConfig {
-    /// PR 變更行數的目標數：顯示 `Δ(目標 − 總和)`，總和達到目標時改紅色粗體。
+    /// PR 變更行數的目標數：顯示 `Δ(目標 − 總和)`，`Δ` 的顏色依已用比例
+    /// （總和 ÷ 目標）與下面三個門檻決定。
     #[garde(range(min = 1))]
     #[default = 10_000]
     pub diff_stat_target: u32,
+    /// 已用比例 `<` 此值（%）→ `Δ` 綠色。
+    #[garde(range(max = DIFF_STAT_PERCENT_MAX))]
+    #[default = 30]
+    pub diff_stat_green_percent: u16,
+    /// 已用比例 `<` 此值（%）→ `Δ` 黃色。
+    #[garde(range(max = DIFF_STAT_PERCENT_MAX))]
+    #[default = 70]
+    pub diff_stat_yellow_percent: u16,
+    /// 已用比例 `≥` 此值（%）→ `=總和` 與 `Δ` 紅色粗體。判斷順序固定為
+    /// 綠、黃、紅，三者都不符合才是白色。
+    #[garde(range(max = DIFF_STAT_PERCENT_MAX))]
+    #[default = 70]
+    pub diff_stat_red_percent: u16,
     /// CI 監測 tab 的輪詢間隔（秒）。太小會打爆 GitHub API rate limit，
     /// 載入時驗證範圍並報錯，不靜默 clamp。CLI `--github-ci-interval` 優先。
     #[garde(range(min = GITHUB_CI_INTERVAL_MIN_SECS, max = GITHUB_CI_INTERVAL_MAX_SECS))]
     #[default = 15]
     pub ci_interval_secs: u64,
 }
+
+/// `ui.github.diff_stat_*_percent` 的上限。允許超過 100，才能表達「超過目標才紅」。
+pub const DIFF_STAT_PERCENT_MAX: u16 = 1000;
 
 /// `ui.github.ci_interval_secs` 與 `--github-ci-interval` 的合法範圍（秒）。
 pub const GITHUB_CI_INTERVAL_MIN_SECS: u64 = 5;
@@ -913,6 +930,9 @@ mod tests {
                 },
                 github: UiGithubConfig {
                     diff_stat_target: 10_000,
+                    diff_stat_green_percent: 30,
+                    diff_stat_yellow_percent: 70,
+                    diff_stat_red_percent: 70,
                     ci_interval_secs: 15,
                 },
             },
@@ -961,6 +981,9 @@ mod tests {
             date_local = false
             [ui.github]
             diff_stat_target = 5000
+            diff_stat_green_percent = 20
+            diff_stat_yellow_percent = 60
+            diff_stat_red_percent = 100
             ci_interval_secs = 30
             [color.graph]
             branches = ["#ff0000", "#00ff00", "#0000ff"]
@@ -1075,6 +1098,9 @@ mod tests {
                 },
                 github: UiGithubConfig {
                     diff_stat_target: 5000,
+                    diff_stat_green_percent: 20,
+                    diff_stat_yellow_percent: 60,
+                    diff_stat_red_percent: 100,
                     ci_interval_secs: 30,
                 },
             },
@@ -1538,6 +1564,32 @@ mod tests {
             };
             assert!(github.validate().is_ok(), "{secs}");
         }
+    }
+
+    #[test]
+    fn github_diff_stat_percents_above_max_fail_validation() {
+        let over = DIFF_STAT_PERCENT_MAX + 1;
+        for github in [
+            UiGithubConfig {
+                diff_stat_green_percent: over,
+                ..UiGithubConfig::default()
+            },
+            UiGithubConfig {
+                diff_stat_yellow_percent: over,
+                ..UiGithubConfig::default()
+            },
+            UiGithubConfig {
+                diff_stat_red_percent: over,
+                ..UiGithubConfig::default()
+            },
+        ] {
+            assert!(github.validate().is_err());
+        }
+        let at_max = UiGithubConfig {
+            diff_stat_red_percent: DIFF_STAT_PERCENT_MAX,
+            ..UiGithubConfig::default()
+        };
+        assert!(at_max.validate().is_ok());
     }
 
     #[test]

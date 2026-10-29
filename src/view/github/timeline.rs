@@ -479,20 +479,51 @@ fn review_state_label(state: &str) -> Cow<'static, str> {
     }
 }
 
-/// `base ← head` 那一列的變更行數：`+新增 -刪除 =總和 Δ(目標-總和)`。總和
-/// 達到 `target`（Δ ≤ 0）代表這個 PR 通常該拆分——`=總和` 與 `Δ` 都改紅色
-/// 加粗；還沒到時 `Δ` 綠色。
-pub(super) fn diff_stat_spans(stat: DiffStat, target: u32) -> [Span<'static>; 4] {
+/// `Δ` 上色用的目標數與三個門檻（%），由 `UiGithubConfig` 轉來。
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct DiffStatThresholds {
+    pub(crate) target: u32,
+    pub(crate) green: u16,
+    pub(crate) yellow: u16,
+    pub(crate) red: u16,
+}
+
+impl Default for DiffStatThresholds {
+    fn default() -> Self {
+        (&crate::config::UiGithubConfig::default()).into()
+    }
+}
+
+impl From<&crate::config::UiGithubConfig> for DiffStatThresholds {
+    fn from(c: &crate::config::UiGithubConfig) -> Self {
+        Self {
+            target: c.diff_stat_target,
+            green: c.diff_stat_green_percent,
+            yellow: c.diff_stat_yellow_percent,
+            red: c.diff_stat_red_percent,
+        }
+    }
+}
+
+/// `base ← head` 那一列的變更行數：`+新增 -刪除 =總和 Δ(目標-總和)`。`Δ` 依
+/// 已用比例（總和 ÷ 目標）上色，判斷順序固定為綠、黃、紅，都不符合才是白色；
+/// 紅色時 `=總和` 也一起改紅色加粗，提醒這個 PR 通常該拆分。比較用整數交叉
+/// 相乘，不經浮點。
+pub(super) fn diff_stat_spans(stat: DiffStat, th: DiffStatThresholds) -> [Span<'static>; 4] {
     let total = stat.additions.saturating_add(stat.deletions);
-    let remaining = i64::from(target) - i64::from(total);
-    let (total_style, remaining_style) = if remaining <= 0 {
+    let remaining = i64::from(th.target) - i64::from(total);
+    let used = u64::from(total) * 100;
+    let below = |percent: u16| used < u64::from(percent) * u64::from(th.target);
+    let plain = Style::default().fg(Color::White);
+    let (total_style, remaining_style) = if below(th.green) {
+        (plain, Style::default().fg(Color::Green))
+    } else if below(th.yellow) {
+        (plain, Style::default().fg(Color::Yellow))
+    } else if !below(th.red) {
         let danger = Style::default().fg(Color::Red).add_modifier(Modifier::BOLD);
         (danger, danger)
     } else {
-        (
-            Style::default().fg(Color::White),
-            Style::default().fg(Color::Green),
-        )
+        (plain, plain)
     };
     [
         Span::styled(
@@ -550,17 +581,27 @@ mod tests {
         assert_eq!(mergeable_marker(None), None);
     }
 
-    const TARGET: u32 = 10_000;
+    /// 目標 10000、門檻 30／70／70（預設）。
+    fn th() -> DiffStatThresholds {
+        DiffStatThresholds::default()
+    }
+
+    fn stat(additions: u32, deletions: u32) -> DiffStat {
+        DiffStat {
+            additions,
+            deletions,
+        }
+    }
+
+    fn assert_delta(spans: &[Span<'static>; 4], text: &str, color: Color, bold: bool) {
+        assert_eq!(spans[3].content, text);
+        assert_eq!(spans[3].style.fg, Some(color));
+        assert_eq!(spans[3].style.add_modifier.contains(Modifier::BOLD), bold);
+    }
 
     #[test]
     fn diff_stat_spans_colors_additions_and_deletions() {
-        let spans = diff_stat_spans(
-            DiffStat {
-                additions: 600,
-                deletions: 71,
-            },
-            TARGET,
-        );
+        let spans = diff_stat_spans(stat(600, 71), th());
         assert_eq!(spans[0].content, "  +600");
         assert_eq!(spans[0].style.fg, Some(Color::Green));
         assert_eq!(spans[1].content, " -71");
@@ -570,33 +611,39 @@ mod tests {
     }
 
     #[test]
-    fn diff_stat_spans_below_target_is_white_total_and_green_delta() {
-        let spans = diff_stat_spans(
-            DiffStat {
-                additions: 9999,
-                deletions: 0,
-            },
-            TARGET,
-        );
-        assert_eq!(spans[2].content, " =9999");
+    fn diff_stat_spans_below_green_is_green_and_total_stays_white() {
+        let spans = diff_stat_spans(stat(2999, 0), th());
         assert_eq!(spans[2].style.fg, Some(Color::White));
         assert!(!spans[2].style.add_modifier.contains(Modifier::BOLD));
-        assert_eq!(spans[3].content, " Δ1");
-        assert_eq!(spans[3].style.fg, Some(Color::Green));
-        assert!(!spans[3].style.add_modifier.contains(Modifier::BOLD));
+        assert_delta(&spans, " Δ7001", Color::Green, false);
     }
 
     #[test]
-    fn diff_stat_spans_at_target_is_red_and_bold() {
-        let spans = diff_stat_spans(
-            DiffStat {
-                additions: 9000,
-                deletions: 1000,
-            },
-            TARGET,
+    fn diff_stat_spans_green_boundary_is_yellow() {
+        // 剛好 30%：`< green` 不成立，落到黃色。
+        assert_delta(
+            &diff_stat_spans(stat(3000, 0), th()),
+            " Δ7000",
+            Color::Yellow,
+            false,
         );
-        assert_eq!(spans[2].content, " =10000");
-        assert_eq!(spans[3].content, " Δ0");
+    }
+
+    #[test]
+    fn diff_stat_spans_between_green_and_yellow_is_yellow() {
+        assert_delta(
+            &diff_stat_spans(stat(6999, 0), th()),
+            " Δ3001",
+            Color::Yellow,
+            false,
+        );
+    }
+
+    #[test]
+    fn diff_stat_spans_red_boundary_is_red_and_bold() {
+        // 剛好 70%：`≥ red` 成立，`=總和` 與 `Δ` 一起紅粗體。
+        let spans = diff_stat_spans(stat(6000, 1000), th());
+        assert_eq!(spans[2].content, " =7000");
         for span in &spans[2..] {
             assert_eq!(span.style.fg, Some(Color::Red));
             assert!(span.style.add_modifier.contains(Modifier::BOLD));
@@ -605,28 +652,62 @@ mod tests {
 
     #[test]
     fn diff_stat_spans_over_target_shows_negative_delta() {
-        let spans = diff_stat_spans(
-            DiffStat {
-                additions: 9000,
-                deletions: 1500,
-            },
-            TARGET,
+        assert_delta(
+            &diff_stat_spans(stat(9000, 1500), th()),
+            " Δ-500",
+            Color::Red,
+            true,
         );
-        assert_eq!(spans[3].content, " Δ-500");
-        assert_eq!(spans[3].style.fg, Some(Color::Red));
+    }
+
+    #[test]
+    fn diff_stat_spans_raised_red_leaves_a_white_band() {
+        let th = DiffStatThresholds { red: 100, ..th() };
+        // 70% ≤ 比例 < 100%：黃、紅都不符合，Δ 白色。
+        assert_delta(
+            &diff_stat_spans(stat(8000, 0), th),
+            " Δ2000",
+            Color::White,
+            false,
+        );
+        // 剛好 100%：紅。
+        assert_delta(
+            &diff_stat_spans(stat(10_000, 0), th),
+            " Δ0",
+            Color::Red,
+            true,
+        );
+    }
+
+    #[test]
+    fn diff_stat_spans_yellow_wins_over_lower_red() {
+        // red < yellow 時順序固定為綠、黃、紅：50% 先被黃色攔下。
+        let th = DiffStatThresholds {
+            yellow: 70,
+            red: 40,
+            ..th()
+        };
+        assert_delta(
+            &diff_stat_spans(stat(5000, 0), th),
+            " Δ5000",
+            Color::Yellow,
+            false,
+        );
     }
 
     #[test]
     fn diff_stat_spans_uses_custom_target() {
-        let spans = diff_stat_spans(
-            DiffStat {
-                additions: 600,
-                deletions: 71,
-            },
-            700,
+        let th = DiffStatThresholds {
+            target: 700,
+            ..th()
+        };
+        // 671 / 700 = 95.9%
+        assert_delta(
+            &diff_stat_spans(stat(600, 71), th),
+            " Δ29",
+            Color::Red,
+            true,
         );
-        assert_eq!(spans[3].content, " Δ29");
-        assert_eq!(spans[3].style.fg, Some(Color::Green));
     }
 
     #[test]

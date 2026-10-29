@@ -27,6 +27,7 @@ use crate::{
 };
 
 use preview::{PreviewCache, PreviewInput, SelectedItem, SelectedItemExtra};
+pub(crate) use timeline::DiffStatThresholds;
 use timeline::{TimelineEntry, TimelineLoad};
 
 const PREFETCH_THRESHOLD: usize = 5;
@@ -248,9 +249,9 @@ pub struct GitHubView<'a> {
     /// `LabelMode` 的註解）。session 內由 `App::github_label_mode` 保存
     /// （關掉 GitHub 模式再開仍維持），重啟 serie 回預設。
     label_mode: LabelMode,
-    /// `ui.github.diff_stat_target`，PR 變更行數 `Δ` 的基準。由
+    /// `ui.github.diff_stat_*`，PR 變更行數 `Δ` 的目標數與顏色門檻。由
     /// `View::of_github` 從 `AppContext` 帶入，view 存活期間不變。
-    diff_stat_target: u32,
+    diff_stat_thresholds: DiffStatThresholds,
 
     tx: Sender,
 }
@@ -313,7 +314,7 @@ impl<'a> GitHubView<'a> {
             preview_height: 0,
             expand_commits: false,
             label_mode: LabelMode::default(),
-            diff_stat_target: crate::config::UiGithubConfig::default().diff_stat_target,
+            diff_stat_thresholds: DiffStatThresholds::default(),
             tx,
         }
     }
@@ -374,8 +375,8 @@ impl<'a> GitHubView<'a> {
         self
     }
 
-    pub(crate) fn with_diff_stat_target(mut self, target: u32) -> Self {
-        self.diff_stat_target = target;
+    pub(crate) fn with_diff_stat_thresholds(mut self, thresholds: DiffStatThresholds) -> Self {
+        self.diff_stat_thresholds = thresholds;
         self
     }
 
@@ -1509,7 +1510,7 @@ impl<'a> GitHubView<'a> {
             body_rev: self.body_rev,
             entry: self.timeline.get(&(kind, number)),
             expand_commits: self.expand_commits,
-            diff_stat_target: self.diff_stat_target,
+            diff_stat_thresholds: self.diff_stat_thresholds,
             item,
         }
     }
