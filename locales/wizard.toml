@@ -467,3 +467,19 @@ en-US = "Δ is yellow when the used share is below this (%, 0–1000)"
 [wizard.number.title.github_diff_stat_red]
 zh-TW = "已用比例達到此值（%）時 Δ 為紅色粗體（0–1000）"
 en-US = "Δ is bold red when the used share reaches this (%, 0–1000)"
+
+[wizard.dialog.help.group_graph]
+zh-TW = "Graph 與清單顯示（排序、寬度、樣式、捲動、長線截斷）"
+en-US = "Graph and list display (order, width, style, scrolling, long-edge truncation)"
+
+[wizard.dialog.help.group_update]
+zh-TW = "自動更新（模式、檢查間隔、重啟、release notes、beta）"
+en-US = "Auto-update (mode, check interval, restart, release notes, beta)"
+
+[wizard.dialog.help.group_git_sync]
+zh-TW = "Git 同步（fetch prune、自動 fetch）"
+en-US = "Git sync (fetch prune, auto-fetch)"
+
+[wizard.dialog.help.group_github]
+zh-TW = "GitHub view（PR 變更行數、CI 監測）"
+en-US = "GitHub view (PR changed lines, CI tab)"
