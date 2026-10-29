@@ -87,6 +87,9 @@ date_local = true
 
 [ui.github]
 diff_stat_target = 10000
+diff_stat_green_percent = 30
+diff_stat_yellow_percent = 70
+diff_stat_red_percent = 70
 ci_interval_secs = 15
 
 [color]
@@ -572,12 +575,29 @@ merge 密集的 repo（例如 linux）改用 `--order topo`，圖寬約只有預
 ### `ui.github.diff_stat_target`
 
 GitHub view 的 PR 變更行數目標數。`base ← head` 那一列與 branches 卡片顯示
-`+新增 -刪除 =總和 Δ差值`，其中 `Δ` 是目標數減總和：還沒達標時綠色，
-達到或超過時（`Δ` ≤ 0）`=總和` 與 `Δ` 改紅色加粗，提醒這個 PR 該拆分。
+`+新增 -刪除 =總和 Δ差值`，其中 `Δ` 是目標數減總和。`Δ` 的顏色依已用比例
+（總和 ÷ 目標）決定，門檻見下面三個設定。
 
 - 型別：`u32`
 - 預設值：`10000`
 - 最小值：`1`
+
+### `ui.github.diff_stat_green_percent`／`diff_stat_yellow_percent`／`diff_stat_red_percent`
+
+`Δ` 顏色的三個門檻（單位 %），依固定順序判斷，符合第一個就停：
+
+1. 已用比例 `<` `diff_stat_green_percent` → 綠色
+2. `<` `diff_stat_yellow_percent` → 黃色
+3. `≥` `diff_stat_red_percent` → `=總和` 與 `Δ` 紅色加粗，提醒這個 PR 該拆分
+4. 其餘 → 白色，也就是 `[yellow, red)` 區間
+
+預設 `30`／`70`／`70`，所以預設沒有白色；把紅色門檻調高才會出現白色區間。
+不檢查三者的大小關係，`red` 小於 `yellow` 時紅色會被黃色搶先。舊版「總和達到目標才紅」
+對應 `diff_stat_red_percent = 100`。
+
+- 型別：`u16`
+- 預設值：`30`／`70`／`70`
+- 範圍：`0`～`1000`
 
 ### `ui.github.ci_interval_secs`
 

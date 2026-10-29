@@ -463,7 +463,7 @@ impl<'a> GitHubView<'a> {
                 card_area,
                 branch,
                 vis_i == self.selected_index,
-                self.diff_stat_target,
+                self.diff_stat_thresholds,
             );
         }
 

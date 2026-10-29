@@ -10,7 +10,7 @@ use rust_i18n::t;
 
 use crate::{github::GhBranch, widget::truncate_line};
 
-use super::timeline::diff_stat_spans;
+use super::timeline::{diff_stat_spans, DiffStatThresholds};
 
 /// 卡片高度：上下邊框 2 列 + 內容 2 列。branch 名放在上框的 title，不佔內容列。
 pub(super) const CARD_HEIGHT: u16 = 4;
@@ -57,17 +57,17 @@ pub(super) fn render_card(
     area: Rect,
     branch: &GhBranch,
     selected: bool,
-    diff_stat_target: u32,
+    diff_stat_thresholds: DiffStatThresholds,
 ) {
     let block = card_block(&branch.name, area.width, selected);
 
     f.render_widget(
-        Paragraph::new(card_body(branch, diff_stat_target)).block(block),
+        Paragraph::new(card_body(branch, diff_stat_thresholds)).block(block),
         area,
     );
 }
 
-fn card_body(branch: &GhBranch, diff_stat_target: u32) -> Vec<Line<'static>> {
+fn card_body(branch: &GhBranch, diff_stat_thresholds: DiffStatThresholds) -> Vec<Line<'static>> {
     let short_oid: String = branch.head_oid.chars().take(7).collect();
     let meta = Line::styled(
         format!(
@@ -78,7 +78,7 @@ fn card_body(branch: &GhBranch, diff_stat_target: u32) -> Vec<Line<'static>> {
     );
     // `diff_stat_spans` 自帶開頭兩格空白，剛好當卡片內縮
     let stat = match branch.diff_stat {
-        Some(stat) => Line::from(diff_stat_spans(stat, diff_stat_target).to_vec()),
+        Some(stat) => Line::from(diff_stat_spans(stat, diff_stat_thresholds).to_vec()),
         None => Line::styled(
             format!("  {}", t!("github.branches.stat_unavailable")),
             Style::default().fg(TEXT_COLOR),
@@ -111,7 +111,7 @@ mod tests {
     fn render_to_rows(branch: &GhBranch, width: u16) -> Vec<String> {
         let mut terminal = Terminal::new(TestBackend::new(width, CARD_HEIGHT)).unwrap();
         terminal
-            .draw(|f| render_card(f, f.area(), branch, true, 10_000))
+            .draw(|f| render_card(f, f.area(), branch, true, DiffStatThresholds::default()))
             .unwrap();
         let buf = terminal.backend().buffer().clone();
         (0..CARD_HEIGHT)
@@ -169,7 +169,15 @@ mod tests {
     fn text_outside_the_border_is_bright_gray() {
         let mut terminal = Terminal::new(TestBackend::new(40, CARD_HEIGHT)).unwrap();
         terminal
-            .draw(|f| render_card(f, f.area(), &branch("feat/x"), false, 10_000))
+            .draw(|f| {
+                render_card(
+                    f,
+                    f.area(),
+                    &branch("feat/x"),
+                    false,
+                    DiffStatThresholds::default(),
+                )
+            })
             .unwrap();
         let buf = terminal.backend().buffer().clone();
 

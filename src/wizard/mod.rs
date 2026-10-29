@@ -1,4 +1,5 @@
 mod color_editor;
+mod field_menu;
 mod keybind_editor;
 pub(crate) mod path_browser;
 
@@ -90,13 +91,17 @@ fn wizard_loop(
                 terminal.clear()?;
             }
             Flow::OpenEditor(Dialog::Number(field)) => {
-                let spec = field.spec();
-                let current = field.current(&state.draft, &state.defaults);
-                if let NumberFlow::Committed(v) =
-                    run_number_input(terminal, current, theme, &spec.title, spec.min, spec.max)?
-                {
-                    field.commit(&mut state.draft, v);
-                }
+                edit_number(terminal, &mut state.draft, &state.defaults, field, theme)?;
+                terminal.clear()?;
+            }
+            Flow::OpenEditor(Dialog::DiffStatMenu) => {
+                field_menu::run(
+                    terminal,
+                    &mut state.draft,
+                    &state.defaults,
+                    &DIFF_STAT_FIELDS,
+                    theme,
+                )?;
                 terminal.clear()?;
             }
             Flow::OpenEditor(Dialog::ColorMenu) => {
@@ -109,6 +114,24 @@ fn wizard_loop(
             }
         }
     }
+}
+
+/// 開數字輸入彈窗編輯一個欄位，確認後寫進 `draft`。主選單與群組子選單共用。
+fn edit_number(
+    terminal: &mut DefaultTerminal,
+    draft: &mut Draft,
+    defaults: &ResolvedDefaults,
+    field: NumberField,
+    theme: &ColorTheme,
+) -> crate::Result<()> {
+    let spec = field.spec();
+    let current = field.current(draft, defaults);
+    if let NumberFlow::Committed(v) =
+        run_number_input(terminal, current, theme, &spec.title, spec.min, spec.max)?
+    {
+        field.commit(draft, v);
+    }
+    Ok(())
 }
 
 fn is_abort_key(key: &KeyEvent) -> bool {
@@ -262,6 +285,10 @@ struct ResolvedDefaults {
     list_graph_max_width_percent: u16,
     /// `ui.github.diff_stat_target` 目前有效值，同樣沒有 CLI 旗標。
     github_diff_stat_target: u32,
+    /// `ui.github.diff_stat_{green,yellow,red}_percent` 目前有效值。
+    github_diff_stat_green: u16,
+    github_diff_stat_yellow: u16,
+    github_diff_stat_red: u16,
     /// `ui.github.ci_interval_secs` 目前有效值（設定檔的值；CLI 旗標由 `draft.args` 帶）。
     github_ci_interval: u64,
     /// `true` = 設定檔載入失敗（讀不到／解析失敗／garde 驗證不過），
@@ -325,6 +352,9 @@ impl ResolvedDefaults {
             list_graph_edge_max_rows: ui.list.graph_edge_max_rows,
             list_graph_max_width_percent: ui.list.graph_max_width_percent,
             github_diff_stat_target: ui.github.diff_stat_target,
+            github_diff_stat_green: ui.github.diff_stat_green_percent,
+            github_diff_stat_yellow: ui.github.diff_stat_yellow_percent,
+            github_diff_stat_red: ui.github.diff_stat_red_percent,
             github_ci_interval: ui.github.ci_interval_secs,
             config_is_fallback: false,
         }
@@ -570,6 +600,15 @@ struct NumberSpec {
     max: usize,
 }
 
+/// `Δ` 顏色門檻的輸入範圍：0～`DIFF_STAT_PERCENT_MAX`（允許超過 100%）。
+fn percent_spec(title: Cow<'static, str>) -> NumberSpec {
+    NumberSpec {
+        title,
+        min: 0,
+        max: config::DIFF_STAT_PERCENT_MAX as usize,
+    }
+}
+
 /// Enter／→ 開數字輸入彈窗的欄位。
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum NumberField {
@@ -585,6 +624,11 @@ enum NumberField {
     ListGraphMaxWidthPercent,
     /// `ui.github.diff_stat_target`（GitHub view PR 變更行數 `Δ` 的目標數）。
     GithubDiffStatTarget,
+    /// `ui.github.diff_stat_green_percent`／`_yellow_percent`／`_red_percent`
+    /// （`Δ` 的顏色門檻），跟目標數一起收在 `DIFF_STAT_FIELDS` 群組裡。
+    GithubDiffStatGreen,
+    GithubDiffStatYellow,
+    GithubDiffStatRed,
     /// `ui.github.ci_interval_secs`（GitHub view CI 監測 tab 的輪詢間隔），
     /// 同 `AutoFetchInterval` 有對應的 CLI 旗標 `--github-ci-interval`。
     GithubCiInterval,
@@ -621,6 +665,18 @@ impl NumberField {
                 table: UI_GITHUB,
                 key: "diff_stat_target".into(),
             },
+            NumberField::GithubDiffStatGreen => ConfigKey {
+                table: UI_GITHUB,
+                key: "diff_stat_green_percent".into(),
+            },
+            NumberField::GithubDiffStatYellow => ConfigKey {
+                table: UI_GITHUB,
+                key: "diff_stat_yellow_percent".into(),
+            },
+            NumberField::GithubDiffStatRed => ConfigKey {
+                table: UI_GITHUB,
+                key: "diff_stat_red_percent".into(),
+            },
             NumberField::GithubCiInterval => ConfigKey {
                 table: UI_GITHUB,
                 key: "ci_interval_secs".into(),
@@ -637,6 +693,9 @@ impl NumberField {
             NumberField::ListGraphEdgeMaxRows => "[GRAPH_EDGE_MAX_ROWS]",
             NumberField::ListGraphMaxWidthPercent => "[GRAPH_MAX_WIDTH_PERCENT]",
             NumberField::GithubDiffStatTarget => "[DIFF_STAT_TARGET]",
+            NumberField::GithubDiffStatGreen => "[DIFF_STAT_GREEN_PERCENT]",
+            NumberField::GithubDiffStatYellow => "[DIFF_STAT_YELLOW_PERCENT]",
+            NumberField::GithubDiffStatRed => "[DIFF_STAT_RED_PERCENT]",
             NumberField::GithubCiInterval => "--github-ci-interval <SECONDS>",
         }
     }
@@ -652,6 +711,9 @@ impl NumberField {
                 t!("wizard.number.help.list_graph_max_width_percent")
             }
             NumberField::GithubDiffStatTarget => t!("wizard.number.help.github_diff_stat_target"),
+            NumberField::GithubDiffStatGreen => t!("wizard.number.help.github_diff_stat_green"),
+            NumberField::GithubDiffStatYellow => t!("wizard.number.help.github_diff_stat_yellow"),
+            NumberField::GithubDiffStatRed => t!("wizard.number.help.github_diff_stat_red"),
             NumberField::GithubCiInterval => t!("wizard.number.help.github_ci_interval"),
         }
     }
@@ -693,6 +755,15 @@ impl NumberField {
                 min: 1,
                 max: u32::MAX as usize,
             },
+            NumberField::GithubDiffStatGreen => {
+                percent_spec(t!("wizard.number.title.github_diff_stat_green"))
+            }
+            NumberField::GithubDiffStatYellow => {
+                percent_spec(t!("wizard.number.title.github_diff_stat_yellow"))
+            }
+            NumberField::GithubDiffStatRed => {
+                percent_spec(t!("wizard.number.title.github_diff_stat_red"))
+            }
             NumberField::GithubCiInterval => NumberSpec {
                 title: t!("wizard.number.title.github_ci_interval"),
                 min: config::GITHUB_CI_INTERVAL_MIN_SECS as usize,
@@ -720,6 +791,15 @@ impl NumberField {
             NumberField::GithubDiffStatTarget => {
                 Some(config::UiGithubConfig::default().diff_stat_target as usize)
             }
+            NumberField::GithubDiffStatGreen => {
+                Some(config::UiGithubConfig::default().diff_stat_green_percent as usize)
+            }
+            NumberField::GithubDiffStatYellow => {
+                Some(config::UiGithubConfig::default().diff_stat_yellow_percent as usize)
+            }
+            NumberField::GithubDiffStatRed => {
+                Some(config::UiGithubConfig::default().diff_stat_red_percent as usize)
+            }
             NumberField::GithubCiInterval => {
                 Some(config::UiGithubConfig::default().ci_interval_secs as usize)
             }
@@ -738,6 +818,9 @@ impl NumberField {
                 Some(defaults.list_graph_max_width_percent as usize)
             }
             NumberField::GithubDiffStatTarget => Some(defaults.github_diff_stat_target as usize),
+            NumberField::GithubDiffStatGreen => Some(defaults.github_diff_stat_green as usize),
+            NumberField::GithubDiffStatYellow => Some(defaults.github_diff_stat_yellow as usize),
+            NumberField::GithubDiffStatRed => Some(defaults.github_diff_stat_red as usize),
             NumberField::GithubCiInterval => Some(defaults.github_ci_interval as usize),
         }
     }
@@ -768,7 +851,10 @@ impl NumberField {
             NumberField::ListScrolloff | NumberField::ListGraphEdgeMaxRows => {
                 t!("wizard.number.rows", n = n).into_owned()
             }
-            NumberField::ListGraphMaxWidthPercent => format!("{n}%"),
+            NumberField::ListGraphMaxWidthPercent
+            | NumberField::GithubDiffStatGreen
+            | NumberField::GithubDiffStatYellow
+            | NumberField::GithubDiffStatRed => format!("{n}%"),
         }
     }
 
@@ -788,7 +874,10 @@ impl NumberField {
             NumberField::ListScrolloff
             | NumberField::ListGraphEdgeMaxRows
             | NumberField::ListGraphMaxWidthPercent
-            | NumberField::GithubDiffStatTarget => {}
+            | NumberField::GithubDiffStatTarget
+            | NumberField::GithubDiffStatGreen
+            | NumberField::GithubDiffStatYellow
+            | NumberField::GithubDiffStatRed => {}
         }
         draft
             .edits
@@ -803,6 +892,8 @@ enum Dialog {
     Number(NumberField),
     ColorMenu,
     KeyBindMenu,
+    /// `Δ` 的目標數與三個顏色門檻（`DIFF_STAT_FIELDS`）收成一頁的子選單。
+    DiffStatMenu,
 }
 
 /// 一個項目怎麼編輯：原地循環，或開子畫面。
@@ -820,6 +911,7 @@ impl Editor {
             Editor::Dialog(Dialog::Number(f)) => f.flags(),
             Editor::Dialog(Dialog::ColorMenu) => "[COLOR]",
             Editor::Dialog(Dialog::KeyBindMenu) => "[KEYBIND]",
+            Editor::Dialog(Dialog::DiffStatMenu) => "[DIFF_STAT]",
         }
     }
 
@@ -830,6 +922,7 @@ impl Editor {
             Editor::Dialog(Dialog::Number(f)) => f.help(),
             Editor::Dialog(Dialog::ColorMenu) => t!("wizard.dialog.help.color"),
             Editor::Dialog(Dialog::KeyBindMenu) => t!("wizard.dialog.help.keybind"),
+            Editor::Dialog(Dialog::DiffStatMenu) => t!("wizard.dialog.help.diff_stat"),
         }
     }
 
@@ -858,6 +951,10 @@ impl Editor {
                 .keys()
                 .filter(|ck| ck.table.starts_with(KEYBIND))
                 .count(),
+            Editor::Dialog(Dialog::DiffStatMenu) => DIFF_STAT_FIELDS
+                .iter()
+                .filter(|f| draft.edits.contains_key(&f.config_key()))
+                .count(),
         }
     }
 
@@ -869,6 +966,12 @@ impl Editor {
             Editor::Cycle(f) => format!("< {} >", f.current_desc(draft, defaults)),
             Editor::Dialog(Dialog::Path) => draft.args.path.clone(),
             Editor::Dialog(Dialog::Number(f)) => f.current_label(draft, defaults),
+            // 只有四個數字，直接列出來比「n 項已改」有用：`10000 · 30/70/70%`。
+            Editor::Dialog(Dialog::DiffStatMenu) => {
+                let [target, green, yellow, red] =
+                    DIFF_STAT_FIELDS.map(|f| f.current(draft, defaults).unwrap_or_default());
+                format!("{target} · {green}/{yellow}/{red}%")
+            }
             Editor::Dialog(Dialog::ColorMenu | Dialog::KeyBindMenu) => {
                 match self.touched_count(draft) {
                     0 => t!("wizard.editor.untouched").into_owned(),
@@ -913,15 +1016,21 @@ const ROWS: &[RowAction] = &[
     RowAction::Edit(Editor::Dialog(Dialog::Number(
         NumberField::ListGraphMaxWidthPercent,
     ))),
-    RowAction::Edit(Editor::Dialog(Dialog::Number(
-        NumberField::GithubDiffStatTarget,
-    ))),
+    RowAction::Edit(Editor::Dialog(Dialog::DiffStatMenu)),
     RowAction::Edit(Editor::Dialog(Dialog::Number(
         NumberField::GithubCiInterval,
     ))),
     RowAction::Edit(Editor::Dialog(Dialog::ColorMenu)),
     RowAction::Edit(Editor::Dialog(Dialog::KeyBindMenu)),
     RowAction::Launch,
+];
+
+/// `Dialog::DiffStatMenu` 子選單裡的欄位，順序即畫面順序。
+const DIFF_STAT_FIELDS: [NumberField; 4] = [
+    NumberField::GithubDiffStatTarget,
+    NumberField::GithubDiffStatGreen,
+    NumberField::GithubDiffStatYellow,
+    NumberField::GithubDiffStatRed,
 ];
 
 /// 每一列的顯示文字：所有欄位都附上目前有效值（讀設定檔得到的真實值，不是
@@ -940,6 +1049,16 @@ fn top_row_label(row: RowAction, draft: &Draft, defaults: &ResolvedDefaults) -> 
     } else {
         Cow::Borrowed("")
     };
+    editor_row_label(editor, draft, defaults, note)
+}
+
+/// 一個可編輯項目的一列文字：`✓` 前綴＋旗標＋說明＋目前值。主選單與群組子選單共用。
+fn editor_row_label(
+    editor: Editor,
+    draft: &Draft,
+    defaults: &ResolvedDefaults,
+    note: Cow<'static, str>,
+) -> String {
     let prefix = if draft.is_touched(editor) {
         "✓ "
     } else {
@@ -2142,6 +2261,60 @@ mod tests {
     }
 
     #[test]
+    fn diff_stat_group_row_shows_values_and_counts_touched_fields() {
+        let mut s = test_state();
+        let group = Editor::Dialog(Dialog::DiffStatMenu);
+        assert_eq!(
+            group.current_label(&s.draft, &s.defaults),
+            "10000 · 30/70/70%"
+        );
+        assert!(!s.draft.is_touched(group));
+
+        NumberField::GithubDiffStatRed.commit(&mut s.draft, Some(100));
+        NumberField::GithubDiffStatTarget.commit(&mut s.draft, Some(500));
+        assert_eq!(group.touched_count(&s.draft), 2);
+        assert!(s.draft.is_touched(group));
+        assert_eq!(
+            group.current_label(&s.draft, &s.defaults),
+            "500 · 30/70/100%"
+        );
+    }
+
+    #[test]
+    fn apply_touched_settings_writes_github_diff_stat_percents() {
+        let mut s = test_state();
+        NumberField::GithubDiffStatGreen.commit(&mut s.draft, Some(20));
+        NumberField::GithubDiffStatYellow.commit(&mut s.draft, Some(60));
+        NumberField::GithubDiffStatRed.commit(&mut s.draft, Some(100));
+        let updated = apply_touched_settings(&s.draft, "").unwrap();
+        let ui = config::parse_ui(&updated).unwrap();
+        assert_eq!(ui.github.diff_stat_green_percent, 20);
+        assert_eq!(ui.github.diff_stat_yellow_percent, 60);
+        assert_eq!(ui.github.diff_stat_red_percent, 100);
+
+        NumberField::GithubDiffStatRed.commit(&mut s.draft, None);
+        assert_eq!(
+            NumberField::GithubDiffStatRed.current_label(&s.draft, &s.defaults),
+            "70%",
+            "清空後顯示內建預設"
+        );
+    }
+
+    #[test]
+    fn diff_stat_target_lives_in_the_group_not_the_main_menu() {
+        assert!(!ROWS.iter().any(|r| matches!(
+            r,
+            RowAction::Edit(Editor::Dialog(Dialog::Number(
+                NumberField::GithubDiffStatTarget
+                    | NumberField::GithubDiffStatGreen
+                    | NumberField::GithubDiffStatYellow
+                    | NumberField::GithubDiffStatRed
+            )))
+        )));
+        row_of(|a| matches!(a, RowAction::Edit(Editor::Dialog(Dialog::DiffStatMenu))));
+    }
+
+    #[test]
     fn apply_touched_settings_writes_github_ci_interval() {
         let mut s = test_state();
         assert_eq!(
@@ -2192,6 +2365,9 @@ mod tests {
         NumberField::AutoFetchInterval.commit(&mut s.draft, Some(45));
         NumberField::ListScrolloff.commit(&mut s.draft, Some(7));
         NumberField::GithubDiffStatTarget.commit(&mut s.draft, Some(4321));
+        NumberField::GithubDiffStatGreen.commit(&mut s.draft, Some(11));
+        NumberField::GithubDiffStatYellow.commit(&mut s.draft, Some(22));
+        NumberField::GithubDiffStatRed.commit(&mut s.draft, Some(33));
 
         let updated = apply_touched_settings(&s.draft, "").unwrap();
         let core = config::parse_core(&updated).unwrap();
@@ -2223,6 +2399,9 @@ mod tests {
             "ListScrolloff 沒有 draft.args 可比對，直接比寫回的值"
         );
         assert_eq!(ui.github.diff_stat_target, 4321);
+        assert_eq!(ui.github.diff_stat_green_percent, 11);
+        assert_eq!(ui.github.diff_stat_yellow_percent, 22);
+        assert_eq!(ui.github.diff_stat_red_percent, 33);
     }
 
     /// 新架構才有的保證：`edits` 是空的，`apply_touched_settings` 一次

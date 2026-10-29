@@ -1749,7 +1749,7 @@ impl App<'_> {
             before_view,
             data,
             self.github_label_mode,
-            self.ctx.ui_config.github.diff_stat_target,
+            (&self.ctx.ui_config.github).into(),
             Duration::from_secs(self.ctx.ui_config.github.ci_interval_secs),
             self.ec.sender(),
         );
