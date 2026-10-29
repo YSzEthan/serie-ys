@@ -842,21 +842,19 @@ impl App<'_> {
                     state,
                     remote_deletable,
                 } => {
-                    let head_branch = match self.repository.head() {
-                        Head::Branch { name } => Some(name.as_str()),
-                        _ => None,
-                    };
+                    // 不用 `self.repository` 的快照：branch 可能是 GitHub view
+                    // 開著期間才在本機建立／切換的
+                    let (live_refs, live_head) =
+                        crate::git::live_merge_refs(self.repository.path(), &head_ref);
+                    let live_refs: Vec<&Ref> = live_refs.iter().collect();
                     let local_delete = local_branch_delete_check(
-                        &self.repository.all_refs(),
-                        head_branch,
+                        &live_refs,
+                        live_head.as_deref(),
                         &head_ref,
                         &head_ref_oid,
                     );
-                    let tracking_ref = tracking_ref_to_delete(
-                        &self.repository.all_refs(),
-                        &head_ref,
-                        remote_deletable,
-                    );
+                    let tracking_ref =
+                        tracking_ref_to_delete(&live_refs, &head_ref, remote_deletable);
                     self.status_line_state.open_merge_pr_prompt(
                         number,
                         head_ref,

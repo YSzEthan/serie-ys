@@ -1173,6 +1173,42 @@ pub fn local_branch_names(path: &Path) -> std::result::Result<FxHashSet<String>,
         .collect())
 }
 
+/// 現在磁碟上與 PR head 同名的 local branch／`origin/<head_ref>` tracking ref，
+/// 以及目前 checkout 的 branch（detached 為 `None`）。
+///
+/// 給 GitHub view 的 merge 選單用：`Repository` 是載入當下的快照，使用者在
+/// 別處新建／切換 branch 後不會更新，按 `p` 時得現查才不用回 git view 重開。
+pub fn live_merge_refs(path: &Path, head_ref: &str) -> (Vec<Ref>, Option<String>) {
+    let rev = |refname: String| {
+        let mut cmd = git_read(path);
+        cmd.args(["rev-parse", "--verify", "-q", &refname]);
+        git_stdout(cmd, None, BRANCH_QUERY_TIMEOUT)
+            .ok()
+            .map(|s| CommitHash::from(s.trim()))
+    };
+    let mut refs = Vec::new();
+    if let Some(target) = rev(format!("refs/heads/{head_ref}")) {
+        refs.push(Ref::Branch {
+            name: head_ref.to_string(),
+            target,
+        });
+    }
+    let tracking = format!("origin/{head_ref}");
+    if let Some(target) = rev(format!("refs/remotes/{tracking}")) {
+        refs.push(Ref::RemoteBranch {
+            name: tracking,
+            target,
+        });
+    }
+    let mut cmd = git_read(path);
+    cmd.args(["symbolic-ref", "-q", "--short", "HEAD"]);
+    let head = git_stdout(cmd, None, BRANCH_QUERY_TIMEOUT)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    (refs, head)
+}
+
 /// `base_oid...head_oid`（三點，相對 merge-base）的 (新增, 刪除) 行數。
 /// 歷史與 base 不相連的 branch（例如 `gh-pages`）沒有 merge-base，三點 diff 會
 /// 失敗；這時退回兩點（直接比兩個 tip），不能讓一個孤兒 branch 拖垮整個分頁。
