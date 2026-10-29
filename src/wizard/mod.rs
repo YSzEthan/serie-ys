@@ -83,37 +83,36 @@ fn wizard_loop(
                     Err(e) => state.write_error = Some(e),
                 }
             }
-            Flow::OpenEditor(Dialog::Path) => {
-                let start = path_browser::start_dir(&state.draft.args.path);
-                if let Some(p) = path_browser::run(terminal, &start, theme)? {
-                    state.draft.args.path = p.to_string_lossy().into_owned();
-                }
-                terminal.clear()?;
-            }
-            Flow::OpenEditor(Dialog::Number(field)) => {
-                edit_number(terminal, &mut state.draft, &state.defaults, field, theme)?;
-                terminal.clear()?;
-            }
-            Flow::OpenEditor(Dialog::DiffStatMenu) => {
-                field_menu::run(
-                    terminal,
-                    &mut state.draft,
-                    &state.defaults,
-                    &DIFF_STAT_FIELDS,
-                    theme,
-                )?;
-                terminal.clear()?;
-            }
-            Flow::OpenEditor(Dialog::ColorMenu) => {
-                color_editor::run(terminal, &mut state.draft, &state.defaults, theme)?;
-                terminal.clear()?;
-            }
-            Flow::OpenEditor(Dialog::KeyBindMenu) => {
-                keybind_editor::run(terminal, &mut state.draft, &state.defaults, theme)?;
-                terminal.clear()?;
+            Flow::OpenEditor(d) => {
+                open_editor(terminal, &mut state.draft, &state.defaults, d, theme)?;
             }
         }
     }
+}
+
+/// 開一個子畫面編輯器，關閉後清畫面。主選單與群組子選單共用，子選單才能
+/// 遞迴開下一層。
+fn open_editor(
+    terminal: &mut DefaultTerminal,
+    draft: &mut Draft,
+    defaults: &ResolvedDefaults,
+    dialog: Dialog,
+    theme: &ColorTheme,
+) -> crate::Result<()> {
+    match dialog {
+        Dialog::Path => {
+            let start = path_browser::start_dir(&draft.args.path);
+            if let Some(p) = path_browser::run(terminal, &start, theme)? {
+                draft.args.path = p.to_string_lossy().into_owned();
+            }
+        }
+        Dialog::Number(field) => edit_number(terminal, draft, defaults, field, theme)?,
+        Dialog::Group(group) => field_menu::run(terminal, draft, defaults, group, theme)?,
+        Dialog::ColorMenu => color_editor::run(terminal, draft, defaults, theme)?,
+        Dialog::KeyBindMenu => keybind_editor::run(terminal, draft, defaults, theme)?,
+    }
+    terminal.clear()?;
+    Ok(())
 }
 
 /// 開數字輸入彈窗編輯一個欄位，確認後寫進 `draft`。主選單與群組子選單共用。
@@ -886,18 +885,63 @@ impl NumberField {
 }
 
 /// 開子畫面的編輯器。`Flow` 不用跟著長。
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Dialog {
     Path,
     Number(NumberField),
     ColorMenu,
     KeyBindMenu,
-    /// `Δ` 的目標數與三個顏色門檻（`DIFF_STAT_FIELDS`）收成一頁的子選單。
-    DiffStatMenu,
+    /// 一組欄位收成一頁的子選單（見 [`Group`]）。
+    Group(Group),
+}
+
+/// 子選單的分類。主選單只留一列入口，點進來才逐項設定；`GitHub` 裡還嵌著
+/// `DiffStat`，所以是三層。
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum Group {
+    Graph,
+    Update,
+    GitSync,
+    GitHub,
+    /// `Δ` 的目標數與三個顏色門檻。
+    DiffStat,
+}
+
+impl Group {
+    /// 該組的項目，順序即畫面順序。
+    fn items(self) -> &'static [Editor] {
+        match self {
+            Group::Graph => &GRAPH_ITEMS,
+            Group::Update => &UPDATE_ITEMS,
+            Group::GitSync => &GIT_SYNC_ITEMS,
+            Group::GitHub => &GITHUB_ITEMS,
+            Group::DiffStat => &DIFF_STAT_ITEMS,
+        }
+    }
+
+    fn flags(self) -> &'static str {
+        match self {
+            Group::Graph => "[GRAPH]",
+            Group::Update => "[UPDATE]",
+            Group::GitSync => "[GIT_SYNC]",
+            Group::GitHub => "[GITHUB]",
+            Group::DiffStat => "[DIFF_STAT]",
+        }
+    }
+
+    fn help(self) -> Cow<'static, str> {
+        match self {
+            Group::Graph => t!("wizard.dialog.help.group_graph"),
+            Group::Update => t!("wizard.dialog.help.group_update"),
+            Group::GitSync => t!("wizard.dialog.help.group_git_sync"),
+            Group::GitHub => t!("wizard.dialog.help.group_github"),
+            Group::DiffStat => t!("wizard.dialog.help.diff_stat"),
+        }
+    }
 }
 
 /// 一個項目怎麼編輯：原地循環，或開子畫面。
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq, Eq)]
 enum Editor {
     Cycle(CycleField),
     Dialog(Dialog),
@@ -911,7 +955,7 @@ impl Editor {
             Editor::Dialog(Dialog::Number(f)) => f.flags(),
             Editor::Dialog(Dialog::ColorMenu) => "[COLOR]",
             Editor::Dialog(Dialog::KeyBindMenu) => "[KEYBIND]",
-            Editor::Dialog(Dialog::DiffStatMenu) => "[DIFF_STAT]",
+            Editor::Dialog(Dialog::Group(g)) => g.flags(),
         }
     }
 
@@ -922,7 +966,7 @@ impl Editor {
             Editor::Dialog(Dialog::Number(f)) => f.help(),
             Editor::Dialog(Dialog::ColorMenu) => t!("wizard.dialog.help.color"),
             Editor::Dialog(Dialog::KeyBindMenu) => t!("wizard.dialog.help.keybind"),
-            Editor::Dialog(Dialog::DiffStatMenu) => t!("wizard.dialog.help.diff_stat"),
+            Editor::Dialog(Dialog::Group(g)) => g.help(),
         }
     }
 
@@ -951,10 +995,9 @@ impl Editor {
                 .keys()
                 .filter(|ck| ck.table.starts_with(KEYBIND))
                 .count(),
-            Editor::Dialog(Dialog::DiffStatMenu) => DIFF_STAT_FIELDS
-                .iter()
-                .filter(|f| draft.edits.contains_key(&f.config_key()))
-                .count(),
+            Editor::Dialog(Dialog::Group(g)) => {
+                g.items().iter().map(|e| e.touched_count(draft)).sum()
+            }
         }
     }
 
@@ -967,12 +1010,12 @@ impl Editor {
             Editor::Dialog(Dialog::Path) => draft.args.path.clone(),
             Editor::Dialog(Dialog::Number(f)) => f.current_label(draft, defaults),
             // 只有四個數字，直接列出來比「n 項已改」有用：`10000 · 30/70/70%`。
-            Editor::Dialog(Dialog::DiffStatMenu) => {
+            Editor::Dialog(Dialog::Group(Group::DiffStat)) => {
                 let [target, green, yellow, red] =
                     DIFF_STAT_FIELDS.map(|f| f.current(draft, defaults).unwrap_or_default());
                 format!("{target} · {green}/{yellow}/{red}%")
             }
-            Editor::Dialog(Dialog::ColorMenu | Dialog::KeyBindMenu) => {
+            Editor::Dialog(Dialog::ColorMenu | Dialog::KeyBindMenu | Dialog::Group(_)) => {
                 match self.touched_count(draft) {
                     0 => t!("wizard.editor.untouched").into_owned(),
                     n => t!("wizard.editor.touched", n = n).into_owned(),
@@ -988,44 +1031,53 @@ enum RowAction {
     Launch,
 }
 
-/// 精靈主選單的完整清單。新增可編輯項目只需要在這裡加一行——`flags`／
-/// `help`／存檔路徑都掛在 `Editor` 上往下委派，不用再手抄一次。
+/// 精靈主選單的完整清單。新增可編輯項目只需要在這裡（或某個 `Group` 的
+/// 項目表）加一行——`flags`／`help`／存檔路徑都掛在 `Editor` 上往下委派，
+/// 不用再手抄一次。`--locale` 一定要留在頂層：介面語言只在 `wizard_loop`
+/// 每輪開頭重套，子選單迴圈不會。
 const ROWS: &[RowAction] = &[
     RowAction::Edit(Editor::Dialog(Dialog::Path)),
     RowAction::Edit(Editor::Cycle(CycleField::Locale)),
-    RowAction::Edit(Editor::Dialog(Dialog::Number(NumberField::MaxCount))),
-    RowAction::Edit(Editor::Cycle(CycleField::Order)),
-    RowAction::Edit(Editor::Cycle(CycleField::GraphWidth)),
-    RowAction::Edit(Editor::Cycle(CycleField::Compact)),
-    RowAction::Edit(Editor::Cycle(CycleField::GraphStyle)),
-    RowAction::Edit(Editor::Cycle(CycleField::InitialSelection)),
-    RowAction::Edit(Editor::Cycle(CycleField::UpdateMode)),
-    RowAction::Edit(Editor::Dialog(Dialog::Number(NumberField::UpdateInterval))),
-    RowAction::Edit(Editor::Cycle(CycleField::AutoRestart)),
-    RowAction::Edit(Editor::Cycle(CycleField::ReleaseNotes)),
-    RowAction::Edit(Editor::Cycle(CycleField::Beta)),
-    RowAction::Edit(Editor::Cycle(CycleField::FetchPrune)),
-    RowAction::Edit(Editor::Cycle(CycleField::AutoFetch)),
-    RowAction::Edit(Editor::Dialog(Dialog::Number(
-        NumberField::AutoFetchInterval,
-    ))),
-    RowAction::Edit(Editor::Dialog(Dialog::Number(NumberField::ListScrolloff))),
-    RowAction::Edit(Editor::Dialog(Dialog::Number(
-        NumberField::ListGraphEdgeMaxRows,
-    ))),
-    RowAction::Edit(Editor::Dialog(Dialog::Number(
-        NumberField::ListGraphMaxWidthPercent,
-    ))),
-    RowAction::Edit(Editor::Dialog(Dialog::DiffStatMenu)),
-    RowAction::Edit(Editor::Dialog(Dialog::Number(
-        NumberField::GithubCiInterval,
-    ))),
+    RowAction::Edit(Editor::Dialog(Dialog::Group(Group::Graph))),
+    RowAction::Edit(Editor::Dialog(Dialog::Group(Group::Update))),
+    RowAction::Edit(Editor::Dialog(Dialog::Group(Group::GitSync))),
+    RowAction::Edit(Editor::Dialog(Dialog::Group(Group::GitHub))),
     RowAction::Edit(Editor::Dialog(Dialog::ColorMenu)),
     RowAction::Edit(Editor::Dialog(Dialog::KeyBindMenu)),
     RowAction::Launch,
 ];
 
-/// `Dialog::DiffStatMenu` 子選單裡的欄位，順序即畫面順序。
+const GRAPH_ITEMS: [Editor; 9] = [
+    Editor::Dialog(Dialog::Number(NumberField::MaxCount)),
+    Editor::Cycle(CycleField::Order),
+    Editor::Cycle(CycleField::GraphWidth),
+    Editor::Cycle(CycleField::Compact),
+    Editor::Cycle(CycleField::GraphStyle),
+    Editor::Cycle(CycleField::InitialSelection),
+    Editor::Dialog(Dialog::Number(NumberField::ListScrolloff)),
+    Editor::Dialog(Dialog::Number(NumberField::ListGraphEdgeMaxRows)),
+    Editor::Dialog(Dialog::Number(NumberField::ListGraphMaxWidthPercent)),
+];
+
+const UPDATE_ITEMS: [Editor; 5] = [
+    Editor::Cycle(CycleField::UpdateMode),
+    Editor::Dialog(Dialog::Number(NumberField::UpdateInterval)),
+    Editor::Cycle(CycleField::AutoRestart),
+    Editor::Cycle(CycleField::ReleaseNotes),
+    Editor::Cycle(CycleField::Beta),
+];
+
+const GIT_SYNC_ITEMS: [Editor; 3] = [
+    Editor::Cycle(CycleField::FetchPrune),
+    Editor::Cycle(CycleField::AutoFetch),
+    Editor::Dialog(Dialog::Number(NumberField::AutoFetchInterval)),
+];
+
+const GITHUB_ITEMS: [Editor; 2] = [
+    Editor::Dialog(Dialog::Group(Group::DiffStat)),
+    Editor::Dialog(Dialog::Number(NumberField::GithubCiInterval)),
+];
+
 const DIFF_STAT_FIELDS: [NumberField; 4] = [
     NumberField::GithubDiffStatTarget,
     NumberField::GithubDiffStatGreen,
@@ -1033,12 +1085,30 @@ const DIFF_STAT_FIELDS: [NumberField; 4] = [
     NumberField::GithubDiffStatRed,
 ];
 
-/// 每一列的顯示文字：所有欄位都附上目前有效值（讀設定檔得到的真實值，不是
-/// 硬預設）。`✓` 標示這欄本次 session 有被使用者主動改過（Launch 時會寫回
-/// 設定檔）。
+/// `Group::DiffStat` 子選單裡的項目，順序同 `DIFF_STAT_FIELDS`。
+const DIFF_STAT_ITEMS: [Editor; 4] = [
+    Editor::Dialog(Dialog::Number(DIFF_STAT_FIELDS[0])),
+    Editor::Dialog(Dialog::Number(DIFF_STAT_FIELDS[1])),
+    Editor::Dialog(Dialog::Number(DIFF_STAT_FIELDS[2])),
+    Editor::Dialog(Dialog::Number(DIFF_STAT_FIELDS[3])),
+];
+
+/// 主選單一列的顯示文字：Launch 是固定字串，其餘委派給 [`editor_row_label`]。
+/// 所有欄位都附上目前有效值（讀設定檔得到的真實值，不是硬預設）。`✓` 標示
+/// 這欄本次 session 有被使用者主動改過（Launch 時會寫回設定檔）。
 fn top_row_label(row: RowAction, draft: &Draft, defaults: &ResolvedDefaults) -> String {
-    let RowAction::Edit(editor) = row else {
-        return t!("wizard.top.launch").into_owned();
+    match row {
+        RowAction::Edit(editor) => editor_row_label(editor, draft, defaults),
+        RowAction::Launch => t!("wizard.top.launch").into_owned(),
+    }
+}
+
+/// 一個可編輯項目的一列文字：`✓` 前綴＋旗標＋說明＋目前值。主選單與群組子選單共用。
+fn editor_row_label(editor: Editor, draft: &Draft, defaults: &ResolvedDefaults) -> String {
+    let prefix = if draft.is_touched(editor) {
+        "✓ "
+    } else {
+        "  "
     };
     // YSGIT_NO_UPDATE_CHECK 會在 `update::resolve()` 把 mode 壓成 Off——這裡
     // 只是提醒使用者，不是這一列本身的邏輯改變。
@@ -1048,21 +1118,6 @@ fn top_row_label(row: RowAction, draft: &Draft, defaults: &ResolvedDefaults) -> 
         t!("wizard.top.update_note")
     } else {
         Cow::Borrowed("")
-    };
-    editor_row_label(editor, draft, defaults, note)
-}
-
-/// 一個可編輯項目的一列文字：`✓` 前綴＋旗標＋說明＋目前值。主選單與群組子選單共用。
-fn editor_row_label(
-    editor: Editor,
-    draft: &Draft,
-    defaults: &ResolvedDefaults,
-    note: Cow<'static, str>,
-) -> String {
-    let prefix = if draft.is_touched(editor) {
-        "✓ "
-    } else {
-        "  "
     };
     t!(
         "wizard.top.row",
@@ -1531,10 +1586,29 @@ mod tests {
         row_of(move |a| matches!(a, RowAction::Edit(Editor::Cycle(f)) if *f == field))
     }
 
-    fn row_of_number(field: NumberField) -> usize {
-        row_of(
-            move |a| matches!(a, RowAction::Edit(Editor::Dialog(Dialog::Number(f))) if *f == field),
-        )
+    /// 在所有子選單裡找這個項目，回傳 (所在群組, 列索引)。
+    fn find_in_groups(target: Editor) -> (Group, usize) {
+        [Group::Graph, Group::Update, Group::GitSync, Group::GitHub]
+            .into_iter()
+            .find_map(|g| g.items().iter().position(|e| *e == target).map(|i| (g, i)))
+            .expect("子選單裡找不到這個項目")
+    }
+
+    fn find_cycle(field: CycleField) -> (Group, usize) {
+        find_in_groups(Editor::Cycle(field))
+    }
+
+    fn find_number(field: NumberField) -> (Group, usize) {
+        find_in_groups(Editor::Dialog(Dialog::Number(field)))
+    }
+
+    /// 開 `at` 所在的子選單、游標移到該列，送一個按鍵。
+    fn menu_key(
+        s: &mut WizardState,
+        (group, idx): (Group, usize),
+        k: KeyEvent,
+    ) -> field_menu::Flow {
+        field_menu::FieldMenuState::at(group, idx).on_key(k, &mut s.draft, &s.defaults)
     }
 
     fn key(code: KeyCode) -> KeyEvent {
@@ -1559,21 +1633,20 @@ mod tests {
     #[test]
     fn right_cycles_forward_through_each_variant_and_wraps() {
         let mut s = test_state();
-        let idx = row_of_field(CycleField::Order);
-        move_to_row(&mut s, idx);
+        let at = find_cycle(CycleField::Order);
         assert_eq!(s.draft.args.order, None, "還沒碰過，維持未設定");
 
-        s.on_key(key(KeyCode::Right));
+        menu_key(&mut s, at, key(KeyCode::Right));
         assert_eq!(
             s.draft.args.order,
             Some(CommitOrderType::Topo),
             "chrono 是目前值，第一次按 → 要跳過它，直接切到 topo"
         );
 
-        s.on_key(key(KeyCode::Right));
+        menu_key(&mut s, at, key(KeyCode::Right));
         assert_eq!(s.draft.args.order, Some(CommitOrderType::Chrono));
 
-        s.on_key(key(KeyCode::Right));
+        menu_key(&mut s, at, key(KeyCode::Right));
         assert_eq!(
             s.draft.args.order,
             Some(CommitOrderType::Topo),
@@ -1588,28 +1661,26 @@ mod tests {
     // 換三個值的 `-s`，方向錯了序列才會真的不一樣。
     fn left_cycles_backward_through_each_variant_and_wraps() {
         let mut s = test_state();
-        let idx = row_of_field(CycleField::GraphStyle);
-        move_to_row(&mut s, idx);
         assert_eq!(s.draft.args.graph_style, None);
 
-        s.on_key(key(KeyCode::Left));
+        CycleField::GraphStyle.cycle(&mut s.draft, &s.defaults, -1);
         assert_eq!(
             s.draft.args.graph_style,
             Some(GraphStyle::Ascii),
             "第一次按 ← 要跳過目前值 rounded，往後繞到最後一個值 ascii"
         );
 
-        s.on_key(key(KeyCode::Left));
+        CycleField::GraphStyle.cycle(&mut s.draft, &s.defaults, -1);
         assert_eq!(
             s.draft.args.graph_style,
             Some(GraphStyle::Angular),
             "← 是往後退，不是又往前"
         );
 
-        s.on_key(key(KeyCode::Left));
+        CycleField::GraphStyle.cycle(&mut s.draft, &s.defaults, -1);
         assert_eq!(s.draft.args.graph_style, Some(GraphStyle::Rounded));
 
-        s.on_key(key(KeyCode::Left));
+        CycleField::GraphStyle.cycle(&mut s.draft, &s.defaults, -1);
         assert_eq!(
             s.draft.args.graph_style,
             Some(GraphStyle::Ascii),
@@ -1623,11 +1694,9 @@ mod tests {
     #[test]
     fn first_press_skips_the_current_variant_in_either_direction() {
         let mut s = test_state();
-        let idx = row_of_field(CycleField::GraphStyle);
-        move_to_row(&mut s, idx);
         assert_eq!(s.draft.args.graph_style, None);
 
-        s.on_key(key(KeyCode::Right));
+        CycleField::GraphStyle.cycle(&mut s.draft, &s.defaults, 1);
         assert_eq!(
             s.draft.args.graph_style,
             Some(GraphStyle::Angular),
@@ -1635,9 +1704,7 @@ mod tests {
         );
 
         let mut s = test_state();
-        let idx = row_of_field(CycleField::GraphStyle);
-        move_to_row(&mut s, idx);
-        s.on_key(key(KeyCode::Left));
+        CycleField::GraphStyle.cycle(&mut s.draft, &s.defaults, -1);
         assert_eq!(
             s.draft.args.graph_style,
             Some(GraphStyle::Ascii),
@@ -1648,13 +1715,12 @@ mod tests {
     #[test]
     fn cycling_a_type_field_updates_the_row_label_immediately() {
         let mut s = test_state();
-        let idx = row_of_field(CycleField::Order);
-        move_to_row(&mut s, idx);
-        s.on_key(key(KeyCode::Right)); // 跳過目前值，直接切到 topo
+        let at = find_cycle(CycleField::Order);
+        menu_key(&mut s, at, key(KeyCode::Right)); // 跳過目前值，直接切到 topo
 
-        let row = ROWS[idx];
         assert!(
-            top_row_label(row, &s.draft, &s.defaults).contains("< topo >"),
+            editor_row_label(Editor::Cycle(CycleField::Order), &s.draft, &s.defaults)
+                .contains("< topo >"),
             "切換完不用離開這一列就看得到新值"
         );
     }
@@ -1662,8 +1728,7 @@ mod tests {
     #[test]
     fn cycle_field_rows_wrap_the_value_in_angle_brackets() {
         let s = test_state();
-        let idx = row_of_field(CycleField::Order);
-        let label = top_row_label(ROWS[idx], &s.draft, &s.defaults);
+        let label = editor_row_label(Editor::Cycle(CycleField::Order), &s.draft, &s.defaults);
         assert!(
             label.contains("< chrono >"),
             "循環選擇欄位要用 < > 標示可切換：{label}"
@@ -1675,8 +1740,11 @@ mod tests {
         // `row.flags` 本身含 `<NUMBER>`（CLI 語法），這裡只檢查「目前：」後面
         // 的值沒有被包一層 `< >`，不是整條 label 零角括號。
         let s = test_state();
-        let idx = row_of_number(NumberField::MaxCount);
-        let label = top_row_label(ROWS[idx], &s.draft, &s.defaults);
+        let label = editor_row_label(
+            Editor::Dialog(Dialog::Number(NumberField::MaxCount)),
+            &s.draft,
+            &s.defaults,
+        );
         let value_part = label.split("目前：").nth(1).expect("label 要含「目前：」");
         assert!(
             !value_part.starts_with('<'),
@@ -1690,12 +1758,14 @@ mod tests {
     #[test]
     fn enter_on_a_type_field_row_is_a_no_op() {
         let mut s = test_state();
-        let idx = row_of_field(CycleField::Order);
-        move_to_row(&mut s, idx);
-        s.on_key(key(KeyCode::Right)); // 先切到 topo
+        let at = find_cycle(CycleField::Order);
+        menu_key(&mut s, at, key(KeyCode::Right)); // 先切到 topo
         assert_eq!(s.draft.args.order, Some(CommitOrderType::Topo));
 
-        assert!(matches!(s.on_key(key(KeyCode::Enter)), Flow::Continue));
+        assert!(matches!(
+            menu_key(&mut s, at, key(KeyCode::Enter)),
+            field_menu::Flow::Continue
+        ));
         assert_eq!(
             s.draft.args.order,
             Some(CommitOrderType::Topo),
@@ -1722,33 +1792,30 @@ mod tests {
     #[test]
     fn enter_on_max_count_row_requests_number_input() {
         let mut s = test_state();
-        let idx = row_of_number(NumberField::MaxCount);
-        move_to_row(&mut s, idx);
+        let at = find_number(NumberField::MaxCount);
         assert!(matches!(
-            s.on_key(key(KeyCode::Enter)),
-            Flow::OpenEditor(Dialog::Number(NumberField::MaxCount))
+            menu_key(&mut s, at, key(KeyCode::Enter)),
+            field_menu::Flow::Open(Dialog::Number(NumberField::MaxCount))
         ));
     }
 
     #[test]
     fn enter_on_update_interval_row_requests_number_input() {
         let mut s = test_state();
-        let idx = row_of_number(NumberField::UpdateInterval);
-        move_to_row(&mut s, idx);
+        let at = find_number(NumberField::UpdateInterval);
         assert!(matches!(
-            s.on_key(key(KeyCode::Enter)),
-            Flow::OpenEditor(Dialog::Number(NumberField::UpdateInterval))
+            menu_key(&mut s, at, key(KeyCode::Enter)),
+            field_menu::Flow::Open(Dialog::Number(NumberField::UpdateInterval))
         ));
     }
 
     #[test]
     fn enter_on_scrolloff_row_requests_number_input() {
         let mut s = test_state();
-        let idx = row_of_number(NumberField::ListScrolloff);
-        move_to_row(&mut s, idx);
+        let at = find_number(NumberField::ListScrolloff);
         assert!(matches!(
-            s.on_key(key(KeyCode::Enter)),
-            Flow::OpenEditor(Dialog::Number(NumberField::ListScrolloff))
+            menu_key(&mut s, at, key(KeyCode::Enter)),
+            field_menu::Flow::Open(Dialog::Number(NumberField::ListScrolloff))
         ));
     }
 
@@ -1780,11 +1847,10 @@ mod tests {
     #[test]
     fn update_mode_row_cycles_and_skips_the_current_variant() {
         let mut s = test_state();
-        let idx = row_of_field(CycleField::UpdateMode);
-        move_to_row(&mut s, idx);
+        let at = find_cycle(CycleField::UpdateMode);
         assert_eq!(s.draft.args.update_mode, None);
 
-        s.on_key(key(KeyCode::Right));
+        menu_key(&mut s, at, key(KeyCode::Right));
         assert_eq!(
             s.draft.args.update_mode,
             Some(UpdateMode::Auto),
@@ -1795,22 +1861,20 @@ mod tests {
     #[test]
     fn auto_restart_row_toggles() {
         let mut s = test_state();
-        let idx = row_of_field(CycleField::AutoRestart);
-        move_to_row(&mut s, idx);
+        let at = find_cycle(CycleField::AutoRestart);
         assert_eq!(s.draft.args.auto_restart, None);
 
-        s.on_key(key(KeyCode::Right));
+        menu_key(&mut s, at, key(KeyCode::Right));
         assert_eq!(s.draft.args.auto_restart, Some(AutoRestart::On));
     }
 
     #[test]
     fn release_notes_row_toggles() {
         let mut s = test_state();
-        let idx = row_of_field(CycleField::ReleaseNotes);
-        move_to_row(&mut s, idx);
+        let at = find_cycle(CycleField::ReleaseNotes);
         assert_eq!(s.draft.args.release_notes, None);
 
-        s.on_key(key(KeyCode::Right));
+        menu_key(&mut s, at, key(KeyCode::Right));
         assert_eq!(
             s.draft.args.release_notes,
             Some(ReleaseNotes::Off),
@@ -1821,11 +1885,10 @@ mod tests {
     #[test]
     fn beta_row_toggles() {
         let mut s = test_state();
-        let idx = row_of_field(CycleField::Beta);
-        move_to_row(&mut s, idx);
+        let at = find_cycle(CycleField::Beta);
         assert_eq!(s.draft.args.beta, None);
 
-        s.on_key(key(KeyCode::Right));
+        menu_key(&mut s, at, key(KeyCode::Right));
         assert_eq!(
             s.draft.args.beta,
             Some(Beta::On),
@@ -1860,11 +1923,10 @@ mod tests {
     #[test]
     fn fetch_prune_row_toggles() {
         let mut s = test_state();
-        let idx = row_of_field(CycleField::FetchPrune);
-        move_to_row(&mut s, idx);
+        let at = find_cycle(CycleField::FetchPrune);
         assert_eq!(s.draft.args.fetch_prune, None);
 
-        s.on_key(key(KeyCode::Right));
+        menu_key(&mut s, at, key(KeyCode::Right));
         assert_eq!(
             s.draft.args.fetch_prune,
             Some(FetchPrune::On),
@@ -1925,19 +1987,19 @@ mod tests {
     }
 
     #[test]
-    // 一樣換三個值的 graph_style：h 若誤接成 +1，會從 Angular 再往前跳到
-    // Ascii 而不是退回 Rounded，斷言才抓得到方向錯誤。
-    fn vim_hl_cycle_type_field_same_as_arrow_keys() {
+    fn vim_l_cycles_and_h_goes_back_in_a_submenu() {
         let mut s = test_state();
-        let idx = row_of_field(CycleField::GraphStyle);
-        move_to_row(&mut s, idx);
-        s.on_key(char_key('l'));
+        let at = find_cycle(CycleField::GraphStyle);
+        menu_key(&mut s, at, char_key('l'));
         assert_eq!(s.draft.args.graph_style, Some(GraphStyle::Angular));
-        s.on_key(char_key('h'));
+        assert!(matches!(
+            menu_key(&mut s, at, char_key('h')),
+            field_menu::Flow::Back
+        ));
         assert_eq!(
             s.draft.args.graph_style,
-            Some(GraphStyle::Rounded),
-            "h 要往回退，不是又往前"
+            Some(GraphStyle::Angular),
+            "子選單裡 h 是回上一層，不動值"
         );
     }
 
@@ -1957,13 +2019,17 @@ mod tests {
     #[test]
     fn top_row_shows_the_real_default_not_a_vague_placeholder() {
         let s = test_state();
-        let order_idx = row_of_field(CycleField::Order);
         assert!(
-            top_row_label(ROWS[order_idx], &s.draft, &s.defaults).contains("< chrono >"),
+            editor_row_label(Editor::Cycle(CycleField::Order), &s.draft, &s.defaults)
+                .contains("< chrono >"),
             "chrono 是真正的目前值"
         );
-        let max_count_idx = row_of_number(NumberField::MaxCount);
-        assert!(top_row_label(ROWS[max_count_idx], &s.draft, &s.defaults).contains("不限制"));
+        assert!(editor_row_label(
+            Editor::Dialog(Dialog::Number(NumberField::MaxCount)),
+            &s.draft,
+            &s.defaults
+        )
+        .contains("不限制"));
     }
 
     /// `ResolvedDefaults` 讀到設定檔真實值時，顯示與循環起點都要反映它，
@@ -1974,14 +2040,13 @@ mod tests {
         core.option.order = Some(CommitOrderType::Topo);
         let mut s = WizardState::with_defaults(ResolvedDefaults::from_core(&core));
 
-        let idx = row_of_field(CycleField::Order);
         assert!(
-            top_row_label(ROWS[idx], &s.draft, &s.defaults).contains("< topo >"),
+            editor_row_label(Editor::Cycle(CycleField::Order), &s.draft, &s.defaults)
+                .contains("< topo >"),
             "設定檔寫的是 topo，精靈顯示的目前值要跟著是 topo，不是硬預設的 chrono"
         );
 
-        move_to_row(&mut s, idx);
-        s.on_key(key(KeyCode::Right));
+        menu_key(&mut s, find_cycle(CycleField::Order), key(KeyCode::Right));
         assert_eq!(
             s.draft.args.order,
             Some(CommitOrderType::Chrono),
@@ -2065,9 +2130,8 @@ mod tests {
     #[test]
     fn apply_touched_settings_only_writes_touched_keys() {
         let mut s = test_state();
-        let idx = row_of_field(CycleField::Order);
-        move_to_row(&mut s, idx);
-        s.on_key(key(KeyCode::Right)); // order = Some(Topo)，其餘欄位沒碰過
+        let at = find_cycle(CycleField::Order);
+        menu_key(&mut s, at, key(KeyCode::Right)); // order = Some(Topo)，其餘欄位沒碰過
 
         let updated = apply_touched_settings(&s.draft, "").unwrap();
         assert!(updated.contains("order = \"topo\""), "{updated}");
@@ -2087,9 +2151,8 @@ mod tests {
         // 自己重抄一份呼叫順序——重抄的話，`migrate_and_apply_touched_settings`
         // 裡萬一漏接 `migrate_legacy_toml`，這條測試不會發現。
         let mut s = test_state();
-        let idx = row_of_field(CycleField::Order);
-        move_to_row(&mut s, idx);
-        s.on_key(key(KeyCode::Right)); // order = Some(Topo)
+        let at = find_cycle(CycleField::Order);
+        menu_key(&mut s, at, key(KeyCode::Right)); // order = Some(Topo)
 
         let legacy = "[ui.refs]\nwidth = 40\n";
         let updated = migrate_and_apply_touched_settings(&s.draft, legacy).unwrap();
@@ -2102,9 +2165,8 @@ mod tests {
     #[test]
     fn apply_touched_settings_preserves_existing_comments_and_unrelated_keys() {
         let mut s = test_state();
-        let idx = row_of_field(CycleField::Order);
-        move_to_row(&mut s, idx);
-        s.on_key(key(KeyCode::Right));
+        let at = find_cycle(CycleField::Order);
+        menu_key(&mut s, at, key(KeyCode::Right));
 
         let existing = "# 我的註解\n[core.search]\nfuzzy = true\n";
         let updated = apply_touched_settings(&s.draft, existing).unwrap();
@@ -2118,9 +2180,8 @@ mod tests {
         // assets/default-config.toml 把每個旋鈕的說明都寫成該鍵值後面的行內
         // 註解——改一次那個值，說明不能跟著消失。
         let mut s = test_state();
-        let idx = row_of_field(CycleField::Order);
-        move_to_row(&mut s, idx);
-        s.on_key(key(KeyCode::Right));
+        let at = find_cycle(CycleField::Order);
+        menu_key(&mut s, at, key(KeyCode::Right));
 
         let existing = "[core.option]\norder = \"chrono\"  # commit 排序\n";
         let updated = apply_touched_settings(&s.draft, existing).unwrap();
@@ -2183,9 +2244,8 @@ mod tests {
     #[test]
     fn apply_touched_settings_writes_update_settings_too() {
         let mut s = test_state();
-        let idx = row_of_field(CycleField::AutoRestart);
-        move_to_row(&mut s, idx);
-        s.on_key(key(KeyCode::Right)); // auto_restart = Some(On)
+        let at = find_cycle(CycleField::AutoRestart);
+        menu_key(&mut s, at, key(KeyCode::Right)); // auto_restart = Some(On)
 
         let updated = apply_touched_settings(&s.draft, "").unwrap();
         assert!(updated.contains("auto_restart = \"on\""), "{updated}");
@@ -2263,7 +2323,7 @@ mod tests {
     #[test]
     fn diff_stat_group_row_shows_values_and_counts_touched_fields() {
         let mut s = test_state();
-        let group = Editor::Dialog(Dialog::DiffStatMenu);
+        let group = Editor::Dialog(Dialog::Group(Group::DiffStat));
         assert_eq!(
             group.current_label(&s.draft, &s.defaults),
             "10000 · 30/70/70%"
@@ -2311,7 +2371,112 @@ mod tests {
                     | NumberField::GithubDiffStatRed
             )))
         )));
-        row_of(|a| matches!(a, RowAction::Edit(Editor::Dialog(Dialog::DiffStatMenu))));
+        row_of(|a| {
+            matches!(
+                a,
+                RowAction::Edit(Editor::Dialog(Dialog::Group(Group::GitHub)))
+            )
+        });
+        assert!(Group::GitHub
+            .items()
+            .iter()
+            .any(|e| matches!(e, Editor::Dialog(Dialog::Group(Group::DiffStat)))));
+    }
+
+    /// 遞迴展開子選單，收集選單樹上的每個項目。
+    fn walk(editor: Editor, out: &mut Vec<Editor>) {
+        out.push(editor);
+        if let Editor::Dialog(Dialog::Group(g)) = editor {
+            for &e in g.items() {
+                walk(e, out);
+            }
+        }
+    }
+
+    fn all_editors() -> Vec<Editor> {
+        let mut all = Vec::new();
+        for row in ROWS {
+            if let RowAction::Edit(e) = row {
+                walk(*e, &mut all);
+            }
+        }
+        all
+    }
+
+    #[test]
+    fn every_field_appears_exactly_once_in_the_menu_tree() {
+        let all = all_editors();
+        let cycles = [
+            CycleField::Order,
+            CycleField::GraphWidth,
+            CycleField::Compact,
+            CycleField::GraphStyle,
+            CycleField::InitialSelection,
+            CycleField::UpdateMode,
+            CycleField::AutoRestart,
+            CycleField::ReleaseNotes,
+            CycleField::Beta,
+            CycleField::FetchPrune,
+            CycleField::AutoFetch,
+            CycleField::Locale,
+        ];
+        let numbers = [
+            NumberField::MaxCount,
+            NumberField::UpdateInterval,
+            NumberField::AutoFetchInterval,
+            NumberField::ListScrolloff,
+            NumberField::ListGraphEdgeMaxRows,
+            NumberField::ListGraphMaxWidthPercent,
+            NumberField::GithubDiffStatTarget,
+            NumberField::GithubDiffStatGreen,
+            NumberField::GithubDiffStatYellow,
+            NumberField::GithubDiffStatRed,
+            NumberField::GithubCiInterval,
+        ];
+        for f in cycles {
+            let n = all
+                .iter()
+                .filter(|e| matches!(e, Editor::Cycle(g) if *g == f))
+                .count();
+            assert_eq!(n, 1, "CycleField 要剛好出現一次");
+        }
+        for f in numbers {
+            let n = all
+                .iter()
+                .filter(|e| matches!(e, Editor::Dialog(Dialog::Number(g)) if *g == f))
+                .count();
+            assert_eq!(n, 1, "NumberField 要剛好出現一次");
+        }
+        let total_cycle = all.iter().filter(|e| matches!(e, Editor::Cycle(_))).count();
+        let total_number = all
+            .iter()
+            .filter(|e| matches!(e, Editor::Dialog(Dialog::Number(_))))
+            .count();
+        assert_eq!(total_cycle, cycles.len(), "有新的 CycleField 沒列進測試");
+        assert_eq!(total_number, numbers.len(), "有新的 NumberField 沒列進測試");
+    }
+
+    /// 介面語言只在 `wizard_loop` 每輪開頭重套，子選單迴圈不會；放進子選單
+    /// 就不會即時換語言。
+    #[test]
+    fn locale_stays_on_the_top_level() {
+        row_of_field(CycleField::Locale);
+    }
+
+    #[test]
+    fn group_row_counts_touched_fields_recursively() {
+        let mut s = test_state();
+        let github = Editor::Dialog(Dialog::Group(Group::GitHub));
+        assert!(!s.draft.is_touched(github));
+
+        NumberField::GithubDiffStatRed.commit(&mut s.draft, Some(100));
+        NumberField::GithubCiInterval.commit(&mut s.draft, Some(30));
+        assert_eq!(github.touched_count(&s.draft), 2, "含第三層的 DiffStat");
+        assert!(editor_row_label(github, &s.draft, &s.defaults).starts_with("✓ "));
+        assert_eq!(
+            github.current_label(&s.draft, &s.defaults),
+            t!("wizard.editor.touched", n = 2)
+        );
     }
 
     #[test]
