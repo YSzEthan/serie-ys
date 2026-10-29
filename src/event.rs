@@ -194,7 +194,8 @@ pub enum AppEvent {
     /// 一路往前傳，見 `reload::Reloader::request_full`。
     Refresh,
     ClearStatusLine,
-    UpdateStatusInput(String, Option<u16>, Option<String>),
+    /// 訊息、游標在訊息內的 byte 位置、右側的 transient 訊息。
+    UpdateStatusInput(String, usize, Option<String>),
     NotifyInfo(String),
     NotifySuccess(String),
     NotifyWarn(String),

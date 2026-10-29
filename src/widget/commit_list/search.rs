@@ -5,7 +5,6 @@ use rust_i18n::t;
 use rustc_hash::FxHashMap;
 use tui_input::backend::crossterm::EventHandler;
 use tui_input::{Input, InputRequest};
-use unicode_width::UnicodeWidthStr;
 
 use crate::config::SearchTarget;
 use crate::fuzzy::SearchMatcher;
@@ -375,6 +374,15 @@ impl MatchSet {
     }
 }
 
+/// `Input::cursor()` 是 codepoint 數，轉成 `value()` 內的 byte 位置。
+fn cursor_byte_offset(input: &Input) -> usize {
+    let value = input.value();
+    value
+        .char_indices()
+        .nth(input.cursor())
+        .map_or(value.len(), |(i, _)| i)
+}
+
 impl<'a> CommitListState<'a> {
     pub fn select_next_match(&mut self) {
         if self.commits.is_empty() {
@@ -623,8 +631,9 @@ impl<'a> CommitListState<'a> {
         }
     }
 
-    pub fn search_query_cursor_position(&self) -> u16 {
-        self.search_input.visual_cursor() as u16 + 1 // 加 1 是為了 "/"
+    /// 游標在 `search_query_string()` 裡的 byte 位置（前綴 "/" 佔 1 byte）。
+    pub fn search_query_cursor_byte_index(&self) -> usize {
+        1 + cursor_byte_offset(&self.search_input)
     }
 
     pub fn transient_message_string(&self) -> Option<String> {
@@ -811,9 +820,9 @@ impl<'a> CommitListState<'a> {
         }
     }
 
-    pub fn filter_query_cursor_position(&self) -> u16 {
-        // 前綴的顯示寬度（全形字佔 2 格）
-        t!("view.filter.prefix").width() as u16 + self.filter_input.visual_cursor() as u16
+    /// 游標在 `filter_query_string()` 裡的 byte 位置（前綴可能是全形字，不能當 1 byte）。
+    pub fn filter_query_cursor_byte_index(&self) -> usize {
+        t!("view.filter.prefix").len() + cursor_byte_offset(&self.filter_input)
     }
 
     pub fn filter_transient_message_string(&self) -> Option<String> {
@@ -1589,7 +1598,7 @@ mod tests {
             state.start_search();
 
             assert_eq!(state.search_query_string(), Some("/fx".into()));
-            assert_eq!(state.search_query_cursor_position(), 3);
+            assert_eq!(state.search_query_cursor_byte_index(), 3);
             assert_eq!(state.search_options(), options);
             assert_eq!(state.current_list_status(), position);
             assert_eq!(state.search.hits, hits);
@@ -1730,6 +1739,51 @@ mod tests {
         }
     }
 
+    /// 游標 byte index 必須永遠落在 char boundary（render 每幀都用它切字串），
+    /// 且從頭（只有 "/" 前綴）走到尾（整串長度）。組合字元、ZWJ emoji 是
+    /// tui-input 一次可能跨多個 codepoint 的情況。
+    #[test]
+    fn search_query_cursor_byte_index_tracks_unicode_input() {
+        let query = "a界e\u{301}👩‍💻";
+        with_state(&[query], |state| {
+            state.start_search();
+            type_query(state, query);
+            let msg = state.search_query_string().unwrap();
+            assert_eq!(state.search_query_cursor_byte_index(), msg.len());
+
+            state.handle_search_input(key(KeyCode::Home));
+            assert_eq!(state.search_query_cursor_byte_index(), 1);
+
+            let mut prev = 1;
+            for _ in 0..query.chars().count() {
+                state.handle_search_input(key(KeyCode::Right));
+                let idx = state.search_query_cursor_byte_index();
+                assert!(msg.is_char_boundary(idx), "{idx} 不在 char boundary");
+                assert!(idx >= prev);
+                prev = idx;
+            }
+            assert_eq!(prev, msg.len());
+        });
+    }
+
+    /// filter 的前綴是全形字（zh-TW），byte 數不等於顯示寬度，也不是 1。
+    #[test]
+    fn filter_query_cursor_byte_index_includes_prefix_bytes() {
+        with_state(&["x"], |state| {
+            state.start_filter();
+            for c in "a界".chars() {
+                state.handle_filter_input(key(KeyCode::Char(c)));
+            }
+            let msg = state.filter_query_string().unwrap();
+            assert_eq!(state.filter_query_cursor_byte_index(), msg.len());
+
+            state.handle_filter_input(key(KeyCode::Home));
+            let idx = state.filter_query_cursor_byte_index();
+            assert_eq!(idx, msg.len() - "a界".len());
+            assert!(msg.is_char_boundary(idx));
+        });
+    }
+
     #[test]
     fn resume_search_moves_cursor_to_end_of_long_unicode_query() {
         let query = "検索".repeat(40);
@@ -1741,7 +1795,7 @@ mod tests {
 
             state.start_search();
             assert_eq!(state.search_query_string(), Some(format!("/{query}")));
-            assert_eq!(state.search_query_cursor_position(), 161);
+            assert_eq!(state.search_query_cursor_byte_index(), 241);
             type_query(state, "追");
             assert_eq!(state.search_query_string(), Some(format!("/{query}追")));
         });
