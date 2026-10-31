@@ -705,6 +705,9 @@ impl App<'_> {
                 AppEvent::FetchAll => {
                     self.fetch_all();
                 }
+                AppEvent::Push => {
+                    self.push();
+                }
                 AppEvent::Pull => {
                     self.pull();
                 }
@@ -2326,6 +2329,7 @@ impl App<'_> {
                 // 手動 fetch 成功等同「一輪 auto-fetch 已經跑過」，讓倒數與
                 // 基準指紋重新計算，見 `auto_fetch::spawn_resync`。
                 on_success: Some(AppEvent::AutoFetchResync),
+                ignore_success_stderr: false,
             },
         );
     }
@@ -2363,6 +2367,41 @@ impl App<'_> {
                 error_prefix: t!("app.pull.failed"),
                 timeout: GIT_PULL_TIMEOUT,
                 on_success: None,
+                ignore_success_stderr: false,
+            },
+        );
+    }
+
+    /// 把目前 branch push 到遠端同名 branch，沒有 upstream 時順便建立並設定。
+    ///
+    /// - `push.default=current`：固定語意，不受使用者設定影響。`upstream` 會在
+    ///   upstream 不同名時直接推進別的 branch，`matching` 可能什麼都沒推，
+    ///   `nothing` 會讓 `autoSetupRemote` 失效。
+    /// - `advice.pushUpdateRejected=false`：被拒時 git 會印數行 `hint:`，
+    ///   狀態列會把它們接成一行，真正的 `rejected` 原因就被擠掉。
+    /// - 不 force：被拒就報錯，本地不動。
+    ///
+    /// `on_success` 刻意不送 `AutoFetchResync`，理由同 `pull()`。
+    fn push(&self) {
+        spawn_git_task(
+            self.ec,
+            GitTask {
+                repo: self.repository.path(),
+                args: &[
+                    "-c",
+                    "advice.pushUpdateRejected=false",
+                    "-c",
+                    "push.default=current",
+                    "-c",
+                    "push.autoSetupRemote=true",
+                    "push",
+                ],
+                pending_msg: t!("app.push.pending").into_owned(),
+                success_msg: t!("app.push.done").into_owned(),
+                error_prefix: t!("app.push.failed"),
+                timeout: GIT_PUSH_TIMEOUT,
+                on_success: None,
+                ignore_success_stderr: true,
             },
         );
     }
@@ -2378,6 +2417,7 @@ impl App<'_> {
                 error_prefix: t!("app.checkout.failed"),
                 timeout: GIT_CHECKOUT_TIMEOUT,
                 on_success: None,
+                ignore_success_stderr: false,
             },
         );
     }
@@ -2736,6 +2776,11 @@ const GIT_CHECKOUT_TIMEOUT: Duration = Duration::from_secs(1800);
 /// 留下 `.git/index.lock`，到時要改送 SIGTERM。
 const GIT_PULL_TIMEOUT: Duration = Duration::from_secs(1800);
 
+/// `push` 的逾時預算。`run_with_timeout` 的 `kill()` 只殺得到 `git push`
+/// 本身，pre-push hook 與傳輸可能還在跑，所以逾時只決定「什麼時候不再等」，
+/// 回報失敗時 push 不一定真的失敗。
+const GIT_PUSH_TIMEOUT: Duration = Duration::from_secs(1800);
+
 /// `spawn_git_task` 的參數包——原本 7 個位置參數裡 `pending_msg`／
 /// `success_msg`／`error_prefix` 三個相鄰同型別，寫反編譯器抓不到（跟
 /// `AutoFetchOverrides` doc comment 點名的同一類風險），加第 8 個參數
@@ -2752,6 +2797,10 @@ struct GitTask<'a> {
     /// 唯一用途是 `fetch_all()` 送 `AppEvent::AutoFetchResync`，讓手動
     /// fetch 成功後 auto-fetch 的倒數與基準跟著重整。
     on_success: Option<AppEvent>,
+    /// 成功時固定顯示 `success_msg`，不拿 stderr 當訊息。`git push` 成功時
+    /// stderr 會帶 `remote:` 訊息與 pre-push hook 的輸出，多行接成一行後
+    /// 比「完成」更難讀。
+    ignore_success_stderr: bool,
 }
 
 fn spawn_git_task(ec: &EventController, task: GitTask) {
@@ -2763,6 +2812,7 @@ fn spawn_git_task(ec: &EventController, task: GitTask) {
         error_prefix,
         timeout,
         on_success,
+        ignore_success_stderr,
     } = task;
     let repo_path = repo.to_path_buf();
     let tx = ec.sender();
@@ -2780,7 +2830,7 @@ fn spawn_git_task(ec: &EventController, task: GitTask) {
         match output {
             Ok(o) if o.status.success() => {
                 let detail = String::from_utf8_lossy(&o.stderr).trim().to_string();
-                let msg = if detail.is_empty() {
+                let msg = if detail.is_empty() || ignore_success_stderr {
                     success_msg
                 } else {
                     detail

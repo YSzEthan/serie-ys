@@ -200,6 +200,10 @@ en-US = "Fetch all remotes"
 zh-TW = "pull 目前 branch（只做 fast-forward）"
 en-US = "Pull current branch (fast-forward only)"
 
+[help.list.push_current_branch]
+zh-TW = "push 目前 branch（沒有 upstream 時一併建立）"
+en-US = "Push current branch (sets upstream if missing)"
+
 [help.list.checkout_selected_commit_ref]
 zh-TW = "checkout 選取的 commit/ref"
 en-US = "Checkout selected commit/ref"

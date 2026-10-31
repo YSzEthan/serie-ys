@@ -912,6 +912,9 @@
         "pull": {
           "$ref": "#/definitions/keybindArray"
         },
+        "push": {
+          "$ref": "#/definitions/keybindArray"
+        },
         "checkout": {
           "$ref": "#/definitions/keybindArray"
         },

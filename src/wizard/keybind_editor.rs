@@ -756,21 +756,21 @@ mod tests {
         );
     }
 
-    /// `shift-p` 預設歸 GitHub 介面的 `toggle_pr_draft`；`go_to_head` 只在
+    /// `shift-x` 預設歸 GitHub 介面的 `toggle_issue_state`；`go_to_head` 只在
     /// commit 清單有效，兩者可以共用，不需要確認。
     #[test]
     fn binding_a_key_owned_by_another_scope_needs_no_confirmation() {
-        let shift_p = KeyEvent::new(KeyCode::Char('P'), KeyModifiers::SHIFT);
+        let shift_x = KeyEvent::new(KeyCode::Char('X'), KeyModifiers::SHIFT);
         let mut state = KeyBindEditorState::new(&test_defaults());
         let mut draft = test_draft();
         state.list.select(Some(row_of(&state, UserEvent::GoToHead)));
         state.on_key(key(KeyCode::Enter), &mut draft);
-        state.on_key(shift_p, &mut draft);
+        state.on_key(shift_x, &mut draft);
 
         assert!(state.capture.is_none(), "不衝突就直接指派，不進確認");
         assert_eq!(
-            state.effective().events(&shift_p),
-            &[UserEvent::GoToHead, UserEvent::TogglePrDraft]
+            state.effective().events(&shift_x),
+            &[UserEvent::GoToHead, UserEvent::ToggleIssueState]
         );
     }
 

@@ -494,9 +494,21 @@ mod tests {
     #[test]
     fn default_keybind_parses() {
         let keybind = KeyBind::new(None);
+        assert_eq!(keybind.resolve(&shift_p(), None), Some(UserEvent::Push));
+    }
+
+    /// 預設的 `shift-p`：commit 清單是 push，GitHub 介面維持切換 PR draft。
+    #[test]
+    fn default_shift_p_means_push_in_list_and_draft_in_github() {
+        let keybind = KeyBind::new(None);
+
         assert_eq!(
-            keybind.resolve(&shift_p(), None),
-            Some(UserEvent::TogglePrDraft),
+            keybind.resolve(&shift_p(), Some(KeyScope::List)),
+            Some(UserEvent::Push)
+        );
+        assert_eq!(
+            keybind.resolve(&shift_p(), Some(KeyScope::GitHub)),
+            Some(UserEvent::TogglePrDraft)
         );
     }
 
