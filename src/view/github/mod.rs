@@ -97,6 +97,17 @@ impl GitHubTab {
         }
     }
 
+    /// 數字鍵 1~4 對應的分頁，順序同畫面上的 tab 列。
+    fn from_digit(c: char) -> Option<GitHubTab> {
+        match c {
+            '1' => Some(GitHubTab::Issues),
+            '2' => Some(GitHubTab::PullRequests),
+            '3' => Some(GitHubTab::Branches),
+            '4' => Some(GitHubTab::Ci),
+            _ => None,
+        }
+    }
+
     /// Tab 鍵的循環順序：Issues → PRs → Branches → CI → Issues。
     fn next(self) -> GitHubTab {
         match self {
@@ -257,6 +268,11 @@ pub struct GitHubView<'a> {
 }
 
 impl<'a> GitHubView<'a> {
+    /// 搜尋 prompt 開著時，按鍵是文字輸入，`App` 要當輸入模式處理。
+    pub fn is_prompt_focused(&self) -> bool {
+        self.focus == GitHubFocus::Prompt
+    }
+
     /// 一律從 Loading 起跳：唯一呼叫者 `App::open_github` 開 view 時必定
     /// 送出 refresh，帶快取重開也一樣。
     pub fn new(before: View<'a>, data: GitHubData, tx: Sender) -> GitHubView<'a> {
@@ -3437,6 +3453,62 @@ mod tests {
         assert_eq!(issue_view.label_mode, LabelMode::Swatches);
         issue_view.handle_preview_event(UserEvent::ToggleLabelMode, 1);
         assert_eq!(issue_view.label_mode, LabelMode::Names);
+    }
+
+    fn press_key(view: &mut GitHubView<'_>, key: ratatui::crossterm::event::KeyEvent) {
+        view.handle_event(UserEventWithCount::from_event(UserEvent::Unknown), key);
+    }
+
+    #[test]
+    fn digit_keys_jump_to_tab_in_list_focus() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent};
+
+        let mut view = view_with_body("body".to_string());
+        for (c, tab) in [
+            ('3', GitHubTab::Branches),
+            ('4', GitHubTab::Ci),
+            ('1', GitHubTab::Issues),
+            ('2', GitHubTab::PullRequests),
+        ] {
+            press_key(&mut view, KeyEvent::from(KeyCode::Char(c)));
+            assert_eq!(view.active_tab, tab, "key {c}");
+        }
+    }
+
+    #[test]
+    fn unmapped_and_modified_digits_do_not_switch_tab() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+        let mut view = view_with_body("body".to_string());
+        for key in [
+            KeyEvent::from(KeyCode::Char('5')),
+            KeyEvent::from(KeyCode::Char('0')),
+            KeyEvent::new(KeyCode::Char('3'), KeyModifiers::ALT),
+        ] {
+            press_key(&mut view, key);
+            assert_eq!(view.active_tab, GitHubTab::PullRequests, "{key:?}");
+        }
+    }
+
+    #[test]
+    fn digit_for_current_tab_keeps_scroll_state() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent};
+
+        let mut view = view_with_body("body".to_string());
+        view.preview_offset = 3;
+        press_key(&mut view, KeyEvent::from(KeyCode::Char('2')));
+        assert_eq!(view.preview_offset, 3);
+    }
+
+    #[test]
+    fn digit_in_prompt_focus_goes_to_search_input() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent};
+
+        let mut view = view_with_body("body".to_string());
+        view.focus = GitHubFocus::Prompt;
+        press_key(&mut view, KeyEvent::from(KeyCode::Char('4')));
+        assert_eq!(view.active_tab, GitHubTab::PullRequests);
+        assert_eq!(view.search_input.value(), "4");
     }
 
     /// 搜尋 prompt 裡打字母 `t`：要進 search_input，不能被攔截去切換
