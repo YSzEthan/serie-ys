@@ -708,6 +708,10 @@ impl App<'_> {
                 AppEvent::Push => {
                     self.push();
                 }
+                AppEvent::OpenRepoWeb => match crate::git::remote_web_url(self.repository.path()) {
+                    Ok(url) => self.open_url(url),
+                    Err(msg) => self.ec.send(AppEvent::NotifyError(msg)),
+                },
                 AppEvent::Pull => {
                     self.pull();
                 }

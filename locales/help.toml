@@ -204,6 +204,10 @@ en-US = "Pull current branch (fast-forward only)"
 zh-TW = "push 目前 branch（沒有 upstream 時一併建立）"
 en-US = "Push current branch (sets upstream if missing)"
 
+[help.list.open_repo_web]
+zh-TW = "用瀏覽器開 repo 首頁（origin，或唯一的 remote）"
+en-US = "Open repo homepage in browser (origin, or the only remote)"
+
 [help.list.checkout_selected_commit_ref]
 zh-TW = "checkout 選取的 commit/ref"
 en-US = "Checkout selected commit/ref"

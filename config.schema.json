@@ -915,6 +915,9 @@
         "push": {
           "$ref": "#/definitions/keybindArray"
         },
+        "open_repo_web": {
+          "$ref": "#/definitions/keybindArray"
+        },
         "checkout": {
           "$ref": "#/definitions/keybindArray"
         },

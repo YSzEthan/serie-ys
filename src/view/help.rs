@@ -285,6 +285,7 @@ fn help_blocks(
         b(vec![UserEvent::Fetch], t!("help.list.fetch_all_remotes")),
         b(vec![UserEvent::Pull], t!("help.list.pull_fast_forward_only")),
         b(vec![UserEvent::Push], t!("help.list.push_current_branch")),
+        b(vec![UserEvent::OpenRepoWeb], t!("help.list.open_repo_web")),
         b(vec![UserEvent::Checkout], t!("help.list.checkout_selected_commit_ref")),
         b(vec![UserEvent::MarkToggle], t!("help.list.toggle_mark")),
         b(vec![UserEvent::Refresh], t!("help.list.refresh")),
