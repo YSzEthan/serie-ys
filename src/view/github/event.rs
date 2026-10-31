@@ -1,6 +1,6 @@
 use std::time::Instant;
 
-use ratatui::crossterm::event::{Event, KeyEvent};
+use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use rust_i18n::t;
 use tui_input::backend::crossterm::EventHandler;
 
@@ -31,7 +31,10 @@ impl<'a> GitHubView<'a> {
             GitHubFocus::CheckboxEdit => self.handle_checkbox_edit_event(event, count),
             GitHubFocus::Preview => self.handle_preview_event(event, count),
             GitHubFocus::Prompt => self.handle_prompt_event(event, count, key),
-            GitHubFocus::List => self.handle_list_event(event, count),
+            GitHubFocus::List => match digit_tab(event, key) {
+                Some(tab) => self.select_tab(tab),
+                None => self.handle_list_event(event, count),
+            },
         }
         if self.selected_number_and_kind() != before {
             self.schedule_timeline_for_selected(Instant::now());
@@ -156,6 +159,15 @@ impl<'a> GitHubView<'a> {
         }
     }
 
+    /// 跳到指定分頁；已經在該分頁就不動，免得把游標重設到第 0 列。
+    fn select_tab(&mut self, tab: GitHubTab) {
+        if tab == self.active_tab {
+            return;
+        }
+        self.switch_tab(tab);
+        self.bump_generation();
+    }
+
     fn switch_tab(&mut self, tab: GitHubTab) {
         self.active_tab = tab;
         self.selected_index = 0;
@@ -177,14 +189,8 @@ impl<'a> GitHubView<'a> {
             UserEvent::GitHubToggle | UserEvent::Cancel | UserEvent::Close => {
                 self.tx.send(AppEvent::CloseGitHub);
             }
-            UserEvent::RefList => {
-                self.switch_tab(self.active_tab.next());
-                self.bump_generation();
-            }
-            UserEvent::RefListPrev => {
-                self.switch_tab(self.active_tab.prev());
-                self.bump_generation();
-            }
+            UserEvent::RefList => self.select_tab(self.active_tab.next()),
+            UserEvent::RefListPrev => self.select_tab(self.active_tab.prev()),
             UserEvent::NavigateDown | UserEvent::SelectDown => {
                 let max = self.current_list_len().saturating_sub(1);
                 let step = self.nav_step();
@@ -758,6 +764,17 @@ impl<'a> GitHubView<'a> {
             return;
         }
         self.dispatch_load_more();
+    }
+}
+
+/// 沒綁定、不帶修飾鍵的數字鍵 1~4 → 對應分頁。綁定過的數字鍵會 resolve
+/// 成別的事件，不會走到這裡。
+fn digit_tab(event: UserEvent, key: KeyEvent) -> Option<GitHubTab> {
+    match (event, key.code) {
+        (UserEvent::Unknown, KeyCode::Char(c)) if key.modifiers == KeyModifiers::NONE => {
+            GitHubTab::from_digit(c)
+        }
+        _ => None,
     }
 }
 

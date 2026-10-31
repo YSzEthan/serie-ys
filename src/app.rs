@@ -1177,7 +1177,7 @@ impl App<'_> {
             }
             None => {
                 self.key_state.reset_quit_press();
-                if self.is_input_mode() || matches!(self.view, View::Detail(_)) {
+                if unbound_key_goes_to_view(&self.view, self.is_input_mode()) {
                     self.key_state.clear_count();
                     self.view
                         .handle_event(UserEventWithCount::from_event(UserEvent::Unknown), key);
@@ -1254,6 +1254,7 @@ impl App<'_> {
     fn is_input_mode(&self) -> bool {
         self.status_line_state.is_input_mode_variant()
             || matches!(self.view, View::CreateTag(_) | View::Shell(_))
+            || matches!(&self.view, View::GitHub(v) if v.is_prompt_focused())
     }
 
     fn open_detail(&mut self) {
@@ -2891,6 +2892,12 @@ fn global_app_event(event: UserEvent, browsing_view: bool, input_mode: bool) -> 
     }
 }
 
+/// 沒綁定的按鍵要交給 view（而不是累積成數字前綴）。GitHub view 的數字鍵
+/// 用來切分頁，所以不收 count。
+fn unbound_key_goes_to_view(view: &View, input_mode: bool) -> bool {
+    input_mode || matches!(view, View::Detail(_) | View::GitHub(_))
+}
+
 fn process_numeric_prefix(
     numeric_prefix: &str,
     user_event: UserEvent,
@@ -3114,6 +3121,24 @@ mod tests {
             intercepted,
             "event={event:?} browsing={browsing_view} input={input_mode} 得到 {actual:?}"
         );
+    }
+
+    /// GitHub view 的數字鍵切分頁，不能被當成 count 前綴吞掉；其他非輸入
+    /// 模式的 view 維持原行為。
+    #[test]
+    fn unbound_key_goes_to_view_only_for_github_detail_or_input_mode() {
+        let (tx, _rx) = crate::event::Sender::channel_for_test();
+        let github = View::of_github(
+            View::Default,
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            Duration::from_secs(60),
+            tx,
+        );
+        assert!(unbound_key_goes_to_view(&github, false));
+        assert!(!unbound_key_goes_to_view(&View::Default, false));
+        assert!(unbound_key_goes_to_view(&View::Default, true));
     }
 
     #[test]
