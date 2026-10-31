@@ -255,12 +255,12 @@ zh-TW = "沒有項目"
 en-US = "No items"
 
 [github.render.tab_issues]
-zh-TW = " Issues (%{n}) "
-en-US = " Issues (%{n}) "
+zh-TW = " [1]Issues (%{n}) "
+en-US = " [1]Issues (%{n}) "
 
 [github.render.tab_prs]
-zh-TW = " PRs (%{n}) "
-en-US = " PRs (%{n}) "
+zh-TW = " [2]PRs (%{n}) "
+en-US = " [2]PRs (%{n}) "
 
 [github.render.matched]
 zh-TW = "  符合 %{n} 項"
@@ -373,8 +373,8 @@ zh-TW = "  ⟳ 重新抓取中…"
 en-US = "  ⟳ Refetching…"
 
 [github.render.tab_branches]
-zh-TW = " Branches (%{n}) "
-en-US = " Branches (%{n}) "
+zh-TW = " [3]Branches (%{n}) "
+en-US = " [3]Branches (%{n}) "
 
 [github.branches.stat_unavailable]
 zh-TW = "本機沒有此 commit，按 f fetch 後顯示行數"
@@ -397,8 +397,8 @@ zh-TW = "[所有作者]"
 en-US = "[all authors]"
 
 [github.render.tab_ci]
-zh-TW = " CI (%{n}) "
-en-US = " CI (%{n}) "
+zh-TW = " [4]CI (%{n}) "
+en-US = " [4]CI (%{n}) "
 
 [github.ci.no_checks]
 zh-TW = "尚無 CI"
