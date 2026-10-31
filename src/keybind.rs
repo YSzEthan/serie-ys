@@ -512,6 +512,19 @@ mod tests {
         );
     }
 
+    /// 預設的 `shift-o` 只在 commit 清單開 repo 首頁，其他畫面不處理。
+    #[test]
+    fn default_shift_o_opens_repo_web_in_list_only() {
+        let keybind = KeyBind::new(None);
+        let shift_o = KeyEvent::new(KeyCode::Char('O'), KeyModifiers::SHIFT);
+
+        assert_eq!(
+            keybind.resolve(&shift_o, Some(KeyScope::List)),
+            Some(UserEvent::OpenRepoWeb)
+        );
+        assert!(!KeyScope::GitHub.consumes(UserEvent::OpenRepoWeb));
+    }
+
     /// 同一顆鍵、不同畫面各自處理的事件，可以出現在同一份設定檔；按下時依目前
     /// 畫面決定觸發哪一個。
     #[test]

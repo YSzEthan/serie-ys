@@ -207,6 +207,7 @@ pub enum AppEvent {
     FetchAll,
     Pull,
     Push,
+    OpenRepoWeb,
     CheckoutCommit {
         target: String,
     },
@@ -1125,6 +1126,7 @@ pub enum UserEvent {
     Fetch,
     Pull,
     Push,
+    OpenRepoWeb,
     Checkout,
     MergePr,
     ToggleIssueState,
@@ -1193,6 +1195,7 @@ impl UserEvent {
             UserEvent::Fetch => "fetch",
             UserEvent::Pull => "pull",
             UserEvent::Push => "push",
+            UserEvent::OpenRepoWeb => "open_repo_web",
             UserEvent::Checkout => "checkout",
             UserEvent::MergePr => "merge_pr",
             UserEvent::ToggleIssueState => "toggle_issue_state",
@@ -1265,6 +1268,7 @@ impl UserEvent {
             UserEvent::Fetch => t!("event.desc.fetch"),
             UserEvent::Pull => t!("event.desc.pull"),
             UserEvent::Push => t!("event.desc.push"),
+            UserEvent::OpenRepoWeb => t!("event.desc.open_repo_web"),
             UserEvent::Checkout => t!("event.desc.checkout"),
             UserEvent::MergePr => t!("event.desc.merge_pr"),
             UserEvent::ToggleIssueState => t!("event.desc.toggle_issue_state"),
@@ -1356,6 +1360,7 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "fetch" => Ok(UserEvent::Fetch),
                         "pull" => Ok(UserEvent::Pull),
                         "push" => Ok(UserEvent::Push),
+                        "open_repo_web" => Ok(UserEvent::OpenRepoWeb),
                         "checkout" => Ok(UserEvent::Checkout),
                         "merge_pr" => Ok(UserEvent::MergePr),
                         "toggle_issue_state" => Ok(UserEvent::ToggleIssueState),
@@ -1483,6 +1488,7 @@ impl KeyScope {
                     | E::Fetch
                     | E::Pull
                     | E::Push
+                    | E::OpenRepoWeb
                     | E::Checkout
                     | E::MarkToggle
                     | E::Refresh
@@ -2090,6 +2096,7 @@ mod tests {
             UserEvent::Fetch,
             UserEvent::Pull,
             UserEvent::Push,
+            UserEvent::OpenRepoWeb,
             UserEvent::Checkout,
             UserEvent::MergePr,
             UserEvent::ToggleIssueState,
