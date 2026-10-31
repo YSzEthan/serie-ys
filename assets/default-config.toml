@@ -78,7 +78,10 @@ date_format = "%Y-%m-%d %H:%M:%S %z"
 date_local = true
 
 [ui.github]
-diff_stat_target = 10000  # PR 變更行數的目標數，顯示 Δ = 目標 − 總和，達到時紅色標示（≥1）
+diff_stat_target = 10000  # PR 變更行數的目標數，顯示 Δ = 目標 − 總和（≥1）
+diff_stat_green_percent = 30   # 已用比例（總和 ÷ 目標）< 此值（%）→ Δ 綠色
+diff_stat_yellow_percent = 70  # < 此值 → 黃色
+diff_stat_red_percent = 70     # ≥ 此值 → 紅色粗體；三者都不符合才是白色
 ci_interval_secs = 15  # CI 監測 tab 的輪詢間隔（秒，5～300）；--github-ci-interval 優先
 
 # 介面配色。顏色可以是 ANSI 色名（"red"、"dark-gray"⋯）、"reset"（沿用終端機

@@ -172,6 +172,14 @@ en-US = "Failed to delete branch"
 zh-TW = "強制刪除 branch 失敗"
 en-US = "Failed to force delete branch"
 
+[git.remote_web.no_remote]
+zh-TW = "找不到 origin，也沒有唯一的 remote 可用"
+en-US = "No origin remote, and no single remote to fall back on"
+
+[git.remote_web.unsupported]
+zh-TW = "無法把 remote URL 轉成網頁位址：%{url}"
+en-US = "Cannot turn remote URL into a web address: %{url}"
+
 [git.branch.invalid_remote_name]
 zh-TW = "remote branch 名稱格式無效：%{name}"
 en-US = "Invalid remote branch name format: %{name}"

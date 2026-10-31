@@ -320,14 +320,14 @@ impl<'a> View<'a> {
         before: View<'a>,
         data: crate::github::GitHubData,
         label_mode: LabelMode,
-        diff_stat_target: u32,
+        diff_stat_thresholds: crate::view::github::DiffStatThresholds,
         ci_interval: std::time::Duration,
         tx: Sender,
     ) -> Self {
         View::GitHub(Box::new(
             GitHubView::new(before, data, tx)
                 .with_label_mode(label_mode)
-                .with_diff_stat_target(diff_stat_target)
+                .with_diff_stat_thresholds(diff_stat_thresholds)
                 .with_ci_interval(ci_interval),
         ))
     }

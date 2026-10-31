@@ -164,6 +164,18 @@ en-US = "Pull complete"
 zh-TW = "Pull 失敗"
 en-US = "Pull failed"
 
+[app.push.pending]
+zh-TW = "正在 push…"
+en-US = "Pushing…"
+
+[app.push.done]
+zh-TW = "Push 完成"
+en-US = "Push complete"
+
+[app.push.failed]
+zh-TW = "Push 失敗"
+en-US = "Push failed"
+
 [app.checkout.pending]
 zh-TW = "正在 checkout '%{target}'…"
 en-US = "Checking out '%{target}'…"

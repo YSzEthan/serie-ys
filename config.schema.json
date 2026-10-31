@@ -475,10 +475,31 @@
           "properties": {
             "diff_stat_target": {
               "type": "integer",
-              "description": "Target size for a pull request's changed lines. The GitHub view shows the delta (target minus total); once the total reaches the target it is highlighted in red.",
+              "description": "Target size for a pull request's changed lines. The GitHub view shows the delta (target minus total); the delta's color depends on the used share (total divided by target) and the three thresholds below.",
               "minimum": 1,
               "maximum": 4294967295,
               "default": 10000
+            },
+            "diff_stat_green_percent": {
+              "type": "integer",
+              "description": "Used share (percent) below which the delta is green. Checked first.",
+              "minimum": 0,
+              "maximum": 1000,
+              "default": 30
+            },
+            "diff_stat_yellow_percent": {
+              "type": "integer",
+              "description": "Used share (percent) below which the delta is yellow. Checked second.",
+              "minimum": 0,
+              "maximum": 1000,
+              "default": 70
+            },
+            "diff_stat_red_percent": {
+              "type": "integer",
+              "description": "Used share (percent) at or above which the total and delta are bold red. Checked third; anything left over is white.",
+              "minimum": 0,
+              "maximum": 1000,
+              "default": 70
             },
             "ci_interval_secs": {
               "type": "integer",
@@ -889,6 +910,12 @@
           "$ref": "#/definitions/keybindArray"
         },
         "pull": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "push": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "open_repo_web": {
           "$ref": "#/definitions/keybindArray"
         },
         "checkout": {

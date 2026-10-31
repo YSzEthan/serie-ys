@@ -196,6 +196,14 @@ en-US = "Fetch all remotes"
 zh-TW = "pull（只做 fast-forward）"
 en-US = "Pull (fast-forward only)"
 
+[event.desc.push]
+zh-TW = "push 目前 branch 到同名 remote branch"
+en-US = "Push current branch to the same-named remote branch"
+
+[event.desc.open_repo_web]
+zh-TW = "用瀏覽器開 repo 首頁"
+en-US = "Open repo homepage in browser"
+
 [event.desc.checkout]
 zh-TW = "checkout 選取的 commit/ref"
 en-US = "Checkout selected commit/ref"

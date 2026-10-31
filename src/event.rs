@@ -194,7 +194,8 @@ pub enum AppEvent {
     /// 一路往前傳，見 `reload::Reloader::request_full`。
     Refresh,
     ClearStatusLine,
-    UpdateStatusInput(String, Option<u16>, Option<String>),
+    /// 訊息、游標在訊息內的 byte 位置、右側的 transient 訊息。
+    UpdateStatusInput(String, usize, Option<String>),
     NotifyInfo(String),
     NotifySuccess(String),
     NotifyWarn(String),
@@ -205,6 +206,8 @@ pub enum AppEvent {
     HidePendingOverlay,
     FetchAll,
     Pull,
+    Push,
+    OpenRepoWeb,
     CheckoutCommit {
         target: String,
     },
@@ -1122,6 +1125,8 @@ pub enum UserEvent {
     DetailPaneToggle,
     Fetch,
     Pull,
+    Push,
+    OpenRepoWeb,
     Checkout,
     MergePr,
     ToggleIssueState,
@@ -1189,6 +1194,8 @@ impl UserEvent {
             UserEvent::DetailPaneToggle => "detail_pane_toggle",
             UserEvent::Fetch => "fetch",
             UserEvent::Pull => "pull",
+            UserEvent::Push => "push",
+            UserEvent::OpenRepoWeb => "open_repo_web",
             UserEvent::Checkout => "checkout",
             UserEvent::MergePr => "merge_pr",
             UserEvent::ToggleIssueState => "toggle_issue_state",
@@ -1260,6 +1267,8 @@ impl UserEvent {
             UserEvent::DetailPaneToggle => t!("event.desc.detail_pane_toggle"),
             UserEvent::Fetch => t!("event.desc.fetch"),
             UserEvent::Pull => t!("event.desc.pull"),
+            UserEvent::Push => t!("event.desc.push"),
+            UserEvent::OpenRepoWeb => t!("event.desc.open_repo_web"),
             UserEvent::Checkout => t!("event.desc.checkout"),
             UserEvent::MergePr => t!("event.desc.merge_pr"),
             UserEvent::ToggleIssueState => t!("event.desc.toggle_issue_state"),
@@ -1350,6 +1359,8 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "detail_pane_toggle" => Ok(UserEvent::DetailPaneToggle),
                         "fetch" => Ok(UserEvent::Fetch),
                         "pull" => Ok(UserEvent::Pull),
+                        "push" => Ok(UserEvent::Push),
+                        "open_repo_web" => Ok(UserEvent::OpenRepoWeb),
                         "checkout" => Ok(UserEvent::Checkout),
                         "merge_pr" => Ok(UserEvent::MergePr),
                         "toggle_issue_state" => Ok(UserEvent::ToggleIssueState),
@@ -1476,6 +1487,8 @@ impl KeyScope {
                     | E::RemoteRefsToggle
                     | E::Fetch
                     | E::Pull
+                    | E::Push
+                    | E::OpenRepoWeb
                     | E::Checkout
                     | E::MarkToggle
                     | E::Refresh
@@ -2082,6 +2095,8 @@ mod tests {
             UserEvent::DetailPaneToggle,
             UserEvent::Fetch,
             UserEvent::Pull,
+            UserEvent::Push,
+            UserEvent::OpenRepoWeb,
             UserEvent::Checkout,
             UserEvent::MergePr,
             UserEvent::ToggleIssueState,

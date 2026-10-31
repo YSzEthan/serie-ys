@@ -61,6 +61,8 @@
 | <kbd>g</kbd> | 開啟 GitHub issues/PRs | `github_toggle` |
 | <kbd>f</kbd> | fetch 所有 remote | `fetch` |
 | <kbd>p</kbd> | pull 目前 branch（只做 fast-forward） | `pull` |
+| <kbd>P</kbd> | push 目前 branch（沒有 upstream 時一併建立） | `push` |
+| <kbd>O</kbd> | 用瀏覽器開 repo 首頁（origin，或唯一的 remote） | `open_repo_web` |
 | <kbd>Space</kbd> | checkout 選取的 commit/ref | `checkout` |
 | <kbd>a</kbd> | 切換 commit 標記 | `mark_toggle` |
 | <kbd>r</kbd> | 重新整理 | `refresh` |
@@ -117,7 +119,7 @@
 | 按鍵 | 說明 | 設定鍵名 |
 | --- | --- | --- |
 | <kbd>g</kbd> <kbd>n</kbd> <kbd>Esc</kbd> <kbd>Backspace</kbd> | 關閉 GitHub view | `github_toggle` `cancel` `close` |
-| <kbd>Tab</kbd> <kbd>Shift-Tab</kbd> | 切換 Issues → PRs → Branches → CI 分頁，Shift-Tab 反向（Branches 列出 GitHub 上沒有 OPEN PR 的 branch 與行數差異；CI 監測 head branch 在本地的 open PR 的 CI 狀態） | `ref_list` `ref_list_prev` |
+| <kbd>Tab</kbd> <kbd>Shift-Tab</kbd> | 切換 Issues → PRs → Branches → CI 分頁，Shift-Tab 反向，數字鍵 1~4 直接跳到對應分頁（Branches 列出 GitHub 上沒有 OPEN PR 的 branch 與行數差異；CI 監測 head branch 在本地的 open PR 的 CI 狀態） | `ref_list` `ref_list_prev` |
 | <kbd>Down</kbd> <kbd>j</kbd> <kbd>J</kbd> | 向下移動 | `navigate_down` `select_down` |
 | <kbd>Up</kbd> <kbd>k</kbd> <kbd>K</kbd> | 向上移動 | `navigate_up` `select_up` |
 | <kbd>PageDown</kbd> <kbd>Ctrl-f</kbd> | 向下一頁 | `page_down` |

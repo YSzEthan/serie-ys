@@ -14,7 +14,7 @@ use super::{
         build_timeline, diff_stat_spans, leading, mergeable_marker, TimelineEntry, TimelineLoad,
         TimelineStage,
     },
-    GitHubTab, Section,
+    DiffStatThresholds, GitHubTab, Section,
 };
 
 /// 第三個回傳值是 leading 區（CI、commit）起點的*邏輯*行號，也就是 header
@@ -84,7 +84,7 @@ pub(super) fn build_preview_content(
         if let Some((text, color)) = mergeable_marker(input.entry.and_then(|e| e.mergeable)) {
             spans.push(Span::styled(text, Style::default().fg(color)));
         }
-        spans.extend(diff_stat_spans(diff_stat, input.diff_stat_target));
+        spans.extend(diff_stat_spans(diff_stat, input.diff_stat_thresholds));
         lines.push(Line::from(spans));
     }
 
@@ -161,8 +161,8 @@ pub(super) struct PreviewInput<'v> {
     pub(super) body_rev: u64,
     pub(super) entry: Option<&'v TimelineEntry>,
     pub(super) expand_commits: bool,
-    /// `ui.github.diff_stat_target`，PR 變更行數 `Δ` 的基準。
-    pub(super) diff_stat_target: u32,
+    /// `ui.github.diff_stat_*`，PR 變更行數 `Δ` 的目標數與顏色門檻。
+    pub(super) diff_stat_thresholds: DiffStatThresholds,
     pub(super) item: Option<SelectedItem<'v>>,
 }
 
@@ -189,7 +189,7 @@ impl PreviewInput<'_> {
             rev: self.entry.map_or(0, |e| e.rev),
             expand_commits: self.expand_commits,
             body_rev: self.body_rev,
-            diff_stat_target: self.diff_stat_target,
+            diff_stat_thresholds: self.diff_stat_thresholds,
             width: self.width,
         }
     }
@@ -238,7 +238,7 @@ struct PreviewKey {
     rev: u64,
     expand_commits: bool,
     body_rev: u64,
-    diff_stat_target: u32,
+    diff_stat_thresholds: DiffStatThresholds,
     width: u16,
 }
 
@@ -448,7 +448,7 @@ mod tests {
             body_rev: 0,
             entry: Some(entry),
             expand_commits: true,
-            diff_stat_target: 10_000,
+            diff_stat_thresholds: DiffStatThresholds::default(),
             item: Some(SelectedItem {
                 title: "t",
                 state: "OPEN",

@@ -200,6 +200,14 @@ en-US = "Fetch all remotes"
 zh-TW = "pull 目前 branch（只做 fast-forward）"
 en-US = "Pull current branch (fast-forward only)"
 
+[help.list.push_current_branch]
+zh-TW = "push 目前 branch（沒有 upstream 時一併建立）"
+en-US = "Push current branch (sets upstream if missing)"
+
+[help.list.open_repo_web]
+zh-TW = "用瀏覽器開 repo 首頁（origin，或唯一的 remote）"
+en-US = "Open repo homepage in browser (origin, or the only remote)"
+
 [help.list.checkout_selected_commit_ref]
 zh-TW = "checkout 選取的 commit/ref"
 en-US = "Checkout selected commit/ref"
@@ -365,8 +373,8 @@ zh-TW = "關閉 GitHub view"
 en-US = "Close GitHub view"
 
 [help.github.switch_issue_pr_tab]
-zh-TW = "切換 Issues → PRs → Branches → CI 分頁，Shift-Tab 反向（Branches 列出 GitHub 上沒有 OPEN PR 的 branch 與行數差異；CI 監測 head branch 在本地的 open PR 的 CI 狀態）"
-en-US = "Cycle Issues → PRs → Branches → CI tab, Shift-Tab reverses (Branches lists branches on GitHub without an open PR, with line diff; CI watches the CI status of open PRs whose head branch exists locally)"
+zh-TW = "切換 Issues → PRs → Branches → CI 分頁，Shift-Tab 反向，數字鍵 1~4 直接跳到對應分頁（Branches 列出 GitHub 上沒有 OPEN PR 的 branch 與行數差異；CI 監測 head branch 在本地的 open PR 的 CI 狀態）"
+en-US = "Cycle Issues → PRs → Branches → CI tab, Shift-Tab reverses, digits 1-4 jump straight to a tab (Branches lists branches on GitHub without an open PR, with line diff; CI watches the CI status of open PRs whose head branch exists locally)"
 
 [help.github.move_down]
 zh-TW = "向下移動"

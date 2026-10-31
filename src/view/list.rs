@@ -233,6 +233,12 @@ impl<'a> ListView<'a> {
             UserEvent::Pull => {
                 self.tx.send(AppEvent::Pull);
             }
+            UserEvent::Push => {
+                self.tx.send(AppEvent::Push);
+            }
+            UserEvent::OpenRepoWeb => {
+                self.tx.send(AppEvent::OpenRepoWeb);
+            }
             UserEvent::DeleteRef if !self.as_list_state().is_virtual_row_selected() => {
                 let refs = self.as_list_state().selected_commit_refs();
                 let (local, _remote) = partition_branches(refs.iter().copied());
@@ -321,13 +327,10 @@ impl<'a> ListView<'a> {
         };
         if let SearchState::Searching { .. } = list_state.search_state() {
             if let Some(query) = list_state.search_query_string() {
-                let cursor_pos = list_state.search_query_cursor_position();
+                let cursor = list_state.search_query_cursor_byte_index();
                 let transient_msg = list_state.transient_message_string();
-                self.tx.send(AppEvent::UpdateStatusInput(
-                    query,
-                    Some(cursor_pos),
-                    transient_msg,
-                ));
+                self.tx
+                    .send(AppEvent::UpdateStatusInput(query, cursor, transient_msg));
             }
         }
     }
@@ -340,13 +343,10 @@ impl<'a> ListView<'a> {
         if let FilterState::Filtering { .. } = self.as_list_state().filter_state() {
             let list_state = self.as_list_state();
             if let Some(query) = list_state.filter_query_string() {
-                let cursor_pos = list_state.filter_query_cursor_position();
+                let cursor = list_state.filter_query_cursor_byte_index();
                 let transient_msg = list_state.filter_transient_message_string();
-                self.tx.send(AppEvent::UpdateStatusInput(
-                    query,
-                    Some(cursor_pos),
-                    transient_msg,
-                ));
+                self.tx
+                    .send(AppEvent::UpdateStatusInput(query, cursor, transient_msg));
             }
         }
     }

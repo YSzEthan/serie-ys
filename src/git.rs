@@ -1173,6 +1173,42 @@ pub fn local_branch_names(path: &Path) -> std::result::Result<FxHashSet<String>,
         .collect())
 }
 
+/// 現在磁碟上與 PR head 同名的 local branch／`origin/<head_ref>` tracking ref，
+/// 以及目前 checkout 的 branch（detached 為 `None`）。
+///
+/// 給 GitHub view 的 merge 選單用：`Repository` 是載入當下的快照，使用者在
+/// 別處新建／切換 branch 後不會更新，按 `p` 時得現查才不用回 git view 重開。
+pub fn live_merge_refs(path: &Path, head_ref: &str) -> (Vec<Ref>, Option<String>) {
+    let rev = |refname: String| {
+        let mut cmd = git_read(path);
+        cmd.args(["rev-parse", "--verify", "-q", &refname]);
+        git_stdout(cmd, None, BRANCH_QUERY_TIMEOUT)
+            .ok()
+            .map(|s| CommitHash::from(s.trim()))
+    };
+    let mut refs = Vec::new();
+    if let Some(target) = rev(format!("refs/heads/{head_ref}")) {
+        refs.push(Ref::Branch {
+            name: head_ref.to_string(),
+            target,
+        });
+    }
+    let tracking = format!("origin/{head_ref}");
+    if let Some(target) = rev(format!("refs/remotes/{tracking}")) {
+        refs.push(Ref::RemoteBranch {
+            name: tracking,
+            target,
+        });
+    }
+    let mut cmd = git_read(path);
+    cmd.args(["symbolic-ref", "-q", "--short", "HEAD"]);
+    let head = git_stdout(cmd, None, BRANCH_QUERY_TIMEOUT)
+        .ok()
+        .map(|s| s.trim().to_string())
+        .filter(|s| !s.is_empty());
+    (refs, head)
+}
+
 /// `base_oid...head_oid`（三點，相對 merge-base）的 (新增, 刪除) 行數。
 /// 歷史與 base 不相連的 branch（例如 `gh-pages`）沒有 merge-base，三點 diff 會
 /// 失敗；這時退回兩點（直接比兩個 tip），不能讓一個孤兒 branch 拖垮整個分頁。
@@ -1756,6 +1792,98 @@ pub fn remote_tracking_oid(path: &Path, name: &str) -> Option<String> {
         .then(|| String::from_utf8_lossy(&output.stdout).trim().to_string())
 }
 
+/// 目前 repo 的 remote 網頁首頁。有 `origin` 就用它，否則 remote 只有一個時用那一個。
+pub fn remote_web_url(path: &Path) -> std::result::Result<String, String> {
+    let git = |args: &[&str]| {
+        Command::new("git")
+            .args(args)
+            .current_dir(path)
+            .output()
+            .ok()
+            .filter(|o| o.status.success())
+            .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+    };
+
+    let remotes = git(&["remote"]).unwrap_or_default();
+    let mut names = remotes.lines();
+    let remote = match (names.next(), names.next()) {
+        (Some(only), None) => only,
+        _ if remotes.lines().any(|n| n == "origin") => "origin",
+        _ => return Err(t!("git.remote_web.no_remote").into_owned()),
+    };
+
+    // `get-url` 會套用 `url.<base>.insteadOf`，這正是要的。
+    let raw = git(&["remote", "get-url", remote])
+        .ok_or_else(|| t!("git.remote_web.no_remote").into_owned())?;
+    remote_url_to_web(&raw).ok_or_else(|| {
+        t!(
+            "git.remote_web.unsupported",
+            url = strip_userinfo_for_display(&raw)
+        )
+        .into_owned()
+    })
+}
+
+/// 錯誤訊息裡不要帶出 `user:token@`。
+fn strip_userinfo_for_display(raw: &str) -> String {
+    match raw.split_once("://") {
+        Some((scheme, rest)) => {
+            // 只在 authority 裡找 `@`，path 裡的 `@` 不算 userinfo。
+            let (authority, tail) = rest.split_at(rest.find('/').unwrap_or(rest.len()));
+            let host = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+            format!("{scheme}://{host}{tail}")
+        }
+        None => raw.to_string(),
+    }
+}
+
+/// remote URL 轉成可在瀏覽器開的 `https://host/owner/repo`。
+///
+/// 只認 `ssh`／`git`／`http`／`https`（含 scp 式 `user@host:path`）；本機路徑、
+/// `file://` 回 `None`。userinfo 一律丟掉（避免 token 外流）；ssh／git 的 port
+/// 是 ssh port，丟掉；http(s) 的 port 保留。
+fn remote_url_to_web(raw: &str) -> Option<String> {
+    let raw = raw.trim();
+    // scp 式：沒有 `://`，且第一個 `:` 前面沒有 `/`（判定同 git，避開 `C:\repo`、`./a:b`）。
+    let normalized;
+    let url = if raw.contains("://") {
+        raw
+    } else {
+        let (host, path) = raw.split_once(':')?;
+        // host 含路徑分隔字元是本機路徑（`./a:b`）；單一字母或 `\` 開頭是 Windows 磁碟機（`C:\repo`）。
+        // host／path 為空的情況交給下面統一擋。
+        if host.contains(['/', '\\']) || host.len() == 1 || path.starts_with('\\') {
+            return None;
+        }
+        normalized = format!("ssh://{host}/{}", path.trim_start_matches('/'));
+        &normalized
+    };
+
+    let (scheme, rest) = url.split_once("://")?;
+    // (網頁 scheme, 是否保留 port)：ssh／git 的 port 是 ssh port，轉成 https 後不適用。
+    let (web_scheme, keep_port) = match scheme {
+        "http" => ("http", true),
+        "https" => ("https", true),
+        "ssh" | "git" => ("https", false),
+        _ => return None,
+    };
+    let (authority, path) = rest.split_once('/')?;
+    let host_port = authority.rsplit_once('@').map_or(authority, |(_, h)| h);
+    let host = if keep_port {
+        host_port
+    } else {
+        host_port.split(':').next().unwrap_or(host_port)
+    };
+    let path = path
+        .trim_matches('/')
+        .trim_end_matches(".git")
+        .trim_matches('/');
+    if host.is_empty() || path.is_empty() {
+        return None;
+    }
+    Some(format!("{web_scheme}://{host}/{path}"))
+}
+
 /// 把 remote-tracking ref 指回 `oid`。`push :ref` 會順手清掉追蹤 ref，
 /// 使用者不想刪它時，push 前先記 oid、push 後用這個放回去。
 pub fn restore_remote_tracking_ref(
@@ -2214,5 +2342,33 @@ mod tests {
             .unwrap()
             .fingerprint();
         assert_ne!(before, after, ".mailmap 改變作者身分，指紋不該不變");
+    }
+
+    #[test]
+    fn remote_url_to_web_cases() {
+        let ok = |raw: &str, want: &str| {
+            assert_eq!(remote_url_to_web(raw).as_deref(), Some(want), "{raw}");
+        };
+        ok(
+            "git@github.com:YSzEthan/serie.git",
+            "https://github.com/YSzEthan/serie",
+        );
+        ok("ssh://git@host:2222/o/r.git", "https://host/o/r");
+        ok("git://host/o/r", "https://host/o/r");
+        ok("https://user:tok@host/o/r.git", "https://host/o/r");
+        ok("https://host:8443/o/r.git/", "https://host:8443/o/r");
+        ok("http://host/o/r", "http://host/o/r");
+
+        for raw in [
+            "",
+            "C:\\repo",
+            "./a:b",
+            "/srv/repo.git",
+            "file:///srv/repo",
+            "https://host",
+            "git@host:",
+        ] {
+            assert_eq!(remote_url_to_web(raw), None, "{raw}");
+        }
     }
 }

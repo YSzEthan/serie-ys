@@ -31,6 +31,24 @@ fn esc_cancel() -> Cow<'static, str> {
     t!("common.esc_cancel")
 }
 
+/// 輸入框要顯示的整串，以及游標前那段內容。
+///
+/// Virtual 游標字元接在切點上而不是事後覆寫，游標下的字元才不會被蓋掉；
+/// 接成單一字串（不拆 span）是為了讓 `truncate_line` 的截斷行為跟沒有游標
+/// 時一樣，不會整段丟掉游標後的內容。`cursor` 不在 char boundary 時退回
+/// 尾端——每一幀都會跑，不能 panic。
+fn input_display<'a>(
+    msg: &'a str,
+    cursor: usize,
+    cursor_type: &CursorType,
+) -> (&'a str, Cow<'a, str>) {
+    let (before, after) = msg.split_at_checked(cursor).unwrap_or((msg, ""));
+    match cursor_type {
+        CursorType::Native => (before, Cow::Borrowed(msg)),
+        CursorType::Virtual(c) => (before, Cow::Owned(format!("{before}{c}{after}"))),
+    }
+}
+
 /// `RestartPrompt` 取消後留下的提醒；`maybe_open_restart_prompt`（app.rs）
 /// 守衛沒過時也是同一句，兩處共用同一份字面值不會漂移。
 pub(super) fn update_installed_hint() -> Cow<'static, str> {
@@ -234,7 +252,8 @@ enum Answer {
 enum StatusLine {
     #[default]
     None,
-    Input(String, Option<u16>, Option<String>),
+    /// 訊息、游標在訊息內的 byte 位置、右側的 transient 訊息。
+    Input(String, usize, Option<String>),
     RefPicker {
         options: Vec<String>,
         kind: RefCopyKind,
@@ -560,10 +579,10 @@ impl StatusLineState {
     pub(super) fn update_input(
         &mut self,
         msg: String,
-        cursor_pos: Option<u16>,
+        cursor: usize,
         transient_msg: Option<String>,
     ) {
-        self.line = StatusLine::Input(msg, cursor_pos, transient_msg);
+        self.line = StatusLine::Input(msg, cursor, transient_msg);
     }
 
     pub(super) fn set_notification_info(&mut self, msg: String) {
@@ -1036,6 +1055,9 @@ impl StatusLineState {
         let full_reload_span = self.full_reload_span(full_status);
         let full_reload_w = full_reload_span.as_ref().map_or(0, Span::width);
 
+        // `Input` 分支算出的「游標前內容的顯示寬度」，渲染後定位游標用。
+        let mut cursor_col = 0usize;
+
         let mut text: Line = match &self.line {
             StatusLine::None => {
                 if numeric_prefix.is_empty() {
@@ -1044,8 +1066,11 @@ impl StatusLineState {
                     Line::raw(numeric_prefix).fg(self.ctx.color_theme.status_input_transient_fg)
                 }
             }
-            StatusLine::Input(msg, _, transient_msg) => {
-                let msg_w = console::measure_text_width(msg.as_str());
+            StatusLine::Input(msg, cursor, transient_msg) => {
+                let (before, display) =
+                    input_display(msg, *cursor, &self.ctx.ui_config.cursor_type);
+                cursor_col = console::measure_text_width(before);
+                let msg_w = console::measure_text_width(&display);
                 if let Some(t_msg) = transient_msg {
                     let t_msg_w = console::measure_text_width(t_msg.as_str());
                     // saturating：窄終端 + 長 transient message 會讓這串減法
@@ -1056,14 +1081,14 @@ impl StatusLineState {
                         .saturating_sub(2 /* pad */)
                         .saturating_sub(full_reload_w);
                     Line::from(vec![
-                        msg.as_str().fg(self.ctx.color_theme.status_input_fg),
+                        display.fg(self.ctx.color_theme.status_input_fg),
                         " ".repeat(pad_w).into(),
                         t_msg
                             .as_str()
                             .fg(self.ctx.color_theme.status_input_transient_fg),
                     ])
                 } else {
-                    Line::raw(msg).fg(self.ctx.color_theme.status_input_fg)
+                    Line::raw(display).fg(self.ctx.color_theme.status_input_fg)
                 }
             }
             StatusLine::RefPicker { options, kind } => self.render_picker_line(
@@ -1196,22 +1221,34 @@ impl StatusLineState {
         // 截斷統一在這裡套一次，不分支 —— picker 那幾行才是真正沒有上限的
         // （`render_picker_line` 把每個 branch 名 inline 印出來），提示列反而是
         // 人工策劃過的。可用寬度從 `block.inner()` 拿，不要手算 padding。
-        let max_width = block.inner(area).width as usize;
+        let inner = block.inner(area);
+        let max_width = inner.width as usize;
         let paragraph = Paragraph::new(truncate_line(text, max_width)).block(block);
         f.render_widget(paragraph, area);
 
-        if let StatusLine::Input(_, Some(cursor_pos), _) = &self.line {
+        if let StatusLine::Input(..) = &self.line {
             // `+ full_reload_w`：Full 重載指示插在 `msg` 前面時會把整行往右
             // 推，游標必須跟著讓開，否則會畫在指示文字底下而不是輸入內容
             // 對應的字元位置。
-            let (x, y) = (area.x + cursor_pos + full_reload_w as u16 + 1, area.y + 1);
+            let offset = u16::try_from(full_reload_w + cursor_col).unwrap_or(u16::MAX);
+            let (x, y) = (inner.x.saturating_add(offset), inner.y);
             match &self.ctx.ui_config.cursor_type {
                 CursorType::Native => {
                     f.set_cursor_position((x, y));
                 }
                 CursorType::Virtual(cursor) => {
-                    let style = Style::default().fg(self.ctx.color_theme.virtual_cursor_fg);
-                    f.buffer_mut().set_string(x, y, cursor, style);
+                    // 游標字元已由 `input_display` 接進字串，這裡只上色、不覆寫。
+                    // 被 `truncate_line` 截掉時那格已是 `…`／空白，染色會誤導，
+                    // 所以先確認格子上真的是游標字元。
+                    let w = u16::try_from(console::measure_text_width(cursor)).unwrap_or(u16::MAX);
+                    if x.saturating_add(w) <= inner.right()
+                        && f.buffer_mut()
+                            .cell((x, y))
+                            .is_some_and(|c| c.symbol() == cursor.as_str())
+                    {
+                        let style = Style::default().fg(self.ctx.color_theme.virtual_cursor_fg);
+                        f.buffer_mut().set_style(Rect::new(x, y, w, 1), style);
+                    }
                 }
             }
         }
@@ -1463,6 +1500,140 @@ mod tests {
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::empty())
+    }
+
+    const RED: ratatui::style::Color = ratatui::style::Color::Red;
+
+    fn virtual_bar() -> CursorType {
+        CursorType::Virtual("|".into())
+    }
+
+    /// 輸入框狀態；`virtual_cursor_fg` 固定成紅色，才能用顏色分辨「這格有沒有被當游標染色」。
+    fn input_state(
+        cursor_type: CursorType,
+        msg: &str,
+        cursor: usize,
+        transient: Option<&str>,
+    ) -> StatusLineState {
+        let (tx, _rx) = Sender::channel_for_test();
+        let mut ctx = test_ctx();
+        let c = Rc::get_mut(&mut ctx).unwrap();
+        c.ui_config.cursor_type = cursor_type;
+        c.color_theme.virtual_cursor_fg = RED;
+        let mut state = StatusLineState::new(ctx, tx, AutoFetchClock::default());
+        state.update_input(msg.into(), cursor, transient.map(Into::into));
+        state
+    }
+
+    /// 畫出狀態列（2 列：上邊框＋輸入列），回傳 buffer。
+    fn render_input(state: &StatusLineState, width: u16) -> ratatui::buffer::Buffer {
+        use ratatui::{backend::TestBackend, Terminal};
+
+        let mut terminal = Terminal::new(TestBackend::new(width, 2)).unwrap();
+        terminal
+            .draw(|f| state.render(f, f.area(), &View::Default, "", FullStatus::Idle))
+            .unwrap();
+        terminal.backend().buffer().clone()
+    }
+
+    fn input_row(buf: &ratatui::buffer::Buffer) -> String {
+        (0..buf.area.width).map(|x| buf[(x, 1)].symbol()).collect()
+    }
+
+    fn red_cells(buf: &ratatui::buffer::Buffer) -> Vec<u16> {
+        (0..buf.area.width)
+            .filter(|&x| buf[(x, 1)].fg == RED)
+            .collect()
+    }
+
+    #[test]
+    fn input_display_virtual_inserts_cursor_without_dropping_chars() {
+        let (before, display) = input_display("/abc", 2, &virtual_bar());
+        assert_eq!(before, "/a");
+        assert_eq!(display, "/a|bc");
+
+        let (_, display) = input_display("/abc", 4, &virtual_bar());
+        assert_eq!(display, "/abc|");
+
+        let (before, display) = input_display("/界a", 4, &virtual_bar());
+        assert_eq!(before, "/界");
+        assert_eq!(display, "/界|a");
+    }
+
+    #[test]
+    fn input_display_native_keeps_message_untouched() {
+        let (before, display) = input_display("/abc", 2, &CursorType::Native);
+        assert_eq!(before, "/a");
+        assert_eq!(display, "/abc");
+    }
+
+    /// 切點落在多 byte 字元中間時退回尾端，不 panic。
+    #[test]
+    fn input_display_falls_back_when_cursor_is_not_on_char_boundary() {
+        let (before, display) = input_display("/界", 2, &virtual_bar());
+        assert_eq!(before, "/界");
+        assert_eq!(display, "/界|");
+
+        let (before, _) = input_display("/ab", 99, &virtual_bar());
+        assert_eq!(before, "/ab");
+    }
+
+    /// 回歸 #198：游標在中間時，它底下的字元不能被蓋掉。
+    #[test]
+    fn virtual_cursor_renders_between_chars_and_is_colored() {
+        let state = input_state(virtual_bar(), "/abc", 2, None);
+        let buf = render_input(&state, 20);
+
+        let row = input_row(&buf);
+        assert!(row.contains("/a|bc"), "{row}");
+        assert_eq!(red_cells(&buf), vec![3]); // 左 padding 1 + "/a" 2 = x 3
+    }
+
+    /// 長 query、游標在中間、終端太窄：游標後的內容仍要以截斷形式看得到，
+    /// 不能像拆 span 那樣整段消失。
+    #[test]
+    fn virtual_cursor_in_long_query_keeps_text_after_cursor_visible() {
+        let state = input_state(virtual_bar(), "/abcdefghijklmnopqrstuvwxyz", 3, None);
+        let buf = render_input(&state, 14);
+        let row = input_row(&buf);
+
+        assert!(row.contains("/ab|cdef"), "{row}");
+        assert!(row.contains('…'), "{row}");
+        assert_eq!(red_cells(&buf).len(), 1);
+    }
+
+    /// 游標在被截掉的尾端：該格已是 `…`，不能被染成游標色。
+    #[test]
+    fn virtual_cursor_truncated_away_colors_nothing() {
+        let state = input_state(virtual_bar(), "/abcdefghijklmnopqrstuvwxyz", 27, None);
+        let buf = render_input(&state, 14);
+
+        let row = input_row(&buf);
+        assert!(row.contains('…'), "{row}");
+        assert!(red_cells(&buf).is_empty());
+    }
+
+    /// 游標多佔一格後，右側 transient 訊息仍要貼齊右緣、不被擠掉。
+    #[test]
+    fn virtual_cursor_keeps_transient_message_right_aligned() {
+        let state = input_state(virtual_bar(), "/ab", 1, Some("OK"));
+        let buf = render_input(&state, 20);
+        let row = input_row(&buf);
+
+        assert!(row.contains("/|ab"), "{row}");
+        assert!(row.trim_end().ends_with("OK"), "{row}");
+        assert_eq!(buf[(17, 1)].symbol(), "O"); // 右 padding 1 → 內容到 x 18
+    }
+
+    /// Native 游標只定位、不改字串。
+    #[test]
+    fn native_cursor_does_not_alter_rendered_text() {
+        let state = input_state(CursorType::Native, "/abc", 2, None);
+        let buf = render_input(&state, 20);
+
+        let row = input_row(&buf);
+        assert!(row.contains("/abc"), "{row}");
+        assert!(red_cells(&buf).is_empty());
     }
 
     #[test]
@@ -2083,7 +2254,7 @@ mod tests {
             ("None", StatusLine::None, false, false),
             (
                 "Input",
-                StatusLine::Input(String::new(), None, None),
+                StatusLine::Input(String::new(), 0, None),
                 false,
                 true,
             ),
@@ -2275,7 +2446,7 @@ mod tests {
                 StatusLine::NotificationError(String::new()),
                 false,
             ),
-            ("Input", StatusLine::Input(String::new(), None, None), true),
+            ("Input", StatusLine::Input(String::new(), 0, None), true),
             (
                 "RefPicker",
                 StatusLine::RefPicker {
