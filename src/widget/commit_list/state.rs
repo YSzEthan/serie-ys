@@ -557,13 +557,11 @@ impl<'a> CommitListState<'a> {
                     Box::new((0..self.commits.len()).map(RawCommitIdx))
                 };
 
-                Some(
-                    base.filter(|raw| {
-                        !(has_remote_filter && self.remote_only_commits.contains(raw.0))
-                            && !condensed_mask.is_some_and(|mask| mask.contains(raw.0))
-                    })
-                    .collect(),
-                )
+                let hidden = |raw: &RawCommitIdx| {
+                    (has_remote_filter && self.remote_only_commits.contains(raw.0))
+                        || condensed_mask.is_some_and(|mask| mask.contains(raw.0))
+                };
+                Some(base.filter(|raw| !hidden(raw)).collect())
             };
         self.total = self
             .filtered_indices
