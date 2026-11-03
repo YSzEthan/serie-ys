@@ -376,6 +376,10 @@ en-US = "Delete ref"
 zh-TW = "重新整理"
 en-US = "Refresh"
 
+[help.github.open_help]
+zh-TW = "開啟說明"
+en-US = "Open help"
+
 [help.github.close_github_view]
 zh-TW = "關閉 GitHub view"
 en-US = "Close GitHub view"

@@ -181,7 +181,7 @@ impl<'a> HelpView<'a> {
         std::mem::take(&mut self.before)
     }
 
-    pub(super) fn before_view_mut(&mut self) -> &mut View<'a> {
+    pub(crate) fn before_view_mut(&mut self) -> &mut View<'a> {
         &mut self.before
     }
 
@@ -339,6 +339,7 @@ fn help_blocks(
     ];
 
     let github = vec![
+        b(vec![UserEvent::HelpToggle], t!("help.github.open_help")),
         b(vec![UserEvent::GitHubToggle, UserEvent::Cancel, UserEvent::Close], t!("help.github.close_github_view")),
         b(vec![UserEvent::RefList, UserEvent::RefListPrev], t!("help.github.switch_issue_pr_tab")),
         b(vec![UserEvent::NavigateDown, UserEvent::SelectDown], t!("help.github.move_down")),
@@ -740,10 +741,13 @@ mod tests {
     /// 這些 event 由 `App` 的事件迴圈直接處理，不會進 view —— 但只在
     /// `is_browsing_view()` 的三個 view 生效（見 `view::views::is_browsing_view`）。
     fn app_level_ok(block: HelpBlock, event: UserEvent) -> bool {
-        matches!(
-            block,
-            Some(KeyScope::List | KeyScope::Detail | KeyScope::Refs)
-        ) && matches!(event, UserEvent::HelpToggle | UserEvent::GitHubToggle)
+        match block {
+            Some(KeyScope::List | KeyScope::Detail | KeyScope::Refs) => {
+                matches!(event, UserEvent::HelpToggle | UserEvent::GitHubToggle)
+            }
+            Some(KeyScope::GitHub) => event == UserEvent::HelpToggle,
+            _ => false,
+        }
     }
 
     /// mdBook 上的鍵位頁。內容由本測試產生 —— 那是全 repo 唯一有讀者的鍵位文件

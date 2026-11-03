@@ -996,7 +996,17 @@ impl<'a> GitHubView<'a> {
         self.preview_offset = 0;
     }
 
+    /// 窄版提示列放不下多少組，`?` 開說明就排第一，剩下的看得到幾組算幾組
+    /// （見 `widget::fit_key_groups`）。文字輸入中 `?` 是字元，不提示。
     pub fn status_hints(&self) -> Vec<HintSpec> {
+        let mut hints = self.base_status_hints();
+        if self.is_narrow() && !self.is_prompt_focused() {
+            hints.insert(0, h(&[UserEvent::HelpToggle], t!("common.hint.help")));
+        }
+        hints
+    }
+
+    fn base_status_hints(&self) -> Vec<HintSpec> {
         match self.focus {
             GitHubFocus::CheckboxEdit => {
                 vec![
@@ -3372,6 +3382,24 @@ mod tests {
         view.pull_requests[0].labels = labels;
         view.pull_requests[0].title = title.to_string();
         view
+    }
+
+    /// #214：窄版提示列第一組固定是 `?` 開說明；寬版不佔位；打字中不提示。
+    #[test]
+    fn narrow_hints_start_with_help_except_while_typing() {
+        let mut view = view_with_body("body".to_string());
+        view.focus = GitHubFocus::List;
+        let first = |v: &GitHubView<'_>| v.status_hints().first().map(|(e, _)| e.to_vec());
+
+        render_to_string_at_width(&mut view, 40);
+        assert_eq!(first(&view), Some(vec![UserEvent::HelpToggle]));
+
+        view.focus = GitHubFocus::Prompt;
+        assert_ne!(first(&view), Some(vec![UserEvent::HelpToggle]));
+
+        view.focus = GitHubFocus::List;
+        render_to_string_at_width(&mut view, 100);
+        assert_ne!(first(&view), Some(vec![UserEvent::HelpToggle]));
     }
 
     /// #214：40 欄（手機）時單欄顯示，清單列沒有狀態欄、標題有位置，
