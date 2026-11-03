@@ -268,6 +268,11 @@ pub struct GitHubView<'a> {
 }
 
 impl<'a> GitHubView<'a> {
+    /// 窄螢幕（手機）排版。還沒 render 過（寬度 0）不算窄。
+    pub(super) fn is_narrow(&self) -> bool {
+        self.width != 0 && u16::try_from(self.width).is_ok_and(crate::is_narrow)
+    }
+
     /// 搜尋 prompt 開著時，按鍵是文字輸入，`App` 要當輸入模式處理。
     pub fn is_prompt_focused(&self) -> bool {
         self.focus == GitHubFocus::Prompt
@@ -3367,6 +3372,52 @@ mod tests {
         view.pull_requests[0].labels = labels;
         view.pull_requests[0].title = title.to_string();
         view
+    }
+
+    /// #214：40 欄（手機）時單欄顯示，清單列沒有狀態欄、標題有位置，
+    /// 四個分頁的短標籤都看得到；focus 切到 preview 才改畫 preview。
+    #[test]
+    fn narrow_width_shows_single_pane_with_short_tabs() {
+        let title = "Narrow title here";
+        let mut view = view_with_pr_labels(vec![], title);
+        view.active_tab = GitHubTab::PullRequests;
+
+        let list = render_to_string_at_width(&mut view, 40);
+        assert!(view.is_narrow());
+        for tab in ["[1]I", "[2]P", "[3]B", "[4]CI"] {
+            assert!(list.contains(tab), "tab {tab} missing:\n{list}");
+        }
+        assert!(list.contains(title), "title must fit in list:\n{list}");
+        assert!(
+            !list.contains("開啟"),
+            "state column must be dropped:\n{list}"
+        );
+        // 單欄時清單吃滿全寬：邊框在最右欄，而不是 40% 處
+        assert!(
+            list.lines()
+                .skip(3)
+                .all(|l| !l.trim_end_matches(['"', ' ']).contains("│ ")),
+            "list must span the full width:\n{list}"
+        );
+
+        view.focus = GitHubFocus::Preview;
+        let preview = render_to_string_at_width(&mut view, 40);
+        assert!(
+            preview.contains("內文"),
+            "preview must be shown:\n{preview}"
+        );
+        assert!(!preview.contains('▸'), "list must be hidden:\n{preview}");
+    }
+
+    /// 60 欄以上維持原本的左右分割。
+    #[test]
+    fn width_60_keeps_split_layout() {
+        let mut view = view_with_pr_labels(vec![], "Wide title");
+        view.active_tab = GitHubTab::PullRequests;
+        let screen = render_to_string_at_width(&mut view, 60);
+        assert!(!view.is_narrow());
+        assert!(screen.contains("[2]PRs"), "full tab labels:\n{screen}");
+        assert!(screen.contains('│'), "split layout kept:\n{screen}");
     }
 
     /// #112：labels 一多就把標題擠到看不見。色塊模式（`t`）要顯示每個
