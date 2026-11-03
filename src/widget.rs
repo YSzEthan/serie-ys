@@ -87,6 +87,23 @@ pub fn fit_key_groups<'a, 'b>(
     pairs
 }
 
+/// 把提示依序分成多列，每列都整組放得進 `max_width`（單組就超寬時獨佔一列）。
+/// 彈窗沒有地方可以丟提示，所以換行而不是 `fit_key_groups` 的丟棄。
+pub fn wrap_key_groups<'a, 'b>(
+    pairs: &'a [(String, &'b str)],
+    max_width: usize,
+) -> Vec<&'a [(String, &'b str)]> {
+    let mut rows = Vec::new();
+    let mut rest = pairs;
+    while !rest.is_empty() {
+        let n = fit_key_groups(rest, max_width).len().max(1);
+        let (row, tail) = rest.split_at(n);
+        rows.push(row);
+        rest = tail;
+    }
+    rows
+}
+
 /// `key:desc  key:desc…` —— key 用 `key_fg`，冒號與 desc 用
 /// `status_input_transient_fg`。
 pub fn hint_line(theme: &ColorTheme, pairs: &[(String, &str)], key_fg: Color) -> Line<'static> {
@@ -221,6 +238,20 @@ mod tests {
 
     fn fit_sample() -> Vec<(String, &'static str)> {
         pairs(&[("?", "說明"), ("Enter", "open"), ("q", "close")])
+    }
+
+    #[test]
+    fn wrap_key_groups_splits_into_rows_that_fit() {
+        let sample = fit_sample();
+        let rows = wrap_key_groups(&sample, 18);
+        assert_eq!(rows.iter().map(|r| r.len()).collect::<Vec<_>>(), vec![2, 1]);
+        // 單組就超寬：獨佔一列，不會無窮迴圈
+        let rows = wrap_key_groups(&sample, 3);
+        assert_eq!(
+            rows.iter().map(|r| r.len()).collect::<Vec<_>>(),
+            vec![1, 1, 1]
+        );
+        assert!(wrap_key_groups(&[], 10).is_empty());
     }
 
     #[test]

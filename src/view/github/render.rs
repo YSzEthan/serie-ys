@@ -10,7 +10,10 @@ use ratatui::{
 };
 use rust_i18n::t;
 
-use crate::github::{CiState, GhIssue, GhPullRequest};
+use crate::{
+    github::{CiState, GhIssue, GhPullRequest},
+    widget::truncate_line,
+};
 
 use super::{
     branches, ci,
@@ -102,10 +105,10 @@ impl<'a> GitHubView<'a> {
                 content_area.width,
                 1,
             );
-            let flash = Paragraph::new(Line::from(Span::styled(
-                msg.clone(),
-                Style::default().fg(color),
-            )))
+            let flash = Paragraph::new(truncate_line(
+                Line::from(Span::styled(msg.as_str(), Style::default().fg(color))),
+                content_area.width as usize,
+            ))
             .alignment(ratatui::layout::Alignment::Center);
             f.render_widget(flash, flash_area);
         }
@@ -513,12 +516,15 @@ impl<'a> GitHubView<'a> {
                 ..area
             };
             f.render_widget(
-                Paragraph::new(Line::styled(
-                    t!(
-                        "github.render.branches_truncated",
-                        n = crate::github::BRANCH_LIMIT
+                Paragraph::new(truncate_line(
+                    Line::styled(
+                        t!(
+                            "github.render.branches_truncated",
+                            n = crate::github::BRANCH_LIMIT
+                        ),
+                        Style::default().fg(Color::Gray),
                     ),
-                    Style::default().fg(Color::Gray),
+                    area.width as usize,
                 ))
                 .alignment(ratatui::layout::Alignment::Center),
                 footer_area,
@@ -651,10 +657,13 @@ impl<'a> GitHubView<'a> {
             .collect();
 
         // Footer 列
-        lines.push(Line::from(Span::styled(
-            t!("github.render.tasks_footer"),
-            Style::default().fg(Color::DarkGray),
-        )));
+        lines.push(truncate_line(
+            Line::from(Span::styled(
+                t!("github.render.tasks_footer"),
+                Style::default().fg(Color::DarkGray),
+            )),
+            inner.width as usize,
+        ));
 
         let paragraph = Paragraph::new(lines);
         f.render_widget(paragraph, inner);

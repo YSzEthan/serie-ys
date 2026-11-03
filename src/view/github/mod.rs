@@ -3437,6 +3437,16 @@ mod tests {
         assert!(!preview.contains('▸'), "list must be hidden:\n{preview}");
     }
 
+    /// #214：flash 訊息比畫面寬時截成 `…`，不會被切掉半個字。
+    #[test]
+    fn narrow_flash_message_is_truncated() {
+        let mut view = view_with_pr_labels(vec![], "t");
+        view.flash_message = Some(("x".repeat(80), false));
+        let screen = render_to_string_at_width(&mut view, 40);
+        // 分頁、提示列也可能出現 `…`，所以要連同被截斷的內容一起比對
+        assert!(screen.contains(&format!("{}…", "x".repeat(20))), "{screen}");
+    }
+
     /// 60 欄以上維持原本的左右分割。
     #[test]
     fn width_60_keeps_split_layout() {

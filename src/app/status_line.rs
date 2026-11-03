@@ -20,8 +20,8 @@ use crate::{
     reload::FullStatus,
     view::View,
     widget::{
-        commit_list::ChildPickOption, fit_key_groups, h, hint_line, hint_pairs, keybind_hint_line,
-        truncate_line, HintSpec,
+        commit_list::ChildPickOption, fit_key_groups, h, hint_line, hint_pairs, truncate_line,
+        wrap_key_groups, HintSpec,
     },
 };
 
@@ -1437,9 +1437,14 @@ impl StatusLineState {
             }
         };
 
-        // 上下框線 2 + head_ref 1 + 提示 1 + 內容列
         let width = 50u16.min(area.width.saturating_sub(4));
-        let height = (lines.len() as u16 + 4).min(area.height.saturating_sub(2));
+        // 內層寬 = 彈窗寬 - 框線 2 - 左右留白 2；窄螢幕的提示要換行而不是被切掉
+        let inner_width = (width as usize).saturating_sub(4);
+        let pairs = hint_pairs(&self.ctx.keybind, &hints);
+        let hint_rows = wrap_key_groups(&pairs, inner_width);
+        // 上下框線 2 + head_ref 1 + 提示列 + 內容列
+        let height =
+            (lines.len() as u16 + 3 + hint_rows.len() as u16).min(area.height.saturating_sub(2));
         let popup = Rect::new(
             area.x + area.width.saturating_sub(width) / 2,
             area.y + area.height.saturating_sub(height) / 2,
@@ -1459,18 +1464,24 @@ impl StatusLineState {
         let [name_area, body_area, hint_area] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Min(0),
-            Constraint::Length(1),
+            Constraint::Length(hint_rows.len() as u16),
         ])
         .areas(inner);
+        let name = console::truncate_str(head_ref, inner_width, "…");
         f.render_widget(
-            Paragraph::new(Line::from(Span::raw(head_ref.as_str()).fg(fg).bold())),
+            Paragraph::new(Line::from(Span::raw(name.as_ref()).fg(fg).bold())),
             name_area,
         );
+        let lines: Vec<Line> = lines
+            .into_iter()
+            .map(|l| truncate_line(l, inner_width))
+            .collect();
         f.render_widget(Paragraph::new(lines), body_area);
-        f.render_widget(
-            Paragraph::new(keybind_hint_line(theme, &self.ctx.keybind, &hints)).centered(),
-            hint_area,
-        );
+        let hint_lines: Vec<Line> = hint_rows
+            .into_iter()
+            .map(|row| truncate_line(hint_line(theme, row, theme.help_key_fg), inner_width))
+            .collect();
+        f.render_widget(Paragraph::new(hint_lines).centered(), hint_area);
     }
 }
 
@@ -2109,7 +2120,11 @@ mod tests {
         use ratatui::{backend::TestBackend, Terminal};
 
         fn screen(state: &StatusLineState) -> String {
-            let mut terminal = Terminal::new(TestBackend::new(70, 20)).unwrap();
+            screen_at(state, 70)
+        }
+
+        fn screen_at(state: &StatusLineState, width: u16) -> String {
+            let mut terminal = Terminal::new(TestBackend::new(width, 20)).unwrap();
             terminal.draw(|f| state.render_popup(f, f.area())).unwrap();
             let buf = terminal.backend().buffer().clone();
             (0..buf.area.height)
@@ -2136,6 +2151,14 @@ mod tests {
 
         state.line = StatusLine::None;
         assert!(!screen(&state).contains("squash"));
+
+        // 40 欄（手機）：提示換行，每個按鍵說明都完整；彈窗不超出畫面
+        state.line = merge_pr_prompt();
+        let narrow = screen_at(&state, 40);
+        for hint in ["Enter:", "Esc:", "h/l:", "k/j:"] {
+            assert!(narrow.contains(hint), "{hint} missing:\n{narrow}");
+        }
+        assert!(narrow.contains("< squash >"), "{narrow}");
     }
 
     #[test]
