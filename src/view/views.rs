@@ -143,6 +143,16 @@ impl<'a> View<'a> {
         }
     }
 
+    /// 目前的 GitHub view。說明蓋在上面時 GitHub view 被收進 `HelpView::before`，
+    /// 背景載入的結果仍要送得到它，不然關掉說明回來會卡在載入中。
+    pub fn github_view_mut(&mut self) -> Option<&mut crate::view::github::GitHubView<'a>> {
+        match self {
+            View::GitHub(v) => Some(v),
+            View::Help(h) => h.before_view_mut().github_view_mut(),
+            _ => None,
+        }
+    }
+
     pub fn is_browsing_view(&self) -> bool {
         match self {
             View::List(_) | View::Detail(_) | View::Refs(_) => true,

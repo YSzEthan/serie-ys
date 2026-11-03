@@ -7,6 +7,7 @@
 order = "chrono"
 graph_width = "auto"
 compact = "auto"
+condensed = "auto"
 graph_style = "rounded"
 initial_selection = "latest"
 locale = "zh-tw"
@@ -168,7 +169,7 @@ Commit 排序演算法。
 
 ### `core.option.graph_width`
 
-圖形的每一欄佔用幾個終端字元格。
+圖形的每一欄佔用幾個終端字元格。精簡模式（手機版面）固定用 `auto`，不吃這個設定。
 
 - 型別：`string`（enum）
 - 預設值：`auto`
@@ -182,7 +183,8 @@ Commit 排序演算法。
 ### `core.option.compact`
 
 緊湊模式：commit 的說明文字貼齊該列 graph 實際畫到的最右邊，不保留固定
-留白，marker 欄也一併拿掉。
+留白，marker 欄也一併拿掉。精簡模式（手機版面）固定使用緊湊，不吃這個設定；
+因此手機版面不會顯示 marker 欄（被標記的 commit 看不到標記符號）。
 
 - 型別：`string`（enum）
 - 預設值：`auto`
@@ -192,6 +194,21 @@ Commit 排序演算法。
   - `off`
 
 命令列參數指定的值優先。
+
+### `core.option.condensed`
+
+精簡模式：隱藏沒有 ref、位在一條直線中間的 commit，只留下 branch、tag、
+HEAD 與分岔、匯合處，每一列改成只顯示 ref 標籤，並在右邊標出它底下被藏起來
+的 commit 數。給手機 SSH 這類窄螢幕看 branch 的順序與關聯用。
+
+- 型別：`string`（enum）
+- 預設值：`auto`
+- 可選值：
+  - `auto`：終端機窄於 60 欄時開啟，寬度跨過 60 欄時自動切換
+  - `on`
+  - `off`
+
+執行中可用 <kbd>w</kbd> 暫時切換；下次寬度跨過 60 欄時回到自動判斷。
 
 ### `core.option.graph_style`
 
@@ -565,8 +582,8 @@ merge 密集的 repo（例如 linux）改用 `--order topo`，圖寬約只有預
 
 ### `ui.list.graph_max_width_percent`
 
-長線截斷啟用時，graph 欄最多佔清單寬度的百分比。超出的 lane 收進最後一欄的
-溢位欄：顯示 `…`，或顯示落在溢位範圍的 commit 的 dot。
+長線截斷啟用時，graph 欄最多佔清單寬度的百分比。精簡模式（手機版面）固定
+用 40%，不吃這個設定。超出的 lane 收進最後一欄的溢位欄：顯示 `…`，或顯示落在溢位範圍的 commit 的 dot。
 
 - 型別：`u16`
 - 預設值：`50`

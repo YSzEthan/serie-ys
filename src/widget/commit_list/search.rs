@@ -963,7 +963,7 @@ mod tests {
             FxHashMap::default(),
             MatchOptions::default(),
             None,
-            crate::RemoteOnly::default(),
+            crate::CommitMask::default(),
             None,
             0,
         );
@@ -1895,7 +1895,7 @@ mod tests {
             FxHashMap::default(),
             MatchOptions::default(),
             None,
-            crate::RemoteOnly::default(),
+            crate::CommitMask::default(),
             None,
             0,
         );

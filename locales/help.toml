@@ -188,6 +188,10 @@ en-US = "Delete local branch from commit"
 zh-TW = "切換 remote refs"
 en-US = "Toggle remote refs"
 
+[help.list.toggle_condensed]
+zh-TW = "切換精簡模式（只顯示分支與分岔處，窄螢幕自動開啟）"
+en-US = "Toggle condensed graph (branches and fork points only; auto on narrow terminals)"
+
 [help.list.open_github_issues_prs]
 zh-TW = "開啟 GitHub issues/PRs"
 en-US = "Open GitHub issues/PRs"
@@ -312,6 +316,10 @@ en-US = "Copy tag name"
 zh-TW = "切換 remote refs"
 en-US = "Toggle remote refs"
 
+[help.detail.toggle_condensed]
+zh-TW = "切換精簡模式（只顯示分支與分岔處，窄螢幕自動開啟）"
+en-US = "Toggle condensed graph (branches and fork points only; auto on narrow terminals)"
+
 [help.detail.open_refs_list]
 zh-TW = "開啟 refs 清單"
 en-US = "Open refs list"
@@ -367,6 +375,10 @@ en-US = "Delete ref"
 [help.refs.refresh]
 zh-TW = "重新整理"
 en-US = "Refresh"
+
+[help.github.open_help]
+zh-TW = "開啟說明"
+en-US = "Open help"
 
 [help.github.close_github_view]
 zh-TW = "關閉 GitHub view"

@@ -62,19 +62,31 @@ pub(super) fn render_card(
     let block = card_block(&branch.name, area.width, selected);
 
     f.render_widget(
-        Paragraph::new(card_body(branch, diff_stat_thresholds)).block(block),
+        Paragraph::new(card_body(
+            branch,
+            diff_stat_thresholds,
+            area.width.saturating_sub(2) as usize,
+        ))
+        .block(block),
         area,
     );
 }
 
-fn card_body(branch: &GhBranch, diff_stat_thresholds: DiffStatThresholds) -> Vec<Line<'static>> {
+fn card_body(
+    branch: &GhBranch,
+    diff_stat_thresholds: DiffStatThresholds,
+    width: usize,
+) -> Vec<Line<'static>> {
     let short_oid: String = branch.head_oid.chars().take(7).collect();
-    let meta = Line::styled(
-        format!(
-            " {short_oid} · {} · @{}",
-            branch.committer_date, branch.author
+    let meta = truncate_line(
+        Line::styled(
+            format!(
+                " {short_oid} · {} · @{}",
+                branch.committer_date, branch.author
+            ),
+            Style::default().fg(TEXT_COLOR),
         ),
-        Style::default().fg(TEXT_COLOR),
+        width,
     );
     // `diff_stat_spans` 自帶開頭兩格空白，剛好當卡片內縮
     let stat = match branch.diff_stat {
@@ -84,7 +96,7 @@ fn card_body(branch: &GhBranch, diff_stat_thresholds: DiffStatThresholds) -> Vec
             Style::default().fg(TEXT_COLOR),
         ),
     };
-    vec![meta, stat]
+    vec![meta, truncate_line(stat, width)]
 }
 
 #[cfg(test)]
@@ -93,6 +105,23 @@ mod tests {
 
     use super::*;
     use crate::github::DiffStat;
+
+    /// 窄卡片：meta 列放不下時截成 `…`，不是被邊框硬切。
+    #[test]
+    fn card_meta_is_truncated_with_ellipsis_when_narrow() {
+        let mut b = branch("topic");
+        b.author = "a-very-long-author-name-indeed".to_string();
+        let thresholds = DiffStatThresholds::default();
+        let text = |w| -> String {
+            card_body(&b, thresholds, w)[0]
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect()
+        };
+        assert!(text(20).ends_with('…'), "{}", text(20));
+        assert!(text(100).ends_with("indeed"));
+    }
 
     fn branch(name: &str) -> GhBranch {
         GhBranch {

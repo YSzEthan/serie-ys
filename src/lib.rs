@@ -30,6 +30,7 @@ use std::{
     io::{IsTerminal, Write},
     path::Path,
     rc::Rc,
+    sync::{atomic::AtomicBool, Arc},
     time::Duration,
 };
 
@@ -313,6 +314,39 @@ pub enum CompactType {
     Off,
 }
 
+/// 精簡模式（#215）：`Auto` 依終端寬度決定，`On`／`Off` 強制。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CondensedType {
+    Auto,
+    On,
+    Off,
+}
+
+/// 終端寬度小於這個欄數就視為窄螢幕（手機 SSH）：Git view 自動換成精簡
+/// graph，GitHub view 換成窄版排版。
+pub const NARROW_WIDTH: u16 = 60;
+
+pub fn is_narrow(width: u16) -> bool {
+    width < NARROW_WIDTH
+}
+
+/// 目前終端寬度；量不到就當寬螢幕（不啟用窄版行為）。
+pub fn terminal_width() -> u16 {
+    ratatui::crossterm::terminal::size().map_or(u16::MAX, |(w, _)| w)
+}
+
+impl CondensedType {
+    /// 在終端寬度 `width` 下，這個設定是否要開精簡模式。
+    pub fn resolve(self, width: u16) -> bool {
+        match self {
+            CondensedType::On => true,
+            CondensedType::Off => false,
+            CondensedType::Auto => is_narrow(width),
+        }
+    }
+}
+
 pub use graph::GraphStyle;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum, Deserialize)]
@@ -376,15 +410,16 @@ pub(crate) fn apply_locale(locale: Locale) {
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-/// 只有 remote ref 走得到的 commit，以 raw index（`Repository::all_commits()`
-/// 的位置）為索引。
+/// 要從 graph 隱藏的 commit 遮罩，以 raw index（`Repository::all_commits()`
+/// 的位置）為索引。來源有「只有 remote ref 走得到的 commit」，以及精簡模式
+/// 的中間 commit；兩者可用 `union` 合併。
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct RemoteOnly {
+pub struct CommitMask {
     bits: Vec<bool>,
     count: usize,
 }
 
-impl RemoteOnly {
+impl CommitMask {
     pub fn contains(&self, raw: usize) -> bool {
         self.bits.get(raw).copied().unwrap_or(false)
     }
@@ -408,10 +443,20 @@ impl RemoteOnly {
             .enumerate()
             .filter_map(|(raw, &hidden)| hidden.then_some(raw))
     }
+
+    /// 兩個遮罩的聯集：任一邊要隱藏的 commit 都隱藏。
+    pub fn union(&self, other: &Self) -> Self {
+        let len = self.bits.len().max(other.bits.len());
+        Self::from_bits(
+            (0..len)
+                .map(|raw| self.contains(raw) || other.contains(raw))
+                .collect(),
+        )
+    }
 }
 
 /// 從所有本地 ref 開始沿 parent 走訪，走不到的就是只能從遠端分支到達的 commit。
-pub fn find_remote_only_commits(repository: &git::Repository) -> RemoteOnly {
+pub fn find_remote_only_commits(repository: &git::Repository) -> CommitMask {
     let mut reachable = vec![false; repository.all_commits().len()];
     let mut stack: Vec<usize> = Vec::new();
     let mut visit = |raw: usize, stack: &mut Vec<usize>| {
@@ -448,16 +493,18 @@ pub fn find_remote_only_commits(repository: &git::Repository) -> RemoteOnly {
         }
     }
 
-    RemoteOnly::from_bits(reachable.into_iter().map(|r| !r).collect())
+    CommitMask::from_bits(reachable.into_iter().map(|r| !r).collect())
 }
 
 /// 有 remote-only commit 時，算出隱藏它們之後的 filtered graph；沒有就回 `None`。
+/// `condensed` 是精簡模式開啟時的遮罩，要一併隱藏——沒有 remote-only commit
+/// 時回 `None` 沒問題：主 graph 本身就已經套用精簡遮罩。
 /// 回傳裸的 `Graph`（不包 `Rc`）——這個函式也在 `reload::Reloader` 的背景
-/// worker thread 上呼叫，`Rc` 不是 `Send`；呼叫端（`build_graph_artifacts`
-/// 或 `lib.rs::run()` 換資料那段）才決定要不要包成 `Rc`。
+/// worker thread 上呼叫，`Rc` 不是 `Send`；呼叫端才決定要不要包成 `Rc`。
 pub fn compute_filtered_graph_from(
     repository: &git::Repository,
-    remote_only: &RemoteOnly,
+    remote_only: &CommitMask,
+    condensed: Option<&CommitMask>,
     trunc: graph::Truncation,
 ) -> Option<Graph> {
     if remote_only.is_empty() {
@@ -465,24 +512,57 @@ pub fn compute_filtered_graph_from(
     }
 
     let head = resolve_head_commit_hash(repository);
+    let hidden = condensed.map_or_else(|| remote_only.clone(), |c| remote_only.union(c));
     Some(graph::calc_graph_filtered(
         repository,
-        remote_only,
+        &hidden,
         head.as_ref(),
         head_has_named_ref(repository),
         trunc,
     ))
 }
 
-/// 初始載入專用：算完直接包成 `App::new` 要的 `Rc`。背景重載（Phase 6）
-/// 走 `reload::Reloader` 自己的路徑，不經過這個函式。
-fn build_graph_artifacts(
+/// 一次算出 App 需要的所有 graph 資料。全是 `Send` 的裸資料（沒有 `Rc`），
+/// 背景 worker 與主執行緒共用。
+pub struct GraphSet {
+    pub graph: Graph,
+    pub filtered: Option<Graph>,
+    pub remote_only: CommitMask,
+    /// 精簡模式開啟時的遮罩與 `hidden_below`；`None` = 關閉。
+    pub condensed: Option<graph::Condensed>,
+}
+
+/// `condensed` 為 true 時，主 graph 與 filtered graph 都套用精簡遮罩。
+pub fn compute_graphs(
     repository: &git::Repository,
     trunc: graph::Truncation,
-) -> (Option<Rc<Graph>>, RemoteOnly) {
+    condensed: bool,
+) -> GraphSet {
+    let head = resolve_head_commit_hash(repository);
+    let reserve_head_col = head_has_named_ref(repository);
+    let condensed = condensed.then(|| {
+        let head_raw = head.as_ref().and_then(|h| repository.index_of(h));
+        graph::condense(repository, head_raw)
+    });
+    let graph = match &condensed {
+        Some(c) => {
+            graph::calc_graph_filtered(repository, &c.mask, head.as_ref(), reserve_head_col, trunc)
+        }
+        None => graph::calc_graph(repository, head.as_ref(), reserve_head_col, trunc),
+    };
     let remote_only = find_remote_only_commits(repository);
-    let filtered = compute_filtered_graph_from(repository, &remote_only, trunc).map(Rc::new);
-    (filtered, remote_only)
+    let filtered = compute_filtered_graph_from(
+        repository,
+        &remote_only,
+        condensed.as_ref().map(|c| &c.mask),
+        trunc,
+    );
+    GraphSet {
+        graph,
+        filtered,
+        remote_only,
+        condensed,
+    }
 }
 
 /// 當 HEAD 指向帶有本地 branch 或 tag ref 的 commit 時回傳 true。
@@ -831,6 +911,15 @@ pub fn run() -> Result<()> {
     // 指紋而延後 spawn。兩者都由這個函式的 `loop` 持有，跟 `repository`／
     // `graph` 活得一樣久；每個 `App` 只借用 `&reloader`，換資料重建 `App`
     // 不會連 worker thread 也重開一次。
+    // 精簡模式（#215）：啟動時依終端寬度決定一次，之後 resize 跨過門檻由
+    // `App` 接手（見 `App::check_condensed`）。量不到寬度就當寬螢幕。
+    let startup_width = terminal_width();
+    let condensed_setting = ctx
+        .core_config
+        .option
+        .condensed
+        .unwrap_or(CondensedType::Auto);
+    let want_condensed = Arc::new(AtomicBool::new(condensed_setting.resolve(startup_width)));
     let reloader = Reloader::spawn(
         repo_root,
         reload::FullLoadConfig {
@@ -838,6 +927,7 @@ pub fn run() -> Result<()> {
             order,
             max_count,
             trunc,
+            condensed: Arc::clone(&want_condensed),
         },
         ec.sender(),
     );
@@ -873,13 +963,15 @@ pub fn run() -> Result<()> {
         auto_fetch::spawn_resync(&ec, repository.path(), auto_fetch_settings.interval);
         ec.sender().send(event::AppEvent::AutoFetchPoll);
     }
-    let mut graph = Rc::new(graph::calc_graph(
-        &repository,
-        resolve_head_commit_hash(&repository).as_ref(),
-        head_has_named_ref(&repository),
-        trunc,
-    ));
-    let (mut filtered_graph, mut remote_only_commits) = build_graph_artifacts(&repository, trunc);
+    let GraphSet {
+        graph: first_graph,
+        filtered: first_filtered,
+        remote_only: mut remote_only_commits,
+        condensed: first_condensed,
+    } = compute_graphs(&repository, trunc, reloader.want_condensed());
+    let mut graph = Rc::new(first_graph);
+    let mut filtered_graph = first_filtered.map(Rc::new);
+    let mut condensed = first_condensed.map(Rc::new);
 
     // 同步等第一個背景 `git status` 結果——`status` 幾乎一定比上面的
     // `git log` 快，這個等待接近免費，換來的是「開起來就選在虛擬列」這個
@@ -920,6 +1012,7 @@ pub fn run() -> Result<()> {
             &graph,
             filtered_graph,
             remote_only_commits,
+            condensed.take(),
             &graph_color_set,
             initial_selection,
             ctx.clone(),
@@ -946,6 +1039,7 @@ pub fn run() -> Result<()> {
                 let old_graph = std::mem::replace(&mut graph, Rc::new(loaded.graph));
                 filtered_graph = loaded.filtered.map(Rc::new);
                 remote_only_commits = loaded.remote_only;
+                condensed = loaded.condensed.map(Rc::new);
 
                 // 舊的 `Repository`／graph 上 GB 的釋放丟到背景 thread，
                 // 不卡主執行緒。`Rc::try_unwrap` 理論上必定成功——`app` 剛
@@ -1131,6 +1225,51 @@ mod tests {
         let args = Args::try_parse_from(["ysgit", "-p", "~/projects"]).unwrap();
         assert!(args.path_browser);
         assert_eq!(args.path, "~/projects");
+    }
+
+    #[test]
+    fn commit_mask_union_hides_either_side_and_tolerates_unequal_len() {
+        let a = CommitMask::from_bits(vec![true, false, false]);
+        let b = CommitMask::from_bits(vec![false, false, true, true]);
+
+        let u = a.union(&b);
+
+        assert_eq!(u.iter().collect::<Vec<_>>(), vec![0, 2, 3]);
+        assert_eq!(u.len(), 3);
+        assert_eq!(a.union(&CommitMask::default()), a);
+    }
+
+    #[test]
+    fn condensed_type_resolves_by_width_only_for_auto() {
+        assert!(CondensedType::Auto.resolve(NARROW_WIDTH - 1));
+        assert!(!CondensedType::Auto.resolve(NARROW_WIDTH));
+        assert!(CondensedType::On.resolve(u16::MAX));
+        assert!(!CondensedType::Off.resolve(1));
+    }
+
+    #[test]
+    fn compute_graphs_condensed_drops_middle_rows_and_off_keeps_all() {
+        let commit = |hash: &str, parents: &[&str]| git::Commit {
+            commit_hash: hash.into(),
+            parent_commit_hashes: parents.iter().copied().map(git::CommitHash::from).collect(),
+            ..Default::default()
+        };
+        let repository = git::Repository::from_commits(vec![
+            commit("c0", &["c1"]),
+            commit("c1", &["c2"]),
+            commit("c2", &["c3"]),
+            commit("c3", &[]),
+        ]);
+        let trunc = graph::Truncation::new(10);
+
+        let off = compute_graphs(&repository, trunc, false);
+        assert_eq!(off.graph.row_count(), 4);
+        assert!(off.condensed.is_none());
+
+        let on = compute_graphs(&repository, trunc, true);
+        // c1、c2 是無 ref 的單親單子中間 commit
+        assert_eq!(on.graph.row_count(), 2);
+        assert_eq!(on.condensed.as_ref().map(|c| c.hidden_below(0)), Some(2));
     }
 
     #[test]

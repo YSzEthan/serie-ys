@@ -2027,7 +2027,7 @@ fn build_graph_snapshot_source(
     let graph = if option.filtered {
         let remote_only = ysgit::find_remote_only_commits(&repository);
         Rc::new(
-            ysgit::compute_filtered_graph_from(&repository, &remote_only, option.trunc)
+            ysgit::compute_filtered_graph_from(&repository, &remote_only, None, option.trunc)
                 .expect("filtered case must have remote-only commits"),
         )
     } else {

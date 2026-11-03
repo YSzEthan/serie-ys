@@ -23,8 +23,8 @@ use rust_i18n::t;
 use crate::{
     event::{AppEvent, Sender},
     git::{self, Repository, SortCommit, WorkingChanges},
-    graph::{self, Graph},
-    RemoteOnly,
+    graph::{self, Condensed, Graph},
+    CommitMask,
 };
 
 /// worker 兩次 `git status` 之間至少間隔多久——避免存檔工具連續觸發多次
@@ -46,7 +46,9 @@ pub struct Loaded {
     pub repository: Repository,
     pub graph: Graph,
     pub filtered: Option<Graph>,
-    pub remote_only: RemoteOnly,
+    pub remote_only: CommitMask,
+    /// 精簡模式（#215）這次是否開啟，以及遮罩；`graph`／`filtered` 已經套用。
+    pub condensed: Option<Condensed>,
     /// 這次載入結果的內容指紋，`take_full()` 取走時寫回 `Reloader::applied`。
     fingerprint: u64,
 }
@@ -83,6 +85,10 @@ pub struct FullLoadConfig {
     pub order: SortCommit,
     pub max_count: Option<usize>,
     pub trunc: graph::Truncation,
+    /// 目前要不要開精簡模式。worker 每次載入時才讀，所以使用者在載入前
+    /// 切換（或寬度跨過門檻）也不會拿到過期的 graph；`Reloader::set_want_condensed`
+    /// 是唯一的寫入點。
+    pub condensed: Arc<AtomicBool>,
 }
 
 /// 背景重載的把手，working changes 與 Full 共用同一個結構——兩者本來就是
@@ -101,6 +107,8 @@ pub struct Reloader {
     /// App 手上那份資料的指紋——`take_full()` 唯一寫入點。Full worker 拿它
     /// 跟剛載入的新資料比對：相同就代表沒變，不用觸發換資料。
     applied: Arc<AtomicU64>,
+    /// 同 `FullLoadConfig::condensed`，這是主執行緒這一端的把手。
+    want_condensed: Arc<AtomicBool>,
 }
 
 impl Reloader {
@@ -131,6 +139,7 @@ impl Reloader {
         // 任何 `request_full()` 呼叫搶在 `set_initial_fingerprint` 之前
         // 執行——`App` 都還沒建出來，見該方法文件。
         let applied = Arc::new(AtomicU64::new(0));
+        let want_condensed = Arc::clone(&full.condensed);
 
         {
             let full_state = Arc::clone(&full_state);
@@ -149,7 +158,18 @@ impl Reloader {
             full_tx,
             full_state,
             applied,
+            want_condensed,
         }
+    }
+
+    /// 目前要不要開精簡模式（最後一次 `set_want_condensed` 的值）。
+    pub fn want_condensed(&self) -> bool {
+        self.want_condensed.load(Ordering::Acquire)
+    }
+
+    /// 告訴 Full worker 之後的載入要不要套用精簡模式。
+    pub fn set_want_condensed(&self, on: bool) {
+        self.want_condensed.store(on, Ordering::Release);
     }
 
     /// 啟動時，初始 `Repository::load` 完成之後呼叫一次，把它的指紋設成
@@ -332,21 +352,23 @@ fn load_full(config: &FullLoadConfig, applied: &AtomicU64) -> crate::Result<Outc
         return Ok(Outcome::Unchanged);
     }
 
-    let head = crate::resolve_head_commit_hash(&repository);
-    let graph = graph::calc_graph(
+    let crate::GraphSet {
+        graph,
+        filtered,
+        remote_only,
+        condensed,
+    } = crate::compute_graphs(
         &repository,
-        head.as_ref(),
-        crate::head_has_named_ref(&repository),
         config.trunc,
+        config.condensed.load(Ordering::Acquire),
     );
-    let remote_only = crate::find_remote_only_commits(&repository);
-    let filtered = crate::compute_filtered_graph_from(&repository, &remote_only, config.trunc);
 
     Ok(Outcome::Changed(Box::new(Loaded {
         repository,
         graph,
         filtered,
         remote_only,
+        condensed,
         fingerprint,
     })))
 }
@@ -459,12 +481,27 @@ mod tests {
             order: SortCommit::Chronological,
             max_count: None,
             trunc: graph::Truncation::new(0),
+            condensed: Arc::new(AtomicBool::new(false)),
         }
     }
 
     fn spawn_for_test() -> Reloader {
         let (tx, _rx) = Sender::channel_for_test();
         Reloader::spawn(PathBuf::from("/nonexistent"), full_config(), tx)
+    }
+
+    #[test]
+    fn want_condensed_follows_set_and_is_shared_with_worker_config() {
+        let config = full_config();
+        let shared = Arc::clone(&config.condensed);
+        let (tx, _rx) = Sender::channel_for_test();
+        let reloader = Reloader::spawn(PathBuf::from("/nonexistent"), config, tx);
+        assert!(!reloader.want_condensed());
+
+        reloader.set_want_condensed(true);
+
+        assert!(reloader.want_condensed());
+        assert!(shared.load(Ordering::Acquire));
     }
 
     #[test]

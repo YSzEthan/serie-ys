@@ -227,6 +227,9 @@ impl<'a> ListView<'a> {
                 self.tx
                     .send_after(AppEvent::ClearStatusLine, std::time::Duration::from_secs(3));
             }
+            UserEvent::CondensedToggle => {
+                self.tx.send(AppEvent::ToggleCondensed);
+            }
             UserEvent::Fetch => {
                 self.tx.send(AppEvent::FetchAll);
             }

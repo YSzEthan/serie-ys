@@ -258,6 +258,22 @@ en-US = "No items"
 zh-TW = " [1]Issues (%{n}) "
 en-US = " [1]Issues (%{n}) "
 
+[github.render.tab_issues_short]
+zh-TW = "[1]I %{n}"
+en-US = "[1]I %{n}"
+
+[github.render.tab_prs_short]
+zh-TW = "[2]P %{n}"
+en-US = "[2]P %{n}"
+
+[github.render.tab_branches_short]
+zh-TW = "[3]B %{n}"
+en-US = "[3]B %{n}"
+
+[github.render.tab_ci_short]
+zh-TW = "[4]CI %{n}"
+en-US = "[4]CI %{n}"
+
 [github.render.tab_prs]
 zh-TW = " [2]PRs (%{n}) "
 en-US = " [2]PRs (%{n}) "

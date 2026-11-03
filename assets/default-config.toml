@@ -10,6 +10,7 @@
 order = "chrono"              # commit 排序：chrono（時間序）｜topo（拓撲序）
 graph_width = "auto"          # 圖形欄寬：auto｜double｜single
 compact = "auto"              # 緊湊模式：auto｜on｜off
+condensed = "auto"            # 精簡 graph（只顯示分支與分岔處）：auto（窄於 60 欄自動開）｜on｜off
 graph_style = "rounded"       # 圖形邊線風格：rounded｜angular｜ascii
 initial_selection = "latest"  # 啟動時初始選取：latest｜head
 locale = "zh-tw"              # 介面語言：zh-tw（繁體中文）｜en（English）

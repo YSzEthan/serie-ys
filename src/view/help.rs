@@ -181,7 +181,7 @@ impl<'a> HelpView<'a> {
         std::mem::take(&mut self.before)
     }
 
-    pub(super) fn before_view_mut(&mut self) -> &mut View<'a> {
+    pub(crate) fn before_view_mut(&mut self) -> &mut View<'a> {
         &mut self.before
     }
 
@@ -281,6 +281,7 @@ fn help_blocks(
         b(vec![UserEvent::DeleteTag], t!("help.list.delete_tag_from_commit")),
         b(vec![UserEvent::DeleteRef], t!("help.list.delete_local_branch_from_commit")),
         b(vec![UserEvent::RemoteRefsToggle], t!("help.list.toggle_remote_refs")),
+        b(vec![UserEvent::CondensedToggle], t!("help.list.toggle_condensed")),
         b(vec![UserEvent::GitHubToggle], t!("help.list.open_github_issues_prs")),
         b(vec![UserEvent::Fetch], t!("help.list.fetch_all_remotes")),
         b(vec![UserEvent::Pull], t!("help.list.pull_fast_forward_only")),
@@ -315,6 +316,7 @@ fn help_blocks(
         b(vec![UserEvent::FullBranchCopy], t!("help.detail.copy_remote_branch_name")),
         b(vec![UserEvent::TagCopy], t!("help.detail.copy_tag_name")),
         b(vec![UserEvent::RemoteRefsToggle], t!("help.detail.toggle_remote_refs")),
+        b(vec![UserEvent::CondensedToggle], t!("help.detail.toggle_condensed")),
         b(vec![UserEvent::RefList], t!("help.detail.open_refs_list")),
         // 這個一直都能用（`is_browsing_view()` 含 Detail，事件由 `global_app_event`
         // 在 App 層攔下），只是說明頁從來沒列出來。
@@ -337,6 +339,7 @@ fn help_blocks(
     ];
 
     let github = vec![
+        b(vec![UserEvent::HelpToggle], t!("help.github.open_help")),
         b(vec![UserEvent::GitHubToggle, UserEvent::Cancel, UserEvent::Close], t!("help.github.close_github_view")),
         b(vec![UserEvent::RefList, UserEvent::RefListPrev], t!("help.github.switch_issue_pr_tab")),
         b(vec![UserEvent::NavigateDown, UserEvent::SelectDown], t!("help.github.move_down")),
@@ -738,10 +741,13 @@ mod tests {
     /// 這些 event 由 `App` 的事件迴圈直接處理，不會進 view —— 但只在
     /// `is_browsing_view()` 的三個 view 生效（見 `view::views::is_browsing_view`）。
     fn app_level_ok(block: HelpBlock, event: UserEvent) -> bool {
-        matches!(
-            block,
-            Some(KeyScope::List | KeyScope::Detail | KeyScope::Refs)
-        ) && matches!(event, UserEvent::HelpToggle | UserEvent::GitHubToggle)
+        match block {
+            Some(KeyScope::List | KeyScope::Detail | KeyScope::Refs) => {
+                matches!(event, UserEvent::HelpToggle | UserEvent::GitHubToggle)
+            }
+            Some(KeyScope::GitHub) => event == UserEvent::HelpToggle,
+            _ => false,
+        }
     }
 
     /// mdBook 上的鍵位頁。內容由本測試產生 —— 那是全 repo 唯一有讀者的鍵位文件

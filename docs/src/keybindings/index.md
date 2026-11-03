@@ -58,6 +58,7 @@
 | <kbd>Ctrl-t</kbd> | 刪除 commit 上的 tag | `delete_tag` |
 | <kbd>d</kbd> | 刪除 commit 上的 local branch | `delete_ref` |
 | <kbd>o</kbd> | 切換 remote refs | `remote_refs_toggle` |
+| <kbd>w</kbd> | 切換精簡模式（只顯示分支與分岔處，窄螢幕自動開啟） | `condensed_toggle` |
 | <kbd>g</kbd> | 開啟 GitHub issues/PRs | `github_toggle` |
 | <kbd>f</kbd> | fetch 所有 remote | `fetch` |
 | <kbd>p</kbd> | pull 目前 branch（只做 fast-forward） | `pull` |
@@ -94,6 +95,7 @@
 | <kbd>B</kbd> | 複製 remote branch 名稱 | `full_branch_copy` |
 | <kbd>v</kbd> | 複製 tag 名稱 | `tag_copy` |
 | <kbd>o</kbd> | 切換 remote refs | `remote_refs_toggle` |
+| <kbd>w</kbd> | 切換精簡模式（只顯示分支與分岔處，窄螢幕自動開啟） | `condensed_toggle` |
 | <kbd>Tab</kbd> | 開啟 refs 清單 | `ref_list` |
 | <kbd>g</kbd> | 開啟 GitHub issues/PRs | `github_toggle` |
 | <kbd>F1</kbd> <kbd>?</kbd> | 開啟說明 | `help_toggle` |
@@ -118,6 +120,7 @@
 
 | 按鍵 | 說明 | 設定鍵名 |
 | --- | --- | --- |
+| <kbd>F1</kbd> <kbd>?</kbd> | 開啟說明 | `help_toggle` |
 | <kbd>g</kbd> <kbd>n</kbd> <kbd>Esc</kbd> <kbd>Backspace</kbd> | 關閉 GitHub view | `github_toggle` `cancel` `close` |
 | <kbd>Tab</kbd> <kbd>Shift-Tab</kbd> | 切換 Issues → PRs → Branches → CI 分頁，Shift-Tab 反向，數字鍵 1~4 直接跳到對應分頁（Branches 列出 GitHub 上沒有 OPEN PR 的 branch 與行數差異；CI 監測 head branch 在本地的 open PR 的 CI 狀態） | `ref_list` `ref_list_prev` |
 | <kbd>Down</kbd> <kbd>j</kbd> <kbd>J</kbd> | 向下移動 | `navigate_down` `select_down` |

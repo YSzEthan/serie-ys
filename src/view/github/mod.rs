@@ -268,6 +268,11 @@ pub struct GitHubView<'a> {
 }
 
 impl<'a> GitHubView<'a> {
+    /// 窄螢幕（手機）排版。還沒 render 過（寬度 0）不算窄。
+    pub(super) fn is_narrow(&self) -> bool {
+        self.width != 0 && u16::try_from(self.width).is_ok_and(crate::is_narrow)
+    }
+
     /// 搜尋 prompt 開著時，按鍵是文字輸入，`App` 要當輸入模式處理。
     pub fn is_prompt_focused(&self) -> bool {
         self.focus == GitHubFocus::Prompt
@@ -991,7 +996,17 @@ impl<'a> GitHubView<'a> {
         self.preview_offset = 0;
     }
 
+    /// 窄版提示列放不下多少組，`?` 開說明就排第一，剩下的看得到幾組算幾組
+    /// （見 `widget::fit_key_groups`）。文字輸入中 `?` 是字元，不提示。
     pub fn status_hints(&self) -> Vec<HintSpec> {
+        let mut hints = self.base_status_hints();
+        if self.is_narrow() && !self.is_prompt_focused() {
+            hints.insert(0, h(&[UserEvent::HelpToggle], t!("common.hint.help")));
+        }
+        hints
+    }
+
+    fn base_status_hints(&self) -> Vec<HintSpec> {
         match self.focus {
             GitHubFocus::CheckboxEdit => {
                 vec![
@@ -3367,6 +3382,80 @@ mod tests {
         view.pull_requests[0].labels = labels;
         view.pull_requests[0].title = title.to_string();
         view
+    }
+
+    /// #214：窄版提示列第一組固定是 `?` 開說明；寬版不佔位；打字中不提示。
+    #[test]
+    fn narrow_hints_start_with_help_except_while_typing() {
+        let mut view = view_with_body("body".to_string());
+        view.focus = GitHubFocus::List;
+        let first = |v: &GitHubView<'_>| v.status_hints().first().map(|(e, _)| e.to_vec());
+
+        render_to_string_at_width(&mut view, 40);
+        assert_eq!(first(&view), Some(vec![UserEvent::HelpToggle]));
+
+        view.focus = GitHubFocus::Prompt;
+        assert_ne!(first(&view), Some(vec![UserEvent::HelpToggle]));
+
+        view.focus = GitHubFocus::List;
+        render_to_string_at_width(&mut view, 100);
+        assert_ne!(first(&view), Some(vec![UserEvent::HelpToggle]));
+    }
+
+    /// #214：40 欄（手機）時單欄顯示，清單列沒有狀態欄、標題有位置，
+    /// 四個分頁的短標籤都看得到；focus 切到 preview 才改畫 preview。
+    #[test]
+    fn narrow_width_shows_single_pane_with_short_tabs() {
+        let title = "Narrow title here";
+        let mut view = view_with_pr_labels(vec![], title);
+        view.active_tab = GitHubTab::PullRequests;
+
+        let list = render_to_string_at_width(&mut view, 40);
+        assert!(view.is_narrow());
+        for tab in ["[1]I", "[2]P", "[3]B", "[4]CI"] {
+            assert!(list.contains(tab), "tab {tab} missing:\n{list}");
+        }
+        assert!(list.contains(title), "title must fit in list:\n{list}");
+        assert!(
+            !list.contains("開啟"),
+            "state column must be dropped:\n{list}"
+        );
+        // 單欄時清單吃滿全寬：邊框在最右欄，而不是 40% 處
+        assert!(
+            list.lines()
+                .skip(3)
+                .all(|l| !l.trim_end_matches(['"', ' ']).contains("│ ")),
+            "list must span the full width:\n{list}"
+        );
+
+        view.focus = GitHubFocus::Preview;
+        let preview = render_to_string_at_width(&mut view, 40);
+        assert!(
+            preview.contains("內文"),
+            "preview must be shown:\n{preview}"
+        );
+        assert!(!preview.contains('▸'), "list must be hidden:\n{preview}");
+    }
+
+    /// #214：flash 訊息比畫面寬時截成 `…`，不會被切掉半個字。
+    #[test]
+    fn narrow_flash_message_is_truncated() {
+        let mut view = view_with_pr_labels(vec![], "t");
+        view.flash_message = Some(("x".repeat(80), false));
+        let screen = render_to_string_at_width(&mut view, 40);
+        // 分頁、提示列也可能出現 `…`，所以要連同被截斷的內容一起比對
+        assert!(screen.contains(&format!("{}…", "x".repeat(20))), "{screen}");
+    }
+
+    /// 60 欄以上維持原本的左右分割。
+    #[test]
+    fn width_60_keeps_split_layout() {
+        let mut view = view_with_pr_labels(vec![], "Wide title");
+        view.active_tab = GitHubTab::PullRequests;
+        let screen = render_to_string_at_width(&mut view, 60);
+        assert!(!view.is_narrow());
+        assert!(screen.contains("[2]PRs"), "full tab labels:\n{screen}");
+        assert!(screen.contains('│'), "split layout kept:\n{screen}");
     }
 
     /// #112：labels 一多就把標題擠到看不見。色塊模式（`t`）要顯示每個
