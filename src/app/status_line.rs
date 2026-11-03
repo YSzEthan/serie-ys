@@ -20,8 +20,8 @@ use crate::{
     reload::FullStatus,
     view::View,
     widget::{
-        commit_list::ChildPickOption, h, hint_line, hint_pairs, keybind_hint_line, truncate_line,
-        HintSpec,
+        commit_list::ChildPickOption, fit_key_groups, h, hint_line, hint_pairs, keybind_hint_line,
+        truncate_line, HintSpec,
     },
 };
 
@@ -72,23 +72,31 @@ fn picker_digit_index(key: KeyEvent) -> Option<usize> {
 /// 單階段 y/n 確認的狀態列，與 [`StatusLineState::yes_no_answer`] 接受的鍵一致。
 /// `confirm_desc` 讓呼叫端換掉「confirm」這個字（例如合併 PR 用「execute」更貼切），
 /// 按鍵本身固定是 `UserEvent::Confirm`／`UserEvent::Cancel`。
+///
+/// 寬度不夠時先截問句，`[y]`／`[Esc]` 這些按鍵選項一定完整保留。
 fn confirm_line(
     prompt: String,
     confirm_desc: Cow<'static, str>,
     ctx: &AppContext,
+    max_width: usize,
 ) -> Line<'static> {
     let specs = [
         h(&[UserEvent::Confirm], confirm_desc),
         h(&[UserEvent::Cancel], t!("common.hint.cancel")),
     ];
     let hints = hint_pairs(&ctx.keybind, &specs);
-    let mut spans: Vec<Span<'static>> = vec![prompt.into()];
-    let hint_fg = ctx.color_theme.status_interactive_fg;
-    spans.extend(hint_line(&ctx.color_theme, &hints, hint_fg).spans);
+    let options = hint_line(
+        &ctx.color_theme,
+        &hints,
+        ctx.color_theme.status_interactive_fg,
+    );
+    let prompt = console::truncate_str(&prompt, max_width.saturating_sub(options.width()), "…");
+    let mut spans: Vec<Span<'static>> = vec![prompt.into_owned().into()];
+    spans.extend(options.spans);
     Line::from(spans)
 }
 
-fn build_hotkey_hints(view: &View, ctx: &AppContext) -> Line<'static> {
+fn build_hotkey_hints(view: &View, ctx: &AppContext, max_width: usize) -> Line<'static> {
     let hints: Vec<HintSpec> = match view {
         View::List(_) => vec![
             h(&[UserEvent::Search], t!("common.hint.search")),
@@ -127,7 +135,7 @@ fn build_hotkey_hints(view: &View, ctx: &AppContext) -> Line<'static> {
         // Up/Down／PageUp/PageDown 不經過 `KeyBind`（見
         // `view::shell::resolve` 的文件註解），沒有 `UserEvent` 可以掛，早
         // return 手動補上這兩組固定提示——其餘 view 都走尾端共用的
-        // `keybind_hint_line` 入口，不必為了這一個特例把它拆開。
+        // `hint_pairs` → `fit_key_groups` → `hint_line` 流程，不必為了這一個特例把它拆開。
         View::Shell(_) => {
             let specs = [
                 h(&[UserEvent::Confirm], t!("common.hint.run")),
@@ -140,7 +148,8 @@ fn build_hotkey_hints(view: &View, ctx: &AppContext) -> Line<'static> {
                 ("↑↓".to_string(), history.as_ref()),
                 ("PgUp/PgDn".to_string(), scroll.as_ref()),
             ]);
-            return hint_line(&ctx.color_theme, &pairs, ctx.color_theme.help_key_fg);
+            let pairs = fit_key_groups(&pairs, max_width);
+            return hint_line(&ctx.color_theme, pairs, ctx.color_theme.help_key_fg);
         }
         View::Help(_) => vec![
             h(
@@ -164,7 +173,12 @@ fn build_hotkey_hints(view: &View, ctx: &AppContext) -> Line<'static> {
         View::Default => vec![],
     };
 
-    keybind_hint_line(&ctx.color_theme, &ctx.keybind, &hints)
+    let pairs = hint_pairs(&ctx.keybind, &hints);
+    hint_line(
+        &ctx.color_theme,
+        fit_key_groups(&pairs, max_width),
+        ctx.color_theme.help_key_fg,
+    )
 }
 
 /// merge PR 表單裡可勾選的 head branch 處置。
@@ -1055,6 +1069,19 @@ impl StatusLineState {
         // 同時被插進最前面，兩處若各自重算一次容易對不上。
         let full_reload_span = self.full_reload_span(full_status);
         let full_reload_w = full_reload_span.as_ref().map_or(0, Span::width);
+        // 倒數 span 只在 `StatusLine::None`（也就是提示列）出現，一樣要先量好
+        let countdown_span = self.countdown_secs().map(|s| self.countdown_span(s));
+
+        let block = Block::default()
+            .borders(Borders::TOP)
+            .style(Style::default().fg(self.ctx.color_theme.divider_fg))
+            .padding(Padding::horizontal(1));
+        // 可用寬度從 `block.inner()` 拿，不要手算 padding。提示列／確認列照扣掉
+        // 前綴後的寬度整組取捨，之後才不會被 `truncate_line` 再切出殘字。
+        let inner = block.inner(area);
+        let max_width = inner.width as usize;
+        let hint_width = max_width
+            .saturating_sub(full_reload_w + countdown_span.as_ref().map_or(0, Span::width));
 
         // `Input` 分支算出的「游標前內容的顯示寬度」，渲染後定位游標用。
         let mut cursor_col = 0usize;
@@ -1062,7 +1089,7 @@ impl StatusLineState {
         let mut text: Line = match &self.line {
             StatusLine::None => {
                 if numeric_prefix.is_empty() {
-                    build_hotkey_hints(view, &self.ctx)
+                    build_hotkey_hints(view, &self.ctx, hint_width)
                 } else {
                     Line::raw(numeric_prefix).fg(self.ctx.color_theme.status_input_transient_fg)
                 }
@@ -1173,19 +1200,25 @@ impl StatusLineState {
                 action.prompt(*kind, *number),
                 t!("common.hint.confirm"),
                 &self.ctx,
+                hint_width,
             ),
-            StatusLine::TogglePrDraftPrompt { number, action, .. } => {
-                confirm_line(action.prompt(*number), t!("common.hint.confirm"), &self.ctx)
-            }
+            StatusLine::TogglePrDraftPrompt { number, action, .. } => confirm_line(
+                action.prompt(*number),
+                t!("common.hint.confirm"),
+                &self.ctx,
+                hint_width,
+            ),
             StatusLine::UpdatePrompt { tag } => confirm_line(
                 format!("v{} → {tag}", env!("CARGO_PKG_VERSION")),
                 t!("common.hint.update"),
                 &self.ctx,
+                hint_width,
             ),
             StatusLine::RestartPrompt { tag, .. } => confirm_line(
                 t!("app.status.updated_to", tag = tag).into_owned(),
                 t!("common.hint.restart"),
                 &self.ctx,
+                hint_width,
             ),
             StatusLine::NotificationInfo(msg) => {
                 Line::raw(msg).fg(self.ctx.color_theme.status_info_fg)
@@ -1207,23 +1240,16 @@ impl StatusLineState {
         //
         // 上面幾支 `Line::raw(..).fg(..)` 的樣式是設在 *line* 上的，這個
         // span 帶自己的 `fg`，不會被蓋掉也不會污染別人。
-        if let Some(secs) = self.countdown_secs() {
-            text.spans.insert(0, self.countdown_span(secs));
+        if let Some(span) = countdown_span {
+            text.spans.insert(0, span);
         }
         if let Some(span) = full_reload_span {
             text.spans.insert(0, span);
         }
 
-        let block = Block::default()
-            .borders(Borders::TOP)
-            .style(Style::default().fg(self.ctx.color_theme.divider_fg))
-            .padding(Padding::horizontal(1));
-
         // 截斷統一在這裡套一次，不分支 —— picker 那幾行才是真正沒有上限的
         // （`render_picker_line` 把每個 branch 名 inline 印出來），提示列反而是
-        // 人工策劃過的。可用寬度從 `block.inner()` 拿，不要手算 padding。
-        let inner = block.inner(area);
-        let max_width = inner.width as usize;
+        // 人工策劃過的。
         let paragraph = Paragraph::new(truncate_line(text, max_width)).block(block);
         f.render_widget(paragraph, area);
 
@@ -1464,6 +1490,25 @@ mod tests {
     };
 
     use super::*;
+
+    /// 窄螢幕：問句先被截，`[y]`／`[Esc]` 選項一個字都不能少。
+    #[test]
+    fn confirm_line_truncates_prompt_but_keeps_options() {
+        let ctx = test_ctx();
+        let long = "這是一個非常非常長的確認問題要被截斷".to_string();
+        let line = confirm_line(long.clone(), "confirm".into(), &ctx, 30);
+        let text: String = line.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(line.width() <= 30, "{text}");
+        assert!(
+            text.contains("Enter:confirm") && text.contains("Esc"),
+            "{text}"
+        );
+        assert!(text.contains('…'), "{text}");
+
+        let wide = confirm_line(long.clone(), "confirm".into(), &ctx, 200);
+        let text: String = wide.spans.iter().map(|s| s.content.as_ref()).collect();
+        assert!(text.contains(&long));
+    }
 
     /// 建構測試用 `AppContext`。`keybind` 必須用 `KeyBind::new(None)`（讀
     /// `assets/default-keybind.toml`），不能用 `KeyBind::default()`——那是

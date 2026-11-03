@@ -67,6 +67,26 @@ pub fn keybind_hint_line(
     hint_line(theme, &hint_pairs(keybind, hints), theme.help_key_fg)
 }
 
+/// 排得進 `max_width` 格的最長前綴。整組（`key:desc`）放不下就整組丟掉，
+/// 不會留下 `…` 或半截說明——窄螢幕上殘字比少一個提示更難懂。
+/// 呼叫端把最重要的提示放前面。
+pub fn fit_key_groups<'a, 'b>(
+    pairs: &'a [(String, &'b str)],
+    max_width: usize,
+) -> &'a [(String, &'b str)] {
+    let sep = console::measure_text_width(HINT_SEP);
+    let mut used = 0;
+    for (i, (key, desc)) in pairs.iter().enumerate() {
+        // `key` + `:` + `desc`，第二組起前面多一個分隔
+        let w = console::measure_text_width(key) + 1 + console::measure_text_width(desc);
+        used += w + if i > 0 { sep } else { 0 };
+        if used > max_width {
+            return &pairs[..i];
+        }
+    }
+    pairs
+}
+
 /// `key:desc  key:desc…` —— key 用 `key_fg`，冒號與 desc 用
 /// `status_input_transient_fg`。
 pub fn hint_line(theme: &ColorTheme, pairs: &[(String, &str)], key_fg: Color) -> Line<'static> {
@@ -190,12 +210,32 @@ pub(crate) fn force_update_after_style_edges(buf: &mut Buffer) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
     use ratatui::layout::Rect;
 
     use crate::color::ColorTheme;
 
     fn pairs(v: &[(&str, &'static str)]) -> Vec<(String, &'static str)> {
         v.iter().map(|(k, d)| ((*k).to_string(), *d)).collect()
+    }
+
+    fn fit_sample() -> Vec<(String, &'static str)> {
+        pairs(&[("?", "說明"), ("Enter", "open"), ("q", "close")])
+    }
+
+    #[test]
+    fn fit_key_groups_keeps_everything_when_it_fits() {
+        assert_eq!(fit_key_groups(&fit_sample(), 100).len(), 3);
+    }
+
+    #[test]
+    fn fit_key_groups_drops_whole_trailing_groups() {
+        // `?:說明` = 6，`  Enter:open` = 2 + 10；18 放得下前兩組，第三組不行
+        assert_eq!(fit_key_groups(&fit_sample(), 18).len(), 2);
+        // 差一格就整組丟掉，不留半截
+        assert_eq!(fit_key_groups(&fit_sample(), 17).len(), 1);
+        assert_eq!(fit_key_groups(&fit_sample(), 6).len(), 1);
+        assert_eq!(fit_key_groups(&fit_sample(), 5).len(), 0);
     }
 
     #[test]
