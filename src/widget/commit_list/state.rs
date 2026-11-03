@@ -416,6 +416,11 @@ impl<'a> CommitListState<'a> {
             .map(|p| self.landing_raw(RawCommitIdx(p)))
     }
 
+    /// 精簡模式下 `raw` 底下被藏了幾顆 commit；沒開精簡模式是 0。
+    pub(super) fn hidden_below(&self, raw: RawCommitIdx) -> u32 {
+        self.condensed.as_ref().map_or(0, |c| c.hidden_below(raw.0))
+    }
+
     pub fn condensed_enabled(&self) -> bool {
         self.condensed.is_some()
     }

@@ -29,6 +29,16 @@ const ELLIPSIS: &str = "...";
 const VIRTUAL_ROW_COLOR: Color = Color::Gray;
 /// 被標記的 commit 在 marker 欄的符號（ASCII，不受 glyph 樣式影響）。
 const MARKED_SYMBOL: &str = "*";
+/// 精簡模式（#215）只畫 graph、ref 標籤（沒有 ref 時畫短 hash）與右邊的數字，
+/// 欄位組合不看使用者設定的 `columns`；Subject 欄是畫標籤的地方，所以一定要有。
+const CONDENSED_COLUMNS: [UserListColumnType; 3] = [
+    UserListColumnType::Graph,
+    UserListColumnType::Marker,
+    UserListColumnType::Subject,
+];
+/// 精簡模式下標籤欄最少要留的寬度，取代 `ui.list.subject_min_width`（那是給
+/// 完整 subject 文字用的，窄螢幕下會把 graph 擠成單欄）。
+const CONDENSED_SUBJECT_MIN_WIDTH: u16 = 8;
 
 pub struct CommitList<'a> {
     ctx: Rc<AppContext>,
@@ -64,7 +74,17 @@ impl<'a> StatefulWidget for CommitList<'a> {
         } else {
             self.ctx.ui_config.list.name_width
         };
-        let columns = &self.ctx.ui_config.list.columns;
+        let condensed = state.condensed_enabled();
+        let columns: &[UserListColumnType] = if condensed {
+            &CONDENSED_COLUMNS
+        } else {
+            &self.ctx.ui_config.list.columns
+        };
+        let subject_min_width = if condensed {
+            CONDENSED_SUBJECT_MIN_WIDTH
+        } else {
+            self.ctx.ui_config.list.subject_min_width
+        };
 
         // 寬度／緊湊每幀從 `content_area.width` 決定（不是啟動時凍結）——
         // 兩者跟著 resize、refs 側欄開合自動反應，`-c auto` 也完全不用付
@@ -80,7 +100,7 @@ impl<'a> StatefulWidget for CommitList<'a> {
             state
                 .current_graph_truncated()
                 .then_some(self.ctx.ui_config.list.graph_max_width_percent),
-            self.ctx.ui_config.list.subject_min_width,
+            subject_min_width,
             name_width,
             self.ctx.ui_config.list.date_width,
         );
@@ -98,7 +118,7 @@ impl<'a> StatefulWidget for CommitList<'a> {
 
         let constraints = layout::calc_cell_widths(
             area.width,
-            self.ctx.ui_config.list.subject_min_width,
+            subject_min_width,
             state.graph_cell_width(),
             name_width,
             self.ctx.ui_config.list.date_width,
@@ -188,6 +208,8 @@ struct VisibleRow<'b> {
     /// 使用者用 `mark_toggle` 標記的 commit，marker 欄改畫 `*`。
     is_marked: bool,
     marker_color: Color,
+    /// 精簡模式下這一列底下被藏了幾顆 commit（沒開或 virtual row 是 0）。
+    hidden_below: u32,
 }
 
 enum RowContent<'b> {
@@ -271,6 +293,7 @@ impl CommitList<'_> {
                 is_head: false,
                 is_marked: false,
                 marker_color: VIRTUAL_ROW_COLOR,
+                hidden_below: 0,
             });
         }
 
@@ -304,6 +327,7 @@ impl CommitList<'_> {
                 is_head,
                 is_marked: state.marked_commit_hash() == Some(&info.commit.commit_hash),
                 marker_color: state.marker_color(raw),
+                hidden_below: state.hidden_below(raw),
             });
         }
 
@@ -474,6 +498,20 @@ impl CommitList<'_> {
                     )];
                     self.draw_row_line(buf, area, row, row.text_x, spans);
                 }
+                RowContent::Commit { info, highlight } if state.condensed_enabled() => {
+                    // remote 標籤也要顯示，所以不管 `o` 鍵的狀態一律當作顯示。
+                    let mut spans = refs_spans(
+                        info,
+                        &state.head,
+                        highlight.as_ref().map(|h| &h.refs),
+                        &self.ctx.color_theme,
+                        true,
+                    );
+                    if spans.is_empty() {
+                        spans = self.hash_spans(info, highlight.as_ref());
+                    }
+                    self.draw_condensed_row(buf, area, row, spans);
+                }
                 RowContent::Commit { info, highlight } => {
                     let mut spans = refs_spans(
                         info,
@@ -585,25 +623,65 @@ impl CommitList<'_> {
         for row in rows {
             let spans = match &row.content {
                 RowContent::Virtual => vec!["-".fg(VIRTUAL_ROW_COLOR)],
-                RowContent::Commit { info, highlight } => {
-                    let hash = info.commit.commit_hash.as_short_hash();
-                    let pos = highlight.as_ref().and_then(|h| h.commit_hash.clone());
-                    if let Some(pos) = pos {
-                        highlighted_spans(
-                            hash.into(),
-                            pos,
-                            self.ctx.color_theme.list_hash_fg,
-                            Modifier::empty(),
-                            &self.ctx.color_theme,
-                            false,
-                        )
-                    } else {
-                        vec![hash.fg(self.ctx.color_theme.list_hash_fg)]
-                    }
-                }
+                RowContent::Commit { info, highlight } => self.hash_spans(info, highlight.as_ref()),
             };
             self.draw_row_line(buf, area, row, 0, spans);
         }
+    }
+
+    /// 短 hash（含 search highlight）；Hash 欄與精簡模式的無 ref commit 共用。
+    fn hash_spans<'s>(
+        &self,
+        info: &'s CommitInfo<'_>,
+        highlight: Option<&SearchMatch>,
+    ) -> Vec<Span<'s>> {
+        let hash = info.commit.commit_hash.as_short_hash();
+        let pos = highlight.and_then(|h| h.commit_hash.clone());
+        if let Some(pos) = pos {
+            highlighted_spans(
+                hash.into(),
+                pos,
+                self.ctx.color_theme.list_hash_fg,
+                Modifier::empty(),
+                &self.ctx.color_theme,
+                false,
+            )
+        } else {
+            vec![hash.fg(self.ctx.color_theme.list_hash_fg)]
+        }
+    }
+
+    /// 精簡模式的一列：左邊畫標籤（或短 hash），右邊靠右畫底下被藏的 commit
+    /// 數（暗色，0 不畫）。標籤放不下就在數字前面被裁掉，不會壓到數字。
+    fn draw_condensed_row(
+        &self,
+        buf: &mut Buffer,
+        area: Rect,
+        row: &VisibleRow<'_>,
+        spans: Vec<Span<'_>>,
+    ) {
+        let count = (row.hidden_below > 0).then(|| row.hidden_below.to_string());
+        // 數字前後各留一格空白。
+        let reserved = count.as_ref().map_or(0, |c| c.len() as u16 + 2);
+        let left_area = Rect {
+            width: area.width.saturating_sub(reserved),
+            ..area
+        };
+        self.draw_row_line(buf, left_area, row, row.text_x, spans);
+
+        let Some(count) = count else { return };
+        let y = area.top() + row.y;
+        let x = area.right().saturating_sub(reserved);
+        if y >= area.bottom() || x < area.left() + row.text_x {
+            return;
+        }
+        let mut style = Style::default().fg(self.ctx.color_theme.divider_fg);
+        if row.is_selected {
+            let bg = ratatui_color_to_rgb(self.ctx.color_theme.list_selected_bg);
+            apply_row_bg(buf, Rect::new(x, y, reserved, 1), y, bg);
+            style = style.bg(bg);
+        }
+        buf.set_string(x + 1, y, count, style);
     }
 
     fn render_date(
@@ -1720,6 +1798,145 @@ mod tests {
                     vec![Edge::new(EdgeType::RightBottom, 1, 1)],
                 ],
             )
+        }
+
+        /// 40 欄的精簡模式：只有 graph、ref 標籤（沒有 ref 時是短 hash）與右邊
+        /// 的隱藏數，沒有 subject／作者。
+        fn condensed_state<'a>(
+            repository: &'a Repository,
+            refs: Vec<Vec<&'a crate::git::Ref>>,
+        ) -> CommitListState<'a> {
+            let commits = repository.all_commits();
+            let infos = commits
+                .iter()
+                .zip(refs)
+                .map(|(c, refs)| CommitInfo::new(c, refs))
+                .collect();
+            let mut state = CommitListState::new(
+                infos,
+                repository,
+                Rc::new(Graph::from_materialized(
+                    commits.len(),
+                    Vec::new(),
+                    Vec::new(),
+                )),
+                Vec::new(),
+                Some(RawCommitIdx(0)),
+                Head::None,
+                FxHashMap::default(),
+                MatchOptions::default(),
+                None,
+                CommitMask::default(),
+                None,
+                0,
+            );
+            let condensed = crate::graph::condense(repository, Some(0));
+            let graph = crate::graph::calc_graph_filtered(
+                repository,
+                &condensed.mask,
+                Some(&commits[0].commit_hash),
+                true,
+                crate::graph::Truncation::new(10),
+            );
+            state.apply_condensed(Some(Rc::new(condensed)), Rc::new(graph), None);
+            state.reset_height(10);
+            state
+        }
+
+        fn buffer_lines(buf: &Buffer) -> Vec<String> {
+            (0..buf.area.height)
+                .map(|y| {
+                    (0..buf.area.width)
+                        .map(|x| buf[(x, y)].symbol())
+                        .collect::<String>()
+                })
+                .collect()
+        }
+
+        #[test]
+        fn condensed_rows_show_refs_hash_and_hidden_count_without_subject() {
+            // c0(main, HEAD) ← c1 ← c2 ← c3 ← c4(v1.0)；c1～c3 被藏
+            let mut commits = Vec::new();
+            for (i, hash) in ["aaaaaaa", "bbbbbbb", "ccccccc", "ddddddd", "eeeeeee"]
+                .iter()
+                .enumerate()
+            {
+                let parents: Vec<crate::git::CommitHash> =
+                    ["bbbbbbb", "ccccccc", "ddddddd", "eeeeeee"]
+                        .get(i)
+                        .map(|p| vec![(*p).into()])
+                        .unwrap_or_default();
+                commits.push(Commit {
+                    commit_hash: (*hash).into(),
+                    parent_commit_hashes: parents,
+                    subject: format!("subject-{i}"),
+                    author_name: "alice".into(),
+                    ..Default::default()
+                });
+            }
+            let repository = Repository::from_commits(commits);
+            let main = crate::git::Ref::Branch {
+                name: "main".into(),
+                target: "aaaaaaa".into(),
+            };
+            let tag = crate::git::Ref::Tag {
+                name: "v1.0".into(),
+                target: "eeeeeee".into(),
+            };
+            let mut state = condensed_state(
+                &repository,
+                vec![vec![&main], vec![], vec![], vec![], vec![&tag]],
+            );
+
+            let ctx = test_ctx_styled(GraphStyle::Rounded, GraphWidthType::Double);
+            let area = Rect::new(0, 0, 40, 6);
+            let mut buf = Buffer::empty(area);
+            CommitList::new(ctx, 0).render(area, &mut buf, &mut state);
+            let lines = buffer_lines(&buf);
+            let screen = lines.join("\n");
+
+            assert_eq!(state.total, 2, "{screen}");
+            assert!(lines[1].contains("main"), "{screen}");
+            assert!(
+                lines[1].trim_end().ends_with('3'),
+                "底下藏了 3 顆：\n{screen}"
+            );
+            assert!(lines[2].contains("v1.0"), "{screen}");
+            assert!(!screen.contains("subject-"), "不畫 subject：\n{screen}");
+            assert!(!screen.contains("alice"), "不畫作者：\n{screen}");
+        }
+
+        #[test]
+        fn condensed_commit_without_ref_shows_short_hash_and_hides_zero_count() {
+            // c0(HEAD, 沒有 ref) ← c1 ← c2(root, 沒有 ref)：兩端都畫短 hash
+            let commits: Vec<Commit> = [
+                ("aaaaaaa", Some("bbbbbbb")),
+                ("bbbbbbb", Some("ccccccc")),
+                ("ccccccc", None),
+            ]
+            .into_iter()
+            .map(|(hash, parent)| Commit {
+                commit_hash: hash.into(),
+                parent_commit_hashes: parent.map(|p| vec![p.into()]).unwrap_or_default(),
+                subject: "never-drawn".into(),
+                ..Default::default()
+            })
+            .collect();
+            let repository = Repository::from_commits(commits);
+            let mut state = condensed_state(&repository, vec![vec![], vec![], vec![]]);
+
+            let ctx = test_ctx_styled(GraphStyle::Rounded, GraphWidthType::Double);
+            let area = Rect::new(0, 0, 40, 4);
+            let mut buf = Buffer::empty(area);
+            CommitList::new(ctx, 0).render(area, &mut buf, &mut state);
+            let lines = buffer_lines(&buf);
+            let screen = lines.join("\n");
+
+            assert!(lines[1].contains("aaaaaaa"), "{screen}");
+            assert!(lines[1].trim_end().ends_with('1'), "{screen}");
+            assert!(lines[2].contains("ccccccc"), "{screen}");
+            assert!(!lines[2].trim_end().ends_with('0'), "0 不畫：\n{screen}");
+            assert!(!screen.contains("never-drawn"), "{screen}");
         }
 
         fn dot_color(cells: &[TextCell]) -> Color {
