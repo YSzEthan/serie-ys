@@ -2,7 +2,7 @@ use std::ops::Range;
 
 use crate::{
     git::{CommitHash, Repository},
-    RemoteOnly,
+    CommitMask,
 };
 
 use super::lanes::{self, BuildOpts, Lanes, NOT_LOADED};
@@ -280,7 +280,7 @@ pub fn calc_graph(
 
 pub fn calc_graph_filtered(
     repository: &Repository,
-    remote_only: &RemoteOnly,
+    remote_only: &CommitMask,
     head_hint: Option<&CommitHash>,
     reserve_head_col: bool,
     trunc: Truncation,

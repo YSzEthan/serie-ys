@@ -376,15 +376,16 @@ pub(crate) fn apply_locale(locale: Locale) {
 
 pub type Result<T> = std::result::Result<T, Box<dyn std::error::Error>>;
 
-/// 只有 remote ref 走得到的 commit，以 raw index（`Repository::all_commits()`
-/// 的位置）為索引。
+/// 要從 graph 隱藏的 commit 遮罩，以 raw index（`Repository::all_commits()`
+/// 的位置）為索引。來源有「只有 remote ref 走得到的 commit」，以及精簡模式
+/// 的中間 commit；兩者可用 `union` 合併。
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct RemoteOnly {
+pub struct CommitMask {
     bits: Vec<bool>,
     count: usize,
 }
 
-impl RemoteOnly {
+impl CommitMask {
     pub fn contains(&self, raw: usize) -> bool {
         self.bits.get(raw).copied().unwrap_or(false)
     }
@@ -408,10 +409,20 @@ impl RemoteOnly {
             .enumerate()
             .filter_map(|(raw, &hidden)| hidden.then_some(raw))
     }
+
+    /// 兩個遮罩的聯集：任一邊要隱藏的 commit 都隱藏。
+    pub fn union(&self, other: &Self) -> Self {
+        let len = self.bits.len().max(other.bits.len());
+        Self::from_bits(
+            (0..len)
+                .map(|raw| self.contains(raw) || other.contains(raw))
+                .collect(),
+        )
+    }
 }
 
 /// 從所有本地 ref 開始沿 parent 走訪，走不到的就是只能從遠端分支到達的 commit。
-pub fn find_remote_only_commits(repository: &git::Repository) -> RemoteOnly {
+pub fn find_remote_only_commits(repository: &git::Repository) -> CommitMask {
     let mut reachable = vec![false; repository.all_commits().len()];
     let mut stack: Vec<usize> = Vec::new();
     let mut visit = |raw: usize, stack: &mut Vec<usize>| {
@@ -448,7 +459,7 @@ pub fn find_remote_only_commits(repository: &git::Repository) -> RemoteOnly {
         }
     }
 
-    RemoteOnly::from_bits(reachable.into_iter().map(|r| !r).collect())
+    CommitMask::from_bits(reachable.into_iter().map(|r| !r).collect())
 }
 
 /// 有 remote-only commit 時，算出隱藏它們之後的 filtered graph；沒有就回 `None`。
@@ -457,7 +468,7 @@ pub fn find_remote_only_commits(repository: &git::Repository) -> RemoteOnly {
 /// 或 `lib.rs::run()` 換資料那段）才決定要不要包成 `Rc`。
 pub fn compute_filtered_graph_from(
     repository: &git::Repository,
-    remote_only: &RemoteOnly,
+    remote_only: &CommitMask,
     trunc: graph::Truncation,
 ) -> Option<Graph> {
     if remote_only.is_empty() {
@@ -479,7 +490,7 @@ pub fn compute_filtered_graph_from(
 fn build_graph_artifacts(
     repository: &git::Repository,
     trunc: graph::Truncation,
-) -> (Option<Rc<Graph>>, RemoteOnly) {
+) -> (Option<Rc<Graph>>, CommitMask) {
     let remote_only = find_remote_only_commits(repository);
     let filtered = compute_filtered_graph_from(repository, &remote_only, trunc).map(Rc::new);
     (filtered, remote_only)
@@ -1131,6 +1142,18 @@ mod tests {
         let args = Args::try_parse_from(["ysgit", "-p", "~/projects"]).unwrap();
         assert!(args.path_browser);
         assert_eq!(args.path, "~/projects");
+    }
+
+    #[test]
+    fn commit_mask_union_hides_either_side_and_tolerates_unequal_len() {
+        let a = CommitMask::from_bits(vec![true, false, false]);
+        let b = CommitMask::from_bits(vec![false, false, true, true]);
+
+        let u = a.union(&b);
+
+        assert_eq!(u.iter().collect::<Vec<_>>(), vec![0, 2, 3]);
+        assert_eq!(u.len(), 3);
+        assert_eq!(a.union(&CommitMask::default()), a);
     }
 
     #[test]

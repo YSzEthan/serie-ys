@@ -42,7 +42,7 @@ use crate::{
         force_update_after_style_edges,
         pending_overlay::PendingOverlay,
     },
-    CompactType, GraphWidthType, RemoteOnly,
+    CommitMask, CompactType, GraphWidthType,
 };
 
 use status_line::StatusLineState;
@@ -294,7 +294,7 @@ impl<'a> App<'a> {
         repository: &'a Repository,
         graph: &Rc<Graph>,
         filtered_graph: Option<Rc<Graph>>,
-        remote_only_commits: RemoteOnly,
+        remote_only_commits: CommitMask,
         graph_color_set: &'a GraphColorSet,
         initial_selection: InitialSelection,
         ctx: Rc<AppContext>,
@@ -384,7 +384,7 @@ impl<'a> App<'a> {
         app
     }
 
-    pub fn into_parts(self) -> (Option<Rc<Graph>>, RemoteOnly) {
+    pub fn into_parts(self) -> (Option<Rc<Graph>>, CommitMask) {
         self.view.into_commit_list_state().into_graph_parts()
     }
 }

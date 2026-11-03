@@ -931,7 +931,7 @@ mod tests {
     // 的命名衝突。
     mod render_graph_tests {
         use super::*;
-        use crate::RemoteOnly;
+        use crate::CommitMask;
         use crate::{
             color::{GraphColorSet, GraphColors},
             config::{CoreConfig, UiConfig},
@@ -1185,7 +1185,7 @@ mod tests {
                 FxHashMap::default(),
                 MatchOptions::default(),
                 filtered.clone(),
-                RemoteOnly::from_bits(remote_only),
+                CommitMask::from_bits(remote_only),
                 working,
                 0,
             );
@@ -1833,7 +1833,7 @@ mod tests {
                 FxHashMap::default(),
                 MatchOptions::default(),
                 Some(Rc::new(filtered)),
-                RemoteOnly::default(),
+                CommitMask::default(),
                 None,
                 0,
             );

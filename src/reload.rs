@@ -24,7 +24,7 @@ use crate::{
     event::{AppEvent, Sender},
     git::{self, Repository, SortCommit, WorkingChanges},
     graph::{self, Graph},
-    RemoteOnly,
+    CommitMask,
 };
 
 /// worker 兩次 `git status` 之間至少間隔多久——避免存檔工具連續觸發多次
@@ -46,7 +46,7 @@ pub struct Loaded {
     pub repository: Repository,
     pub graph: Graph,
     pub filtered: Option<Graph>,
-    pub remote_only: RemoteOnly,
+    pub remote_only: CommitMask,
     /// 這次載入結果的內容指紋，`take_full()` 取走時寫回 `Reloader::applied`。
     fingerprint: u64,
 }

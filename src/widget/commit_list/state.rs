@@ -7,7 +7,7 @@ use tui_input::Input;
 use crate::git::{CommitHash, Head, Ref, Repository, WorkingChanges};
 use crate::graph::{CellWidthType, Graph, TextCell};
 use crate::widget::scroll;
-use crate::RemoteOnly;
+use crate::CommitMask;
 
 use super::search::{FilterState, MatchOptions, MatchSet, SearchState};
 use super::{ChildPickOption, CommitInfo, FilteredIdx, RawCommitIdx, VisibleIdx};
@@ -118,7 +118,7 @@ pub struct CommitListState<'a> {
     pub(super) inline_detail_height: u16,
 
     pub(super) show_remote_refs: bool,
-    remote_only_commits: RemoteOnly,
+    remote_only_commits: CommitMask,
     needs_graph_clear: bool,
 
     working_changes: Option<WorkingChanges>,
@@ -137,7 +137,7 @@ impl<'a> CommitListState<'a> {
         ref_name_to_commit_index_map: FxHashMap<String, RawCommitIdx>,
         search_defaults: MatchOptions,
         filtered: Option<Rc<Graph>>,
-        remote_only_commits: RemoteOnly,
+        remote_only_commits: CommitMask,
         working_changes: Option<WorkingChanges>,
         scrolloff: usize,
     ) -> CommitListState<'a> {
@@ -185,7 +185,7 @@ impl<'a> CommitListState<'a> {
         }
     }
 
-    pub fn into_graph_parts(self) -> (Option<Rc<Graph>>, RemoteOnly) {
+    pub fn into_graph_parts(self) -> (Option<Rc<Graph>>, CommitMask) {
         (self.filtered, self.remote_only_commits)
     }
 
@@ -1245,7 +1245,7 @@ mod tests {
             FxHashMap::default(),
             MatchOptions::default(),
             None,
-            crate::RemoteOnly::default(),
+            crate::CommitMask::default(),
             Some(working_changes),
             2,
         );
@@ -1439,7 +1439,7 @@ mod tests {
             FxHashMap::default(),
             MatchOptions::default(),
             None,
-            crate::RemoteOnly::default(),
+            crate::CommitMask::default(),
             None,
             0,
         );
