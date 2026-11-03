@@ -40,6 +40,10 @@ const CONDENSED_COLUMNS: [UserListColumnType; 3] = [
 /// 完整 subject 文字用的，窄螢幕下會把 graph 擠成單欄）。
 const CONDENSED_SUBJECT_MIN_WIDTH: u16 = 8;
 
+/// 精簡模式下 Graph 欄最多佔清單寬度的百分比。精簡後的圖寬通常到不了長線
+/// 截斷的門檻，沒有這個上限 lane 一多就把 Subject 的 ref 標籤擠掉。
+const CONDENSED_GRAPH_MAX_WIDTH_PERCENT: u16 = 40;
+
 pub struct CommitList<'a> {
     ctx: Rc<AppContext>,
     marquee_frame: u64,
@@ -91,15 +95,19 @@ impl<'a> StatefulWidget for CommitList<'a> {
         // `terminal::size()` 的 I/O 成本。決定完先寫回 state，
         // `build_visible_rows` 內部的 `text_cells_for_raw` 才會用到
         // 正確的寬度。
+        let graph_max_percent = self.ctx.ui_config.list.graph_max_width_percent;
+        let max_width_percent = if condensed {
+            Some(graph_max_percent.min(CONDENSED_GRAPH_MAX_WIDTH_PERCENT))
+        } else {
+            state.current_graph_truncated().then_some(graph_max_percent)
+        };
         let (cell_width_type, compact, cols) = layout::decide(
             columns,
             state.current_cell_count(),
             content_area.width,
             self.ctx.graph_width,
             self.ctx.compact,
-            state
-                .current_graph_truncated()
-                .then_some(self.ctx.ui_config.list.graph_max_width_percent),
+            max_width_percent,
             subject_min_width,
             name_width,
             self.ctx.ui_config.list.date_width,
@@ -1937,6 +1945,57 @@ mod tests {
             assert!(lines[2].contains("ccccccc"), "{screen}");
             assert!(!lines[2].trim_end().ends_with('0'), "0 不畫：\n{screen}");
             assert!(!screen.contains("never-drawn"), "{screen}");
+        }
+
+        /// 手機寬度：lane 很多、沒有長線可截的精簡圖，Graph 欄照樣被限在 40%，
+        /// ref 標籤不會被擠掉（回報的 `origin/stag` 被切字問題）。
+        #[test]
+        fn condensed_graph_column_is_capped_so_ref_labels_stay_visible() {
+            // 20 個 branch tip 都以同一個 root 為 parent：圖寬 20 格，遠超過 40 欄的 40%
+            const TIPS: usize = 20;
+            let mut commits: Vec<Commit> = (0..TIPS)
+                .map(|i| Commit {
+                    commit_hash: format!("t{i:06}").as_str().into(),
+                    parent_commit_hashes: vec!["rrrrrrr".into()],
+                    subject: format!("subject-{i}"),
+                    ..Default::default()
+                })
+                .collect();
+            commits.push(Commit {
+                commit_hash: "rrrrrrr".into(),
+                ..Default::default()
+            });
+            let repository = Repository::from_commits(commits);
+            let branches: Vec<crate::git::Ref> = (0..TIPS)
+                .map(|i| crate::git::Ref::Branch {
+                    name: format!("feature-{i}"),
+                    target: format!("t{i:06}").as_str().into(),
+                })
+                .collect();
+            let mut refs: Vec<Vec<&crate::git::Ref>> = branches.iter().map(|b| vec![b]).collect();
+            refs.push(vec![]);
+            let mut state = condensed_state(&repository, refs);
+            let ctx = test_ctx_styled(GraphStyle::Rounded, GraphWidthType::Auto);
+            let area = Rect::new(0, 0, 40, 24);
+            let mut buf = Buffer::empty(area);
+            CommitList::new(ctx, 0).render(area, &mut buf, &mut state);
+            let lines = buffer_lines(&buf);
+            let screen = lines.join("\n");
+
+            assert!(
+                state.current_cell_count() > 16,
+                "fixture 要比上限寬：{screen}"
+            );
+            assert_eq!(state.graph_cols(), 16, "40 欄的 40%：\n{screen}");
+            for i in 0..TIPS {
+                let label = format!("feature-{i}");
+                assert!(
+                    lines
+                        .iter()
+                        .any(|l| l.contains(&label) && !l.contains(&format!("{label}0"))),
+                    "{label} 要完整露出：\n{screen}"
+                );
+            }
         }
 
         fn dot_color(cells: &[TextCell]) -> Color {

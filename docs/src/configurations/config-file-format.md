@@ -581,8 +581,8 @@ merge 密集的 repo（例如 linux）改用 `--order topo`，圖寬約只有預
 
 ### `ui.list.graph_max_width_percent`
 
-長線截斷啟用時，graph 欄最多佔清單寬度的百分比。超出的 lane 收進最後一欄的
-溢位欄：顯示 `…`，或顯示落在溢位範圍的 commit 的 dot。
+長線截斷啟用時，graph 欄最多佔清單寬度的百分比。精簡模式不論有沒有截斷一律
+套用，且不超過 40%。超出的 lane 收進最後一欄的溢位欄：顯示 `…`，或顯示落在溢位範圍的 commit 的 dot。
 
 - 型別：`u16`
 - 預設值：`50`

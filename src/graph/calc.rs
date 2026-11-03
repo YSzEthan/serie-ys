@@ -174,7 +174,7 @@ impl Graph {
         self.rows.cell_count()
     }
 
-    /// 這張圖啟用了長線截斷（圖寬超過門檻）。欄寬上限只在這時候才套用。
+    /// 這張圖啟用了長線截斷（圖寬超過門檻）。非精簡模式的欄寬上限只在這時候才套用。
     pub fn truncated(&self) -> bool {
         self.rows.truncated()
     }

@@ -207,7 +207,7 @@ impl<'a> CommitListState<'a> {
         self.current_cell_count().min(self.col_limit)
     }
 
-    /// 目前的 graph 啟用了長線截斷；欄寬上限只在這時候套用。
+    /// 目前的 graph 啟用了長線截斷；非精簡模式的欄寬上限只在這時候套用。
     pub(super) fn current_graph_truncated(&self) -> bool {
         self.current_graph().truncated()
     }
