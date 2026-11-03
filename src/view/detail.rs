@@ -81,6 +81,7 @@ pub fn status_hints_for(pane: DetailPane) -> Vec<HintSpec> {
     hints.extend([
         h(&[UserEvent::RefList], t!("common.hint.refs")),
         h(&[UserEvent::RemoteRefsToggle], t!("common.hint.remote")),
+        h(&[UserEvent::CondensedToggle], t!("common.hint.condensed")),
         h(&[UserEvent::GitHubToggle], t!("common.hint.github")),
         h(&[UserEvent::Refresh], t!("common.hint.refresh")),
         h(&[UserEvent::HelpToggle], t!("common.hint.help")),
@@ -324,6 +325,9 @@ impl<'a> DetailView<'a> {
                     self.tx
                         .send_after(AppEvent::ClearStatusLine, std::time::Duration::from_secs(3));
                 }
+            }
+            UserEvent::CondensedToggle => {
+                self.tx.send(AppEvent::ToggleCondensed);
             }
             UserEvent::Confirm | UserEvent::Cancel | UserEvent::Close => {
                 self.tx.send(AppEvent::CloseDetail);

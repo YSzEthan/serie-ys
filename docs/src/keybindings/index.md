@@ -58,6 +58,7 @@
 | <kbd>Ctrl-t</kbd> | 刪除 commit 上的 tag | `delete_tag` |
 | <kbd>d</kbd> | 刪除 commit 上的 local branch | `delete_ref` |
 | <kbd>o</kbd> | 切換 remote refs | `remote_refs_toggle` |
+| <kbd>w</kbd> | 切換精簡模式（只顯示分支與分岔處，窄螢幕自動開啟） | `condensed_toggle` |
 | <kbd>g</kbd> | 開啟 GitHub issues/PRs | `github_toggle` |
 | <kbd>f</kbd> | fetch 所有 remote | `fetch` |
 | <kbd>p</kbd> | pull 目前 branch（只做 fast-forward） | `pull` |
@@ -94,6 +95,7 @@
 | <kbd>B</kbd> | 複製 remote branch 名稱 | `full_branch_copy` |
 | <kbd>v</kbd> | 複製 tag 名稱 | `tag_copy` |
 | <kbd>o</kbd> | 切換 remote refs | `remote_refs_toggle` |
+| <kbd>w</kbd> | 切換精簡模式（只顯示分支與分岔處，窄螢幕自動開啟） | `condensed_toggle` |
 | <kbd>Tab</kbd> | 開啟 refs 清單 | `ref_list` |
 | <kbd>g</kbd> | 開啟 GitHub issues/PRs | `github_toggle` |
 | <kbd>F1</kbd> <kbd>?</kbd> | 開啟說明 | `help_toggle` |

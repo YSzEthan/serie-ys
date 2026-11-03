@@ -281,6 +281,7 @@ fn help_blocks(
         b(vec![UserEvent::DeleteTag], t!("help.list.delete_tag_from_commit")),
         b(vec![UserEvent::DeleteRef], t!("help.list.delete_local_branch_from_commit")),
         b(vec![UserEvent::RemoteRefsToggle], t!("help.list.toggle_remote_refs")),
+        b(vec![UserEvent::CondensedToggle], t!("help.list.toggle_condensed")),
         b(vec![UserEvent::GitHubToggle], t!("help.list.open_github_issues_prs")),
         b(vec![UserEvent::Fetch], t!("help.list.fetch_all_remotes")),
         b(vec![UserEvent::Pull], t!("help.list.pull_fast_forward_only")),
@@ -315,6 +316,7 @@ fn help_blocks(
         b(vec![UserEvent::FullBranchCopy], t!("help.detail.copy_remote_branch_name")),
         b(vec![UserEvent::TagCopy], t!("help.detail.copy_tag_name")),
         b(vec![UserEvent::RemoteRefsToggle], t!("help.detail.toggle_remote_refs")),
+        b(vec![UserEvent::CondensedToggle], t!("help.detail.toggle_condensed")),
         b(vec![UserEvent::RefList], t!("help.detail.open_refs_list")),
         // 這個一直都能用（`is_browsing_view()` 含 Detail，事件由 `global_app_event`
         // 在 App 層攔下），只是說明頁從來沒列出來。

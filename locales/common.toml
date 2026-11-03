@@ -148,6 +148,10 @@ en-US = "related"
 zh-TW = "remote"
 en-US = "remote"
 
+[common.hint.condensed]
+zh-TW = "精簡"
+en-US = "condense"
+
 [common.hint.retry]
 zh-TW = "重試"
 en-US = "retry"

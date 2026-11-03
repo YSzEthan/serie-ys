@@ -7,6 +7,7 @@
 order = "chrono"
 graph_width = "auto"
 compact = "auto"
+condensed = "auto"
 graph_style = "rounded"
 initial_selection = "latest"
 locale = "zh-tw"
@@ -192,6 +193,21 @@ Commit 排序演算法。
   - `off`
 
 命令列參數指定的值優先。
+
+### `core.option.condensed`
+
+精簡模式：隱藏沒有 ref、位在一條直線中間的 commit，只留下 branch、tag、
+HEAD 與分岔、匯合處，每一列改成只顯示 ref 標籤，並在右邊標出它底下被藏起來
+的 commit 數。給手機 SSH 這類窄螢幕看 branch 的順序與關聯用。
+
+- 型別：`string`（enum）
+- 預設值：`auto`
+- 可選值：
+  - `auto`：終端機窄於 60 欄時開啟，寬度跨過 60 欄時自動切換
+  - `on`
+  - `off`
+
+執行中可用 <kbd>w</kbd> 暫時切換；下次寬度跨過 60 欄時回到自動判斷。
 
 ### `core.option.graph_style`
 

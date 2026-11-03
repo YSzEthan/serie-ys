@@ -99,6 +99,7 @@ fn build_hotkey_hints(view: &View, ctx: &AppContext) -> Line<'static> {
             h(&[UserEvent::CreateTag], t!("common.hint.tag")),
             h(&[UserEvent::RefList], t!("common.hint.refs")),
             h(&[UserEvent::RemoteRefsToggle], t!("common.hint.remote")),
+            h(&[UserEvent::CondensedToggle], t!("common.hint.condensed")),
             h(&[UserEvent::GitHubToggle], t!("common.hint.github")),
             h(&[UserEvent::Refresh], t!("common.hint.refresh")),
             h(&[UserEvent::HelpToggle], t!("common.hint.help")),

@@ -50,7 +50,7 @@ pub enum Scope {
 #[derive(Debug)]
 pub enum AppEvent {
     Key(KeyEvent),
-    Resize(usize, usize),
+    Resize(usize),
     Tick,
     Quit,
     OpenDetail,
@@ -193,6 +193,10 @@ pub enum AppEvent {
     /// `App::view` 現拿（`View::take_refresh_context`），不再靠事件 payload
     /// 一路往前傳，見 `reload::Reloader::request_full`。
     Refresh,
+    /// `w` 鍵：手動切換精簡模式（#215）。
+    ToggleCondensed,
+    /// resize 停住一小段時間之後，檢查寬度是否跨過窄螢幕門檻。
+    CondensedCheck,
     ClearStatusLine,
     /// 訊息、游標在訊息內的 byte 位置、右側的 transient 訊息。
     UpdateStatusInput(String, usize, Option<String>),
@@ -747,8 +751,8 @@ impl EventController {
                             ratatui::crossterm::event::Event::Key(key) => {
                                 tx.send(AppEvent::Key(key));
                             }
-                            ratatui::crossterm::event::Event::Resize(w, h) => {
-                                tx.send(AppEvent::Resize(w as usize, h as usize));
+                            ratatui::crossterm::event::Event::Resize(w, _) => {
+                                tx.send(AppEvent::Resize(w as usize));
                             }
                             _ => {}
                         },
@@ -1119,6 +1123,7 @@ pub enum UserEvent {
     DeleteTag,
     DeleteRef,
     RemoteRefsToggle,
+    CondensedToggle,
     GitHubToggle,
     ShellToggle,
     TaskListToggle,
@@ -1188,6 +1193,7 @@ impl UserEvent {
             UserEvent::DeleteTag => "delete_tag",
             UserEvent::DeleteRef => "delete_ref",
             UserEvent::RemoteRefsToggle => "remote_refs_toggle",
+            UserEvent::CondensedToggle => "condensed_toggle",
             UserEvent::GitHubToggle => "github_toggle",
             UserEvent::ShellToggle => "shell_toggle",
             UserEvent::TaskListToggle => "task_list_toggle",
@@ -1261,6 +1267,7 @@ impl UserEvent {
             UserEvent::DeleteTag => t!("event.desc.delete_tag"),
             UserEvent::DeleteRef => t!("event.desc.delete_ref"),
             UserEvent::RemoteRefsToggle => t!("event.desc.remote_refs_toggle"),
+            UserEvent::CondensedToggle => t!("event.desc.condensed_toggle"),
             UserEvent::GitHubToggle => t!("event.desc.git_hub_toggle"),
             UserEvent::ShellToggle => t!("event.desc.shell_toggle"),
             UserEvent::TaskListToggle => t!("event.desc.task_list_toggle"),
@@ -1353,6 +1360,7 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "delete_tag" => Ok(UserEvent::DeleteTag),
                         "delete_ref" => Ok(UserEvent::DeleteRef),
                         "remote_refs_toggle" => Ok(UserEvent::RemoteRefsToggle),
+                        "condensed_toggle" => Ok(UserEvent::CondensedToggle),
                         "github_toggle" => Ok(UserEvent::GitHubToggle),
                         "shell_toggle" => Ok(UserEvent::ShellToggle),
                         "task_list_toggle" => Ok(UserEvent::TaskListToggle),
@@ -1485,6 +1493,7 @@ impl KeyScope {
                     | E::DeleteTag
                     | E::DeleteRef
                     | E::RemoteRefsToggle
+                    | E::CondensedToggle
                     | E::Fetch
                     | E::Pull
                     | E::Push
@@ -1519,6 +1528,7 @@ impl KeyScope {
                     | E::FullBranchCopy
                     | E::TagCopy
                     | E::RemoteRefsToggle
+                    | E::CondensedToggle
                     | E::RefList
                     | E::MarkToggle
                     | E::Refresh
@@ -2090,6 +2100,7 @@ mod tests {
             UserEvent::DeleteTag,
             UserEvent::DeleteRef,
             UserEvent::RemoteRefsToggle,
+            UserEvent::CondensedToggle,
             UserEvent::GitHubToggle,
             UserEvent::TaskListToggle,
             UserEvent::DetailPaneToggle,

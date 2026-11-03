@@ -31,7 +31,8 @@ use crate::{
         set_item_state, set_pr_draft, GhItemKind, MergeMethod, PrDraftAction, StateAction,
         StateFilter,
     },
-    graph::{Graph, GraphStyle},
+    graph::{Condensed, Graph, GraphStyle, Truncation},
+    is_narrow,
     keybind::KeyBind,
     process::run_with_timeout,
     reload::{Loaded, Reloader},
@@ -42,7 +43,7 @@ use crate::{
         force_update_after_style_edges,
         pending_overlay::PendingOverlay,
     },
-    CommitMask, CompactType, GraphWidthType,
+    CommitMask, CompactType, CondensedType, GraphWidthType,
 };
 
 use status_line::StatusLineState;
@@ -243,7 +244,18 @@ pub struct App<'a> {
     /// （見 `run()` 的 `Tick` arm）。跟上面兩個欄位同一類「上一幀畫了什麼」的
     /// 狀態；`App` 重建時歸 `None`，最多多畫一幀，無妨。
     last_countdown_secs: Option<u64>,
+    /// 精簡模式的寬度判斷（#215）：上一次判定時，終端寬度是否在窄螢幕門檻
+    /// 下方。只有「跨過門檻」才會觸發重算，沒跨過的 resize 一律忽略。
+    narrow: bool,
+    /// 最近一次 `Resize` 看到的寬度，`CondensedCheck` 到點時才拿來判斷。
+    latest_width: u16,
+    /// 已經排了一個 `CondensedCheck`，拖拉視窗時不重複排。
+    condensed_check_pending: bool,
 }
+
+/// resize 停住這麼久才檢查寬度：拖拉視窗時寬度會在門檻兩側來回，每跨一次
+/// 就重算 graph（linux 規模是秒級）不划算。
+const CONDENSED_CHECK_DELAY: Duration = Duration::from_millis(250);
 
 /// GitHub 資料的排程狀態機。`(loading=false, pending=Some(_))`
 /// 這種非法組合曾經可達（Bug A）—— 用 enum 讓它在型別層直接不存在。
@@ -295,6 +307,7 @@ impl<'a> App<'a> {
         graph: &Rc<Graph>,
         filtered_graph: Option<Rc<Graph>>,
         remote_only_commits: CommitMask,
+        condensed: Option<Rc<Condensed>>,
         graph_color_set: &'a GraphColorSet,
         initial_selection: InitialSelection,
         ctx: Rc<AppContext>,
@@ -346,6 +359,9 @@ impl<'a> App<'a> {
             working_changes_opt,
             ctx.ui_config.list.scrolloff as usize,
         );
+        if condensed.is_some() {
+            commit_list_state.set_condensed(condensed);
+        }
         if let InitialSelection::Head = initial_selection {
             match repository.head() {
                 Head::Branch { name } => commit_list_state.select_ref(name),
@@ -375,10 +391,28 @@ impl<'a> App<'a> {
             marquee_needed: false,
             last_marquee_id: None,
             last_countdown_secs: None,
+            narrow: false,
+            latest_width: u16::MAX,
+            condensed_check_pending: false,
         };
+        // 量不到寬度就當寬螢幕，跟 `lib.rs::run()` 啟動時的判斷一致。
+        let width = crate::terminal_width();
+        app.latest_width = width;
+        app.narrow = is_narrow(width);
 
         if let Some(carry) = carry {
             app.apply_carry(carry);
+        }
+
+        // 背景載入期間使用者切換過、或寬度跨過門檻：載入結果的精簡狀態可能
+        // 已經過期，原地補一次。
+        let want = app.reloader.want_condensed();
+        if app
+            .view
+            .list_state_mut()
+            .is_some_and(|s| s.condensed_enabled() != want)
+        {
+            app.set_condensed(want);
         }
 
         app
@@ -390,6 +424,39 @@ impl<'a> App<'a> {
 }
 
 impl App<'_> {
+    /// 精簡模式開關：重算 graph 後直接換進 `CommitListState`，不 reload、不重建
+    /// `App`，所以開著任何 view（GitHub、help……）都能切，也不掉狀態。
+    fn set_condensed(&mut self, on: bool) {
+        let trunc = Truncation::new(self.ctx.ui_config.list.graph_edge_max_rows);
+        let set = crate::compute_graphs(self.repository, trunc, on);
+        self.reloader.set_want_condensed(on);
+        if let Some(state) = self.view.list_state_mut() {
+            state.apply_condensed(
+                set.condensed.map(Rc::new),
+                Rc::new(set.graph),
+                set.filtered.map(Rc::new),
+            );
+        }
+    }
+
+    /// `auto` 時：寬度跨過窄螢幕門檻才切換；`on`／`off` 不受寬度影響。
+    fn check_condensed(&mut self) {
+        let narrow = is_narrow(self.latest_width);
+        if narrow == self.narrow {
+            return;
+        }
+        self.narrow = narrow;
+        let setting = self
+            .ctx
+            .core_config
+            .option
+            .condensed
+            .unwrap_or(CondensedType::Auto);
+        if setting == CondensedType::Auto {
+            self.set_condensed(narrow);
+        }
+    }
+
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<Ret, std::io::Error> {
         let mut skip_draw = false;
         loop {
@@ -449,8 +516,36 @@ impl App<'_> {
                 AppEvent::Key(key) => {
                     self.handle_key(key);
                 }
-                AppEvent::Resize(w, h) => {
-                    let _ = (w, h);
+                AppEvent::Resize(w) => {
+                    self.latest_width = u16::try_from(w).unwrap_or(u16::MAX);
+                    if !self.condensed_check_pending {
+                        self.condensed_check_pending = true;
+                        self.ec
+                            .sender()
+                            .send_after(AppEvent::CondensedCheck, CONDENSED_CHECK_DELAY);
+                    }
+                }
+                AppEvent::CondensedCheck => {
+                    self.condensed_check_pending = false;
+                    self.check_condensed();
+                }
+                AppEvent::ToggleCondensed => {
+                    let on = !self
+                        .view
+                        .list_state_mut()
+                        .is_some_and(|s| s.condensed_enabled());
+                    self.set_condensed(on);
+                    let msg = if on {
+                        t!("view.list.condensed_on")
+                    } else {
+                        t!("view.list.condensed_off")
+                    };
+                    self.ec
+                        .sender()
+                        .send(AppEvent::NotifyInfo(msg.into_owned()));
+                    self.ec
+                        .sender()
+                        .send_after(AppEvent::ClearStatusLine, Duration::from_secs(3));
                 }
                 AppEvent::Quit => {
                     return Ok(Ret::Quit(None));

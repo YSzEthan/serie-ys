@@ -53,6 +53,7 @@ delete_tag = ["ctrl-t"]
 delete_ref = ["d"]
 
 remote_refs_toggle = ["o"]
+condensed_toggle = ["w"]
 github_toggle = ["g"]
 shell_toggle = ["/"]
 

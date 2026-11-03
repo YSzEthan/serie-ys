@@ -416,13 +416,19 @@ impl<'a> CommitListState<'a> {
             .map(|p| self.landing_raw(RawCommitIdx(p)))
     }
 
+    pub fn condensed_enabled(&self) -> bool {
+        self.condensed.is_some()
+    }
+
+    /// 只設定精簡遮罩（graph 呼叫端已經換好）：`App::new` 建立時用。
+    pub fn set_condensed(&mut self, condensed: Option<Rc<Condensed>>) {
+        self.condensed = condensed;
+        self.rebuild_filtered_indices();
+    }
+
     /// 開關精簡模式：graph 與 `condensed` 要一起換，不然 `filtered_indices`
     /// 和 graph 的列會對不上。選取的 commit 被藏就落到最近的保留祖先。
     /// 約定同 `toggle_remote_refs`：呼叫端不必另外重繪，這裡會要求清畫面。
-    #[cfg_attr(
-        not(test),
-        expect(dead_code, reason = "下一個 commit 的切換鍵才會呼叫")
-    )]
     pub fn apply_condensed(
         &mut self,
         condensed: Option<Rc<Condensed>>,
@@ -431,11 +437,10 @@ impl<'a> CommitListState<'a> {
     ) {
         let prev = (self.total != 0 && !self.is_virtual_row_selected())
             .then(|| self.current_selected_raw());
-        self.condensed = condensed;
         self.graph = graph;
         self.filtered = filtered;
         self.request_graph_clear();
-        self.rebuild_filtered_indices();
+        self.set_condensed(condensed);
         if let Some(target) = prev.and_then(|raw| self.raw_to_visible(raw)) {
             self.set_visible_selection(target);
         }

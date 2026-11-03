@@ -19,7 +19,8 @@ use crate::{
     git::FetchPrune,
     keybind::KeyBind,
     update::{AutoRestart, Beta, ReleaseNotes, UpdateMode, MAX_INTERVAL_HOURS, MIN_INTERVAL_HOURS},
-    CommitOrderType, CompactType, GraphStyle, GraphWidthType, InitialSelection, Locale, Result,
+    CommitOrderType, CompactType, CondensedType, GraphStyle, GraphWidthType, InitialSelection,
+    Locale, Result,
 };
 
 const CONFIG_FILE_NAME: &str = ".ysgit.toml";
@@ -207,6 +208,7 @@ pub struct CoreOptionConfig {
     pub order: Option<CommitOrderType>,
     pub graph_width: Option<GraphWidthType>,
     pub compact: Option<CompactType>,
+    pub condensed: Option<CondensedType>,
     pub graph_style: Option<GraphStyle>,
     pub initial_selection: Option<InitialSelection>,
     pub max_count: Option<usize>,
@@ -867,6 +869,7 @@ mod tests {
                     order: None,
                     graph_width: None,
                     compact: None,
+                    condensed: None,
                     graph_style: None,
                     initial_selection: None,
                     max_count: None,
@@ -995,6 +998,7 @@ mod tests {
                     order: Some(CommitOrderType::Topo),
                     graph_width: Some(GraphWidthType::Single),
                     compact: None,
+                    condensed: None,
                     graph_style: Some(GraphStyle::Angular),
                     initial_selection: Some(InitialSelection::Head),
                     max_count: None,

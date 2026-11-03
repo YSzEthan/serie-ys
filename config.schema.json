@@ -41,6 +41,16 @@
               ],
               "default": "auto"
             },
+            "condensed": {
+              "type": "string",
+              "description": "Condensed graph: hide commits that have no ref and sit in the middle of a straight line, keeping only refs, HEAD, fork points and merge points, with a count of the hidden commits below each one. `auto` turns it on when the terminal is narrower than 60 columns and follows resizes across that width.",
+              "enum": [
+                "auto",
+                "on",
+                "off"
+              ],
+              "default": "auto"
+            },
             "graph_style": {
               "type": "string",
               "description": "The commit graph edge style. The value specified in the command line argument takes precedence.",
@@ -895,6 +905,9 @@
           "$ref": "#/definitions/keybindArray"
         },
         "remote_refs_toggle": {
+          "$ref": "#/definitions/keybindArray"
+        },
+        "condensed_toggle": {
           "$ref": "#/definitions/keybindArray"
         },
         "github_toggle": {

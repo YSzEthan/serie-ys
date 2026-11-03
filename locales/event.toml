@@ -172,6 +172,10 @@ en-US = "Delete local branch on commit"
 zh-TW = "切換 remote refs"
 en-US = "Toggle remote refs"
 
+[event.desc.condensed_toggle]
+zh-TW = "切換精簡模式（只顯示分支與分岔處）"
+en-US = "Toggle condensed graph (branches and fork points only)"
+
 [event.desc.git_hub_toggle]
 zh-TW = "開啟 GitHub issues/PRs"
 en-US = "Open GitHub issues/PRs"
