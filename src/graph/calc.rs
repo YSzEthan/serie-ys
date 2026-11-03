@@ -5,7 +5,10 @@ use crate::{
     CommitMask,
 };
 
-use super::lanes::{self, BuildOpts, Lanes, NOT_LOADED};
+use super::{
+    condense::first_kept,
+    lanes::{self, BuildOpts, Lanes, NOT_LOADED},
+};
 
 /// 長線截斷的門檻：還沒截斷的圖寬超過這麼多欄才啟用。長線在一般 repo 也
 /// 存在，但它們的圖寬本來就放得下，截斷只會把好好的線切碎。
@@ -278,23 +281,44 @@ pub fn calc_graph(
     Graph::from_lanes(None, lanes)
 }
 
+/// 把 `hidden` 遮罩內的 commit 從 graph 拿掉。
+///
+/// 可見 commit 的 parent 被藏時（精簡模式的中間 commit），沿唯一的 parent
+/// 改寫成最近的保留祖先，見 `first_kept`。remote-only 遮罩不會碰到這條路：
+/// 可見集合對祖先封閉（`find_remote_only_commits` 從本地 ref 沿 loaded
+/// parent 走訪，走得到的才可見），所以可見 commit 的 parent 一定可見。
 pub fn calc_graph_filtered(
     repository: &Repository,
-    remote_only: &CommitMask,
+    hidden: &CommitMask,
     head_hint: Option<&CommitHash>,
     reserve_head_col: bool,
     trunc: Truncation,
 ) -> Graph {
-    let total = repository.all_commits().len();
-    let (parent_start_raw, parent_idx_raw) = repository.parent_csr();
+    let (parent_start, parent_idx) = repository.parent_csr();
+    let head_raw = head_hint.and_then(|h| repository.index_of(h));
+    calc_graph_masked(
+        parent_start,
+        parent_idx,
+        hidden,
+        head_raw,
+        reserve_head_col,
+        trunc,
+    )
+}
 
-    // 可見集合對祖先封閉（`find_remote_only_commits` 從本地 ref 沿 loaded
-    // parent 走訪，走得到的才可見，不可能走到一個「parent 可見、自己不可
-    // 見」的矛盾狀態），所以只要把 CSR 重新編號到 row 空間，不必改寫拓樸。
+fn calc_graph_masked(
+    parent_start_raw: &[u32],
+    parent_idx_raw: &[u32],
+    hidden: &CommitMask,
+    head_raw: Option<usize>,
+    reserve_head_col: bool,
+    trunc: Truncation,
+) -> Graph {
+    let total = parent_start_raw.len() - 1;
     let mut raw_to_row = vec![NOT_LOADED; total];
     let mut raws: Vec<u32> = Vec::new();
     for (raw, row) in raw_to_row.iter_mut().enumerate() {
-        if !remote_only.contains(raw) {
+        if !hidden.contains(raw) {
             *row = raws.len() as u32;
             raws.push(raw as u32);
         }
@@ -310,8 +334,9 @@ pub fn calc_graph_filtered(
             let mapped = if p == NOT_LOADED {
                 NOT_LOADED
             } else {
-                let row = raw_to_row[p as usize];
-                debug_assert_ne!(row, NOT_LOADED, "可見 commit 的已載入 parent 一定可見");
+                let (kept, _) = first_kept(parent_start_raw, parent_idx_raw, hidden, p);
+                let row = raw_to_row[kept as usize];
+                debug_assert_ne!(row, NOT_LOADED, "改寫後的 parent 一定可見");
                 row
             };
             parent_idx.push(mapped);
@@ -319,11 +344,120 @@ pub fn calc_graph_filtered(
         parent_start.push(parent_idx.len() as u32);
     }
 
-    let head = head_hint
-        .and_then(|h| repository.index_of(h))
-        .filter(|&raw| !remote_only.contains(raw))
+    let head = head_raw
+        .filter(|&raw| !hidden.contains(raw))
         .map(|raw| raw_to_row[raw]);
 
     let lanes = build_lanes(&parent_start, &parent_idx, head, reserve_head_col, trunc);
     Graph::from_lanes(Some(raws), lanes)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::condense::condense_csr;
+    use super::*;
+
+    fn csr(parents: &[&[u32]]) -> (Vec<u32>, Vec<u32>) {
+        let mut start = vec![0];
+        let mut idx = Vec::new();
+        for ps in parents {
+            idx.extend_from_slice(ps);
+            start.push(idx.len() as u32);
+        }
+        (start, idx)
+    }
+
+    fn masked(parents: &[&[u32]], protected: &[usize], head: Option<usize>) -> Graph {
+        let (start, idx) = csr(parents);
+        let mut flags = vec![false; parents.len()];
+        for &raw in protected {
+            flags[raw] = true;
+        }
+        let condensed = condense_csr(&start, &idx, &flags);
+        calc_graph_masked(
+            &start,
+            &idx,
+            &condensed.mask,
+            head,
+            true,
+            Truncation::new(10),
+        )
+    }
+
+    fn rows_of(graph: &Graph) -> Vec<(usize, usize, Vec<Edge>)> {
+        (0..graph.row_count())
+            .map(|row| (graph.raw_of(row), graph.col(row), graph.row_edges(row)))
+            .collect()
+    }
+
+    /// 精簡後的 graph 要跟「直接拿改寫後的 parent 建一張小圖」長得一樣。
+    #[test]
+    fn condensed_graph_equals_graph_of_rewritten_parents() {
+        // 0 a1(main,HEAD) 1 a2 | 2 b1(feature) 3 b2 | 4 c1(fork) 5 c2 6 c3(tag)
+        let graph = masked(
+            &[&[1], &[4], &[3], &[4], &[5], &[6], &[]],
+            &[0, 2, 6],
+            Some(0),
+        );
+        // 保留 0、2、4、6，parent 改寫成 0→4、2→4、4→6
+        let (start, idx) = csr(&[&[2], &[2], &[3], &[]]);
+        let expected = Graph::from_lanes(
+            None,
+            build_lanes(&start, &idx, Some(0), true, Truncation::new(10)),
+        );
+
+        assert_eq!(graph.row_count(), 4);
+        assert_eq!(
+            (0..4).map(|row| graph.raw_of(row)).collect::<Vec<_>>(),
+            vec![0, 2, 4, 6]
+        );
+        assert_eq!(graph.row_of(1), None);
+        let got: Vec<_> = rows_of(&graph)
+            .into_iter()
+            .map(|(_, c, e)| (c, e))
+            .collect();
+        let want: Vec<_> = rows_of(&expected)
+            .into_iter()
+            .map(|(_, c, e)| (c, e))
+            .collect();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn merge_keeps_second_parent_line_after_hiding_first_parent_chain() {
+        // 0 M(HEAD)[m1, s2]  1 m1[f0]  2 s2[s1]  3 s1[f0]  4 f0
+        let graph = masked(&[&[1, 2], &[4], &[3], &[4], &[]], &[0], Some(0));
+        // 留下 0、2、4：0→[4, 2]，2→[4]
+        let (start, idx) = csr(&[&[2, 1], &[2], &[]]);
+        let expected = Graph::from_lanes(
+            None,
+            build_lanes(&start, &idx, Some(0), true, Truncation::new(10)),
+        );
+
+        let got: Vec<_> = rows_of(&graph)
+            .into_iter()
+            .map(|(_, c, e)| (c, e))
+            .collect();
+        let want: Vec<_> = rows_of(&expected)
+            .into_iter()
+            .map(|(_, c, e)| (c, e))
+            .collect();
+        assert_eq!(got, want);
+    }
+
+    #[test]
+    fn merge_of_own_ancestor_collapses_duplicate_parent_without_panic() {
+        // M[P, S]，P[S]：P 被藏，M 的兩個 parent 都改寫成 S
+        let graph = masked(&[&[1, 2], &[2], &[]], &[0], Some(0));
+        assert_eq!(graph.row_count(), 2);
+        assert_eq!(graph.row_of(1), None);
+    }
+
+    #[test]
+    fn hidden_head_is_treated_as_no_head() {
+        let (start, idx) = csr(&[&[1], &[]]);
+        let mask = CommitMask::from_bits(vec![true, false]);
+        let graph = calc_graph_masked(&start, &idx, &mask, Some(0), true, Truncation::new(10));
+        assert_eq!(graph.row_count(), 1);
+    }
 }
