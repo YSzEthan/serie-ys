@@ -513,7 +513,7 @@ pub struct UiListConfig {
     #[default = 100]
     pub graph_edge_max_rows: usize,
     /// 截斷啟用時，graph 欄最多佔清單寬度的百分比；超出的 lane 收進最後
-    /// 一欄的溢位欄。精簡模式不論有沒有截斷一律套用，且不超過 40%。
+    /// 一欄的溢位欄。精簡模式（手機版面）固定用 40%，不吃這個設定。
     #[garde(range(min = 10, max = 100))]
     #[default = 50]
     pub graph_max_width_percent: u16,

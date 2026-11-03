@@ -17,7 +17,8 @@ use crate::{
     config::UserListColumnType,
     git::{Head, Ref},
     graph::{Glyph, GlyphSet, TextCell},
-    widget::scroll,
+    widget::{marquee, scroll},
+    CompactType, GraphWidthType,
 };
 
 use super::layout;
@@ -95,18 +96,32 @@ impl<'a> StatefulWidget for CommitList<'a> {
         // `terminal::size()` 的 I/O 成本。決定完先寫回 state，
         // `build_visible_rows` 內部的 `text_cells_for_raw` 才會用到
         // 正確的寬度。
-        let graph_max_percent = self.ctx.ui_config.list.graph_max_width_percent;
-        let max_width_percent = if condensed {
-            Some(graph_max_percent.min(CONDENSED_GRAPH_MAX_WIDTH_PERCENT))
+        //
+        // 精簡（手機）版面是固定的（Graph 緊接 Subject、欄寬上限 40%），不吃
+        // 使用者的 `graph_width`、`compact`、`graph_max_width_percent`；精簡
+        // 關閉（`condensed = auto` 時是寬度回到 `NARROW_WIDTH` 以上）後，下一幀
+        // 就照使用者的設定畫，沒有任何東西被改動或殘留。
+        let (width_pref, compact_pref, max_width_percent) = if condensed {
+            (
+                Some(GraphWidthType::Auto),
+                Some(CompactType::On),
+                Some(CONDENSED_GRAPH_MAX_WIDTH_PERCENT),
+            )
         } else {
-            state.current_graph_truncated().then_some(graph_max_percent)
+            (
+                self.ctx.graph_width,
+                self.ctx.compact,
+                state
+                    .current_graph_truncated()
+                    .then_some(self.ctx.ui_config.list.graph_max_width_percent),
+            )
         };
         let (cell_width_type, compact, cols) = layout::decide(
             columns,
             state.current_cell_count(),
             content_area.width,
-            self.ctx.graph_width,
-            self.ctx.compact,
+            width_pref,
+            compact_pref,
             max_width_percent,
             subject_min_width,
             name_width,
@@ -518,7 +533,8 @@ impl CommitList<'_> {
                     if spans.is_empty() {
                         spans = self.hash_spans(info, highlight.as_ref());
                     }
-                    self.draw_condensed_row(buf, area, row, spans);
+                    let frame = row.is_selected.then_some(marquee_frame);
+                    any_selected_overflow |= self.draw_condensed_row(buf, area, row, spans, frame);
                 }
                 RowContent::Commit { info, highlight } => {
                     let mut spans = refs_spans(
@@ -536,7 +552,7 @@ impl CommitList<'_> {
                         // 用它先短路大多數「明顯放得下」的 row，省一次寬度計算。
                         // 寬度基準必須跟 `scroll_window` 一致，理由見 `marquee::display_width`。
                         let overflow = commit.subject.len() > avail
-                            && crate::widget::marquee::display_width(&commit.subject) > avail;
+                            && marquee::display_width(&commit.subject) > avail;
                         let search_pos = highlight.as_ref().and_then(|h| h.subject.as_ref());
                         let sub_spans = if row.is_selected && overflow {
                             any_selected_overflow = true;
@@ -661,13 +677,16 @@ impl CommitList<'_> {
 
     /// 精簡模式的一列：左邊畫標籤（或短 hash），右邊靠右畫底下被藏的 commit
     /// 數（暗色，0 不畫）。標籤放不下就在數字前面被裁掉，不會壓到數字。
+    /// 回傳選取列的標籤（或短 hash）是否溢位（呼叫端據此讓跑馬燈計時器繼續跳動）。
+    /// `frame` 只有選取列給：放不下時捲動；其他列放不下就截斷補 `…`。
     fn draw_condensed_row(
         &self,
         buf: &mut Buffer,
         area: Rect,
         row: &VisibleRow<'_>,
-        spans: Vec<Span<'_>>,
-    ) {
+        mut spans: Vec<Span<'_>>,
+        frame: Option<u64>,
+    ) -> bool {
         let count = (row.hidden_below > 0).then(|| row.hidden_below.to_string());
         // 數字前後各留一格空白。
         let reserved = count.as_ref().map_or(0, |c| c.len() as u16 + 2);
@@ -675,13 +694,33 @@ impl CommitList<'_> {
             width: area.width.saturating_sub(reserved),
             ..area
         };
+        // 左右各一格空白由 `draw_row_line` 補，所以可用寬度要再扣 2。
+        let avail = usize::from(left_area.width.saturating_sub(row.text_x)).saturating_sub(2);
+        // `refs_spans` 尾端帶一個空白；不先去掉，剛好放得下的標籤會被誤判溢位。
+        if let Some(last) = spans.last_mut() {
+            let len = last.content.trim_end().len();
+            match &mut last.content {
+                Cow::Borrowed(s) => *s = &s[..len],
+                Cow::Owned(s) => s.truncate(len),
+            }
+        }
+        let (spans, overflow) = if marquee::spans_display_width(&spans) <= avail {
+            (spans, false)
+        } else if avail <= 1 {
+            // 1 格捲不動雙寬字、也沒有意義：不畫，也不讓計時器白跑
+            (Vec::new(), false)
+        } else if let Some(frame) = frame {
+            (marquee::scroll_spans(&spans, avail, frame), true)
+        } else {
+            (marquee::truncate_spans(&spans, avail), false)
+        };
         self.draw_row_line(buf, left_area, row, row.text_x, spans);
 
-        let Some(count) = count else { return };
+        let Some(count) = count else { return overflow };
         let y = area.top() + row.y;
         let x = area.right().saturating_sub(reserved);
         if y >= area.bottom() || x < area.left() + row.text_x {
-            return;
+            return overflow;
         }
         let mut style = Style::default().fg(self.ctx.color_theme.divider_fg);
         if row.is_selected {
@@ -690,6 +729,7 @@ impl CommitList<'_> {
             style = style.bg(bg);
         }
         buf.set_string(x + 1, y, count, style);
+        overflow
     }
 
     fn render_date(
@@ -947,7 +987,7 @@ fn highlight_as_head<'a>(spans: Vec<Span<'a>>, color_theme: &ColorTheme) -> Vec<
 }
 
 /// 回傳 marquee 視窗內的 subject spans。Scroll offset 由
-/// `crate::widget::marquee::scroll_window` 處理；這邊只負責 search highlight。
+/// `marquee::scroll_window` 處理；這邊只負責 search highlight。
 fn marquee_subject_spans(
     subject: &str,
     available: usize,
@@ -955,7 +995,7 @@ fn marquee_subject_spans(
     search_pos: Option<&SearchMatchPosition>,
     color_theme: &ColorTheme,
 ) -> Vec<Span<'static>> {
-    let slice = crate::widget::marquee::scroll_window(subject, available, marquee_frame);
+    let slice = marquee::scroll_window(subject, available, marquee_frame);
 
     if let Some(pos) = search_pos {
         let shift = if slice.prepended_space { 1 } else { 0 };
@@ -1007,7 +1047,7 @@ mod tests {
     use super::super::search::MatchOptions;
     use super::layout::calc_cell_widths;
     use super::*;
-    use crate::{git::Commit, CompactType, GraphWidthType};
+    use crate::git::Commit;
 
     // ---- render_graph_text --------------------------------------------
     //
@@ -1975,7 +2015,8 @@ mod tests {
             let mut refs: Vec<Vec<&crate::git::Ref>> = branches.iter().map(|b| vec![b]).collect();
             refs.push(vec![]);
             let mut state = condensed_state(&repository, refs);
-            let ctx = test_ctx_styled(GraphStyle::Rounded, GraphWidthType::Auto);
+            // 使用者設了 `graph_width = double`：手機版面是固定的，不吃這個設定
+            let ctx = test_ctx_styled(GraphStyle::Rounded, GraphWidthType::Double);
             let area = Rect::new(0, 0, 40, 24);
             let mut buf = Buffer::empty(area);
             CommitList::new(ctx, 0).render(area, &mut buf, &mut state);
@@ -1996,6 +2037,83 @@ mod tests {
                     "{label} 要完整露出：\n{screen}"
                 );
             }
+        }
+
+        /// 3 個 branch tip（名稱很長）共用一個 root 的精簡圖。
+        fn long_ref_repository() -> (Repository, Vec<crate::git::Ref>) {
+            let mut commits: Vec<Commit> = (0..3)
+                .map(|i| Commit {
+                    commit_hash: format!("t{i:06}").as_str().into(),
+                    parent_commit_hashes: vec!["rrrrrrr".into()],
+                    ..Default::default()
+                })
+                .collect();
+            commits.push(Commit {
+                commit_hash: "rrrrrrr".into(),
+                ..Default::default()
+            });
+            let branches = (0..3)
+                .map(|i| crate::git::Ref::Branch {
+                    name: format!("feature/branch-{i}-with-a-very-long-name"),
+                    target: format!("t{i:06}").as_str().into(),
+                })
+                .collect();
+            (Repository::from_commits(commits), branches)
+        }
+
+        fn render_long_refs(width: u16, frame: u64) -> (Vec<String>, bool, bool) {
+            let (repository, branches) = long_ref_repository();
+            let mut refs: Vec<Vec<&crate::git::Ref>> = branches.iter().map(|b| vec![b]).collect();
+            refs.push(vec![]);
+            let mut state = condensed_state(&repository, refs);
+            // `test_ctx_styled` 固定 `compact = Off`：手機版面照樣緊湊，不吃這個設定
+            let ctx = test_ctx_styled(GraphStyle::Rounded, GraphWidthType::Auto);
+            let area = Rect::new(0, 0, width, 8);
+            let mut buf = Buffer::empty(area);
+            CommitList::new(ctx, frame).render(area, &mut buf, &mut state);
+            (
+                buffer_lines(&buf),
+                state.selected_row_overflows.get(),
+                state.is_compact(),
+            )
+        }
+
+        /// 手機版面固定 compact；選取列的長 ref 標籤跑馬燈（可以看到尾端），其他列
+        /// 截斷但保留名稱開頭並以 `…` 結尾（不是只剩 `(…`）。
+        #[test]
+        fn condensed_long_refs_scroll_on_selected_row_and_truncate_on_others() {
+            let (lines, overflows, compact) = render_long_refs(30, 0);
+            let screen = lines.join("\n");
+            assert!(compact, "精簡版面固定 compact：\n{screen}");
+            assert!(overflows, "選取列溢位要讓跑馬燈計時器跳動：\n{screen}");
+            // 非選取列：名稱開頭還在，結尾是 `…`
+            let truncated = lines
+                .iter()
+                .skip(2)
+                .find(|l| l.contains("branch-"))
+                .unwrap_or_else(|| panic!("{screen}"));
+            assert!(truncated.contains("(feature/"), "{screen}");
+            assert!(truncated.trim_end().ends_with('…'), "{screen}");
+
+            // 選取列：隨 frame 捲動，最後會露出尾端
+            let seen: Vec<String> = (0..80)
+                .map(|f| render_long_refs(30, marquee::PAUSE_TICKS + f).0[1].clone())
+                .collect();
+            assert!(
+                seen.iter().any(|l| l.contains("long-name")),
+                "捲動後要看得到名稱尾端：{seen:?}"
+            );
+            assert!(seen.iter().any(|l| l != &seen[0]), "視窗要有位移");
+        }
+
+        /// 放得下就不溢位、不跑馬燈；寬度小到連 `…` 都放不下時不畫內容、
+        /// 也不讓計時器白跑。
+        #[test]
+        fn condensed_overflow_flag_is_false_when_it_fits_or_cannot_draw() {
+            let (_, overflows, _) = render_long_refs(120, 0);
+            assert!(!overflows, "放得下不該溢位");
+            let (lines, overflows, _) = render_long_refs(4, 0);
+            assert!(!overflows, "avail <= 1 不畫、不設旗標：{lines:?}");
         }
 
         fn dot_color(cells: &[TextCell]) -> Color {
