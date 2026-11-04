@@ -417,8 +417,8 @@ zh-TW = "跳到頂端"
 en-US = "Go to top"
 
 [help.github.go_to_bottom]
-zh-TW = "跳到底端"
-en-US = "Go to bottom"
+zh-TW = "跳到底端（或 `0`）"
+en-US = "Go to bottom (or `0`)"
 
 [help.github.preview_toggle_checkbox]
 zh-TW = "預覽內容／切換 checkbox（Branches：Right/l 移到右側卡片，Enter 無作用；CI：Enter 開啟 PR 的 checks 頁，Right/l 移到右側卡片）"

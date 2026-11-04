@@ -17,7 +17,13 @@ impl<'a> GitHubView<'a> {
         let count = event_with_count.count;
         // 在偏 modal 的 focus（List/Preview）中，右/左鍵兼作 Confirm/Cancel。
         // Prompt 接收原始按鍵輸入；CheckboxEdit 用左/右鍵切換。
+        // 沒綁定的 `0` 在 List/Preview 等同 GoToBottom。
         let event = match self.focus {
+            GitHubFocus::List | GitHubFocus::Preview
+                if unbound_char(event_with_count.event, key) == Some('0') =>
+            {
+                UserEvent::GoToBottom
+            }
             // Branches、CI 是多欄卡片，左右鍵用來在卡片間橫向移動，不當 Confirm/Cancel
             GitHubFocus::List if self.active_tab.is_card_tab() => event_with_count.event,
             GitHubFocus::List | GitHubFocus::Preview => modal_yesno_aliases(event_with_count.event),
@@ -127,6 +133,10 @@ impl<'a> GitHubView<'a> {
             }
             UserEvent::GoToTop => {
                 self.preview_offset = 0;
+            }
+            UserEvent::GoToBottom => {
+                self.preview_offset = self.last_preview_len.saturating_sub(self.preview_height);
+                self.maybe_load_more_timeline();
             }
             UserEvent::Confirm => {
                 self.try_enter_checkbox_edit();
@@ -767,15 +777,18 @@ impl<'a> GitHubView<'a> {
     }
 }
 
-/// 沒綁定、不帶修飾鍵的數字鍵 1~4 → 對應分頁。綁定過的數字鍵會 resolve
-/// 成別的事件，不會走到這裡。
-fn digit_tab(event: UserEvent, key: KeyEvent) -> Option<GitHubTab> {
+/// 沒綁定、不帶修飾鍵的單一字元鍵。綁定過的鍵會 resolve 成別的事件，
+/// 不會走到這裡。
+fn unbound_char(event: UserEvent, key: KeyEvent) -> Option<char> {
     match (event, key.code) {
-        (UserEvent::Unknown, KeyCode::Char(c)) if key.modifiers == KeyModifiers::NONE => {
-            GitHubTab::from_digit(c)
-        }
+        (UserEvent::Unknown, KeyCode::Char(c)) if key.modifiers == KeyModifiers::NONE => Some(c),
         _ => None,
     }
+}
+
+/// 數字鍵 1~4 → 對應分頁。
+fn digit_tab(event: UserEvent, key: KeyEvent) -> Option<GitHubTab> {
+    unbound_char(event, key).and_then(GitHubTab::from_digit)
 }
 
 fn modal_yesno_aliases(event: UserEvent) -> UserEvent {
