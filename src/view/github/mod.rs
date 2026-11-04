@@ -3571,12 +3571,44 @@ mod tests {
         let mut view = view_with_body("body".to_string());
         for key in [
             KeyEvent::from(KeyCode::Char('5')),
-            KeyEvent::from(KeyCode::Char('0')),
+            KeyEvent::new(KeyCode::Char('0'), KeyModifiers::ALT),
             KeyEvent::new(KeyCode::Char('3'), KeyModifiers::ALT),
         ] {
             press_key(&mut view, key);
             assert_eq!(view.active_tab, GitHubTab::PullRequests, "{key:?}");
         }
+    }
+
+    #[test]
+    fn zero_key_goes_to_bottom_in_preview() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent};
+
+        let mut view = view_with_body("body".to_string());
+        let zero = KeyEvent::from(KeyCode::Char('0'));
+        view.focus = GitHubFocus::Preview;
+        view.preview_height = 10;
+
+        view.last_preview_len = 50;
+        press_key(&mut view, zero);
+        assert_eq!(view.preview_offset, 40);
+
+        // 內容比視窗短：不能往下捲
+        view.last_preview_len = 5;
+        press_key(&mut view, zero);
+        assert_eq!(view.preview_offset, 0);
+    }
+
+    #[test]
+    fn zero_key_goes_to_bottom_in_list() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent};
+
+        let mut view = many_branches_view(20);
+        view.selected_index = 0;
+        view.preview_offset = 3;
+        press_key(&mut view, KeyEvent::from(KeyCode::Char('0')));
+        assert_eq!(view.selected_index, 19);
+        assert_eq!(view.preview_offset, 0);
+        assert_eq!(view.active_tab, GitHubTab::Branches);
     }
 
     #[test]
