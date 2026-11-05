@@ -1,5 +1,41 @@
 # Changelog
 
+## [4.16.0](https://github.com/YSzEthan/serie-ys/compare/v4.15.0...v4.16.0) (2026-11-01)
+
+
+### Features
+
+* dev merge 後自動發 beta pre-release，新增 --beta 選項決定是否接受測試版 (#187) (#188) ([#210](https://github.com/YSzEthan/serie-ys/pull/210))
+* GitHub view 分頁支援 Shift+Tab 反向切換 (#191) (#192) ([#210](https://github.com/YSzEthan/serie-ys/pull/210))
+* GitHub view 新增 CI 監測 tab，只輪詢進行中的 PR (#193) (#194) ([#210](https://github.com/YSzEthan/serie-ys/pull/210))
+* GitHub view 的 Δ 依已用比例分綠／黃／紅上色，門檻收進 -h 精靈群組 (#196) (#197) ([#210](https://github.com/YSzEthan/serie-ys/pull/210))
+* git view 新增 P 鍵 push 目前 branch (#206) (#207) ([#210](https://github.com/YSzEthan/serie-ys/pull/210))
+* git view 新增 O 鍵用瀏覽器開 repo 首頁 (#208) (#209) ([#210](https://github.com/YSzEthan/serie-ys/pull/210))
+* GitHub view 支援數字鍵 1~4 直接切換分頁 (#211) (#213) ([#210](https://github.com/YSzEthan/serie-ys/pull/210))
+* GitHub view 分頁標籤顯示數字鍵提示 [1]~[4] (#211) ([#210](https://github.com/YSzEthan/serie-ys/pull/210))
+
+
+### Bug Fixes
+
+* merge PR 表單在勾選項上方加「合併後一併刪除：」說明 (#189) ([#210](https://github.com/YSzEthan/serie-ys/pull/210))
+* 虛擬游標改為插入輸入字串，不再蓋掉游標所在字元 (#198) (#200) ([#210](https://github.com/YSzEthan/serie-ys/pull/210))
+* GitHub view 按 p merge 時即時查本機 branch，不再用載入時的快照 (#202) ([#210](https://github.com/YSzEthan/serie-ys/pull/210))
+
+
+### Refactors
+
+* -h 精靈主選單依功能分類成巢狀子選單 (#204) (#205) ([#210](https://github.com/YSzEthan/serie-ys/pull/210))
+
+
+### CI
+
+* PR merge 進 dev 時依 Closes 等關鍵字自動關閉 issue ([#210](https://github.com/YSzEthan/serie-ys/pull/210))
+
+
+### Chores
+
+* dev 補上 v4.15.0 版號與 CHANGELOG ([#203](https://github.com/YSzEthan/serie-ys/pull/203))
+
 ## [4.15.0](https://github.com/YSzEthan/serie-ys/compare/v4.14.0...v4.15.0) (2026-10-27)
 
 
