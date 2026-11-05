@@ -4,7 +4,7 @@ name: Beta
 # 給 `--beta on` 的客戶端更新。跟 `release.yml` 完全分開：正式版仍然只在
 # 維護者推 `vX.Y.Z` tag 時才發。
 #
-# 版號只在 CI 裡蓋上去，不寫回 repo——dev 的 `Cargo.toml` 一直是上一個正式版號：
+# 版號只在 CI 裡蓋上去，不寫回 repo——dev 的 `Cargo.toml` 是最近一次版號 PR 的版號（平時等於上一個正式版）：
 # - 基底是 patch + 1：`4.12.1-beta.N` 的 semver 比 `4.12.1` 小，停在 4.12.1
 #   的使用者永遠不會把它當成新版。
 # - N 是同基底現有 `vX.Y.Z-beta.*` tag 的最大 N + 1，每個基底版號從 1 開始；

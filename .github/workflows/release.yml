@@ -1,8 +1,9 @@
 name: Release
 
 # 只有推 `vX.Y.Z` tag 才 build 與發版。版號、CHANGELOG 由維護者在本機跑
-# `.github/scripts/prepare_release.py` 產生，經 PR 進 main 後再把 tag 打在
-# merge commit 上；CI 不自動算版號，也不 commit 回 main。
+# `.github/scripts/prepare_release.py` 產生，經 PR 進 dev，再由 dev→main
+# 的 merge commit 帶進 main，tag 打在那個 merge commit 上；CI 不自動算版號，
+# 也不 commit 回 main。
 on:
   push:
     tags:
