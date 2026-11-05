@@ -323,6 +323,7 @@ fn help_blocks(
         b(vec![UserEvent::GitHubToggle], t!("help.detail.open_github_issues_prs")),
         b(vec![UserEvent::HelpToggle], t!("help.detail.open_help")),
         b(vec![UserEvent::MarkToggle], t!("help.detail.toggle_mark")),
+        b(vec![UserEvent::OpenRepoWeb], t!("help.detail.open_repo_web")),
         b(vec![UserEvent::Refresh], t!("help.detail.refresh")),
         b(vec![UserEvent::ShellToggle], t!("help.detail.open_shell")),
     ];
@@ -360,6 +361,7 @@ fn help_blocks(
         b(vec![UserEvent::DetailPaneToggle], t!("help.github.open_related_issue_pr_picker")),
         b(vec![UserEvent::Refresh], t!("help.github.refresh")),
         b(vec![UserEvent::Fetch], t!("help.github.fetch")),
+        b(vec![UserEvent::OpenRepoWeb], t!("help.github.open_repo_web")),
         b(vec![UserEvent::MergePr], t!("help.github.merge_pr_form_then_confirm")),
         b(vec![UserEvent::ToggleIssueState], t!("help.github.close_reopen_issue_or_pr")),
         b(vec![UserEvent::TogglePrDraft], t!("help.github.mark_pr_ready_back_to_draft")),

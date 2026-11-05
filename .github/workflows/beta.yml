@@ -7,7 +7,9 @@ name: Beta
 # 版號只在 CI 裡蓋上去，不寫回 repo——dev 的 `Cargo.toml` 一直是上一個正式版號：
 # - 基底是 patch + 1：`4.12.1-beta.N` 的 semver 比 `4.12.1` 小，停在 4.12.1
 #   的使用者永遠不會把它當成新版。
-# - N 用 `GITHUB_RUN_NUMBER`，單調遞增、不會撞 tag。
+# - N 是同基底現有 `vX.Y.Z-beta.*` tag 的最大 N + 1，每個基底版號從 1 開始；
+#   `concurrency: beta` 讓 run 序列化，不會搶同一個號。別刪最新的 beta tag，
+#   否則下一個 run 會重用該 N，已裝那版的使用者會錯過更新。
 # - 之後真正的 `4.12.2`（或更大）一定比任何 `4.12.2-beta.N` 大，自然取代。
 #
 # tag 由 softprops/action-gh-release 依 `target_commitish` 自動建立，不會
@@ -41,7 +43,10 @@ jobs:
         run: |
           CARGO_VERSION=$(grep -m1 '^version' Cargo.toml | cut -d '"' -f 2)
           IFS=. read -r MAJOR MINOR PATCH <<< "$CARGO_VERSION"
-          echo "version=${MAJOR}.${MINOR}.$((PATCH + 1))-beta.${GITHUB_RUN_NUMBER}" >> "$GITHUB_OUTPUT"
+          BASE="${MAJOR}.${MINOR}.$((PATCH + 1))"
+          LAST=$(git ls-remote --tags --refs origin "v${BASE}-beta.*" \
+            | sed -nE 's|.*-beta\.([0-9]+)$|\1|p' | sort -n | tail -1)
+          echo "version=${BASE}-beta.$((${LAST:-0} + 1))" >> "$GITHUB_OUTPUT"
 
   build:
     needs: [test, version]
