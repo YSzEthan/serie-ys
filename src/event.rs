@@ -1108,6 +1108,7 @@ pub enum UserEvent {
     RefListPrev,
     Search,
     Filter,
+    AuthorFilter,
     UserCommand(usize),
     IgnoreCaseToggle,
     FuzzyToggle,
@@ -1178,6 +1179,7 @@ impl UserEvent {
             UserEvent::RefListPrev => "ref_list_prev",
             UserEvent::Search => "search",
             UserEvent::Filter => "filter",
+            UserEvent::AuthorFilter => "author_filter",
             UserEvent::UserCommand(n) => return Some(format!("user_command_{n}")),
             UserEvent::IgnoreCaseToggle => "ignore_case_toggle",
             UserEvent::FuzzyToggle => "fuzzy_toggle",
@@ -1252,6 +1254,7 @@ impl UserEvent {
             UserEvent::RefListPrev => t!("event.desc.ref_list_prev"),
             UserEvent::Search => t!("event.desc.search"),
             UserEvent::Filter => t!("event.desc.filter"),
+            UserEvent::AuthorFilter => t!("event.desc.author_filter"),
             UserEvent::UserCommand(_) => return None,
             UserEvent::IgnoreCaseToggle => t!("event.desc.ignore_case_toggle"),
             UserEvent::FuzzyToggle => t!("event.desc.fuzzy_toggle"),
@@ -1346,6 +1349,7 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "ref_list_prev" => Ok(UserEvent::RefListPrev),
                         "search" => Ok(UserEvent::Search),
                         "filter" => Ok(UserEvent::Filter),
+                        "author_filter" => Ok(UserEvent::AuthorFilter),
                         "ignore_case_toggle" => Ok(UserEvent::IgnoreCaseToggle),
                         "fuzzy_toggle" => Ok(UserEvent::FuzzyToggle),
                         "target_toggle" => Ok(UserEvent::TargetToggle),
@@ -1568,6 +1572,7 @@ impl KeyScope {
                     | E::GoToBottom
                     | E::Search
                     | E::Filter
+                    | E::AuthorFilter
                     | E::ShortCopy
                     | E::FullCopy
                     | E::TagCopy
@@ -2086,6 +2091,7 @@ mod tests {
             UserEvent::RefListPrev,
             UserEvent::Search,
             UserEvent::Filter,
+            UserEvent::AuthorFilter,
             UserEvent::UserCommand(1),
             UserEvent::UserCommand(42),
             UserEvent::IgnoreCaseToggle,

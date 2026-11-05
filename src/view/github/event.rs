@@ -275,6 +275,7 @@ impl<'a> GitHubView<'a> {
                 self.bump_generation();
                 self.dispatch_refresh();
             }
+            UserEvent::AuthorFilter => self.cycle_author(),
             UserEvent::Refresh => {
                 self.dispatch_refresh();
             }
@@ -376,8 +377,8 @@ impl<'a> GitHubView<'a> {
                     });
                 }
             }
-            // 沒有 state filter、preview、related picker
-            UserEvent::Filter | UserEvent::DetailPaneToggle => {}
+            // 沒有 state filter、作者篩選、preview、related picker
+            UserEvent::Filter | UserEvent::AuthorFilter | UserEvent::DetailPaneToggle => {}
             _ => return false,
         }
         true
@@ -389,7 +390,7 @@ impl<'a> GitHubView<'a> {
     fn handle_branches_event(&mut self, event: UserEvent, count: usize) -> bool {
         match event {
             UserEvent::Refresh => self.reload_branches(),
-            UserEvent::Filter => self.cycle_branch_author(),
+            UserEvent::Filter | UserEvent::AuthorFilter => self.cycle_author(),
             UserEvent::NavigateLeft | UserEvent::NavigateRight => {
                 self.move_card_horizontally(event, count);
             }
@@ -672,93 +673,54 @@ impl<'a> GitHubView<'a> {
         self.rebuild_filtered_indices();
     }
 
+    /// 使用者改了篩選條件：重算索引，並把游標與捲動歸零。資料載入完成的路徑
+    /// 不能用這個（會把使用者捲到一半的位置打回頂端），改用 `recompute_filtered_indices`。
     pub(super) fn rebuild_filtered_indices(&mut self) {
-        let query = self.search_input.value().to_string();
-        let matcher = (!query.is_empty()).then(|| SearchMatcher::new(&query, true, true));
-
-        // Branches 另有作者篩選，沒有搜尋字串時也要算
-        self.filtered_branch_indices = if matcher.is_some() || self.branches_author.is_some() {
-            self.branches
-                .iter()
-                .enumerate()
-                .filter(|(_, b)| {
-                    self.branches_author.as_ref().is_none_or(|a| &b.author == a)
-                        && matcher
-                            .as_ref()
-                            .is_none_or(|m| m.matches(&format!("{} @{}", b.name, b.author)))
-                })
-                .map(|(idx, _)| idx)
-                .collect()
-        } else {
-            Vec::new()
-        };
-
-        self.filtered_ci_indices = match &matcher {
-            Some(m) => self
-                .ci
-                .iter()
-                .enumerate()
-                .filter(|(_, e)| m.matches(&format!("#{} {} {}", e.number, e.title, e.branch)))
-                .map(|(idx, _)| idx)
-                .collect(),
-            None => Vec::new(),
-        };
-
-        let Some(matcher) = matcher else {
-            self.filtered_issue_indices.clear();
-            self.filtered_pr_indices.clear();
-            return;
-        };
-
-        self.filtered_issue_indices = self
-            .issues
-            .iter()
-            .enumerate()
-            .filter(|(_, i)| {
-                let target = format!(
-                    "#{} {} @{} {}",
-                    i.number,
-                    i.title,
-                    i.author.login,
-                    i.labels
-                        .iter()
-                        .map(|l| l.name.as_str())
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                );
-                matcher.matches(&target)
-            })
-            .map(|(idx, _)| idx)
-            .collect();
-
-        self.filtered_pr_indices = self
-            .pull_requests
-            .iter()
-            .enumerate()
-            .filter(|(_, p)| {
-                let target = format!(
-                    "#{} {} @{} {}",
-                    p.number,
-                    p.title,
-                    p.author.login,
-                    p.labels
-                        .iter()
-                        .map(|l| l.name.as_str())
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                );
-                matcher.matches(&target)
-            })
-            .map(|(idx, _)| idx)
-            .collect();
-
-        // 限制 selected_index 的範圍
-        let max = self.current_list_len().saturating_sub(1);
-        if self.selected_index > max {
-            self.selected_index = max;
-        }
+        self.recompute_filtered_indices();
+        self.selected_index = self
+            .selected_index
+            .min(self.current_list_len().saturating_sub(1));
         self.offset = 0;
         self.preview_offset = 0;
+    }
+
+    /// 依搜尋字串與各分頁的作者篩選重算 `filtered_*_indices`，沒有其他副作用。
+    /// 清單內容變動（reload、翻頁）後也要呼叫，不然索引會指向舊資料。
+    pub(super) fn recompute_filtered_indices(&mut self) {
+        let query = self.search_input.value().to_string();
+        let matcher = (!query.is_empty()).then(|| SearchMatcher::new(&query, true, true));
+        let searching = matcher.is_some();
+        let hit = |text: &dyn Fn() -> String| matcher.as_ref().is_none_or(|m| m.matches(&text()));
+        let author_is =
+            |filter: &Option<String>, login: &str| filter.as_deref().is_none_or(|a| a == login);
+
+        self.filtered_branch_indices = filter_indices(
+            &self.branches,
+            searching || self.branches_author.is_some(),
+            |b| {
+                author_is(&self.branches_author, &b.author)
+                    && hit(&|| format!("{} @{}", b.name, b.author))
+            },
+        );
+        self.filtered_ci_indices = filter_indices(&self.ci, searching, |e| {
+            hit(&|| format!("#{} {} {}", e.number, e.title, e.branch))
+        });
+        self.filtered_issue_indices = filter_indices(
+            &self.issues,
+            searching || self.issues_author.is_some(),
+            |i| {
+                author_is(&self.issues_author, &i.author.login)
+                    && hit(&|| search_text(i.number, &i.title, &i.author.login, &i.labels))
+            },
+        );
+        self.filtered_pr_indices = filter_indices(
+            &self.pull_requests,
+            searching || self.prs_author.is_some(),
+            |p| {
+                author_is(&self.prs_author, &p.author.login)
+                    && hit(&|| search_text(p.number, &p.title, &p.author.login, &p.labels))
+            },
+        );
     }
 
     fn start_jump(&mut self, number: u64) {
@@ -781,6 +743,51 @@ impl<'a> GitHubView<'a> {
         }
         self.dispatch_load_more();
     }
+}
+
+/// 篩選沒啟用時回傳空 `Vec`（呼叫端用 `has_active_filter` 判斷要不要看它）。
+fn filter_indices<T>(items: &[T], active: bool, keep: impl Fn(&T) -> bool) -> Vec<usize> {
+    if !active {
+        return Vec::new();
+    }
+    items
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| keep(item))
+        .map(|(idx, _)| idx)
+        .collect()
+}
+
+/// issue／PR 搜尋比對的文字：`#編號 標題 @作者 label…`。
+fn search_text(number: u64, title: &str, login: &str, labels: &[github::GhLabel]) -> String {
+    let labels = labels
+        .iter()
+        .map(|l| l.name.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("#{number} {title} @{login} {labels}")
+}
+
+/// 作者篩選的下一步：所有作者（`None`）→ 依出現順序的各作者 → 回到所有作者。
+/// `cur` 已不在 `authors` 裡（資料重載後作者消失）也回到所有作者。
+pub(super) fn next_author<'a>(
+    authors: impl IntoIterator<Item = &'a str>,
+    cur: Option<&str>,
+) -> Option<String> {
+    let mut seen: Vec<&str> = Vec::new();
+    for author in authors {
+        if !seen.contains(&author) {
+            seen.push(author);
+        }
+    }
+    let next = match cur {
+        None => seen.first(),
+        Some(cur) => seen
+            .iter()
+            .position(|a| *a == cur)
+            .and_then(|i| seen.get(i + 1)),
+    };
+    next.map(|a| (*a).to_string())
 }
 
 /// 沒綁定、不帶修飾鍵的單一字元鍵。綁定過的鍵會 resolve 成別的事件，

@@ -865,6 +865,9 @@
         "filter": {
           "$ref": "#/definitions/keybindArray"
         },
+        "author_filter": {
+          "$ref": "#/definitions/keybindArray"
+        },
         "ignore_case_toggle": {
           "$ref": "#/definitions/keybindArray"
         },

@@ -116,6 +116,10 @@ en-US = "Start search"
 zh-TW = "開始過濾"
 en-US = "Start filter"
 
+[event.desc.author_filter]
+zh-TW = "依作者篩選"
+en-US = "Filter by author"
+
 [event.desc.ignore_case_toggle]
 zh-TW = "切換忽略大小寫"
 en-US = "Toggle ignore case"

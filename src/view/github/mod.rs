@@ -26,6 +26,7 @@ use crate::{
     widget::{h, HintSpec},
 };
 
+use event::next_author;
 use preview::{PreviewCache, PreviewInput, SelectedItem, SelectedItemExtra};
 pub(crate) use timeline::DiffStatThresholds;
 use timeline::{TimelineEntry, TimelineLoad};
@@ -159,15 +160,16 @@ enum LoadState {
     Error(String),
 }
 
-/// GitHub 模式列表 labels 的顯示方式，`t` 切換。色塊模式讓標題有更多空間，
-/// 代價是看不到 label 名稱——preview 永遠顯示完整名稱，不受這個設定影響。
+/// GitHub 模式列表狀態與 labels 的顯示方式，`t` 切換。預設是色塊（狀態 `[▮]`、
+/// label 一格一個），讓標題有更多空間，代價是看不到文字——preview 永遠顯示完整
+/// 名稱，不受這個設定影響。
 ///
 /// 由 `UserEvent::ToggleLabelMode` 觸發，預設鍵 `t`——跟 commit 清單的
 /// `create_tag` 同鍵，不衝突：兩者分屬不同畫面（見 `KeyScope`）。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub(crate) enum LabelMode {
-    #[default]
     Names,
+    #[default]
     Swatches,
 }
 
@@ -201,7 +203,10 @@ pub struct GitHubView<'a> {
     /// 載入途中又收到重載要求（例如 fetch 剛完成）：進行中的那次可能已讀到 fetch 前
     /// 的本機狀態，結果回來後要再跑一次，不能丟掉。
     branches_reload_pending: bool,
-    /// Branches 分頁的作者篩選（`'` 循環切換）；`None` 是所有作者。
+    /// 各分頁的作者篩選（`"` 循環切換，Branches 也可用 `'`）；`None` 是所有作者。
+    /// 獨立於搜尋字串，各分頁各自保存。
+    issues_author: Option<String>,
+    prs_author: Option<String>,
     branches_author: Option<String>,
     /// CI 分頁：open 且 head branch 在本地的 PR 與它們的 check。只活在 view 裡，
     /// 關閉 view 即丟棄（見 `github::load_ci` 的流程說明）。
@@ -313,6 +318,8 @@ impl<'a> GitHubView<'a> {
             // 一律從 Loading 起跳（跟 `load_state` 同理）。
             branches_load: LoadState::Loading,
             branches_reload_pending: false,
+            issues_author: None,
+            prs_author: None,
             branches_author: None,
             width: 0,
             state_filter: data.state_filter,
@@ -460,11 +467,8 @@ impl<'a> GitHubView<'a> {
         self.timeline.clear();
         self.body_rev = self.body_rev.wrapping_add(1);
         self.bump_generation();
-        // 修正選取索引避免越界
-        let max = self.current_list_len().saturating_sub(1);
-        if self.selected_index > max {
-            self.selected_index = max;
-        }
+        // 搜尋字串與作者篩選都還在，索引要跟著新清單重算（也會修正選取索引避免越界）
+        self.refresh_filter_after_data_change();
         self.preview_offset = 0;
         self.request_timeline_for_selected();
     }
@@ -477,15 +481,7 @@ impl<'a> GitHubView<'a> {
                 self.branches_truncated = truncated;
                 self.branches_loaded = true;
                 self.branches_load = LoadState::Idle;
-                // 重載後該作者已不存在就回到所有作者，否則會卡在一個空清單
-                if self
-                    .branches_author
-                    .as_ref()
-                    .is_some_and(|a| !self.branches.iter().any(|b| &b.author == a))
-                {
-                    self.branches_author = None;
-                }
-                self.rebuild_filtered_indices();
+                self.refresh_filter_after_data_change();
             }
             Err(e) if self.branches.is_empty() => self.branches_load = LoadState::Error(e),
             // 已有舊資料時保留畫面，只用 flash 告知這次重抓失敗
@@ -557,6 +553,7 @@ impl<'a> GitHubView<'a> {
             return;
         }
         self.issues.extend(items);
+        self.recompute_filtered_indices();
         self.issues_next_cursor = next_cursor;
         self.loading_more = false;
         if self.pending_jump.is_some() {
@@ -574,6 +571,7 @@ impl<'a> GitHubView<'a> {
             return;
         }
         self.pull_requests.extend(items);
+        self.recompute_filtered_indices();
         self.prs_next_cursor = next_cursor;
         self.loading_more = false;
         if self.pending_jump.is_some() {
@@ -603,6 +601,12 @@ impl<'a> GitHubView<'a> {
             }
         };
         if let Some(idx) = found {
+            // `idx` 是原始清單的位置，要等於可視索引就不能有作者篩選
+            // （搜尋字串在呼叫端已清掉）。
+            if let Some(slot) = self.author_slot_mut() {
+                *slot = None;
+            }
+            self.recompute_filtered_indices();
             self.selected_index = idx;
             self.preview_offset = 0;
             self.adjust_scroll();
@@ -715,7 +719,8 @@ impl<'a> GitHubView<'a> {
                     None
                 };
                 self.ci = entries;
-                self.rebuild_filtered_indices();
+                // 資料載入不是使用者改篩選條件，不能動到捲動位置
+                self.recompute_filtered_indices();
                 if on_ci {
                     // 重排後用編號找回原本選中的 PR；找不到就夾範圍
                     if let Some(pos) = selected.and_then(|n| self.visible_ci_position(n)) {
@@ -1057,7 +1062,7 @@ impl<'a> GitHubView<'a> {
                         ),
                         h(&[UserEvent::Search], t!("common.hint.search")),
                         h(&[UserEvent::Refresh], t!("common.hint.refresh")),
-                        h(&[UserEvent::Filter], t!("common.hint.author_filter")),
+                        h(&[UserEvent::AuthorFilter], t!("common.hint.author_filter")),
                         h(&[UserEvent::ShortCopy], t!("common.hint.copy_url")),
                         h(&[UserEvent::FullCopy], t!("common.hint.create_pr")),
                         h(&[UserEvent::TagCopy], t!("common.hint.branch_name")),
@@ -1087,6 +1092,7 @@ impl<'a> GitHubView<'a> {
                     h(&[UserEvent::Confirm], t!("common.hint.preview")),
                     h(&[UserEvent::Refresh], t!("common.hint.refresh")),
                     h(&[UserEvent::Filter], t!("common.hint.filter")),
+                    h(&[UserEvent::AuthorFilter], t!("common.hint.author_filter")),
                     h(&[UserEvent::ShortCopy], t!("common.hint.copy_url")),
                     h(&[UserEvent::FullCopy], t!("common.hint.open")),
                     h(&[UserEvent::TagCopy], t!("common.hint.num")),
@@ -1320,7 +1326,7 @@ impl<'a> GitHubView<'a> {
         Some(h(&[UserEvent::ToggleCommitLog], label))
     }
 
-    /// 只在色塊模式下顯示——名稱模式是預設，不需要提示佔狀態列空間。
+    /// 只在色塊模式下顯示：狀態與 label 只剩顏色，使用者要知道 `t` 可以看文字。
     fn label_mode_hint(&self) -> Option<HintSpec> {
         (self.label_mode == LabelMode::Swatches).then(|| {
             h(
@@ -1336,6 +1342,8 @@ impl<'a> GitHubView<'a> {
         };
         self.active_tab = GitHubTab::Issues;
         self.focus = GitHubFocus::List;
+        // 原始位置要等於可視索引，搜尋與作者篩選都得清掉
+        self.issues_author = None;
         self.clear_search();
         self.selected_index = raw_idx;
         self.offset = 0;
@@ -1395,8 +1403,36 @@ impl<'a> GitHubView<'a> {
     }
 
     fn has_active_filter(&self) -> bool {
-        !self.search_input.value().is_empty()
-            || (self.active_tab == GitHubTab::Branches && self.branches_author.is_some())
+        !self.search_input.value().is_empty() || self.current_author().is_some()
+    }
+
+    /// 目前分頁的作者篩選；CI 沒有作者篩選。
+    fn current_author(&self) -> Option<&str> {
+        match self.active_tab {
+            GitHubTab::Issues => self.issues_author.as_deref(),
+            GitHubTab::PullRequests => self.prs_author.as_deref(),
+            GitHubTab::Branches => self.branches_author.as_deref(),
+            GitHubTab::Ci => None,
+        }
+    }
+
+    fn author_slot_mut(&mut self) -> Option<&mut Option<String>> {
+        match self.active_tab {
+            GitHubTab::Issues => Some(&mut self.issues_author),
+            GitHubTab::PullRequests => Some(&mut self.prs_author),
+            GitHubTab::Branches => Some(&mut self.branches_author),
+            GitHubTab::Ci => None,
+        }
+    }
+
+    /// 重載後篩選的作者已不在清單裡就回到所有作者，否則會卡在一個空清單。
+    fn drop_vanished_authors(&mut self) {
+        self.issues_author
+            .take_if(|a| !self.issues.iter().any(|i| i.author.login == *a));
+        self.prs_author
+            .take_if(|a| !self.pull_requests.iter().any(|p| p.author.login == *a));
+        self.branches_author
+            .take_if(|a| !self.branches.iter().any(|b| b.author == *a));
     }
 
     /// 卡片一列放幾張，隨寬度變化，不浪費橫向空間。
@@ -1423,25 +1459,43 @@ impl<'a> GitHubView<'a> {
         (content - usize::from(footer)) / branches::CARD_HEIGHT as usize
     }
 
-    /// `'`：Branches 分頁依作者篩選，所有作者 → 各作者（依最近 commit 出現順序）→ 回到所有作者。
-    pub(super) fn cycle_branch_author(&mut self) {
-        let mut authors: Vec<&str> = Vec::new();
-        for b in &self.branches {
-            if !authors.contains(&b.author.as_str()) {
-                authors.push(&b.author);
-            }
-        }
-        let next = match self.branches_author.as_deref() {
-            None => authors.first(),
-            Some(cur) => authors
-                .iter()
-                .position(|a| *a == cur)
-                .and_then(|i| authors.get(i + 1)),
+    /// `"`（Branches 也可用 `'`）：依作者篩選目前分頁，所有作者 → 各作者（依清單
+    /// 出現順序）→ 回到所有作者。
+    pub(super) fn cycle_author(&mut self) {
+        let next = match self.active_tab {
+            GitHubTab::Issues => next_author(
+                self.issues.iter().map(|i| i.author.login.as_str()),
+                self.issues_author.as_deref(),
+            ),
+            GitHubTab::PullRequests => next_author(
+                self.pull_requests.iter().map(|p| p.author.login.as_str()),
+                self.prs_author.as_deref(),
+            ),
+            GitHubTab::Branches => next_author(
+                self.branches.iter().map(|b| b.author.as_str()),
+                self.branches_author.as_deref(),
+            ),
+            GitHubTab::Ci => return,
         };
-        self.branches_author = next.map(|a| (*a).to_string());
+        if let Some(slot) = self.author_slot_mut() {
+            *slot = next;
+        }
         self.selected_index = 0;
-        self.offset = 0;
         self.rebuild_filtered_indices();
+        if !self.active_tab.is_card_tab() {
+            self.schedule_timeline_for_selected(Instant::now());
+        }
+    }
+
+    /// 載入完成後的收尾：作者消失就清掉篩選，重算索引，選取位置夾回範圍並確保可見。
+    /// 不重設捲動位置（那是使用者改篩選條件時的事，見 `rebuild_filtered_indices`）。
+    fn refresh_filter_after_data_change(&mut self) {
+        self.drop_vanished_authors();
+        self.recompute_filtered_indices();
+        self.selected_index = self
+            .selected_index
+            .min(self.current_list_len().saturating_sub(1));
+        self.adjust_scroll();
     }
 
     /// 把可視索引對應到實際資料索引（若有篩選則透過篩選對應）
@@ -3475,6 +3529,8 @@ mod tests {
         ];
         let title = "This is a genuinely long pull request title that needs room";
         let mut view = view_with_pr_labels(labels, title);
+        assert_eq!(view.label_mode, LabelMode::Swatches, "預設是色塊");
+        view.toggle_label_mode();
         assert_eq!(view.label_mode, LabelMode::Names);
 
         // preview（`│` 右側）一律顯示完整 label 名稱與標題，不受這個設定
@@ -3482,8 +3538,8 @@ mod tests {
         let list_row = |screen: &str| -> String {
             screen
                 .lines()
-                .find(|l| l.contains("#1") && l.contains("開啟"))
-                .unwrap()
+                .find(|l| l.contains("#1"))
+                .unwrap_or_else(|| panic!("找不到列表列：\n{screen}"))
                 .split('│')
                 .next()
                 .unwrap()
@@ -3531,18 +3587,18 @@ mod tests {
     #[test]
     fn label_compact_toggle_flips_on_both_tabs_and_both_foci() {
         let mut pr_view = view_with_body("body".to_string());
-        assert_eq!(pr_view.label_mode, LabelMode::Names);
-        pr_view.handle_list_event(UserEvent::ToggleLabelMode, 1);
         assert_eq!(pr_view.label_mode, LabelMode::Swatches);
-        pr_view.handle_preview_event(UserEvent::ToggleLabelMode, 1);
+        pr_view.handle_list_event(UserEvent::ToggleLabelMode, 1);
         assert_eq!(pr_view.label_mode, LabelMode::Names);
+        pr_view.handle_preview_event(UserEvent::ToggleLabelMode, 1);
+        assert_eq!(pr_view.label_mode, LabelMode::Swatches);
 
         let mut issue_view = view_with_issue("issue body".to_string());
-        assert_eq!(issue_view.label_mode, LabelMode::Names);
-        issue_view.handle_list_event(UserEvent::ToggleLabelMode, 1);
         assert_eq!(issue_view.label_mode, LabelMode::Swatches);
-        issue_view.handle_preview_event(UserEvent::ToggleLabelMode, 1);
+        issue_view.handle_list_event(UserEvent::ToggleLabelMode, 1);
         assert_eq!(issue_view.label_mode, LabelMode::Names);
+        issue_view.handle_preview_event(UserEvent::ToggleLabelMode, 1);
+        assert_eq!(issue_view.label_mode, LabelMode::Swatches);
     }
 
     fn press_key(view: &mut GitHubView<'_>, key: ratatui::crossterm::event::KeyEvent) {
@@ -3642,7 +3698,7 @@ mod tests {
 
         let mut view = view_with_body("body".to_string());
         view.focus = GitHubFocus::Prompt;
-        assert_eq!(view.label_mode, LabelMode::Names);
+        assert_eq!(view.label_mode, LabelMode::Swatches);
 
         view.handle_event(
             UserEventWithCount::new(UserEvent::ToggleLabelMode, 1),
@@ -3651,7 +3707,7 @@ mod tests {
 
         assert_eq!(
             view.label_mode,
-            LabelMode::Names,
+            LabelMode::Swatches,
             "typing inside the search prompt must not toggle label mode"
         );
         assert_eq!(view.search_input.value(), "t");
@@ -3670,9 +3726,9 @@ mod tests {
                 .any(|(events, _)| events.contains(&UserEvent::ToggleLabelMode))
         };
 
-        assert!(!has_hint(&view), "names mode must not show the hint");
+        assert!(has_hint(&view), "swatch mode (default) must show the hint");
         view.toggle_label_mode();
-        assert!(has_hint(&view), "swatch mode must show the hint");
+        assert!(!has_hint(&view), "names mode must not show the hint");
     }
 
     /// `r` 在 List 跟 Preview 兩個 focus 都要能觸發同一個刷新動作——
@@ -4061,7 +4117,7 @@ mod tests {
         let mut other = test_branch("b", 1, 1);
         other.author = "bob".to_string();
         view.set_branches(Ok((vec![test_branch("a", 1, 1), other], false)));
-        view.cycle_branch_author();
+        view.cycle_author();
         assert_eq!(view.current_list_len(), 1);
 
         view.active_tab = GitHubTab::Issues;
@@ -4172,8 +4228,8 @@ mod tests {
             assert!(!events.contains(&useless), "{useless:?} does nothing here");
         }
         assert!(events.contains(&UserEvent::RefList));
-        // `'` 在這個分頁是作者篩選
-        assert!(events.contains(&UserEvent::Filter));
+        // `"` 在這個分頁是作者篩選
+        assert!(events.contains(&UserEvent::AuthorFilter));
     }
 
     fn author_branch(name: &str, author: &str) -> GhBranch {
@@ -4653,5 +4709,390 @@ mod tests {
         assert!(screen.contains("CI (1)"), "got:\n{screen}");
         assert!(screen.contains("#1 pr1"), "got:\n{screen}");
         assert!(screen.contains("b2 · 1/2"), "got:\n{screen}");
+    }
+
+    // ── 列表欄位排版、`"` 作者篩選（#227）──────────────────────────────
+
+    fn pr_by(number: u64, author: &str, title: &str) -> GhPullRequest {
+        GhPullRequest {
+            number,
+            title: title.to_string(),
+            state: "OPEN".to_string(),
+            labels: Vec::new(),
+            author: GhAuthor {
+                login: author.to_string(),
+            },
+            head_ref_name: "topic".to_string(),
+            head_ref_oid: "deadbeef".to_string(),
+            base_ref_name: "main".to_string(),
+            is_draft: false,
+            head_branch_deletable: true,
+            body: String::new(),
+            url: String::new(),
+            closed_at: None,
+            updated_at: String::new(),
+            linked_issues: Vec::new(),
+            diff_stat: crate::github::DiffStat::default(),
+        }
+    }
+
+    fn issue_by(number: u64, author: &str, title: &str) -> GhIssue {
+        GhIssue {
+            number,
+            title: title.to_string(),
+            state: "OPEN".to_string(),
+            labels: Vec::new(),
+            author: GhAuthor {
+                login: author.to_string(),
+            },
+            created_at: String::new(),
+            body: String::new(),
+            url: String::new(),
+            closed_at: None,
+            updated_at: String::new(),
+            parent: None,
+            sub_issues: Vec::new(),
+        }
+    }
+
+    fn view_with_items(
+        issues: Vec<GhIssue>,
+        prs: Vec<GhPullRequest>,
+    ) -> (GitHubView<'static>, std::sync::mpsc::Receiver<AppEvent>) {
+        let (tx, rx) = Sender::channel_for_test();
+        let data = GitHubData {
+            issues,
+            pull_requests: prs,
+            ..Default::default()
+        };
+        let mut view = GitHubView::new(View::Default, data, tx);
+        view.active_tab = GitHubTab::PullRequests;
+        view.focus = GitHubFocus::List;
+        (view, rx)
+    }
+
+    fn three_prs() -> (GitHubView<'static>, std::sync::mpsc::Receiver<AppEvent>) {
+        view_with_items(
+            Vec::new(),
+            vec![
+                pr_by(3, "alice", "alpha three"),
+                pr_by(2, "bob", "beta two"),
+                pr_by(1, "alice", "alpha one"),
+            ],
+        )
+    }
+
+    fn list_line(screen: &str, needle: &str) -> String {
+        screen
+            .lines()
+            .find(|l| l.contains(needle))
+            .unwrap_or_else(|| panic!("找不到含 {needle:?} 的列：\n{screen}"))
+            .split('│')
+            .next()
+            .unwrap()
+            .to_string()
+    }
+
+    #[test]
+    fn row_columns_are_number_state_labels_author_title() {
+        let labels = vec![crate::github::GhLabel {
+            name: "alpha".to_string(),
+            color: Some("00ff00".to_string()),
+        }];
+        let mut view = view_with_pr_labels(labels, "The title");
+
+        let row = list_line(&render_to_string_at_width(&mut view, 220), "#1");
+        assert!(row.contains("[▮]  ▮  @alice  The title"), "{row:?}");
+        assert!(!row.contains('←'), "分支不再出現在列表列：{row:?}");
+
+        view.toggle_label_mode();
+        let row = list_line(&render_to_string_at_width(&mut view, 220), "#1");
+        assert!(
+            pos_of(&row, "#1") < pos_of(&row, "開啟")
+                && pos_of(&row, "開啟") < pos_of(&row, "[alpha]")
+                && pos_of(&row, "[alpha]") < pos_of(&row, "@alice")
+                && pos_of(&row, "@alice") < pos_of(&row, "The title"),
+            "{row:?}"
+        );
+    }
+
+    fn pos_of(row: &str, needle: &str) -> usize {
+        row.find(needle)
+            .unwrap_or_else(|| panic!("{needle:?} not in {row:?}"))
+    }
+
+    #[test]
+    fn row_without_labels_leaves_no_empty_label_column() {
+        let (mut view, _rx) = three_prs();
+
+        let screen = render_to_string_at_width(&mut view, 100);
+        let row = list_line(&screen, "alpha three");
+
+        assert!(row.contains("[▮]  @alice  alpha three"), "{row:?}");
+    }
+
+    #[test]
+    fn author_column_pads_to_widest_author_so_titles_align() {
+        let (mut view, _rx) = view_with_items(
+            Vec::new(),
+            vec![
+                pr_by(2, "alice", "TITLE_A"),
+                pr_by(1, "bob-the-builder", "TITLE_B"),
+            ],
+        );
+
+        let screen = render_to_string_at_width(&mut view, 220);
+        let col = |needle: &str| {
+            let row = list_line(&screen, needle);
+            let byte = row.find(needle).unwrap();
+            row[..byte].chars().count()
+        };
+
+        assert_eq!(col("TITLE_A"), col("TITLE_B"));
+    }
+
+    #[test]
+    fn long_author_is_truncated_to_the_column_cap() {
+        let (mut view, _rx) = view_with_items(
+            Vec::new(),
+            vec![pr_by(
+                1,
+                "github-actions-bot-with-a-very-long-name",
+                "TITLE",
+            )],
+        );
+
+        let row = list_line(&render_to_string_at_width(&mut view, 100), "TITLE");
+
+        assert!(!row.contains("very-long-name"), "{row:?}");
+        assert!(row.contains('…'), "{row:?}");
+    }
+
+    #[test]
+    fn narrow_row_has_no_state_cell_and_unpadded_author() {
+        let (mut view, _rx) = view_with_items(
+            Vec::new(),
+            vec![
+                pr_by(2, "alice", "TITLE_A"),
+                pr_by(1, "bob-the-builder", "TITLE_B"),
+            ],
+        );
+
+        let screen = render_to_string_at_width(&mut view, 40);
+        let row = list_line(&screen, "TITLE_A");
+
+        assert!(!row.contains("[▮]") && !row.contains("開啟"), "{row:?}");
+        assert!(row.contains("@alice TITLE_A"), "{row:?}");
+    }
+
+    #[test]
+    fn author_filter_cycles_prs_and_keeps_other_tabs_independent() {
+        let (mut view, _rx) = three_prs();
+        let mut seen = Vec::new();
+        for _ in 0..3 {
+            view.handle_list_event(UserEvent::AuthorFilter, 1);
+            seen.push((view.prs_author.clone(), view.current_list_len()));
+        }
+
+        // 依清單出現順序：alice(2) → bob(1) → 所有作者(3)
+        assert_eq!(
+            seen,
+            [
+                (Some("alice".to_string()), 2),
+                (Some("bob".to_string()), 1),
+                (None, 3),
+            ]
+        );
+        assert_eq!(view.issues_author, None);
+        assert_eq!(view.branches_author, None);
+    }
+
+    #[test]
+    fn author_filter_hides_other_authors_and_shows_in_header() {
+        let (mut view, _rx) = three_prs();
+        view.handle_list_event(UserEvent::AuthorFilter, 1);
+
+        let screen = render_to_string_at_width(&mut view, 100);
+
+        assert!(screen.contains("[@alice]"), "{screen}");
+        assert!(screen.contains("alpha three") && screen.contains("alpha one"));
+        assert!(!screen.contains("beta two"), "{screen}");
+    }
+
+    #[test]
+    fn author_filter_applies_to_issues_tab_too() {
+        let (mut view, _rx) = view_with_items(
+            vec![issue_by(2, "bob", "i-bob"), issue_by(1, "alice", "i-alice")],
+            Vec::new(),
+        );
+        view.active_tab = GitHubTab::Issues;
+
+        view.handle_list_event(UserEvent::AuthorFilter, 1);
+
+        assert_eq!(view.issues_author.as_deref(), Some("bob"));
+        assert_eq!(view.filtered_issue_indices, vec![0]);
+    }
+
+    #[test]
+    fn author_filter_combines_with_search_text() {
+        let (mut view, _rx) = three_prs();
+        view.search_input = Input::new("three".to_string());
+        view.rebuild_filtered_indices();
+        assert_eq!(view.filtered_pr_indices, vec![0]);
+
+        view.handle_list_event(UserEvent::AuthorFilter, 1); // alice
+        assert_eq!(view.filtered_pr_indices, vec![0]);
+        view.handle_list_event(UserEvent::AuthorFilter, 1); // bob：沒有符合 "three"
+        assert!(view.filtered_pr_indices.is_empty());
+        assert_eq!(view.current_list_len(), 0);
+    }
+
+    #[test]
+    fn prs_author_filter_is_dropped_when_that_author_disappears_after_reload() {
+        let (mut view, _rx) = three_prs();
+        view.handle_list_event(UserEvent::AuthorFilter, 1);
+        view.handle_list_event(UserEvent::AuthorFilter, 1);
+        assert_eq!(view.prs_author.as_deref(), Some("bob"));
+
+        view.update_data(
+            Vec::new(),
+            vec![pr_by(9, "alice", "only alice")],
+            None,
+            None,
+        );
+
+        assert_eq!(view.prs_author, None);
+        assert_eq!(view.current_list_len(), 1);
+    }
+
+    /// 既有 bug（#227）：有搜尋字串時 reload 讓清單變短，過期索引會讓 render 越界 panic。
+    #[test]
+    fn update_data_with_search_text_recomputes_stale_indices() {
+        let (mut view, _rx) = three_prs();
+        view.search_input = Input::new("alpha".to_string());
+        view.rebuild_filtered_indices();
+        assert_eq!(view.filtered_pr_indices, vec![0, 2]);
+
+        view.update_data(
+            Vec::new(),
+            vec![pr_by(9, "alice", "alpha only")],
+            None,
+            None,
+        );
+
+        assert_eq!(view.filtered_pr_indices, vec![0]);
+        let screen = render_to_string_at_width(&mut view, 100);
+        assert!(screen.contains("alpha only"), "{screen}");
+    }
+
+    #[test]
+    fn append_pull_requests_extends_filtered_indices() {
+        let (mut view, _rx) = three_prs();
+        view.prs_next_cursor = Some("c".to_string());
+        view.handle_list_event(UserEvent::AuthorFilter, 1); // alice
+        assert_eq!(view.filtered_pr_indices, vec![0, 2]);
+
+        view.append_pull_requests(
+            vec![pr_by(0, "alice", "alpha zero")],
+            None,
+            view.request_generation,
+        );
+
+        assert_eq!(view.filtered_pr_indices, vec![0, 2, 3]);
+    }
+
+    #[test]
+    fn data_arriving_keeps_scroll_offset_and_clamps_selection() {
+        let prs = (1..=30).rev().map(|n| pr_by(n, "alice", "t")).collect();
+        let (mut view, _rx) = view_with_items(Vec::new(), prs);
+        view.height = 10;
+        view.selected_index = 25;
+        view.offset = 20;
+
+        view.append_pull_requests(
+            vec![pr_by(0, "alice", "more")],
+            None,
+            view.request_generation,
+        );
+
+        assert_eq!(view.offset, 20, "翻頁不能把捲動位置打回頂端");
+        assert_eq!(view.selected_index, 25);
+    }
+
+    #[test]
+    fn jump_to_issue_clears_the_issues_author_filter() {
+        let (mut view, _rx) = view_with_items(
+            vec![
+                issue_by(3, "alice", "a"),
+                issue_by(2, "bob", "b"),
+                issue_by(1, "alice", "c"),
+            ],
+            Vec::new(),
+        );
+        view.active_tab = GitHubTab::Issues;
+        view.handle_list_event(UserEvent::AuthorFilter, 1); // alice
+        assert_eq!(view.current_list_len(), 2);
+
+        assert!(view.jump_to_issue(2)); // bob 開的
+
+        assert_eq!(view.issues_author, None);
+        assert_eq!(view.selected_index, 1);
+        assert_eq!(view.selected_number_and_kind().map(|(n, _)| n), Some(2));
+    }
+
+    #[test]
+    fn numeric_jump_clears_the_prs_author_filter() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent};
+        let (mut view, _rx) = three_prs();
+        view.handle_list_event(UserEvent::AuthorFilter, 1); // alice
+        view.focus = GitHubFocus::Prompt;
+        view.search_input = Input::new("2".to_string()); // bob 開的 #2
+
+        view.handle_prompt_event(UserEvent::Confirm, 1, KeyEvent::from(KeyCode::Enter));
+
+        assert_eq!(view.prs_author, None);
+        assert_eq!(view.selected_number_and_kind().map(|(n, _)| n), Some(2));
+    }
+
+    #[test]
+    fn typing_double_quote_in_prompt_reaches_search_input_not_author_filter() {
+        use ratatui::crossterm::event::{KeyCode, KeyEvent};
+        let (mut view, _rx) = three_prs();
+        view.focus = GitHubFocus::Prompt;
+
+        view.handle_event(
+            UserEventWithCount::new(UserEvent::AuthorFilter, 1),
+            KeyEvent::from(KeyCode::Char('"')),
+        );
+
+        assert_eq!(view.prs_author, None);
+        assert_eq!(view.search_input.value(), "\"");
+    }
+
+    #[test]
+    fn author_filter_pauses_load_more() {
+        let prs = (1..=10).rev().map(|n| pr_by(n, "alice", "t")).collect();
+        let (mut view, _rx) = view_with_items(Vec::new(), prs);
+        view.prs_next_cursor = Some("c".to_string());
+        view.height = 10;
+        view.handle_list_event(UserEvent::AuthorFilter, 1);
+
+        view.handle_list_event(UserEvent::GoToBottom, 1);
+
+        assert!(!view.loading_more, "作者篩選期間不翻頁（與搜尋一致）");
+    }
+
+    #[test]
+    fn next_author_cycles_in_first_seen_order_and_dedups() {
+        let authors = ["alice", "bob", "alice", "carol"];
+        let step = |cur: Option<&str>| next_author(authors.iter().copied(), cur);
+
+        assert_eq!(step(None).as_deref(), Some("alice"));
+        assert_eq!(step(Some("alice")).as_deref(), Some("bob"));
+        assert_eq!(step(Some("bob")).as_deref(), Some("carol"));
+        assert_eq!(step(Some("carol")), None);
+        // 目前的作者已不在清單：回到所有作者
+        assert_eq!(step(Some("zed")), None);
+        assert_eq!(next_author(std::iter::empty(), None), None);
     }
 }
