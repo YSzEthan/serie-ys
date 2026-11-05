@@ -336,6 +336,10 @@ en-US = "Open help"
 zh-TW = "切換 commit 標記"
 en-US = "Toggle commit mark"
 
+[help.detail.open_repo_web]
+zh-TW = "用瀏覽器開 repo 首頁（origin，或唯一的 remote）"
+en-US = "Open repo homepage in browser (origin, or the only remote)"
+
 [help.detail.refresh]
 zh-TW = "重新整理"
 en-US = "Refresh"
@@ -451,6 +455,10 @@ en-US = "Copy issue/PR number (#N) (Branches: branch name)"
 [help.github.open_related_issue_pr_picker]
 zh-TW = "開啟相關 issue/PR 選單"
 en-US = "Open related issue/PR picker"
+
+[help.github.open_repo_web]
+zh-TW = "用瀏覽器開 repo 首頁（origin，或唯一的 remote）"
+en-US = "Open repo homepage in browser (origin, or the only remote)"
 
 [help.github.refresh]
 zh-TW = "重新整理"

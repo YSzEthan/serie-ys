@@ -344,6 +344,9 @@ impl<'a> DetailView<'a> {
             UserEvent::Refresh => {
                 self.tx.send(AppEvent::Refresh);
             }
+            UserEvent::OpenRepoWeb => {
+                self.tx.send(AppEvent::OpenRepoWeb);
+            }
             _ => {}
         }
     }

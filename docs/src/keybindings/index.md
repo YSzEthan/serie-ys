@@ -100,6 +100,7 @@
 | <kbd>g</kbd> | 開啟 GitHub issues/PRs | `github_toggle` |
 | <kbd>F1</kbd> <kbd>?</kbd> | 開啟說明 | `help_toggle` |
 | <kbd>a</kbd> | 切換 commit 標記 | `mark_toggle` |
+| <kbd>O</kbd> | 用瀏覽器開 repo 首頁（origin，或唯一的 remote） | `open_repo_web` |
 | <kbd>r</kbd> | 重新整理 | `refresh` |
 | <kbd>/</kbd> | 開啟 Shell | `shell_toggle` |
 
@@ -141,6 +142,7 @@
 | <kbd>u</kbd> | 開啟相關 issue/PR 選單 | `detail_pane_toggle` |
 | <kbd>r</kbd> | 重新整理 | `refresh` |
 | <kbd>f</kbd> | fetch 所有 remote（完成後重新載入 Branches） | `fetch` |
+| <kbd>O</kbd> | 用瀏覽器開 repo 首頁（origin，或唯一的 remote） | `open_repo_web` |
 | <kbd>p</kbd> | merge PR：彈窗選擇合併方式與要刪除的 branch，再確認 | `merge_pr` |
 | <kbd>X</kbd> | 關閉／重新開啟 issue 或 PR | `toggle_issue_state` |
 | <kbd>P</kbd> | PR 標為可供 review／轉回 draft | `toggle_pr_draft` |

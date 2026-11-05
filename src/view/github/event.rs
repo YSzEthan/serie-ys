@@ -165,6 +165,9 @@ impl<'a> GitHubView<'a> {
             UserEvent::Fetch => {
                 self.tx.send(AppEvent::FetchAll);
             }
+            UserEvent::OpenRepoWeb => {
+                self.tx.send(AppEvent::OpenRepoWeb);
+            }
             _ => {}
         }
     }
@@ -277,6 +280,9 @@ impl<'a> GitHubView<'a> {
             }
             UserEvent::Fetch => {
                 self.tx.send(AppEvent::FetchAll);
+            }
+            UserEvent::OpenRepoWeb => {
+                self.tx.send(AppEvent::OpenRepoWeb);
             }
             UserEvent::ShortCopy => {
                 let name = match self.active_tab.kind() {

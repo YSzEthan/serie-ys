@@ -1532,6 +1532,7 @@ impl KeyScope {
                     | E::RefList
                     | E::MarkToggle
                     | E::Refresh
+                    | E::OpenRepoWeb
                     | E::ShellToggle
             ),
             KeyScope::Refs => matches!(
@@ -1573,6 +1574,7 @@ impl KeyScope {
                     | E::DetailPaneToggle
                     | E::Refresh
                     | E::Fetch
+                    | E::OpenRepoWeb
                     | E::MergePr
                     | E::ToggleIssueState
                     | E::CiRerun
