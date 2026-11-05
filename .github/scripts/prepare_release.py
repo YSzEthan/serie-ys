@@ -7,7 +7,6 @@
 用法：
   prepare_release.py --from v1.9.0                # 正式模式：寫入 Cargo.toml / Cargo.lock / CHANGELOG.md
   prepare_release.py --from v1.9.0 --dry-run       # 只印出計算結果，不寫檔
-  prepare_release.py --from v1.9.0 --pr 42         # 在 PR #42 的 branch 上跑，把它當成 squash 後的一個 commit
 
 沒有任何 commit 觸發 bump 時，印出 NO_BUMP 並以 exit code 0 結束——這不是錯誤，
 是「這批 commit 不用發版」的正常結果。
@@ -73,20 +72,18 @@ def run_git(*args: str) -> str:
 
 
 class Commit:
-    __slots__ = ("hash", "subject", "body", "pr")
+    __slots__ = ("hash", "subject", "body")
 
-    def __init__(self, hash_: str, subject: str, body: str, pr: int | None = None):
+    def __init__(self, hash_: str, subject: str, body: str):
         self.hash = hash_
         self.subject = subject
         self.body = body
-        # 已知 PR 編號時直接連到 PR，不查 pr_map（見 squashed_pr_commit）
-        self.pr = pr
 
 
-def load_commits(base: str, head: str = "HEAD") -> list[Commit]:
-    """base..head 之間、非 merge commit 的清單，由舊到新。"""
+def load_commits(base: str) -> list[Commit]:
+    """base..HEAD 之間、非 merge commit 的清單，由舊到新。"""
     out = run_git(
-        "log", f"{base}..{head}", "--no-merges", "--reverse", "--format=%H%x1f%s%x1f%b%x1e"
+        "log", f"{base}..HEAD", "--no-merges", "--reverse", "--format=%H%x1f%s%x1f%b%x1e"
     )
     commits = []
     for record in out.split("\x1e"):
@@ -96,64 +93,6 @@ def load_commits(base: str, head: str = "HEAD") -> list[Commit]:
         h, subject, body = record.split("\x1f")
         commits.append(Commit(h, subject, body))
     return commits
-
-
-def squashed_pr_commit(number: int, commits: list[Commit], pr_title: str | None) -> Commit:
-    """模擬 PR #number squash merge 後落在 main 上的那一個 commit。
-
-    依 repo 的 squash 設定（title=COMMIT_OR_PR_TITLE、message=COMMIT_MESSAGES）：
-    只有一個 commit 時 subject 用它自己的，多個時用 PR 標題，GitHub 再補上
-    ` (#number)`；body 是各 commit body 串起來，BREAKING CHANGE footer 才不會漏。
-    squash 後的 hash 事先無從得知，所以連結指向 PR。
-    """
-    subject = commits[0].subject if len(commits) == 1 else pr_title
-    if not subject:
-        raise SystemExit(f"PR #{number} 有 {len(commits)} 個 commit，需要 PR 標題")
-    body = "\n\n".join(c.body for c in commits if c.body)
-    return Commit(f"pr-{number}", f"{subject} (#{number})", body, pr=number)
-
-
-def build_pr_map(base: str) -> dict[str, int]:
-    """commit hash -> PR number，只涵蓋透過『Merge pull request #N』併入的 commit。
-
-    非經 PR（例如直接 push 到 main）的 commit 不會出現在這份對照表，呼叫端
-    需自行 fallback 到 commit hash 連結。
-    """
-    pr_map: dict[str, int] = {}
-    merges = run_git("log", f"{base}..HEAD", "--merges", "--format=%H %s")
-    for line in merges.splitlines():
-        if not line.strip():
-            continue
-        merge_hash, subject = line.split(" ", 1)
-        m = re.match(r"Merge pull request #(\d+) from", subject)
-        if not m:
-            continue
-        pr_number = int(m.group(1))
-        try:
-            members = run_git("rev-list", f"{merge_hash}^1..{merge_hash}^2").split()
-        except subprocess.CalledProcessError:
-            continue
-        for h in members:
-            pr_map[h] = pr_number
-    return pr_map
-
-
-def load_pr_release_commits(base: str, number: int) -> list[Commit]:
-    """main 上 base 之後的 commit，加上 PR #number squash 後的那一個。"""
-    try:
-        run_git("merge-base", "--is-ancestor", "origin/main", "HEAD")
-    except subprocess.CalledProcessError:
-        raise SystemExit("HEAD 不包含最新的 origin/main，先 rebase 再跑") from None
-    branch = load_commits("origin/main")
-    if not branch:
-        raise SystemExit("origin/main..HEAD 沒有任何 commit，不在 PR 的 branch 上？")
-    title = None
-    if len(branch) > 1:
-        title = subprocess.run(
-            ["gh", "pr", "view", str(number), "--json", "title", "-q", ".title"],
-            cwd=REPO_ROOT, check=True, capture_output=True, text=True,
-        ).stdout.strip()
-    return load_commits(base, "origin/main") + [squashed_pr_commit(number, branch, title)]
 
 
 def warn(message: str) -> None:
@@ -171,7 +110,7 @@ def subject_problem(subject: str) -> str | None:
 
     這是規範的唯一定義，三個呼叫端共用：lefthook 的 commit-msg hook 與
     PR 標題 lint（兩者經 `check_subject.py`）在 merge 前擋，`classify()`
-    則只是補一則警告——擋在那裡沒有用，commit 已經在 main 上了。
+    則只是補一則警告——擋在那裡沒有用，commit 已經在 dev 上了。
     """
     m = SUBJECT_RE.match(subject)
     if not m:
@@ -286,10 +225,7 @@ def find_lock_version(lines: list[str], package_name: str) -> tuple[int, str]:
     raise SystemExit(f"Cargo.lock 找不到 {package_name} 的 version 欄位")
 
 
-def entry_link(repo: str, commit: Commit, pr_map: dict[str, int]) -> str:
-    pr = commit.pr or pr_map.get(commit.hash)
-    if pr is not None:
-        return f"([#{pr}](https://github.com/{repo}/pull/{pr}))"
+def entry_link(repo: str, commit: Commit) -> str:
     short = commit.hash[:7]
     return f"([{short}](https://github.com/{repo}/commit/{commit.hash}))"
 
@@ -300,7 +236,6 @@ def build_changelog_block(
     new_version: str,
     sections: dict[str, list[tuple[Commit, str]]],
     breaking: list[tuple[Commit, str]],
-    pr_map: dict[str, int],
     today: str,
 ) -> str:
     compare_url = f"https://github.com/{repo}/compare/v{old_version}...v{new_version}"
@@ -320,7 +255,7 @@ def build_changelog_block(
         lines.append(f"### {name}")
         lines.append("")
         for commit, desc in items:
-            lines.append(f"* {desc} {entry_link(repo, commit, pr_map)}")
+            lines.append(f"* {desc} {entry_link(repo, commit)}")
         lines.append("")
 
     return "\n".join(lines)
@@ -359,12 +294,6 @@ def main() -> int:
     parser.add_argument(
         "--dry-run", action="store_true", help="只印出計算結果，不寫入 Cargo.toml / CHANGELOG.md"
     )
-    parser.add_argument(
-        "--pr",
-        type=int,
-        metavar="N",
-        help="在 PR #N 的 branch 上跑：origin/main 之後的 commit 合成一個 squash 後的 commit",
-    )
     parser.add_argument("--repo", help="owner/repo，預設從 GITHUB_REPOSITORY 或 git remote 解析")
     parser.add_argument(
         "--print-section",
@@ -382,10 +311,7 @@ def main() -> int:
         parser.error("--from 是必填（除非搭配 --print-section）")
 
     repo = args.repo or detect_repo()
-    if args.pr:
-        commits = load_pr_release_commits(args.base, args.pr)
-    else:
-        commits = load_commits(args.base)
+    commits = load_commits(args.base)
     bump, sections, breaking = classify(commits)
 
     if bump is None:
@@ -402,9 +328,8 @@ def main() -> int:
     cargo_lines = CARGO_TOML.read_text().splitlines(keepends=True)
     version_idx, package_name, old_version = find_package_info(cargo_lines)
     new_version = bump_version(old_version, bump)
-    pr_map = build_pr_map(args.base)
     today = date.today().isoformat()
-    block = build_changelog_block(repo, old_version, new_version, sections, breaking, pr_map, today)
+    block = build_changelog_block(repo, old_version, new_version, sections, breaking, today)
 
     print(f"bump={bump}")
     print(f"version={new_version}")
