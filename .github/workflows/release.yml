@@ -59,10 +59,6 @@ jobs:
             runner: macos-latest
             bin_ext: ""
             label: macos-arm64
-          - target: x86_64-apple-darwin
-            runner: macos-latest
-            bin_ext: ""
-            label: macos-x64
           - target: x86_64-unknown-linux-gnu
             runner: ubuntu-latest
             bin_ext: ""

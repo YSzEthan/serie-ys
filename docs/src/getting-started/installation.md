@@ -7,7 +7,6 @@
 從 [releases](https://github.com/YSzEthan/serie-ys/releases) 下載預先編譯好的執行檔。每個版本都提供以下平台，另附 `checksum.txt` 可驗證：
 
 - `ysgit_<版本>-macos-arm64`
-- `ysgit_<版本>-macos-x64`
 - `ysgit_<版本>-linux`
 - `ysgit_<版本>-windows.exe`
 
