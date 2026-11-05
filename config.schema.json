@@ -711,7 +711,7 @@
         "status_input_transient_fg": {
           "type": "string",
           "description": "Foreground color for transient messages in the status bar.",
-          "default": "dark-gray"
+          "default": "245"
         },
         "status_interactive_fg": {
           "type": "string",
@@ -741,7 +741,7 @@
         "divider_fg": {
           "type": "string",
           "description": "Color for dividers.",
-          "default": "dark-gray"
+          "default": "245"
         },
         "graph": {
           "type": "object",

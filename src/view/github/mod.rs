@@ -1550,6 +1550,7 @@ impl<'a> GitHubView<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::color::MUTED_FG;
     use ratatui::{backend::TestBackend, Terminal};
 
     use crate::event::UserEventWithCount;
@@ -2721,7 +2722,7 @@ mod tests {
             dividers,
             vec![
                 // header → commit block（兩個 commit 集中在一起）：灰線
-                ('─', Some(Color::DarkGray)),
+                ('─', Some(MUTED_FG)),
                 // commit block → body
                 ('─', Some(Section::Commit.color())),
                 // body → 第一則留言
@@ -2732,14 +2733,14 @@ mod tests {
         );
     }
 
-    /// block 分隔線的顏色——markdown 自己那條固定 DarkGray 的不算，
+    /// block 分隔線的顏色——markdown 自己那條固定 MUTED_FG 的不算，
     /// 那條不是 `append_comment_lines` 畫的。
     fn block_divider_colors(lines: &[Line<'static>]) -> Vec<Option<Color>> {
         lines
             .iter()
             .filter(|l| {
                 let text: String = l.spans.iter().map(|s| s.content.to_string()).collect();
-                text.starts_with('─') && l.style.fg != Some(Color::DarkGray)
+                text.starts_with('─') && l.style.fg != Some(MUTED_FG)
             })
             .map(|l| l.style.fg)
             .collect()
@@ -2858,7 +2859,7 @@ mod tests {
         // 分隔線的顏色來自它*之前*那個 block 的 section（見
         // `dividers_are_colour_coded_by_section`），這裡唯一的 block 前面
         // 是初始值 `Section::Body`，所以直接數「不是 markdown 自己那條
-        // 固定 DarkGray 分隔線」的數量——一個 block 只會有一條。
+        // 固定 MUTED_FG 分隔線」的數量——一個 block 只會有一條。
         let (lines, _, _) = build_preview_content(&view.preview_input(40));
         let block_dividers = block_divider_colors(&lines).len();
         assert_eq!(

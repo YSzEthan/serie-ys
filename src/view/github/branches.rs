@@ -8,7 +8,11 @@ use ratatui::{
 
 use rust_i18n::t;
 
-use crate::{github::GhBranch, widget::truncate_line};
+use crate::{
+    color::{MUTED_FG, TEXT_COLOR},
+    github::GhBranch,
+    widget::truncate_line,
+};
 
 use super::timeline::{diff_stat_spans, DiffStatThresholds};
 
@@ -24,9 +28,6 @@ pub(super) fn columns(width: usize) -> usize {
     (width / MIN_CARD_WIDTH).max(1)
 }
 
-/// 邊框以外的文字一律用亮灰色（`Color::Gray`），不用 `DarkGray`，深色背景下才看得清楚。
-pub(super) const TEXT_COLOR: Color = Color::Gray;
-
 /// 邊框 2 格 + title 兩側各 1 格空白。
 const TITLE_CHROME: usize = 4;
 
@@ -35,7 +36,7 @@ pub(super) fn card_block(title: &str, width: u16, selected: bool) -> Block<'stat
     let (border_color, title_style) = if selected {
         (Color::Cyan, Style::default().fg(Color::Cyan).bold())
     } else {
-        (Color::DarkGray, Style::default().fg(TEXT_COLOR))
+        (MUTED_FG, Style::default().fg(TEXT_COLOR))
     };
 
     let title = truncate_line(
@@ -210,10 +211,10 @@ mod tests {
             .unwrap();
         let buf = terminal.backend().buffer().clone();
 
-        // 非選取：title（第 0 列）與 meta（第 1 列）文字是亮灰，邊框維持 DarkGray
+        // 非選取：title（第 0 列）與 meta（第 1 列）文字是亮灰，邊框維持 MUTED_FG
         assert_eq!(buf[(2, 0)].fg, Color::Gray);
         assert_eq!(buf[(2, 1)].fg, Color::Gray);
-        assert_eq!(buf[(0, 0)].fg, Color::DarkGray);
+        assert_eq!(buf[(0, 0)].fg, MUTED_FG);
     }
 
     #[test]

@@ -130,13 +130,13 @@ help_block_title_fg = "green"
 help_key_fg = "yellow"
 virtual_cursor_fg = "reset"
 status_input_fg = "reset"
-status_input_transient_fg = "dark-gray"
+status_input_transient_fg = "245"
 status_interactive_fg = "yellow"
 status_info_fg = "cyan"
 status_success_fg = "green"
 status_warn_fg = "yellow"
 status_error_fg = "red"
-divider_fg = "dark-gray"
+divider_fg = "245"
 
 [color.graph]
 branches = [

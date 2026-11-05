@@ -11,6 +11,7 @@ use ratatui::{
 use rust_i18n::t;
 
 use crate::{
+    color::{MUTED_FG, TEXT_COLOR},
     github::{CiState, GhIssue, GhPullRequest},
     widget::truncate_line,
 };
@@ -64,9 +65,9 @@ impl<'a> GitHubView<'a> {
         // ── Loading / 錯誤提示 ──
         if self.current_list_len() == 0 {
             let (text, color) = match self.list_load_state() {
-                LoadState::Loading => (t!("github.render.loading").into_owned(), Color::DarkGray),
+                LoadState::Loading => (t!("github.render.loading").into_owned(), MUTED_FG),
                 LoadState::Error(err) => (err.clone(), Color::Red),
-                LoadState::Idle => (t!("github.render.empty").into_owned(), Color::DarkGray),
+                LoadState::Idle => (t!("github.render.empty").into_owned(), MUTED_FG),
             };
             render_centered_message(f, content_area, text, color);
             return;
@@ -94,11 +95,7 @@ impl<'a> GitHubView<'a> {
 
         // ── 提示訊息 ──
         if let Some((ref msg, is_error)) = self.flash_message {
-            let color = if is_error {
-                Color::Red
-            } else {
-                Color::DarkGray
-            };
+            let color = if is_error { Color::Red } else { TEXT_COLOR };
             let flash_area = Rect::new(
                 content_area.x,
                 content_area.bottom().saturating_sub(1),
@@ -141,7 +138,7 @@ impl<'a> GitHubView<'a> {
             if self.active_tab == tab {
                 Style::default().fg(Color::Black).bg(Color::Cyan).bold()
             } else {
-                Style::default().fg(Color::DarkGray)
+                Style::default().fg(MUTED_FG)
             }
         };
 
@@ -172,13 +169,13 @@ impl<'a> GitHubView<'a> {
                     } else {
                         format!("[{filter_label}]")
                     },
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(MUTED_FG),
                 ),
             ]);
             if self.has_active_filter() {
                 tab_spans.push(Span::styled(
                     t!("github.render.matched", n = count),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(MUTED_FG),
                 ));
             }
             if matches!(self.list_load_state(), LoadState::Loading) {
@@ -194,7 +191,7 @@ impl<'a> GitHubView<'a> {
         let prompt_color = if self.focus == GitHubFocus::Prompt {
             Color::Cyan
         } else {
-            Color::DarkGray
+            MUTED_FG
         };
         let prompt_prefix = Span::styled("> ", Style::default().fg(prompt_color));
         let prompt_value = Span::raw(self.search_input.value().to_string());
@@ -231,7 +228,7 @@ impl<'a> GitHubView<'a> {
         let list_border_color = if self.focus == GitHubFocus::List {
             Color::Cyan
         } else {
-            Color::DarkGray
+            MUTED_FG
         };
         let block = Block::default()
             .borders(Borders::RIGHT)
@@ -256,7 +253,7 @@ impl<'a> GitHubView<'a> {
             } else {
                 t!("github.render.more")
             };
-            lines.push(Line::styled(hint, Style::default().fg(Color::DarkGray)));
+            lines.push(Line::styled(hint, Style::default().fg(MUTED_FG)));
         }
 
         let list_paragraph =
@@ -635,11 +632,7 @@ impl<'a> GitHubView<'a> {
                 let selected = i == panel.selected;
                 let indicator = if selected { "▸ " } else { "  " };
                 let checkbox = if item.checked { "☑ " } else { "☐ " };
-                let checkbox_color = if item.checked {
-                    Color::Green
-                } else {
-                    Color::DarkGray
-                };
+                let checkbox_color = if item.checked { Color::Green } else { MUTED_FG };
                 let label_style = if selected {
                     Style::default()
                         .fg(Color::Cyan)
@@ -660,7 +653,7 @@ impl<'a> GitHubView<'a> {
         lines.push(truncate_line(
             Line::from(Span::styled(
                 t!("github.render.tasks_footer"),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(MUTED_FG),
             )),
             inner.width as usize,
         ));
@@ -807,10 +800,7 @@ fn head_spans(
     }
     (
         vec![
-            Span::styled(
-                format!("#{number:<5} "),
-                Style::default().fg(Color::DarkGray),
-            ),
+            Span::styled(format!("#{number:<5} "), Style::default().fg(MUTED_FG)),
             Span::styled(pad_state_cell(state_text), Style::default().fg(color)),
         ],
         7 + STATE_COL_WIDTH,
