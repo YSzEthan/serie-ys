@@ -437,8 +437,12 @@ zh-TW = "搜尋／輸入純數字跳到 #N"
 en-US = "Search / type number to jump to #N"
 
 [help.github.filter]
-zh-TW = "過濾（Branches：依作者篩選）"
-en-US = "Filter (Branches: by author)"
+zh-TW = "過濾（Issues／PRs：切換狀態；Branches：依作者篩選）"
+en-US = "Filter (Issues/PRs: state; Branches: by author)"
+
+[help.github.author_filter]
+zh-TW = "依作者篩選（Issues／PRs／Branches）"
+en-US = "Filter by author (Issues/PRs/Branches)"
 
 [help.github.copy_issue_pr_url]
 zh-TW = "複製 issue/PR URL（Branches：compare URL）"

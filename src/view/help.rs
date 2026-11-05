@@ -355,6 +355,10 @@ fn help_blocks(
         b(vec![UserEvent::NavigateLeft], t!("help.github.back_cancel")),
         b(vec![UserEvent::Search], t!("help.github.search_type_number_to_jump_to_n")),
         b(vec![UserEvent::Filter], t!("help.github.filter")),
+        b(
+            vec![UserEvent::AuthorFilter],
+            t!("help.github.author_filter"),
+        ),
         b(vec![UserEvent::ShortCopy], t!("help.github.copy_issue_pr_url")),
         b(vec![UserEvent::FullCopy], t!("help.github.open_issue_pr_in_browser")),
         b(vec![UserEvent::TagCopy], t!("help.github.copy_issue_pr_number_n")),

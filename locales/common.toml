@@ -173,8 +173,8 @@ zh-TW = "選擇"
 en-US = "select"
 
 [common.hint.show_label_names]
-zh-TW = "顯示 label 名稱"
-en-US = "show label names"
+zh-TW = "顯示狀態與 label 文字"
+en-US = "show state and label text"
 
 [common.hint.submit]
 zh-TW = "送出"

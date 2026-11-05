@@ -11,6 +11,7 @@ use ratatui::{
 use rust_i18n::t;
 
 use crate::{
+    color::{MUTED_FG, TEXT_COLOR},
     github::{CiState, GhIssue, GhPullRequest},
     widget::truncate_line,
 };
@@ -64,9 +65,9 @@ impl<'a> GitHubView<'a> {
         // ── Loading / 錯誤提示 ──
         if self.current_list_len() == 0 {
             let (text, color) = match self.list_load_state() {
-                LoadState::Loading => (t!("github.render.loading").into_owned(), Color::DarkGray),
+                LoadState::Loading => (t!("github.render.loading").into_owned(), MUTED_FG),
                 LoadState::Error(err) => (err.clone(), Color::Red),
-                LoadState::Idle => (t!("github.render.empty").into_owned(), Color::DarkGray),
+                LoadState::Idle => (t!("github.render.empty").into_owned(), MUTED_FG),
             };
             render_centered_message(f, content_area, text, color);
             return;
@@ -94,11 +95,7 @@ impl<'a> GitHubView<'a> {
 
         // ── 提示訊息 ──
         if let Some((ref msg, is_error)) = self.flash_message {
-            let color = if is_error {
-                Color::Red
-            } else {
-                Color::DarkGray
-            };
+            let color = if is_error { Color::Red } else { TEXT_COLOR };
             let flash_area = Rect::new(
                 content_area.x,
                 content_area.bottom().saturating_sub(1),
@@ -141,7 +138,7 @@ impl<'a> GitHubView<'a> {
             if self.active_tab == tab {
                 Style::default().fg(Color::Black).bg(Color::Cyan).bold()
             } else {
-                Style::default().fg(Color::DarkGray)
+                Style::default().fg(MUTED_FG)
             }
         };
 
@@ -160,25 +157,28 @@ impl<'a> GitHubView<'a> {
             let count = self.current_list_len();
             tab_spans.extend([
                 Span::raw("  "),
-                // state filter 只管 issue／PR；Branches 分頁的 `'` 是作者篩選
+                // state filter 只管 issue／PR；Branches 分頁沒有 state，只顯示作者篩選
                 Span::styled(
-                    if self.active_tab == GitHubTab::Branches {
-                        match &self.branches_author {
+                    match self.active_tab {
+                        GitHubTab::Branches => match self.current_author() {
                             Some(author) => format!("[@{author}]"),
                             None => t!("github.render.all_authors").into_owned(),
+                        },
+                        GitHubTab::Ci => String::new(),
+                        GitHubTab::Issues | GitHubTab::PullRequests => {
+                            match self.current_author() {
+                                Some(author) => format!("[{filter_label}] [@{author}]"),
+                                None => format!("[{filter_label}]"),
+                            }
                         }
-                    } else if self.active_tab == GitHubTab::Ci {
-                        String::new()
-                    } else {
-                        format!("[{filter_label}]")
                     },
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(MUTED_FG),
                 ),
             ]);
             if self.has_active_filter() {
                 tab_spans.push(Span::styled(
                     t!("github.render.matched", n = count),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(MUTED_FG),
                 ));
             }
             if matches!(self.list_load_state(), LoadState::Loading) {
@@ -194,7 +194,7 @@ impl<'a> GitHubView<'a> {
         let prompt_color = if self.focus == GitHubFocus::Prompt {
             Color::Cyan
         } else {
-            Color::DarkGray
+            MUTED_FG
         };
         let prompt_prefix = Span::styled("> ", Style::default().fg(prompt_color));
         let prompt_value = Span::raw(self.search_input.value().to_string());
@@ -231,7 +231,7 @@ impl<'a> GitHubView<'a> {
         let list_border_color = if self.focus == GitHubFocus::List {
             Color::Cyan
         } else {
-            Color::DarkGray
+            MUTED_FG
         };
         let block = Block::default()
             .borders(Borders::RIGHT)
@@ -256,7 +256,7 @@ impl<'a> GitHubView<'a> {
             } else {
                 t!("github.render.more")
             };
-            lines.push(Line::styled(hint, Style::default().fg(Color::DarkGray)));
+            lines.push(Line::styled(hint, Style::default().fg(MUTED_FG)));
         }
 
         let list_paragraph =
@@ -317,6 +317,27 @@ impl<'a> GitHubView<'a> {
         }
     }
 
+    /// 作者欄寬度：整份已載入清單裡最寬的 `@login`（上限 `AUTHOR_MAX_WIDTH`）。
+    /// 跟 label 欄一樣以整份清單為準，捲動或篩選時欄位才不會左右晃。
+    fn author_pad_width_for_tab(&self) -> usize {
+        let width = |login: &str| console::measure_text_width(&author_text(login));
+        match self.active_tab {
+            GitHubTab::Issues => self
+                .issues
+                .iter()
+                .map(|i| width(&i.author.login))
+                .max()
+                .unwrap_or(0),
+            GitHubTab::PullRequests => self
+                .pull_requests
+                .iter()
+                .map(|p| width(&p.author.login))
+                .max()
+                .unwrap_or(0),
+            GitHubTab::Branches | GitHubTab::Ci => 0,
+        }
+    }
+
     fn current_viewport_rows(
         &self,
         visible_height: usize,
@@ -330,24 +351,26 @@ impl<'a> GitHubView<'a> {
         } else {
             self.label_mode
         };
-        let pad = self.labels_pad_width_for_tab(label_mode);
-        // Paragraph 內部有 Padding::horizontal(1) → 內容可用寬度要 -2。
-        let content_width = inner_width.saturating_sub(2) as usize;
+        let layout = RowLayout {
+            label_mode,
+            labels_pad: self.labels_pad_width_for_tab(label_mode),
+            // 窄版作者不補寬，空間留給標題
+            author_pad: if narrow {
+                0
+            } else {
+                self.author_pad_width_for_tab()
+            },
+            // Paragraph 內部有 Padding::horizontal(1) → 內容可用寬度要 -2。
+            content_width: inner_width.saturating_sub(2) as usize,
+            narrow,
+        };
         let mut rows = Vec::with_capacity(visible_height);
         let mut overflow = false;
 
         let make_issue = |issue: &GhIssue, vis_i: usize| -> (RowData, bool) {
             let is_selected = vis_i == self.selected_index;
             let frame = is_selected.then_some(marquee_frame);
-            let (line, did_scroll) = render_issue_line(
-                issue,
-                is_selected,
-                label_mode,
-                pad,
-                content_width,
-                frame,
-                narrow,
-            );
+            let (line, did_scroll) = render_issue_line(issue, layout, is_selected, frame);
             (
                 RowData {
                     line,
@@ -360,15 +383,7 @@ impl<'a> GitHubView<'a> {
         let make_pr = |pr: &GhPullRequest, vis_i: usize| -> (RowData, bool) {
             let is_selected = vis_i == self.selected_index;
             let frame = is_selected.then_some(marquee_frame);
-            let (line, did_scroll) = render_pr_line(
-                pr,
-                is_selected,
-                label_mode,
-                pad,
-                content_width,
-                frame,
-                narrow,
-            );
+            let (line, did_scroll) = render_pr_line(pr, layout, is_selected, frame);
             (
                 RowData {
                     line,
@@ -635,11 +650,7 @@ impl<'a> GitHubView<'a> {
                 let selected = i == panel.selected;
                 let indicator = if selected { "▸ " } else { "  " };
                 let checkbox = if item.checked { "☑ " } else { "☐ " };
-                let checkbox_color = if item.checked {
-                    Color::Green
-                } else {
-                    Color::DarkGray
-                };
+                let checkbox_color = if item.checked { Color::Green } else { MUTED_FG };
                 let label_style = if selected {
                     Style::default()
                         .fg(Color::Cyan)
@@ -660,7 +671,7 @@ impl<'a> GitHubView<'a> {
         lines.push(truncate_line(
             Line::from(Span::styled(
                 t!("github.render.tasks_footer"),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(MUTED_FG),
             )),
             inner.width as usize,
         ));
@@ -727,11 +738,23 @@ pub(super) fn state_color(state: &str) -> Color {
     }
 }
 
+/// 前面帶一個空白，給 preview 標題接在別的 span 後面用；列表列用
+/// `label_name_spans`（欄位間距由列組裝處統一加）。
 pub(super) fn label_spans(labels: &[crate::github::GhLabel]) -> Vec<Span<'static>> {
     if labels.is_empty() {
         return vec![];
     }
-    let mut spans = vec![Span::raw(" [")];
+    let mut spans = vec![Span::raw(" ")];
+    spans.extend(label_name_spans(labels));
+    spans
+}
+
+/// `[bug, enhancement]`，每個名字用該 label 的顏色。
+fn label_name_spans(labels: &[crate::github::GhLabel]) -> Vec<Span<'static>> {
+    if labels.is_empty() {
+        return vec![];
+    }
+    let mut spans = vec![Span::raw("[")];
     for (i, label) in labels.iter().enumerate() {
         spans.push(Span::styled(
             label.name.clone(),
@@ -753,17 +776,10 @@ pub(super) const SWATCH: &str = "▮";
 
 /// 精簡模式：每個 label 一個該顏色的方塊，緊密排列，不顯示名稱。
 fn label_swatch_spans(labels: &[crate::github::GhLabel]) -> Vec<Span<'static>> {
-    if labels.is_empty() {
-        return vec![];
-    }
-    let mut spans = vec![Span::raw(" ")];
-    for label in labels {
-        spans.push(Span::styled(
-            SWATCH,
-            Style::default().fg(label_color(label)),
-        ));
-    }
-    spans
+    labels
+        .iter()
+        .map(|label| Span::styled(SWATCH, Style::default().fg(label_color(label))))
+        .collect()
 }
 
 /// 依 `mode` 選擇 label 的呈現方式，是 render 這行跟量寬度唯一的共用來源
@@ -771,94 +787,12 @@ fn label_swatch_spans(labels: &[crate::github::GhLabel]) -> Vec<Span<'static>> {
 /// 一次公式，兩邊就不會漂移。
 fn row_label_spans(labels: &[crate::github::GhLabel], mode: LabelMode) -> Vec<Span<'static>> {
     match mode {
-        LabelMode::Names => label_spans(labels),
+        LabelMode::Names => label_name_spans(labels),
         LabelMode::Swatches => label_swatch_spans(labels),
     }
 }
 
-/// `row_label_spans(labels, mode)` 之後補上 pad 空格跟一個分隔空格，
-/// `render_issue_line` / `render_pr_line` 共用。
-fn label_cell(
-    labels: &[crate::github::GhLabel],
-    mode: LabelMode,
-    pad: usize,
-) -> Vec<Span<'static>> {
-    let mut spans = row_label_spans(labels, mode);
-    let used = spans.iter().map(Span::width).sum::<usize>();
-    if pad > used {
-        spans.push(Span::raw(" ".repeat(pad - used)));
-    }
-    spans.push(Span::raw(" "));
-    spans
-}
-
-/// 列首的 `#N` 與狀態欄，回傳 `(spans, 顯示寬度)`。窄版沒有狀態欄，
-/// 改用 `#N` 的顏色表示狀態，`#N` 也不補到固定寬度，標題才有地方放。
-fn head_spans(
-    number: u64,
-    state_text: &str,
-    color: Color,
-    narrow: bool,
-) -> (Vec<Span<'static>>, usize) {
-    if narrow {
-        let text = format!("#{number} ");
-        let width = text.len();
-        return (vec![Span::styled(text, Style::default().fg(color))], width);
-    }
-    (
-        vec![
-            Span::styled(
-                format!("#{number:<5} "),
-                Style::default().fg(Color::DarkGray),
-            ),
-            Span::styled(pad_state_cell(state_text), Style::default().fg(color)),
-        ],
-        7 + STATE_COL_WIDTH,
-    )
-}
-
-/// 回傳 `(line, scrolled)`。`scrolled=true` 代表 title+author 尾段因溢出
-/// 而套用了跑馬燈效果——呼叫端要讓跑馬燈計時器繼續跳動。
-fn render_issue_line(
-    issue: &GhIssue,
-    selected: bool,
-    label_mode: LabelMode,
-    labels_pad_width: usize,
-    content_width: usize,
-    marquee_frame: Option<u64>,
-    narrow: bool,
-) -> (Line<'static>, bool) {
-    let indicator = if selected { "▸ " } else { "  " };
-    let style = if selected {
-        Style::default().fg(Color::Cyan).bold()
-    } else {
-        Style::default()
-    };
-
-    let (head, head_width) = head_spans(
-        issue.number,
-        &state_label(&issue.state),
-        state_color(&issue.state),
-        narrow,
-    );
-    let mut spans = vec![Span::styled(indicator.to_string(), style)];
-    spans.extend(head);
-    spans.extend(label_cell(&issue.labels, label_mode, labels_pad_width));
-
-    let tail = format!("{}  @{}", issue.title, issue.author.login);
-    // 2 (indicator) + #N／狀態欄 + labels_pad + 1 (空格)
-    let prefix_width = 2 + head_width + labels_pad_width + 1;
-    let (tail_spans, scrolled) = tail_spans(
-        &tail,
-        content_width.saturating_sub(prefix_width),
-        marquee_frame,
-        style,
-    );
-    spans.extend(tail_spans);
-    (Line::from(spans), scrolled)
-}
-
-/// 渲染 `title  @author`（或類似格式）：沒有溢出時保持截斷／原樣，
+/// 渲染列尾的標題：沒有溢出時保持截斷／原樣，
 /// 有溢出且被選取、又有 frame 時則透過跑馬燈捲動。
 fn tail_spans(
     tail: &str,
@@ -883,42 +817,176 @@ fn tail_spans(
     (vec![Span::styled(tail.to_string(), style_title)], false)
 }
 
-fn render_pr_line(
-    pr: &GhPullRequest,
-    selected: bool,
+/// `row_label_spans(labels, mode)` 之後補 pad 空格，讓整欄寬度一致。
+fn label_cell(
+    labels: &[crate::github::GhLabel],
+    mode: LabelMode,
+    pad: usize,
+) -> Vec<Span<'static>> {
+    let mut spans = row_label_spans(labels, mode);
+    let used = spans.iter().map(Span::width).sum::<usize>();
+    if pad > used {
+        spans.push(Span::raw(" ".repeat(pad - used)));
+    }
+    spans
+}
+
+/// 狀態格：色塊模式是 `[▮]`（只有 `▮` 帶狀態色），文字模式固定 8 格寬。
+fn state_cell(text: &str, color: Color, mode: LabelMode) -> Vec<Span<'static>> {
+    match mode {
+        LabelMode::Swatches => vec![
+            Span::styled("[", Style::default().fg(MUTED_FG)),
+            Span::styled(SWATCH, Style::default().fg(color)),
+            Span::styled("]", Style::default().fg(MUTED_FG)),
+        ],
+        LabelMode::Names => vec![Span::styled(
+            pad_state_cell(text),
+            Style::default().fg(color),
+        )],
+    }
+}
+
+/// 作者欄最寬顯示格數，超過的 login 用 `…` 截斷，避免一個長 bot 名稱吃掉標題。
+const AUTHOR_MAX_WIDTH: usize = 16;
+
+/// `@login`，超過 `AUTHOR_MAX_WIDTH` 截斷。
+fn author_text(login: &str) -> String {
+    console::truncate_str(&format!("@{login}"), AUTHOR_MAX_WIDTH, "…").into_owned()
+}
+
+/// 列表一列的排版參數，Issues／PRs 共用，整份列表算一次。
+#[derive(Clone, Copy)]
+struct RowLayout {
     label_mode: LabelMode,
-    labels_pad_width: usize,
+    labels_pad: usize,
+    author_pad: usize,
     content_width: usize,
-    marquee_frame: Option<u64>,
     narrow: bool,
+}
+
+/// 一列要顯示的內容，Issues／PRs 共用。
+struct RowFields<'a> {
+    number: u64,
+    state_text: &'a str,
+    state_color: Color,
+    labels: &'a [crate::github::GhLabel],
+    author: &'a str,
+    title: &'a str,
+}
+
+/// 組出一列：`▸ #N  狀態  標籤  @作者  標題`。回傳 `(line, scrolled)`，
+/// `scrolled=true` 代表標題因溢出而套用了跑馬燈——呼叫端要讓跑馬燈計時器繼續跳動。
+///
+/// 欄位之間固定留 `gap`；沒有標籤時整欄省略。窄版沒有狀態格，改用 `#N`
+/// 的顏色表示狀態，`#N`、作者都不補寬，標題才有地方放。
+fn render_row(
+    row: &RowFields<'_>,
+    layout: RowLayout,
+    selected: bool,
+    marquee_frame: Option<u64>,
 ) -> (Line<'static>, bool) {
     let indicator = if selected { "▸ " } else { "  " };
-    let (color, state_text) = if pr.is_draft {
-        (Color::Gray, t!("github.state.draft"))
-    } else {
-        (state_color(&pr.state), state_label(&pr.state))
-    };
     let style = if selected {
         Style::default().fg(Color::Cyan).bold()
     } else {
         Style::default()
     };
+    let gap = if layout.narrow { " " } else { "  " };
 
-    let (head, head_width) = head_spans(pr.number, &state_text, color, narrow);
+    let mut cells: Vec<Vec<Span<'static>>> = Vec::with_capacity(4);
+    if layout.narrow {
+        cells.push(vec![Span::styled(
+            format!("#{}", row.number),
+            Style::default().fg(row.state_color),
+        )]);
+    } else {
+        cells.push(vec![Span::styled(
+            format!("#{:<5}", row.number),
+            Style::default().fg(MUTED_FG),
+        )]);
+        cells.push(state_cell(
+            row.state_text,
+            row.state_color,
+            layout.label_mode,
+        ));
+    }
+    if layout.labels_pad > 0 {
+        cells.push(label_cell(row.labels, layout.label_mode, layout.labels_pad));
+    }
+    cells.push(vec![Span::raw(
+        console::pad_str(
+            &author_text(row.author),
+            layout.author_pad,
+            console::Alignment::Left,
+            None,
+        )
+        .into_owned(),
+    )]);
+
     let mut spans = vec![Span::styled(indicator.to_string(), style)];
-    spans.extend(head);
-    spans.extend(label_cell(&pr.labels, label_mode, labels_pad_width));
+    for cell in cells {
+        spans.extend(cell);
+        spans.push(Span::raw(gap));
+    }
 
-    let tail = format!("{}  ← {}  @{}", pr.title, pr.head_ref_name, pr.author.login);
-    let prefix_width = 2 + head_width + labels_pad_width + 1;
-    let (tail_spans, scrolled) = tail_spans(
-        &tail,
-        content_width.saturating_sub(prefix_width),
+    // 寬度只有一個來源：直接加總已組好的 span，不另外手算公式。
+    let prefix_width: usize = spans.iter().map(Span::width).sum();
+    let (tail, scrolled) = tail_spans(
+        row.title,
+        layout.content_width.saturating_sub(prefix_width),
         marquee_frame,
         style,
     );
-    spans.extend(tail_spans);
+    spans.extend(tail);
     (Line::from(spans), scrolled)
+}
+
+fn render_issue_line(
+    issue: &GhIssue,
+    layout: RowLayout,
+    selected: bool,
+    marquee_frame: Option<u64>,
+) -> (Line<'static>, bool) {
+    let state_text = state_label(&issue.state);
+    render_row(
+        &RowFields {
+            number: issue.number,
+            state_text: &state_text,
+            state_color: state_color(&issue.state),
+            labels: &issue.labels,
+            author: &issue.author.login,
+            title: &issue.title,
+        },
+        layout,
+        selected,
+        marquee_frame,
+    )
+}
+
+fn render_pr_line(
+    pr: &GhPullRequest,
+    layout: RowLayout,
+    selected: bool,
+    marquee_frame: Option<u64>,
+) -> (Line<'static>, bool) {
+    let (color, state_text) = if pr.is_draft {
+        (Color::Gray, t!("github.state.draft"))
+    } else {
+        (state_color(&pr.state), state_label(&pr.state))
+    };
+    render_row(
+        &RowFields {
+            number: pr.number,
+            state_text: &state_text,
+            state_color: color,
+            labels: &pr.labels,
+            author: &pr.author.login,
+            title: &pr.title,
+        },
+        layout,
+        selected,
+        marquee_frame,
+    )
 }
 
 /// `row_label_spans(labels, mode)` 佔用的可視格數總和。直接加總 span 寬度

@@ -9,21 +9,22 @@ use ratatui::{
 use rust_i18n::t;
 
 use crate::{
+    color::TEXT_COLOR,
     github::{CheckState, CiEntry, CiState},
     widget::truncate_line,
 };
 
-use super::branches::{card_block, TEXT_COLOR};
+use super::branches::card_block;
 
 /// 卡片左右各縮 1 格（邊框 2 + 內縮 1）；色點列可用寬度 = 卡片寬 - 3。
 const BODY_CHROME: usize = 3;
 
-/// check 色點的顏色：灰＝運作中、綠＝成功、紅＝失敗。運作中用 `Gray` 而非
-/// `DarkGray`，才不會跟邊框糊在一起（同 branches.rs 的慣例）。
+/// check 色點的顏色：灰＝運作中、綠＝成功、紅＝失敗。運作中用 `TEXT_COLOR` 而非
+/// `MUTED_FG`，才不會跟邊框糊在一起。
 fn dot_color(state: CheckState) -> Color {
     match state {
         CheckState::Failed => Color::Red,
-        CheckState::Pending => Color::Gray,
+        CheckState::Pending => TEXT_COLOR,
         CheckState::Passed => Color::Green,
     }
 }

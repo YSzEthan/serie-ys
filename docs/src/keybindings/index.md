@@ -135,7 +135,8 @@
 | <kbd>Enter</kbd> <kbd>y</kbd> <kbd>Right</kbd> <kbd>l</kbd> | 預覽內容／切換 checkbox（Branches：Right/l 移到右側卡片，Enter 無作用；CI：Enter 開啟 PR 的 checks 頁，Right/l 移到右側卡片） | `confirm` `navigate_right` |
 | <kbd>Left</kbd> <kbd>h</kbd> | 返回／取消（Branches、CI：移到左側卡片，不關閉） | `navigate_left` |
 | <kbd>:</kbd> | 搜尋／輸入純數字跳到 #N | `search` |
-| <kbd>'</kbd> | 過濾（Branches：依作者篩選） | `filter` |
+| <kbd>'</kbd> | 過濾（Issues／PRs：切換狀態；Branches：依作者篩選） | `filter` |
+| <kbd>"</kbd> | 依作者篩選（Issues／PRs／Branches） | `author_filter` |
 | <kbd>c</kbd> | 複製 issue/PR URL（Branches：compare URL） | `short_copy` |
 | <kbd>C</kbd> | 在瀏覽器開啟 issue/PR（Branches：開 PR 頁） | `full_copy` |
 | <kbd>v</kbd> | 複製 issue/PR 編號（#N）（Branches：branch 名稱） | `tag_copy` |

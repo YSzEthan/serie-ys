@@ -34,6 +34,7 @@ ref_list = ["tab"]
 ref_list_prev = ["backtab"]
 search = [":"]
 filter = ["'"]
+author_filter = ["\""]
 
 ignore_case_toggle = ["alt-c"]
 fuzzy_toggle = ["x"]
