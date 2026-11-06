@@ -858,8 +858,8 @@ pub fn run() -> Result<()> {
     // 三個閘門都要過：`auto_restart` 是這個功能唯一的開關，刻意不看
     // `update_settings.mode`——手動 deploy（`rm`/`cp`／`mv`）跟遠端有沒有
     // 新版是兩件事，`mode = off` 的使用者一樣該在別人換掉執行檔後接上
-    // 新版；`!cfg!(debug_assertions)` 對齊 `download_and_replace`
-    // （`update.rs`）與 `pending_release_notes` 兩處既有先例，避免
+    // 新版；`!cfg!(debug_assertions)` 對齊 `pending_release_notes`
+    // （`update.rs`）的先例，避免
     // `cargo run` 開著時另一個終端機 `cargo build` 把自己重啟掉；
     // `exe_snapshot_available()` 避免武裝一個每
     // `update::EXE_CHECK_INTERVAL` spawn 一條 thread、卻因為快照失敗而
