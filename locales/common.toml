@@ -200,9 +200,9 @@ en-US = "toggle"
 zh-TW = "頂端"
 en-US = "top"
 
-[common.esc_cancel]
-zh-TW = "（Esc 取消）"
-en-US = "(Esc to cancel)"
+[common.hint.mark]
+zh-TW = "勾選"
+en-US = "mark"
 
 [common.yes]
 zh-TW = "是"

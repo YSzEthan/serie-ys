@@ -300,10 +300,6 @@ en-US = "Reload panicked: %{detail}"
 zh-TW = "未知的 panic"
 en-US = "Unknown panic"
 
-[app.status.list_separator]
-zh-TW = "、"
-en-US = ", "
-
 [app.status.ci_rerun]
 zh-TW = "重跑 #%{number} 的 CI？"
 en-US = "Re-run CI for #%{number}? "
