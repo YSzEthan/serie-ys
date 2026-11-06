@@ -789,10 +789,9 @@ impl StatusLineState {
     /// 的結果，蓋掉一則同樣在講這件事的通知不算冒犯——跟 `is_idle` 服務的
     /// 「背景不請自來」語意不同，不要合併這兩個判斷式。
     ///
-    /// **不含 `NotificationError`**：跟 `dismiss_notification` 既有的三分類
-    /// 一致——錯誤要使用者主動按鍵確認過才能清掉（見該方法），這裡若也蓋得掉
-    /// 錯誤，使用者原本想按任意鍵去確認錯誤，卻可能誤觸重啟提示的 y/n
-    /// （例如習慣性按 `y`），後果比通知被覆寫嚴重得多。
+    /// **不含 `NotificationError`**：這裡若也蓋得掉錯誤，使用者原本想按任意鍵
+    /// 去確認錯誤，卻可能誤觸重啟提示的 y/n（例如習慣性按 `y`），後果比通知
+    /// 被覆寫嚴重得多。
     pub(super) fn is_showing_notification(&self) -> bool {
         matches!(
             self.line,
@@ -933,8 +932,9 @@ impl StatusLineState {
         }
     }
 
-    /// 清掉目前的通知（若有）。回傳 true 表示這把鍵已被吞掉——只有 Error
-    /// 通知會吞鍵，其餘通知清完後讓鍵繼續往下走。窮盡 match，理由同
+    /// 清掉目前的通知（若有）。回傳 true 表示這把鍵已被吞掉——任何通知
+    /// （Info／Success／Warn／Error）都吞鍵：這把鍵的唯一作用就是消除訊息，
+    /// 不會再觸發其他動作。窮盡 match，理由同
     /// `handle_intercepting_key`。
     pub(super) fn dismiss_notification(&mut self) -> bool {
         match self.line {
@@ -954,11 +954,8 @@ impl StatusLineState {
             | StatusLine::RestartPrompt { .. } => false,
             StatusLine::NotificationInfo(_)
             | StatusLine::NotificationSuccess(_)
-            | StatusLine::NotificationWarn(_) => {
-                self.line = StatusLine::None;
-                false
-            }
-            StatusLine::NotificationError(_) => {
+            | StatusLine::NotificationWarn(_)
+            | StatusLine::NotificationError(_) => {
                 self.line = StatusLine::None;
                 true
             }
@@ -2933,6 +2930,26 @@ mod tests {
 
         state.restore_notification(notification);
         assert!(matches!(&state.line, StatusLine::NotificationError(m) if m == "boom"));
+    }
+
+    /// 任何通知都吞鍵並清掉；非通知狀態不吞鍵、也不動狀態列。
+    #[test]
+    fn dismiss_notification_swallows_key_for_every_notification() {
+        let notifications = [
+            StatusLine::NotificationInfo("m".into()),
+            StatusLine::NotificationSuccess("m".into()),
+            StatusLine::NotificationWarn("m".into()),
+            StatusLine::NotificationError("m".into()),
+        ];
+        for line in notifications {
+            let (mut state, _rx) = test_state();
+            state.line = line;
+            assert!(state.dismiss_notification());
+            assert!(matches!(state.line, StatusLine::None));
+        }
+
+        let (mut state, _rx) = test_state();
+        assert!(!state.dismiss_notification());
     }
 
     #[test]
