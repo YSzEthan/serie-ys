@@ -81,6 +81,8 @@ pub struct CommitListState<'a> {
 
     pub(super) search_state: SearchState,
     pub(super) search_input: Input,
+    /// 最近一次被清掉的非空 search 字串；輸入列空白時再按一次搜尋鍵可還原
+    pub(super) last_search: String,
     /// 目前生效的搜尋設定。刻意不放進 `SearchState::Searching`：套用之後
     /// （`Applied`）這組設定還要繼續驅動 refresh 還原，跟輸入模式無關。
     pub(super) search_options: MatchOptions,
@@ -91,6 +93,8 @@ pub struct CommitListState<'a> {
     // Filter 模式
     pub(super) filter_state: FilterState,
     pub(super) filter_input: Input,
+    /// 同 `last_search`，給 filter 用
+    pub(super) last_filter: String,
     /// 目前生效的 filter 設定，理由同 `search_options`。
     pub(super) filter_options: MatchOptions,
     /// `None` = 沒有 filter 生效；`Some(v)` = filter 生效（`v` 可以是空的，
@@ -167,10 +171,12 @@ impl<'a> CommitListState<'a> {
             ref_name_to_commit_index_map,
             search_state: SearchState::Inactive,
             search_input: Input::default(),
+            last_search: String::new(),
             search_options: search_defaults,
             search: MatchSet::default(),
             filter_state: FilterState::Inactive,
             filter_input: Input::default(),
+            last_filter: String::new(),
             filter_options: MatchOptions::FILTER_DEFAULT,
             filtered_indices: None,
             filter: MatchSet::default(),

@@ -71,6 +71,11 @@ impl<'a> ListView<'a> {
                     self.update_filter_query();
                 }
                 InputAction::TextInput => {
+                    if event == UserEvent::Filter && self.as_mut_list_state().restore_last_filter()
+                    {
+                        self.update_filter_query();
+                        return;
+                    }
                     self.as_mut_list_state().handle_filter_input(key);
                     self.update_filter_query();
                 }
@@ -102,6 +107,11 @@ impl<'a> ListView<'a> {
                     self.update_search_query();
                 }
                 InputAction::TextInput => {
+                    if event == UserEvent::Search && self.as_mut_list_state().restore_last_search()
+                    {
+                        self.update_search_query();
+                        return;
+                    }
                     self.as_mut_list_state().handle_search_input(key);
                     self.update_search_query();
                 }

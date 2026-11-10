@@ -4,7 +4,7 @@ use ratatui::crossterm::event::{Event, KeyEvent};
 use rust_i18n::t;
 use rustc_hash::FxHashMap;
 use tui_input::backend::crossterm::EventHandler;
-use tui_input::{Input, InputRequest};
+use tui_input::Input;
 
 use crate::config::SearchTarget;
 use crate::fuzzy::SearchMatcher;
@@ -12,6 +12,17 @@ use crate::git::Ref;
 
 use super::state::CommitListState;
 use super::{CommitInfo, MatchStep, RawCommitIdx, VisibleIdx};
+
+/// search 輸入列的前綴 icon（nf-fa-search）
+const SEARCH_PREFIX: &str = "\u{f002} ";
+
+/// 非空的輸入存進 `last` 後清空輸入列；空的不能蓋掉上一次的記錄
+fn stash_input(input: &mut Input, last: &mut String) {
+    if !input.value().is_empty() {
+        *last = input.value().to_string();
+    }
+    input.reset();
+}
 
 /// 一組比對設定。search 與 filter 各自在 `CommitListState` 持有一份，跨
 /// mode 轉換（`Searching` → `Applied`、filter 套用後仍生效）存活——套用後
@@ -423,25 +434,30 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn start_search(&mut self) {
-        // `Applied` 時 `search.key` 與 `search_input`／`search_options` 一致，
-        // 保留 `MatchSet` 讓續打字能走增量路徑
-        let match_index = match self.search_state {
-            SearchState::Inactive => {
-                self.search_input.reset();
-                self.search = MatchSet::default();
-                0
-            }
-            SearchState::Applied { match_index, .. } => {
-                self.search_input.handle(InputRequest::GoToEnd);
-                match_index
-            }
-            SearchState::Searching { .. } => return,
-        };
+        if let SearchState::Searching { .. } = self.search_state {
+            return;
+        }
+        // 每次都從空白開始，上一次的字串留在 `last_search`，再按一次搜尋鍵才還原
+        stash_input(&mut self.search_input, &mut self.last_search);
+        self.search = MatchSet::default();
         self.search_state = SearchState::Searching {
             start_index: self.current_selected_raw(),
-            match_index,
+            match_index: 0,
             transient_message: TransientMessage::None,
         };
+    }
+
+    /// 輸入列空白時把 `last_search` 填回去；沒東西可還原回傳 false（呼叫端照一般字元處理）
+    pub fn restore_last_search(&mut self) -> bool {
+        let SearchState::Searching { .. } = self.search_state else {
+            return false;
+        };
+        if !self.search_input.value().is_empty() || self.last_search.is_empty() {
+            return false;
+        }
+        self.search_input = Input::new(self.last_search.clone());
+        self.update_search_after_change();
+        true
     }
 
     pub fn handle_search_input(&mut self, key: KeyEvent) {
@@ -530,7 +546,7 @@ impl<'a> CommitListState<'a> {
     pub fn cancel_search(&mut self) {
         if let SearchState::Searching { .. } | SearchState::Applied { .. } = self.search_state {
             self.search_state = SearchState::Inactive;
-            self.search_input.reset();
+            stash_input(&mut self.search_input, &mut self.last_search);
             self.search = MatchSet::default();
         }
     }
@@ -597,7 +613,7 @@ impl<'a> CommitListState<'a> {
     pub fn search_query_string(&self) -> Option<String> {
         if let SearchState::Searching { .. } = self.search_state {
             let query = self.search_input.value();
-            Some(format!("/{query}"))
+            Some(format!("{SEARCH_PREFIX}{query}"))
         } else {
             None
         }
@@ -631,9 +647,9 @@ impl<'a> CommitListState<'a> {
         }
     }
 
-    /// 游標在 `search_query_string()` 裡的 byte 位置（前綴 "/" 佔 1 byte）。
+    /// 游標在 `search_query_string()` 裡的 byte 位置（含 `SEARCH_PREFIX` 的 byte 數）。
     pub fn search_query_cursor_byte_index(&self) -> usize {
-        1 + cursor_byte_offset(&self.search_input)
+        SEARCH_PREFIX.len() + cursor_byte_offset(&self.search_input)
     }
 
     pub fn transient_message_string(&self) -> Option<String> {
@@ -703,6 +719,7 @@ impl<'a> CommitListState<'a> {
 
     pub fn start_filter(&mut self) {
         if let FilterState::Inactive = self.filter_state {
+            stash_input(&mut self.filter_input, &mut self.last_filter);
             self.filter_options = MatchOptions::FILTER_DEFAULT;
             self.filter_state = FilterState::Filtering {
                 transient_message: TransientMessage::None,
@@ -711,6 +728,19 @@ impl<'a> CommitListState<'a> {
             self.filtered_indices = None;
             self.update_filter_matches();
         }
+    }
+
+    /// 同 `restore_last_search`，給 filter 用
+    pub fn restore_last_filter(&mut self) -> bool {
+        let FilterState::Filtering { .. } = self.filter_state else {
+            return false;
+        };
+        if !self.filter_input.value().is_empty() || self.last_filter.is_empty() {
+            return false;
+        }
+        self.filter_input = Input::new(self.last_filter.clone());
+        self.update_filter_matches();
+        true
     }
 
     pub fn handle_filter_input(&mut self, key: KeyEvent) {
@@ -732,7 +762,7 @@ impl<'a> CommitListState<'a> {
             return;
         }
         self.filter_state = FilterState::Inactive;
-        self.filter_input.reset();
+        stash_input(&mut self.filter_input, &mut self.last_filter);
         self.filter = MatchSet::default();
         self.rebuild_filtered_indices();
         self.set_visible_selection(VisibleIdx(0));
@@ -1570,121 +1600,6 @@ mod tests {
     }
 
     #[test]
-    fn resume_search_preserves_query_options_matches_and_view_position() {
-        with_state(&["other", "Fix parser", "FIX graph", "last"], |state| {
-            state.reset_height(2);
-            state.toggle_ignore_case();
-            state.toggle_fuzzy();
-            state.toggle_target();
-            state.start_search();
-            type_query(state, "fx");
-            state.handle_search_input(key(KeyCode::Left));
-            state.apply_search();
-            state.select_next_match();
-            state.scroll_up();
-
-            let options = state.search_options();
-            let position = state.current_list_status();
-            let hits = state.search.hits.clone();
-            let applied = state.search_state();
-            assert_eq!(
-                applied,
-                SearchState::Applied {
-                    match_index: 2,
-                    total_match: 2
-                }
-            );
-
-            state.start_search();
-
-            assert_eq!(state.search_query_string(), Some("/fx".into()));
-            assert_eq!(state.search_query_cursor_byte_index(), 3);
-            assert_eq!(state.search_options(), options);
-            assert_eq!(state.current_list_status(), position);
-            assert_eq!(state.search.hits, hits);
-
-            state.apply_search();
-            assert_eq!(state.search_state(), applied);
-            assert_eq!(state.current_list_status(), position);
-        });
-    }
-
-    #[test]
-    fn resume_search_edits_from_current_selection() {
-        with_state(
-            &["fix parser older", "fix graph", "fix parser newer"],
-            |state| {
-                state.start_search();
-                type_query(state, "fix");
-                state.apply_search();
-                state.select_next_match();
-                assert_eq!(state.selected_commit_hash(), &hash(2));
-
-                state.start_search();
-                type_query(state, " parser");
-                assert_eq!(state.selected_commit_hash(), &hash(3));
-                assert_eq!(state.search.hits, vec![RawCommitIdx(0), RawCommitIdx(2)]);
-
-                state.handle_search_input(key(KeyCode::Backspace));
-                assert_eq!(state.search_query_string(), Some("/fix parse".into()));
-                state.apply_search();
-                assert_eq!(
-                    state.search_state(),
-                    SearchState::Applied {
-                        match_index: 2,
-                        total_match: 2
-                    }
-                );
-            },
-        );
-    }
-
-    #[test]
-    fn resume_search_does_not_move_selection_off_an_unmatched_commit() {
-        with_state(&["fix", "other", "fix again"], |state| {
-            state.start_search();
-            type_query(state, "fix");
-            state.apply_search();
-            state.select_next();
-            let position = state.current_list_status();
-            let applied = state.search_state();
-
-            state.start_search();
-            state.apply_search();
-
-            assert_eq!(state.current_list_status(), position);
-            assert_eq!(state.selected_commit_hash(), &hash(2));
-            assert_eq!(state.search_state(), applied);
-        });
-    }
-
-    #[test]
-    fn resume_search_without_matches_can_be_corrected() {
-        with_state(&["fix", "other"], |state| {
-            state.start_search();
-            type_query(state, "fixx");
-            state.apply_search();
-            let applied = state.search_state();
-
-            state.start_search();
-            assert_eq!(state.search_query_string(), Some("/fixx".into()));
-            state.apply_search();
-            assert_eq!(state.search_state(), applied);
-
-            state.start_search();
-            state.handle_search_input(key(KeyCode::Backspace));
-            state.apply_search();
-            assert_eq!(
-                state.search_state(),
-                SearchState::Applied {
-                    match_index: 1,
-                    total_match: 1
-                }
-            );
-        });
-    }
-
-    #[test]
     fn cancel_resumed_search_starts_next_search_empty() {
         with_state(&["fix", "other"], |state| {
             state.start_search();
@@ -1696,7 +1611,7 @@ mod tests {
             assert_eq!(state.search_state(), SearchState::Inactive);
             assert!(state.search.hits.is_empty());
             state.start_search();
-            assert_eq!(state.search_query_string(), Some("/".into()));
+            assert_eq!(state.search_query_string(), Some(SEARCH_PREFIX.to_string()));
         });
     }
 
@@ -1713,7 +1628,7 @@ mod tests {
                 state.start_search();
                 state.handle_search_input(KeyEvent::new(KeyCode::Char('u'), KeyModifiers::CONTROL));
 
-                assert_eq!(state.search_query_string(), Some("/".into()));
+                assert_eq!(state.search_query_string(), Some(SEARCH_PREFIX.to_string()));
                 assert!(state.search.hits.is_empty());
                 let SearchState::Searching { match_index, .. } = state.search_state() else {
                     panic!("expected Searching");
@@ -1725,7 +1640,7 @@ mod tests {
                 assert_eq!(state.matched_query_string(), None);
 
                 state.start_search();
-                assert_eq!(state.search_query_string(), Some("/".into()));
+                assert_eq!(state.search_query_string(), Some(SEARCH_PREFIX.to_string()));
                 type_query(state, "o");
                 state.apply_search();
                 assert_eq!(
@@ -1752,9 +1667,9 @@ mod tests {
             assert_eq!(state.search_query_cursor_byte_index(), msg.len());
 
             state.handle_search_input(key(KeyCode::Home));
-            assert_eq!(state.search_query_cursor_byte_index(), 1);
+            assert_eq!(state.search_query_cursor_byte_index(), SEARCH_PREFIX.len());
 
-            let mut prev = 1;
+            let mut prev = SEARCH_PREFIX.len();
             for _ in 0..query.chars().count() {
                 state.handle_search_input(key(KeyCode::Right));
                 let idx = state.search_query_cursor_byte_index();
@@ -1785,19 +1700,49 @@ mod tests {
     }
 
     #[test]
-    fn resume_search_moves_cursor_to_end_of_long_unicode_query() {
-        let query = "検索".repeat(40);
-        with_state(&[query.as_str()], |state| {
+    fn start_search_after_applied_begins_empty_and_second_press_restores() {
+        with_state(&["fix", "other"], |state| {
             state.start_search();
-            type_query(state, &query);
-            state.handle_search_input(key(KeyCode::Home));
+            type_query(state, "fix");
             state.apply_search();
 
             state.start_search();
-            assert_eq!(state.search_query_string(), Some(format!("/{query}")));
-            assert_eq!(state.search_query_cursor_byte_index(), 241);
-            type_query(state, "追");
-            assert_eq!(state.search_query_string(), Some(format!("/{query}追")));
+            assert_eq!(state.search_query_string(), Some(SEARCH_PREFIX.to_string()));
+            assert!(state.search.hits.is_empty());
+
+            assert!(state.restore_last_search());
+            assert_eq!(
+                state.search_query_string(),
+                Some(format!("{SEARCH_PREFIX}fix"))
+            );
+            assert_eq!(state.search.hits, vec![RawCommitIdx(0)]);
+            // 輸入列已有字，不能再還原
+            assert!(!state.restore_last_search());
+        });
+    }
+
+    #[test]
+    fn restore_last_search_without_history_is_noop() {
+        with_state(&["fix"], |state| {
+            state.start_search();
+            assert!(!state.restore_last_search());
+        });
+    }
+
+    #[test]
+    fn start_filter_after_applied_begins_empty_and_second_press_restores() {
+        with_state(&["fix", "other"], |state| {
+            state.start_filter();
+            for c in "fix".chars() {
+                state.handle_filter_input(key(KeyCode::Char(c)));
+            }
+            state.apply_filter();
+
+            state.start_filter();
+            assert_eq!(state.filter_input.value(), "");
+            assert!(state.restore_last_filter());
+            assert_eq!(state.filter_input.value(), "fix");
+            assert!(!state.restore_last_filter());
         });
     }
 

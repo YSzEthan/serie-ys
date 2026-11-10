@@ -160,6 +160,9 @@ enum QuitDecision {
     Second,
 }
 
+/// 「再按一次 q 離開」的雙擊視窗，同時也是提示訊息的顯示時間：訊息還在，第二個 q 就要能離開
+const QUIT_PRESS_WINDOW: Duration = Duration::from_millis(600);
+
 /// 按鍵處理過程中會累積、之後又清空的狀態——數字前綴與 `q` 雙擊退出計時。
 /// 獨立於 `App`，不吃 `Repository`/`EventController`，可以直接 `new` 出來
 /// 測純轉移邏輯，不用假裝建一個完整的 `App`。
@@ -193,7 +196,7 @@ impl KeyState {
     fn register_quit_press(&mut self, now: Instant) -> QuitDecision {
         if self
             .last_quit_press
-            .is_some_and(|t| now.duration_since(t) < Duration::from_millis(500))
+            .is_some_and(|t| now.duration_since(t) < QUIT_PRESS_WINDOW)
         {
             self.last_quit_press = None;
             QuitDecision::Second
@@ -1222,7 +1225,11 @@ impl App<'_> {
             return;
         }
 
-        if self.status_line_state.dismiss_notification() {
+        // Quit 例外：第一次 q 會顯示「再按一次」的通知，第二次 q 若被當成消除鍵吞掉，
+        // 就永遠退不出去
+        if !self.ctx.keybind.has(&key, UserEvent::Quit)
+            && self.status_line_state.dismiss_notification()
+        {
             return;
         }
 
@@ -1252,7 +1259,7 @@ impl App<'_> {
                         .set_notification_info(t!("app.quit.press_again").into_owned());
                     self.ec
                         .sender()
-                        .send_after(AppEvent::ClearStatusLine, Duration::from_millis(600));
+                        .send_after(AppEvent::ClearStatusLine, QUIT_PRESS_WINDOW);
                 }
                 self.key_state.clear_count();
             }
