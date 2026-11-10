@@ -78,6 +78,9 @@ pub struct Swap {
 #[derive(Debug)]
 pub struct Carry {
     view: RefreshViewContext,
+    /// 舊 `App` 最後一次 render 量到的 view 區域。新 `App` 的 `view_area`
+    /// 在第一次 render 前是 0×0，還原 inline user command 時要先有正確值。
+    view_area: Rect,
     notification: Option<status_line::Notification>,
     notice_message: Option<String>,
     github_data: Option<crate::github::GitHubData>,
@@ -1186,6 +1189,7 @@ impl App<'_> {
             loaded,
             carry: Carry {
                 view,
+                view_area: self.view_area,
                 notification: self.status_line_state.take_notification(),
                 notice_message: self.notice_message.take(),
                 github_data: self.github_data.take(),
@@ -2314,6 +2318,7 @@ impl App<'_> {
     fn apply_carry(&mut self, carry: Carry) {
         let Carry {
             view,
+            view_area,
             notification,
             notice_message,
             github_data,
@@ -2321,6 +2326,7 @@ impl App<'_> {
             github_label_mode,
         } = carry;
 
+        self.view_area = view_area;
         self.init_with_context(view);
         if let Some(notification) = notification {
             self.status_line_state.restore_notification(notification);
