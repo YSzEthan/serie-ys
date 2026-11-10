@@ -69,8 +69,8 @@ zh-TW = "第 %{index} 筆，共 %{total} 筆（query：\"%{query}\"）%{options}
 en-US = "Match %{index} of %{total} (query: \"%{query}\") %{options}"
 
 [view.filter.prefix]
-zh-TW = "過濾："
-en-US = "Filter: "
+zh-TW = "󰈲 "
+en-US = "󰈲 "
 
 [view.delete_branch.checked_out]
 zh-TW = "無法刪除目前已 checkout 的 branch"

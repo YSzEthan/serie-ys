@@ -189,6 +189,8 @@ pub struct GitHubView<'a> {
     preview_offset: usize,
 
     search_input: Input,
+    /// 最近一次被清掉的非空查詢字串，在 prompt 空白時再按搜尋鍵可還原
+    last_search: String,
     filtered_issue_indices: Vec<usize>,
     filtered_pr_indices: Vec<usize>,
     filtered_branch_indices: Vec<usize>,
@@ -297,6 +299,7 @@ impl<'a> GitHubView<'a> {
             height: 0,
             preview_offset: 0,
             search_input: Input::default(),
+            last_search: String::new(),
             filtered_issue_indices: Vec::new(),
             filtered_pr_indices: Vec::new(),
             filtered_branch_indices: Vec::new(),

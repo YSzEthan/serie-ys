@@ -2,7 +2,7 @@ use std::time::Instant;
 
 use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
 use rust_i18n::t;
-use tui_input::backend::crossterm::EventHandler;
+use tui_input::{backend::crossterm::EventHandler, Input};
 
 use crate::{
     event::{AppEvent, RelatedGroup, RelatedItem, UserEvent, UserEventWithCount},
@@ -265,6 +265,10 @@ impl<'a> GitHubView<'a> {
                 self.adjust_scroll();
             }
             UserEvent::Search => {
+                // 每次都從空白開始；上一次的查詢字串留在 last_search，在 prompt 再按一次才還原
+                if !self.search_input.value().is_empty() {
+                    self.clear_search();
+                }
                 self.focus = GitHubFocus::Prompt;
             }
             UserEvent::Filter => {
@@ -596,6 +600,12 @@ impl<'a> GitHubView<'a> {
             // 切分頁時保留查詢字串
             UserEvent::RefList => self.switch_tab(self.active_tab.next()),
             UserEvent::RefListPrev => self.switch_tab(self.active_tab.prev()),
+            UserEvent::Search
+                if self.search_input.value().is_empty() && !self.last_search.is_empty() =>
+            {
+                self.search_input = Input::new(self.last_search.clone());
+                self.rebuild_filtered_indices();
+            }
             _ => {
                 // 把按鍵轉發給 tui-input；只有值真的變了才重建
                 let before = self.search_input.value().to_string();
@@ -669,6 +679,9 @@ impl<'a> GitHubView<'a> {
 
     /// 清空搜尋字串；Branches 的作者篩選獨立於搜尋字串，所以重建而非清空索引
     pub(super) fn clear_search(&mut self) {
+        if !self.search_input.value().is_empty() {
+            self.last_search = self.search_input.value().to_string();
+        }
         self.search_input.reset();
         self.rebuild_filtered_indices();
     }

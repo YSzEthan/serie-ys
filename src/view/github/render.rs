@@ -167,8 +167,8 @@ impl<'a> GitHubView<'a> {
                         GitHubTab::Ci => String::new(),
                         GitHubTab::Issues | GitHubTab::PullRequests => {
                             match self.current_author() {
-                                Some(author) => format!("[{filter_label}] [@{author}]"),
-                                None => format!("[{filter_label}]"),
+                                Some(author) => format!("\u{f0232} {filter_label} [@{author}]"),
+                                None => format!("\u{f0232} {filter_label}"),
                             }
                         }
                     },
@@ -196,7 +196,7 @@ impl<'a> GitHubView<'a> {
         } else {
             MUTED_FG
         };
-        let prompt_prefix = Span::styled("> ", Style::default().fg(prompt_color));
+        let prompt_prefix = Span::styled("\u{f002} ", Style::default().fg(prompt_color));
         let prompt_value = Span::raw(self.search_input.value().to_string());
         let prompt_line = Line::from(vec![
             Span::raw("  "), // 左側留白
@@ -218,7 +218,7 @@ impl<'a> GitHubView<'a> {
 
         // focus 在 prompt 上時顯示游標
         if self.focus == GitHubFocus::Prompt {
-            let cursor_x = prompt_area.x + 2 /* 留白 */ + 2 /* "> " */ + self.search_input.visual_cursor() as u16;
+            let cursor_x = prompt_area.x + 2 /* 留白 */ + 2 /* "\u{f002} " */ + self.search_input.visual_cursor() as u16;
             f.set_cursor_position((cursor_x, prompt_area.y));
         }
     }

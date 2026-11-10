@@ -403,14 +403,16 @@ impl<'a> ShellView<'a> {
     }
 
     fn render_input(&mut self, f: &mut Frame, area: Rect, running: bool) {
-        const PROMPT: &str = "$ ";
+        const PROMPT: &str = "\u{f120} $ ";
+        // 顯示寬度（icon、空白、$、空白各 1 格），不能用 `len()`：那是 UTF-8 byte 數
+        const PROMPT_WIDTH: u16 = 4;
         let block = Block::default()
             .borders(Borders::TOP)
             .style(Style::default().fg(self.ctx.color_theme.divider_fg))
             .padding(Padding::horizontal(1));
         let inner = block.inner(area);
 
-        let inner_width = inner.width.saturating_sub(PROMPT.len() as u16).max(1) as usize;
+        let inner_width = inner.width.saturating_sub(PROMPT_WIDTH).max(1) as usize;
         // `visual_scroll` 回傳的是顯示寬度（tui-input 用 UnicodeWidthChar 累加），
         // 不是 byte offset——直接拿去切 `&value()[scroll..]` 在中文輸入下會切在
         // char 中間、當場 panic。`split_at_width` 就是用同一套寬度計算找 char
@@ -432,7 +434,7 @@ impl<'a> ShellView<'a> {
         f.render_widget(paragraph, area);
 
         if !running {
-            let x = inner.x + PROMPT.len() as u16 + (self.input.visual_cursor() - scroll) as u16;
+            let x = inner.x + PROMPT_WIDTH + (self.input.visual_cursor() - scroll) as u16;
             let y = inner.y;
             match &self.ctx.ui_config.cursor_type {
                 CursorType::Native => f.set_cursor_position((x, y)),
