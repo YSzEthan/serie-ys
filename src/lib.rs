@@ -1054,7 +1054,10 @@ pub fn run() -> Result<()> {
                     drop(old_filtered);
                 });
 
-                terminal.clear()?;
+                // 不用 `?`：提早 return 會跳過下面的 `ratatui::restore()`。
+                if let Err(e) = terminal.clear() {
+                    break Err(e);
+                }
 
                 // 換資料後 working changes 的基準可能已經變了（checkout／
                 // commit 都會動到）：排一次背景 status，不等它跑完——
