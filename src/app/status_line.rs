@@ -12,6 +12,7 @@ use ratatui::{
 };
 
 use crate::{
+    color::MUTED_FG,
     config::CursorType,
     event::{
         AppEvent, AutoFetchClock, CheckoutPickKind, RefCopyKind, RelatedItem, Sender, UserEvent,
@@ -1387,14 +1388,11 @@ impl StatusLineState {
         let mut focus = 0;
         for (i, item) in spec.items.iter().enumerate() {
             if let Some(group) = &item.group {
-                rows.push((
-                    group.clone(),
-                    Style::default().fg(fg).add_modifier(Modifier::DIM),
-                ));
+                rows.push((group.clone(), Style::default().fg(MUTED_FG)));
             }
             let mut style = Style::default().fg(fg);
             if item.dim {
-                style = style.add_modifier(Modifier::DIM);
+                style = style.fg(MUTED_FG);
             }
             if i == menu.cursor {
                 focus = rows.len();
@@ -1411,7 +1409,7 @@ impl StatusLineState {
             rows.push((format!("{mark}{number}{}{quick}", item.label), style));
         }
         if let Some(footer) = spec.footer {
-            rows.push((footer, Style::default().fg(fg).add_modifier(Modifier::DIM)));
+            rows.push((footer, Style::default().fg(MUTED_FG)));
         }
 
         let content_width = rows
@@ -1502,7 +1500,7 @@ impl StatusLineState {
                 if !rows.is_empty() {
                     lines.push(Line::from(Span::styled(
                         t!("app.merge.dialog.delete_after"),
-                        Style::default().fg(fg).add_modifier(Modifier::DIM),
+                        Style::default().fg(MUTED_FG),
                     )));
                 }
                 lines.extend(rows.iter().enumerate().map(|(i, &(opt, checked))| {
@@ -1603,7 +1601,7 @@ impl StatusLineState {
         );
         f.render_widget(Clear, rect);
         let block = Block::default()
-            .title(title)
+            .title(Span::styled(title, Style::default().fg(MUTED_FG)))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.divider_fg))
             .style(Style::default().bg(theme.bg).fg(fg))
