@@ -82,10 +82,6 @@ en-US = "Close issue #%{number}? "
 zh-TW = "正在關閉 issue #%{number}…"
 en-US = "Closing issue #%{number}…"
 
-[github.state_action.close_issue.success]
-zh-TW = "已關閉 issue #%{number}"
-en-US = "Closed issue #%{number}"
-
 [github.state_action.close_issue.hint]
 zh-TW = "關閉 issue"
 en-US = "close issue"
@@ -97,10 +93,6 @@ en-US = "Reopen issue #%{number}? "
 [github.state_action.reopen_issue.pending]
 zh-TW = "正在重新開啟 issue #%{number}…"
 en-US = "Reopening issue #%{number}…"
-
-[github.state_action.reopen_issue.success]
-zh-TW = "已重新開啟 issue #%{number}"
-en-US = "Reopened issue #%{number}"
 
 [github.state_action.reopen_issue.hint]
 zh-TW = "重新開啟 issue"
@@ -114,10 +106,6 @@ en-US = "Close PR #%{number}? "
 zh-TW = "正在關閉 PR #%{number}…"
 en-US = "Closing PR #%{number}…"
 
-[github.state_action.close_pr.success]
-zh-TW = "已關閉 PR #%{number}"
-en-US = "Closed PR #%{number}"
-
 [github.state_action.close_pr.hint]
 zh-TW = "關閉 PR"
 en-US = "close PR"
@@ -129,10 +117,6 @@ en-US = "Reopen PR #%{number}? "
 [github.state_action.reopen_pr.pending]
 zh-TW = "正在重新開啟 PR #%{number}…"
 en-US = "Reopening PR #%{number}…"
-
-[github.state_action.reopen_pr.success]
-zh-TW = "已重新開啟 PR #%{number}"
-en-US = "Reopened PR #%{number}"
 
 [github.state_action.reopen_pr.hint]
 zh-TW = "重新開啟 PR"
@@ -148,10 +132,6 @@ en-US = "Mark PR #%{number} ready for review? "
 zh-TW = "正在將 PR #%{number} 標為可供 review…"
 en-US = "Marking PR #%{number} ready for review…"
 
-[github.draft.mark_ready.success]
-zh-TW = "PR #%{number} 已可供 review"
-en-US = "PR #%{number} is ready for review"
-
 [github.draft.mark_ready.hint]
 zh-TW = "可供 review"
 en-US = "ready for review"
@@ -163,10 +143,6 @@ en-US = "Convert PR #%{number} back to draft? "
 [github.draft.to_draft.pending]
 zh-TW = "正在將 PR #%{number} 轉為 draft…"
 en-US = "Converting PR #%{number} to draft…"
-
-[github.draft.to_draft.success]
-zh-TW = "PR #%{number} 已轉為 draft"
-en-US = "PR #%{number} converted to draft"
 
 [github.draft.to_draft.hint]
 zh-TW = "轉回 draft"

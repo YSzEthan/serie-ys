@@ -202,16 +202,16 @@ pub fn spawn_resync(ec: &EventController, repo: &Path, interval: Duration) {
 /// `--heads --tags`：GitHub 的 `refs/pull/*/merge` 是每次 base branch
 /// 前進就整批重算的——任何人 push 一次 main，所有開著的 PR 的 merge ref
 /// SHA 全變。不濾掉的話，活躍 repo 上等於「別人每 push 一次就多打一次
-/// 沒必要的 fetch，還彈一個沒東西變的通知」。
+/// 沒必要的 fetch」。
 ///
 /// 這條規則只求「盡量」對齊 `git fetch` 實際更新的集合，不是「必須」：
 /// `--all` 會跳過設了 `remote.<name>.skipDefaultUpdate` 的 remote，但
 /// `git remote` 會列它；預設 `fetch` 只跟隨可從抓下來的歷史到達的 tag，
 /// 不是全部 remote tag，`--tags` 涵蓋過頭；remote 有自訂 refspec（例如
 /// 只抓 `refs/heads/main`）時 `--heads` 同樣涵蓋過頭。三者都只造成偶發
-/// 的多餘 fetch 與一個「沒東西變」的通知，修掉的成本遠高於症狀。同一類：
+/// 的多餘 fetch，修掉的成本遠高於症狀。同一類：
 /// `fetch_prune = off` 時，遠端只刪掉分支／tag 也會讓指紋變化觸發一次
-/// 實際上沒有新內容的 fetch，一樣跳出成功通知——不會重複觸發（成功後基準
+/// 實際上沒有新內容的 fetch——不會重複觸發（成功後基準
 /// 就更新成新指紋），不特別處理。
 ///
 /// 沒有 remote（`git remote` 空輸出）時回傳空字串，不是 `None`——這是一個

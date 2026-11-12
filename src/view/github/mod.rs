@@ -1265,7 +1265,7 @@ impl<'a> GitHubView<'a> {
         };
     }
 
-    /// 就地更新 draft 狀態。`RefreshGitHub` 是非同步的，成功通知到列表刷新之間
+    /// 就地更新 draft 狀態。`RefreshGitHub` 是非同步的，操作成功到列表刷新之間
     /// 若讀到過期的 `is_draft`，反向操作會挑錯方向，而 `gh pr ready` 對非 draft
     /// PR 是 idempotent 成功 — 使用者不會收到任何錯誤提示。
     pub fn set_pr_draft_flag(&mut self, number: u64, is_draft: bool) {

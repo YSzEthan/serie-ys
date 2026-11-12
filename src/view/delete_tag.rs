@@ -131,13 +131,6 @@ impl<'a> DeleteTagView<'a> {
                 }
             }
 
-            // 成功
-            let msg = if delete_from_remote {
-                t!("view.delete_tag.done_remote", tag = tag_name).into_owned()
-            } else {
-                t!("view.delete_tag.done_local", tag = tag_name).into_owned()
-            };
-            tx.send(AppEvent::NotifySuccess(msg));
             tx.send(AppEvent::HidePendingOverlay);
             tx.send(AppEvent::Refresh);
         });

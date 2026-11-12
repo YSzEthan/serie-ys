@@ -1617,7 +1617,7 @@ fn run_git_command_env(
         .output()
         .map_err(|e| t!("git.exec_failed", subcommand = args[0], error = e).into_owned())?;
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = crate::process::stderr_summary(&output.stderr);
         return Err(t!("common.failed_with", prefix = error_prefix, detail = stderr).into_owned());
     }
     Ok(())
@@ -1697,7 +1697,7 @@ pub fn create_tag(
         .map_err(|e| t!("git.exec_failed", subcommand = "tag", error = e).into_owned())?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = crate::process::stderr_summary(&output.stderr);
         return Err(t!(
             "common.failed_with",
             prefix = t!("git.tag.create_failed"),

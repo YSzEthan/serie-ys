@@ -113,9 +113,103 @@ pub fn run_with_timeout(
     })
 }
 
+/// 從 git／gh 的 stderr 挑出最有用的一行，給狀態列顯示。
+///
+/// 依序挑第一個符合的行（每行先 trim、空行略過）：
+///
+/// 1. `fatal:` 開頭，去掉前綴
+/// 2. `! [` 開頭，整行保留——push 被拒的原因（non-fast-forward、
+///    already exists…）寫在這行的括號裡，`error: failed to push` 反而沒說
+/// 3. `error:` 開頭，去掉前綴
+/// 4. 不以 `hint:`／`warning:`／`remote:`／`To ` 開頭的行
+///
+/// 都沒有就回空字串。
+///
+/// 已知損失：pre-push hook 自己的輸出沒有前綴，會輸給後面那行
+/// `error: failed to push`。
+pub(crate) fn stderr_summary(stderr: &[u8]) -> String {
+    let text = String::from_utf8_lossy(stderr);
+    let lines: Vec<&str> = text
+        .lines()
+        .map(str::trim)
+        .filter(|l| !l.is_empty())
+        .collect();
+    let strip = |prefix: &str| {
+        lines
+            .iter()
+            .find_map(|l| l.strip_prefix(prefix))
+            .map(|l| l.trim().to_string())
+    };
+    strip("fatal:")
+        .or_else(|| {
+            lines
+                .iter()
+                .find(|l| l.starts_with("! ["))
+                .map(|l| l.to_string())
+        })
+        .or_else(|| strip("error:"))
+        .or_else(|| {
+            lines
+                .iter()
+                .find(|l| {
+                    !["hint:", "warning:", "remote:", "To "]
+                        .iter()
+                        .any(|p| l.starts_with(p))
+                })
+                .map(|l| l.to_string())
+        })
+        .unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn stderr_summary_push_rejected_picks_reason_line() {
+        let s = "To github.com:x/y.git\n ! [rejected]        main -> main (non-fast-forward)\nerror: failed to push some refs to 'github.com:x/y.git'\nhint: Updates were rejected\n";
+        assert_eq!(
+            stderr_summary(s.as_bytes()),
+            "! [rejected]        main -> main (non-fast-forward)"
+        );
+    }
+
+    #[test]
+    fn stderr_summary_push_tag_already_exists() {
+        let s = "To github.com:x/y.git\n ! [rejected]        v1 -> v1 (already exists)\nerror: failed to push some refs\n";
+        assert!(stderr_summary(s.as_bytes()).ends_with("(already exists)"));
+    }
+
+    #[test]
+    fn stderr_summary_fatal_wins_and_strips_prefix() {
+        let s = "warning: x\nfatal: not a git repository\nerror: y\n";
+        assert_eq!(stderr_summary(s.as_bytes()), "not a git repository");
+    }
+
+    #[test]
+    fn stderr_summary_error_line_keeps_not_fully_merged() {
+        let s = "error: the branch 'x' is not fully merged.\nhint: If you are sure, run 'git branch -D x'\n";
+        let msg = stderr_summary(s.as_bytes());
+        assert!(msg.contains("not fully merged"), "{msg}");
+    }
+
+    #[test]
+    fn stderr_summary_plain_gh_line_keeps_classifiers() {
+        let s = "X Pull request #3 is not mergeable: the merge commit cannot be cleanly created.\n";
+        let msg = stderr_summary(s.as_bytes());
+        assert!(crate::github::is_merge_conflict_error(&msg), "{msg}");
+        let s = "gh: Reference does not exist (HTTP 422)\n";
+        let msg = stderr_summary(s.as_bytes());
+        assert!(msg.contains("Reference does not exist"), "{msg}");
+    }
+
+    #[test]
+    fn stderr_summary_skips_noise_and_handles_empty() {
+        assert_eq!(stderr_summary(b""), "");
+        assert_eq!(stderr_summary(b"\n  \n"), "");
+        assert_eq!(stderr_summary(b"hint: a\nremote: b\nTo x\n"), "");
+        assert_eq!(stderr_summary(b"remote: b\nreal problem\n"), "real problem");
+    }
 
     // 所有逾時測試共用的預算與斷言上限。上限抓 3 倍而不是「反正很大」的
     // 2 秒：這幾條測試唯一的價值就是證明「有界」，斷言鬆到跟預算無關就
