@@ -1,4 +1,9 @@
-use std::{borrow::Cow, path::PathBuf, rc::Rc};
+use std::{
+    borrow::Cow,
+    path::PathBuf,
+    rc::Rc,
+    time::{Duration, Instant},
+};
 
 use rust_i18n::t;
 
@@ -53,10 +58,12 @@ pub(super) fn update_installed_hint() -> Cow<'static, str> {
     t!("app.status.update_installed")
 }
 
-/// 使用者沒有按下重啟：更新其實已經做完了，留一句話提醒手動重啟。
-fn restart_skipped_notice() -> StatusLine {
-    StatusLine::NotificationSuccess(update_installed_hint().into_owned())
-}
+/// Info／Success 通知預設顯示多久。到期由 `expire_notification` 在 Tick 清掉；
+/// 期間按鍵不會被吞（見 `dismiss_notification`）。
+const NOTIFICATION_TTL: Duration = Duration::from_secs(15);
+
+/// 切換類的一閃即逝提示（remote refs、condensed）顯示多久。
+pub(super) const BRIEF_NOTIFICATION_TTL: Duration = Duration::from_secs(3);
 
 fn picker_digit_index(key: KeyEvent) -> Option<usize> {
     let KeyCode::Char(c) = key.code else {
@@ -594,11 +601,14 @@ impl StatusLine {
 /// 擋掉 picker／prompt／輸入框，走到這裡的 `StatusLine` 只可能是四種
 /// `Notification*` variant 之一。
 #[derive(Debug)]
-pub(super) struct Notification(StatusLine);
+pub(super) struct Notification(StatusLine, Option<Instant>);
 
 #[derive(Debug)]
 pub(super) struct StatusLineState {
     line: StatusLine,
+    /// Info／Success 的到期時間。只由 `set_transient` 寫入；只有 `line` 是這兩種
+    /// 通知時才有意義，其餘變體不讀它。
+    notification_deadline: Option<Instant>,
     ctx: Rc<AppContext>,
     tx: Sender,
     /// 下一輪 auto-fetch 的 deadline，倒數用。在這裡持有而不是每次 render
@@ -611,6 +621,7 @@ impl StatusLineState {
     pub(super) fn new(ctx: Rc<AppContext>, tx: Sender, auto_fetch_clock: AutoFetchClock) -> Self {
         Self {
             line: StatusLine::default(),
+            notification_deadline: None,
             ctx,
             tx,
             auto_fetch_clock,
@@ -831,7 +842,9 @@ impl StatusLineState {
             line @ (StatusLine::NotificationInfo(_)
             | StatusLine::NotificationSuccess(_)
             | StatusLine::NotificationWarn(_)
-            | StatusLine::NotificationError(_)) => Some(Notification(line)),
+            | StatusLine::NotificationError(_)) => {
+                Some(Notification(line, self.notification_deadline))
+            }
             other => {
                 self.line = other;
                 None
@@ -843,6 +856,7 @@ impl StatusLineState {
     /// 新的 `StatusLineState` 上。
     pub(super) fn restore_notification(&mut self, notification: Notification) {
         self.line = notification.0;
+        self.notification_deadline = notification.1;
     }
 
     /// Full 重載狀態指示——插在 hotkey hints／輸入框那一列最前面，跟倒數
@@ -877,11 +891,59 @@ impl StatusLineState {
     }
 
     pub(super) fn set_notification_info(&mut self, msg: String) {
-        self.line = StatusLine::NotificationInfo(msg);
+        self.set_notification_info_for(msg, NOTIFICATION_TTL);
+    }
+
+    /// 顯示一則只留 `ttl` 的 Info。切換類提示用這個，不要再送延遲的
+    /// `ClearStatusLine`——那個事件不看狀態列現在是什麼，會誤清掉期間
+    /// 打開的搜尋輸入框或 picker。
+    pub(super) fn set_notification_info_for(&mut self, msg: String, ttl: Duration) {
+        self.set_transient(StatusLine::NotificationInfo(msg), Instant::now() + ttl);
     }
 
     pub(super) fn set_notification_success(&mut self, msg: String) {
-        self.line = StatusLine::NotificationSuccess(msg);
+        self.set_transient(
+            StatusLine::NotificationSuccess(msg),
+            Instant::now() + NOTIFICATION_TTL,
+        );
+    }
+
+    /// Info／Success 唯一的寫入點，到期時間在這裡一起蓋。
+    fn set_transient(&mut self, line: StatusLine, deadline: Instant) {
+        self.line = line;
+        self.notification_deadline = Some(deadline);
+    }
+
+    /// Tick 呼叫：Info／Success 到期就清成 `None`，回傳 true 表示畫面要重畫。
+    /// 其餘變體（picker、輸入框、Warn、Error）一律不動——它們不會自己消失。
+    /// 窮舉 match，理由同 `handle_intercepting_key`。
+    pub(super) fn expire_notification(&mut self, now: Instant) -> bool {
+        match self.line {
+            StatusLine::NotificationInfo(_) | StatusLine::NotificationSuccess(_) => {
+                if self.notification_deadline.is_some_and(|d| now >= d) {
+                    self.line = StatusLine::None;
+                    self.notification_deadline = None;
+                    return true;
+                }
+                false
+            }
+            StatusLine::None
+            | StatusLine::Input(_, _, _)
+            | StatusLine::RefPicker { .. }
+            | StatusLine::CheckoutPicker { .. }
+            | StatusLine::ChildPicker { .. }
+            | StatusLine::RelatedPicker { .. }
+            | StatusLine::DeleteBranchPicker { .. }
+            | StatusLine::DeleteBranchConfirm { .. }
+            | StatusLine::MergePrPrompt { .. }
+            | StatusLine::CiRerunPrompt { .. }
+            | StatusLine::ToggleStatePrompt { .. }
+            | StatusLine::TogglePrDraftPrompt { .. }
+            | StatusLine::UpdatePrompt { .. }
+            | StatusLine::RestartPrompt { .. }
+            | StatusLine::NotificationWarn(_)
+            | StatusLine::NotificationError(_) => false,
+        }
     }
 
     pub(super) fn set_notification_warn(&mut self, msg: String) {
@@ -927,10 +989,10 @@ impl StatusLineState {
         }
     }
 
-    /// 清掉目前的通知（若有）。回傳 true 表示這把鍵已被吞掉——任何通知
-    /// （Info／Success／Warn／Error）都吞鍵：這把鍵的唯一作用就是消除訊息，
-    /// 不會再觸發其他動作。窮盡 match，理由同
-    /// `handle_intercepting_key`。
+    /// 清掉目前的通知（若有）。回傳 true 表示這把鍵已被吞掉——只有 Warn／Error
+    /// 吞鍵：這把鍵的唯一作用就是消除訊息，不會再觸發其他動作。Info／Success
+    /// 不吞鍵，按鍵照常執行，通知留到 `expire_notification` 到期或被新內容
+    /// 取代。窮盡 match，理由同 `handle_intercepting_key`。
     pub(super) fn dismiss_notification(&mut self) -> bool {
         match self.line {
             StatusLine::None
@@ -946,11 +1008,10 @@ impl StatusLineState {
             | StatusLine::ToggleStatePrompt { .. }
             | StatusLine::TogglePrDraftPrompt { .. }
             | StatusLine::UpdatePrompt { .. }
-            | StatusLine::RestartPrompt { .. } => false,
-            StatusLine::NotificationInfo(_)
-            | StatusLine::NotificationSuccess(_)
-            | StatusLine::NotificationWarn(_)
-            | StatusLine::NotificationError(_) => {
+            | StatusLine::RestartPrompt { .. }
+            | StatusLine::NotificationInfo(_)
+            | StatusLine::NotificationSuccess(_) => false,
+            StatusLine::NotificationWarn(_) | StatusLine::NotificationError(_) => {
                 self.line = StatusLine::None;
                 true
             }
@@ -1013,11 +1074,11 @@ impl StatusLineState {
     /// 關掉選單。`RestartPrompt` 取消時更新其實已經做完了，跟其餘選單「取消 =
     /// 什麼都沒發生」不同——靜默清空會讓使用者忘記要手動重啟，留一句話。
     fn cancel_menu(&mut self) {
-        self.line = if matches!(self.line, StatusLine::RestartPrompt { .. }) {
-            restart_skipped_notice()
+        if matches!(self.line, StatusLine::RestartPrompt { .. }) {
+            self.set_notification_success(update_installed_hint().into_owned());
         } else {
-            StatusLine::None
-        };
+            self.line = StatusLine::None;
+        }
     }
 
     /// 執行選單的第 `idx` 列。列的順序與 [`StatusLine::menu_spec`] 一致。
@@ -1117,7 +1178,9 @@ impl StatusLineState {
             StatusLine::RestartPrompt { exe, .. } if idx == 0 => {
                 self.tx.send(AppEvent::RestartRequested { exe });
             }
-            StatusLine::RestartPrompt { .. } => self.line = restart_skipped_notice(),
+            StatusLine::RestartPrompt { .. } => {
+                self.set_notification_success(update_installed_hint().into_owned());
+            }
             _ => {}
         }
     }
@@ -2674,6 +2737,7 @@ mod tests {
             let (tx, _rx) = Sender::channel_for_test();
             StatusLineState {
                 line,
+                notification_deadline: None,
                 ctx: test_ctx(),
                 tx,
                 auto_fetch_clock: AutoFetchClock::default(),
@@ -2863,6 +2927,7 @@ mod tests {
             let (tx, _rx) = Sender::channel_for_test();
             StatusLineState {
                 line,
+                notification_deadline: None,
                 ctx: test_ctx(),
                 tx,
                 auto_fetch_clock: AutoFetchClock::default(),
@@ -2924,24 +2989,110 @@ mod tests {
         assert!(matches!(&state.line, StatusLine::NotificationError(m) if m == "boom"));
     }
 
-    /// 任何通知都吞鍵並清掉；非通知狀態不吞鍵、也不動狀態列。
+    /// 只有 Warn／Error 吞鍵並清掉；Info／Success 不吞、通知留著；
+    /// 非通知狀態不吞鍵、也不動狀態列。
     #[test]
-    fn dismiss_notification_swallows_key_for_every_notification() {
-        let notifications = [
-            StatusLine::NotificationInfo("m".into()),
-            StatusLine::NotificationSuccess("m".into()),
+    fn dismiss_notification_only_swallows_warn_and_error() {
+        for line in [
             StatusLine::NotificationWarn("m".into()),
             StatusLine::NotificationError("m".into()),
-        ];
-        for line in notifications {
+        ] {
             let (mut state, _rx) = test_state();
             state.line = line;
             assert!(state.dismiss_notification());
             assert!(matches!(state.line, StatusLine::None));
         }
 
+        for line in [
+            StatusLine::NotificationInfo("m".into()),
+            StatusLine::NotificationSuccess("m".into()),
+        ] {
+            let (mut state, _rx) = test_state();
+            state.line = line;
+            assert!(!state.dismiss_notification());
+            assert!(!matches!(state.line, StatusLine::None));
+        }
+
         let (mut state, _rx) = test_state();
         assert!(!state.dismiss_notification());
+    }
+
+    /// Info／Success 到期前不清、到期時清掉並回報要重畫。
+    #[test]
+    fn expire_notification_clears_info_and_success_at_deadline() {
+        let t0 = Instant::now();
+        for line in [
+            StatusLine::NotificationInfo("m".into()),
+            StatusLine::NotificationSuccess("m".into()),
+        ] {
+            let (mut state, _rx) = test_state();
+            state.set_transient(line, t0 + NOTIFICATION_TTL);
+            assert!(!state.expire_notification(t0 + NOTIFICATION_TTL - Duration::from_millis(1)));
+            assert!(!matches!(state.line, StatusLine::None));
+            assert!(state.expire_notification(t0 + NOTIFICATION_TTL));
+            assert!(matches!(state.line, StatusLine::None));
+            // 清掉之後再問不會重複回報
+            assert!(!state.expire_notification(t0 + NOTIFICATION_TTL * 2));
+        }
+    }
+
+    /// Warn／Error、picker、輸入框就算帶著過期的 deadline 也不能被清掉
+    /// ——延遲事件誤清輸入框正是這個設計要避免的事。
+    #[test]
+    fn expire_notification_never_touches_other_variants() {
+        let past = Instant::now();
+        let later = past + NOTIFICATION_TTL * 2;
+        let others = [
+            StatusLine::NotificationWarn("m".into()),
+            StatusLine::NotificationError("m".into()),
+            StatusLine::Input("q".into(), 1, None),
+            StatusLine::RefPicker {
+                options: vec!["main".into()],
+                kind: RefCopyKind::Local,
+                menu: Menu::default(),
+            },
+        ];
+        for line in others {
+            let (mut state, _rx) = test_state();
+            state.line = line;
+            state.notification_deadline = Some(past);
+            assert!(!state.expire_notification(later));
+            assert!(!matches!(state.line, StatusLine::None));
+        }
+    }
+
+    /// 新通知蓋掉舊的 Info 時，到期時間以新的為準。
+    #[test]
+    fn replacing_notification_resets_deadline() {
+        let t0 = Instant::now();
+        let (mut state, _rx) = test_state();
+        state.set_transient(
+            StatusLine::NotificationInfo("A".into()),
+            t0 + NOTIFICATION_TTL,
+        );
+        state.set_transient(
+            StatusLine::NotificationInfo("B".into()),
+            t0 + Duration::from_secs(10) + NOTIFICATION_TTL,
+        );
+        assert!(!state.expire_notification(t0 + NOTIFICATION_TTL));
+        assert!(state.expire_notification(t0 + Duration::from_secs(10) + NOTIFICATION_TTL));
+    }
+
+    /// 換資料（take → 新 state restore）要帶著原本的到期時間，不能重新計時。
+    #[test]
+    fn restore_notification_keeps_deadline() {
+        let t0 = Instant::now();
+        let (mut old, _rx) = test_state();
+        old.set_transient(
+            StatusLine::NotificationInfo("m".into()),
+            t0 + NOTIFICATION_TTL,
+        );
+        let notification = old.take_notification().expect("應該取到通知");
+
+        let (mut fresh, _rx2) = test_state();
+        fresh.restore_notification(notification);
+        assert!(!fresh.expire_notification(t0 + NOTIFICATION_TTL - Duration::from_millis(1)));
+        assert!(fresh.expire_notification(t0 + NOTIFICATION_TTL));
     }
 
     #[test]

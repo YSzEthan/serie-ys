@@ -313,17 +313,12 @@ impl<'a> DetailView<'a> {
             UserEvent::RemoteRefsToggle => {
                 if let Some(ref mut cls) = self.commit_list_state {
                     let show = cls.toggle_remote_refs();
-                    if show {
-                        self.tx.send(AppEvent::NotifyInfo(
-                            t!("view.list.remote_refs_shown").into_owned(),
-                        ));
+                    let msg = if show {
+                        t!("view.list.remote_refs_shown")
                     } else {
-                        self.tx.send(AppEvent::NotifyInfo(
-                            t!("view.list.remote_refs_hidden").into_owned(),
-                        ));
-                    }
-                    self.tx
-                        .send_after(AppEvent::ClearStatusLine, std::time::Duration::from_secs(3));
+                        t!("view.list.remote_refs_hidden")
+                    };
+                    self.tx.send(AppEvent::NotifyInfoBrief(msg.into_owned()));
                 }
             }
             UserEvent::CondensedToggle => {

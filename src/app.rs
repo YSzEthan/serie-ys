@@ -46,7 +46,7 @@ use crate::{
     CommitMask, CompactType, CondensedType, GraphWidthType,
 };
 
-use status_line::StatusLineState;
+use status_line::{StatusLineState, BRIEF_NOTIFICATION_TTL};
 
 mod status_line;
 
@@ -508,8 +508,12 @@ impl App<'_> {
                     // 這三行放在 `if` 外面、無條件執行，不要搬進 `else`
                     // 分支：那樣跑馬燈期間根本不會算，欄位會一路發霉，跑馬燈
                     // 停下來的那一刻就用一個過期值去比對。
+                    //
+                    // `expire_notification` 必須排在 `countdown_secs()` 前面：通知一清掉
+                    // 狀態列就變 idle，倒數要在同一幀出現。
+                    let expired = self.status_line_state.expire_notification(Instant::now());
                     let countdown = self.status_line_state.countdown_secs();
-                    let changed = countdown != self.last_countdown_secs;
+                    let changed = expired || countdown != self.last_countdown_secs;
                     self.last_countdown_secs = countdown;
 
                     if self.marquee_needed {
@@ -546,12 +550,8 @@ impl App<'_> {
                     } else {
                         t!("view.list.condensed_off")
                     };
-                    self.ec
-                        .sender()
-                        .send(AppEvent::NotifyInfo(msg.into_owned()));
-                    self.ec
-                        .sender()
-                        .send_after(AppEvent::ClearStatusLine, Duration::from_secs(3));
+                    self.status_line_state
+                        .set_notification_info_for(msg.into_owned(), BRIEF_NOTIFICATION_TTL);
                 }
                 AppEvent::Quit => {
                     return Ok(Ret::Quit(None));
@@ -787,6 +787,10 @@ impl App<'_> {
                 }
                 AppEvent::NotifyInfo(msg) => {
                     self.status_line_state.set_notification_info(msg);
+                }
+                AppEvent::NotifyInfoBrief(msg) => {
+                    self.status_line_state
+                        .set_notification_info_for(msg, BRIEF_NOTIFICATION_TTL);
                 }
                 AppEvent::NotifySuccess(msg) => {
                     self.status_line_state.set_notification_success(msg);
@@ -1220,8 +1224,8 @@ impl App<'_> {
             return;
         }
 
-        // Quit 例外：第一次 q 會顯示「再按一次」的通知，第二次 q 若被當成消除鍵吞掉，
-        // 就永遠退不出去
+        // Quit 例外：Warn／Error 顯示時按 q 要直接進入離開流程，不要只用來消掉通知
+        // （Info／Success 本來就不吞鍵，包括 q 第一次按下的「再按一次」）
         if !self.ctx.keybind.has(&key, UserEvent::Quit)
             && self.status_line_state.dismiss_notification()
         {
@@ -1250,11 +1254,10 @@ impl App<'_> {
                     self.ec.send(AppEvent::Quit);
                     return;
                 } else {
-                    self.status_line_state
-                        .set_notification_info(t!("app.quit.press_again").into_owned());
-                    self.ec
-                        .sender()
-                        .send_after(AppEvent::ClearStatusLine, QUIT_PRESS_WINDOW);
+                    self.status_line_state.set_notification_info_for(
+                        t!("app.quit.press_again").into_owned(),
+                        QUIT_PRESS_WINDOW,
+                    );
                 }
                 self.key_state.clear_count();
             }
