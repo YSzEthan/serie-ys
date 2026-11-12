@@ -1152,6 +1152,7 @@ impl<'a> GitHubView<'a> {
             labels: Vec::new(),
             author: author(),
             head_ref_name: "topic".to_string(),
+            head_owner: None,
             head_ref_oid: "deadbeef".to_string(),
             base_ref_name: "main".to_string(),
             is_draft,
@@ -1747,6 +1748,7 @@ mod tests {
                 login: "alice".to_string(),
             },
             head_ref_name: "topic".to_string(),
+            head_owner: None,
             head_ref_oid: "deadbeef".to_string(),
             base_ref_name: "main".to_string(),
             is_draft: false,
@@ -3574,7 +3576,7 @@ mod tests {
         );
 
         // 色塊比 "[alpha, beta]" 短很多，讓出來的欄寬應該讓標題露出更多字。
-        let title_prefix = &title[..10];
+        let title_prefix = &title[..7];
         assert!(
             !names_row.contains(title_prefix),
             "names mode is the regression case: title should still be cut off in the list row:\n{names_row}"
@@ -4726,6 +4728,7 @@ mod tests {
                 login: author.to_string(),
             },
             head_ref_name: "topic".to_string(),
+            head_owner: None,
             head_ref_oid: "deadbeef".to_string(),
             base_ref_name: "main".to_string(),
             is_draft: false,

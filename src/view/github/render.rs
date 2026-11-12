@@ -338,6 +338,25 @@ impl<'a> GitHubView<'a> {
         }
     }
 
+    /// 編號欄寬度：整份已載入清單裡最寬的編號文字，下限 `NUMBER_MIN_WIDTH`。
+    /// 跟作者欄一樣以整份清單為準，捲動或篩選時欄位才不會左右晃。
+    fn number_pad_width_for_tab(&self) -> usize {
+        let widest = match self.active_tab {
+            GitHubTab::Issues => self
+                .issues
+                .iter()
+                .map(|i| console::measure_text_width(&issue_number_text(i.number)))
+                .max(),
+            GitHubTab::PullRequests => self
+                .pull_requests
+                .iter()
+                .map(|p| console::measure_text_width(&pr_number_text(p)))
+                .max(),
+            GitHubTab::Branches | GitHubTab::Ci => None,
+        };
+        widest.unwrap_or(0).max(NUMBER_MIN_WIDTH)
+    }
+
     fn current_viewport_rows(
         &self,
         visible_height: usize,
@@ -359,6 +378,12 @@ impl<'a> GitHubView<'a> {
                 0
             } else {
                 self.author_pad_width_for_tab()
+            },
+            // 窄版編號不補寬，跟作者欄一樣把空間留給標題
+            number_pad: if narrow {
+                0
+            } else {
+                self.number_pad_width_for_tab()
             },
             // Paragraph 內部有 Padding::horizontal(1) → 內容可用寬度要 -2。
             content_width: inner_width.saturating_sub(2) as usize,
@@ -854,19 +879,36 @@ fn author_text(login: &str) -> String {
     console::truncate_str(&format!("@{login}"), AUTHOR_MAX_WIDTH, "…").into_owned()
 }
 
+/// 寬版編號欄最小寬度：`#` 加 5 位數，Issues 分頁維持原本的欄寬。
+const NUMBER_MIN_WIDTH: usize = 6;
+
+/// PR 編號後面 `(head)` 裡 head 的最大顯示寬度。
+const HEAD_MAX_WIDTH: usize = 16;
+
+fn issue_number_text(number: u64) -> String {
+    format!("#{number}")
+}
+
+/// `#N(head)`；只截 head，括號在截完之後才包上去，結尾的 `)` 一定保留。
+fn pr_number_text(pr: &GhPullRequest) -> String {
+    let head = console::truncate_str(&pr.head_label(), HEAD_MAX_WIDTH, "…").into_owned();
+    format!("#{}({head})", pr.number)
+}
+
 /// 列表一列的排版參數，Issues／PRs 共用，整份列表算一次。
 #[derive(Clone, Copy)]
 struct RowLayout {
     label_mode: LabelMode,
     labels_pad: usize,
     author_pad: usize,
+    number_pad: usize,
     content_width: usize,
     narrow: bool,
 }
 
 /// 一列要顯示的內容，Issues／PRs 共用。
 struct RowFields<'a> {
-    number: u64,
+    number_text: String,
     state_text: &'a str,
     state_color: Color,
     labels: &'a [crate::github::GhLabel],
@@ -894,16 +936,23 @@ fn render_row(
     let gap = if layout.narrow { " " } else { "  " };
 
     let mut cells: Vec<Vec<Span<'static>>> = Vec::with_capacity(4);
-    if layout.narrow {
-        cells.push(vec![Span::styled(
-            format!("#{}", row.number),
-            Style::default().fg(row.state_color),
-        )]);
+    let number_color = if layout.narrow {
+        row.state_color
     } else {
-        cells.push(vec![Span::styled(
-            format!("#{:<5}", row.number),
-            Style::default().fg(MUTED_FG),
-        )]);
+        MUTED_FG
+    };
+    let number = console::pad_str(
+        &row.number_text,
+        layout.number_pad,
+        console::Alignment::Left,
+        None,
+    )
+    .into_owned();
+    cells.push(vec![Span::styled(
+        number,
+        Style::default().fg(number_color),
+    )]);
+    if !layout.narrow {
         cells.push(state_cell(
             row.state_text,
             row.state_color,
@@ -950,7 +999,7 @@ fn render_issue_line(
     let state_text = state_label(&issue.state);
     render_row(
         &RowFields {
-            number: issue.number,
+            number_text: issue_number_text(issue.number),
             state_text: &state_text,
             state_color: state_color(&issue.state),
             labels: &issue.labels,
@@ -976,7 +1025,7 @@ fn render_pr_line(
     };
     render_row(
         &RowFields {
-            number: pr.number,
+            number_text: pr_number_text(pr),
             state_text: &state_text,
             state_color: color,
             labels: &pr.labels,
@@ -1015,5 +1064,130 @@ mod tests {
         assert!(updated.contains(&0), "{updated:?}");
         assert!(!updated.contains(&1), "{updated:?}");
         assert!((2..80).all(|x| updated.contains(&x)), "{updated:?}");
+    }
+
+    fn test_pr(number: u64, branch: &str, owner: Option<&str>) -> GhPullRequest {
+        GhPullRequest {
+            number,
+            title: "TITLE".to_string(),
+            state: "OPEN".to_string(),
+            labels: Vec::new(),
+            author: crate::github::GhAuthor {
+                login: "me".to_string(),
+            },
+            head_ref_name: branch.to_string(),
+            head_owner: owner.map(str::to_string),
+            head_ref_oid: String::new(),
+            base_ref_name: "main".to_string(),
+            is_draft: false,
+            head_branch_deletable: false,
+            body: String::new(),
+            url: String::new(),
+            closed_at: None,
+            updated_at: String::new(),
+            linked_issues: Vec::new(),
+            diff_stat: crate::github::DiffStat::default(),
+        }
+    }
+
+    fn test_layout(narrow: bool, number_pad: usize) -> RowLayout {
+        RowLayout {
+            label_mode: LabelMode::Swatches,
+            labels_pad: 0,
+            author_pad: 0,
+            number_pad,
+            content_width: 120,
+            narrow,
+        }
+    }
+
+    fn line_text(line: &Line<'_>) -> String {
+        line.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn pr_number_text_appends_head_label() {
+        assert_eq!(pr_number_text(&test_pr(243, "topic", None)), "#243(topic)");
+        assert_eq!(
+            pr_number_text(&test_pr(12, "main", Some("alice"))),
+            "#12(alice:main)"
+        );
+    }
+
+    /// 只截 head，結尾的 `)` 不能被吃掉。
+    #[test]
+    fn pr_number_text_truncates_head_but_keeps_closing_paren() {
+        let text = pr_number_text(&test_pr(5, "feature/a-very-long-branch-name", None));
+        assert!(text.starts_with("#5(feature/a-very-"), "{text}");
+        assert!(text.ends_with("…)"), "{text}");
+        assert_eq!(
+            console::measure_text_width(&text),
+            "#5()".len() + HEAD_MAX_WIDTH
+        );
+    }
+
+    #[test]
+    fn pr_line_shows_head_in_wide_and_narrow() {
+        let pr = test_pr(243, "topic", None);
+        let (wide, _) = render_pr_line(&pr, test_layout(false, 11), false, None);
+        let (narrow, _) = render_pr_line(&pr, test_layout(true, 0), false, None);
+        assert!(
+            line_text(&wide).starts_with("  #243(topic)"),
+            "{}",
+            line_text(&wide)
+        );
+        assert!(
+            line_text(&narrow).starts_with("  #243(topic) "),
+            "{}",
+            line_text(&narrow)
+        );
+    }
+
+    /// head 長短不一時，標題起始欄要對齊。
+    #[test]
+    fn pr_titles_align_when_heads_differ() {
+        let prs = [
+            test_pr(1, "a", None),
+            test_pr(2, "much-longer-branch", None),
+        ];
+        let pad = prs
+            .iter()
+            .map(|p| console::measure_text_width(&pr_number_text(p)))
+            .max()
+            .unwrap();
+        let title_col = |pr: &GhPullRequest| {
+            let (line, _) = render_pr_line(pr, test_layout(false, pad), false, None);
+            let text = line_text(&line);
+            console::measure_text_width(&text[..text.find("TITLE").unwrap()])
+        };
+        assert_eq!(title_col(&prs[0]), title_col(&prs[1]));
+    }
+
+    /// Issues 寬版維持原本 `#{:<5}` 的欄寬。
+    #[test]
+    fn issue_line_keeps_original_number_column_width() {
+        let issue = GhIssue {
+            number: 7,
+            title: "TITLE".to_string(),
+            state: "OPEN".to_string(),
+            labels: Vec::new(),
+            author: crate::github::GhAuthor {
+                login: "me".to_string(),
+            },
+            created_at: String::new(),
+            body: String::new(),
+            url: String::new(),
+            closed_at: None,
+            updated_at: String::new(),
+            parent: None,
+            sub_issues: Vec::new(),
+        };
+        let layout = test_layout(false, NUMBER_MIN_WIDTH);
+        let (line, _) = render_issue_line(&issue, layout, false, None);
+        assert!(
+            line_text(&line).starts_with("  #7      "),
+            "{}",
+            line_text(&line)
+        );
     }
 }
