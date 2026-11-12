@@ -186,7 +186,7 @@ fn run_gh(path: &Path, args: &[&str]) -> Result<String, String> {
     let output = run_with_timeout(cmd, None, GH_TIMEOUT)?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = crate::process::stderr_summary(&output.stderr);
         return Err(t!("github.error.gh_failed", detail = stderr).into_owned());
     }
 
@@ -1658,7 +1658,7 @@ pub fn update_body(path: &Path, number: u64, kind: GhItemKind, body: &str) -> Re
     let output = run_with_timeout(cmd, Some(body.as_bytes()), GH_TIMEOUT)?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = crate::process::stderr_summary(&output.stderr);
         return Err(t!("github.error.edit_failed", detail = stderr).into_owned());
     }
     Ok(())
@@ -1729,24 +1729,6 @@ impl StateAction {
             }
             (StateAction::Reopen, GhItemKind::PullRequest) => {
                 t!("github.state_action.reopen_pr.pending", number = number)
-            }
-        }
-        .into_owned()
-    }
-
-    pub fn success(self, kind: GhItemKind, number: u64) -> String {
-        match (self, kind) {
-            (StateAction::Close, GhItemKind::Issue) => {
-                t!("github.state_action.close_issue.success", number = number)
-            }
-            (StateAction::Reopen, GhItemKind::Issue) => {
-                t!("github.state_action.reopen_issue.success", number = number)
-            }
-            (StateAction::Close, GhItemKind::PullRequest) => {
-                t!("github.state_action.close_pr.success", number = number)
-            }
-            (StateAction::Reopen, GhItemKind::PullRequest) => {
-                t!("github.state_action.reopen_pr.success", number = number)
             }
         }
         .into_owned()
@@ -2134,14 +2116,6 @@ impl PrDraftAction {
         .into_owned()
     }
 
-    pub fn success(self, number: u64) -> String {
-        match self {
-            PrDraftAction::MarkReady => t!("github.draft.mark_ready.success", number = number),
-            PrDraftAction::ConvertToDraft => t!("github.draft.to_draft.success", number = number),
-        }
-        .into_owned()
-    }
-
     pub fn hint_label(self) -> Cow<'static, str> {
         match self {
             PrDraftAction::MarkReady => t!("github.draft.mark_ready.hint"),
@@ -2204,10 +2178,6 @@ mod tests {
         assert_eq!(
             StateAction::Close.prompt(GhItemKind::Issue, 12),
             "關閉 issue #12？ "
-        );
-        assert_eq!(
-            StateAction::Reopen.success(GhItemKind::PullRequest, 12),
-            "已重新開啟 PR #12"
         );
         assert_eq!(
             StateAction::Close.pending(GhItemKind::Issue, 12),

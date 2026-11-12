@@ -176,14 +176,6 @@ en-US = "Creating tag '%{tag}'…"
 zh-TW = "Tag 已在 local 建立，但 push 失敗：%{detail}"
 en-US = "Tag created locally, but push failed: %{detail}"
 
-[view.create_tag.done_push]
-zh-TW = "已建立 tag '%{tag}' 並 push 到 origin"
-en-US = "Tag '%{tag}' created and pushed to origin"
-
-[view.create_tag.done]
-zh-TW = "已建立 tag '%{tag}'"
-en-US = "Tag '%{tag}' created"
-
 [view.create_tag.title]
 zh-TW = " 建立 Tag"
 en-US = " Create Tag"
@@ -211,14 +203,6 @@ en-US = "Deleting tag '%{tag}'…"
 [view.delete_tag.remote_failed]
 zh-TW = "Local tag 已刪除，但從 remote 刪除失敗：%{detail}"
 en-US = "Local tag deleted, but failed to delete from remote: %{detail}"
-
-[view.delete_tag.done_remote]
-zh-TW = "已從 local 與 remote 刪除 tag '%{tag}'"
-en-US = "Tag '%{tag}' deleted from local and remote"
-
-[view.delete_tag.done_local]
-zh-TW = "已在 local 刪除 tag '%{tag}'"
-en-US = "Tag '%{tag}' deleted locally"
 
 [view.delete_tag.title]
 zh-TW = " 刪除 Tag"

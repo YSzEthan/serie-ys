@@ -4,10 +4,6 @@ _version = 2
 zh-TW = "已更新——重啟 ysgit 後生效"
 en-US = "Updated — restart ysgit to apply"
 
-[app.status.auto_fetched]
-zh-TW = "已自動 fetch 到新的 commit"
-en-US = "Auto-fetched new commits"
-
 [app.status.marked]
 zh-TW = "已標記 %{hash}"
 en-US = "Marked %{hash}"
@@ -140,10 +136,6 @@ en-US = "No user command configured for #%{number}"
 zh-TW = "正在 fetch…"
 en-US = "Fetching…"
 
-[app.fetch.done]
-zh-TW = "Fetch 完成"
-en-US = "Fetch complete"
-
 [app.fetch.failed]
 zh-TW = "Fetch 失敗"
 en-US = "Fetch failed"
@@ -156,10 +148,6 @@ en-US = "Auto-fetching…"
 zh-TW = "正在 pull…"
 en-US = "Pulling…"
 
-[app.pull.done]
-zh-TW = "Pull 完成"
-en-US = "Pull complete"
-
 [app.pull.failed]
 zh-TW = "Pull 失敗"
 en-US = "Pull failed"
@@ -168,10 +156,6 @@ en-US = "Pull failed"
 zh-TW = "正在 push…"
 en-US = "Pushing…"
 
-[app.push.done]
-zh-TW = "Push 完成"
-en-US = "Push complete"
-
 [app.push.failed]
 zh-TW = "Push 失敗"
 en-US = "Push failed"
@@ -179,10 +163,6 @@ en-US = "Push failed"
 [app.checkout.pending]
 zh-TW = "正在 checkout '%{target}'…"
 en-US = "Checking out '%{target}'…"
-
-[app.checkout.done]
-zh-TW = "已 checkout '%{target}'"
-en-US = "Checked out '%{target}'"
 
 [app.checkout.failed]
 zh-TW = "Checkout 失敗"
@@ -228,10 +208,6 @@ en-US = "PR #%{number} merged (%{method})"
 zh-TW = "正在刪除 local branch…"
 en-US = "Deleting local branch…"
 
-[app.merge.local_deleted]
-zh-TW = "，已刪除 local branch '%{name}'"
-en-US = ", local branch '%{name}' deleted"
-
 [app.merge.local_not_fully_merged]
 zh-TW = "%{e}（branch 有不在這次 merge 內的 commit，若確定要刪除，請手動處理）"
 en-US = "%{e} (branch has commits outside this merge — delete manually if you are sure)"
@@ -244,10 +220,6 @@ en-US = ", but failed to delete local branch '%{name}': %{hint}"
 zh-TW = "正在刪除 remote branch…"
 en-US = "Deleting remote branch…"
 
-[app.merge.remote_deleted]
-zh-TW = "，已刪除 remote branch '%{head_ref}'"
-en-US = ", remote branch '%{head_ref}' deleted"
-
 [app.merge.remote_delete_failed]
 zh-TW = "，但刪除 remote branch '%{head_ref}' 失敗：%{e}"
 en-US = ", but failed to delete remote branch '%{head_ref}': %{e}"
@@ -255,10 +227,6 @@ en-US = ", but failed to delete remote branch '%{head_ref}': %{e}"
 [app.merge.deleting_tracking]
 zh-TW = "正在刪除本機追蹤分支…"
 en-US = "Deleting local tracking branch…"
-
-[app.merge.tracking_deleted]
-zh-TW = "，已刪除本機追蹤分支 '%{name}'"
-en-US = ", local tracking branch '%{name}' deleted"
 
 [app.merge.tracking_delete_failed]
 zh-TW = "，但刪除本機追蹤分支 '%{name}' 失敗：%{e}"
@@ -279,10 +247,6 @@ en-US = "Force deleting branch '%{name}'…"
 [app.delete_branch.pending]
 zh-TW = "正在刪除 branch '%{name}'…"
 en-US = "Deleting branch '%{name}'…"
-
-[app.delete_branch.done]
-zh-TW = "已刪除 branch '%{name}'"
-en-US = "Branch '%{name}' deleted"
 
 [app.delete_branch.not_fully_merged]
 zh-TW = "%{e}（按 d → f 強制刪除）"

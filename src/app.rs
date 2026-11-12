@@ -905,15 +905,6 @@ impl App<'_> {
                     }
                 }
                 AppEvent::AutoFetchCompleted => {
-                    // 使用者正在 picker／輸入框裡的時候不搶 status line；
-                    // refresh 照做，只有要不要出聲用這道守衛。刻意不用
-                    // `can_interrupt()`——它連 GitHub view 都排除，而盯著
-                    // GitHub view 等 PR 被 merge 正是這個功能存在的理由。
-                    if self.status_line_state.is_idle_or_notification() {
-                        self.status_line_state.set_notification_success(
-                            status_line::auto_fetch_success_msg().into_owned(),
-                        );
-                    }
                     self.reloader.request_full(Instant::now());
                     self.reload_github_branches();
                 }
@@ -2400,9 +2391,7 @@ impl App<'_> {
     /// 長出一份守衛。
     ///
     /// 狀態列那半（閒置或僅顯示通知）另外抽成
-    /// `StatusLineState::is_idle_or_notification`，`AppEvent::AutoFetchCompleted`
-    /// 的守衛也共用同一份——它刻意不要求 `is_browsing_view()`（見該處註解），
-    /// 所以不能直接呼叫這個函式。
+    /// `StatusLineState::is_idle_or_notification`。
     fn can_interrupt(&self) -> bool {
         self.pending_message.is_none()
             && self.view.is_browsing_view()
@@ -2437,13 +2426,11 @@ impl App<'_> {
                 repo: self.repository.path(),
                 args: self.ctx.fetch_prune.fetch_all_args(),
                 pending_msg: t!("app.fetch.pending").into_owned(),
-                success_msg: t!("app.fetch.done").into_owned(),
                 error_prefix: t!("app.fetch.failed"),
                 timeout: GIT_FETCH_TIMEOUT,
                 // 手動 fetch 成功等同「一輪 auto-fetch 已經跑過」，讓倒數與
                 // 基準指紋重新計算，見 `auto_fetch::spawn_resync`。
                 on_success: Some(AppEvent::AutoFetchResync),
-                ignore_success_stderr: false,
             },
         );
     }
@@ -2462,7 +2449,7 @@ impl App<'_> {
     /// `on_success` 刻意不送 `AutoFetchResync`：auto-fetch 的基準是所有 remote
     /// 的 ls-remote 指紋，pull 只 fetch upstream 所在的 remote，在這裡重算會把
     /// 其他 remote 的新內容當成已經看過而漏 fetch。代價是下一輪 auto-fetch 會
-    /// 多跑一次（跳出「自動 fetch 中…」overlay 與成功通知），而且
+    /// 多跑一次（跳出「自動 fetch 中…」overlay），而且
     /// `AutoFetchResync` 順帶的 `reload_github_branches()` 也不會觸發。
     fn pull(&self) {
         spawn_git_task(
@@ -2477,11 +2464,9 @@ impl App<'_> {
                     "--ff-only",
                 ],
                 pending_msg: t!("app.pull.pending").into_owned(),
-                success_msg: t!("app.pull.done").into_owned(),
                 error_prefix: t!("app.pull.failed"),
                 timeout: GIT_PULL_TIMEOUT,
                 on_success: None,
-                ignore_success_stderr: false,
             },
         );
     }
@@ -2511,11 +2496,9 @@ impl App<'_> {
                     "push",
                 ],
                 pending_msg: t!("app.push.pending").into_owned(),
-                success_msg: t!("app.push.done").into_owned(),
                 error_prefix: t!("app.push.failed"),
                 timeout: GIT_PUSH_TIMEOUT,
                 on_success: None,
-                ignore_success_stderr: true,
             },
         );
     }
@@ -2527,11 +2510,9 @@ impl App<'_> {
                 repo: self.repository.path(),
                 args: &["checkout", &target],
                 pending_msg: t!("app.checkout.pending", target = target).into_owned(),
-                success_msg: t!("app.checkout.done", target = target).into_owned(),
                 error_prefix: t!("app.checkout.failed"),
                 timeout: GIT_CHECKOUT_TIMEOUT,
                 on_success: None,
-                ignore_success_stderr: false,
             },
         );
     }
@@ -2652,7 +2633,6 @@ fn spawn_merge_pr(
                     };
                     match result {
                         Ok(()) => {
-                            message.push_str(&t!("app.merge.local_deleted", name = name));
                             refs_changed = true;
                         }
                         Err(e) => {
@@ -2678,18 +2658,13 @@ fn spawn_merge_pr(
                     tx.send(AppEvent::ShowPendingOverlay {
                         message: t!("app.merge.deleting_remote").into_owned(),
                     });
-                    match gh_delete_remote_branch(&repo_path, &head_ref) {
-                        Ok(()) => {
-                            message.push_str(&t!("app.merge.remote_deleted", head_ref = head_ref))
-                        }
-                        Err(e) => {
-                            has_failure = true;
-                            message.push_str(&t!(
-                                "app.merge.remote_delete_failed",
-                                head_ref = head_ref,
-                                e = e
-                            ));
-                        }
+                    if let Err(e) = gh_delete_remote_branch(&repo_path, &head_ref) {
+                        has_failure = true;
+                        message.push_str(&t!(
+                            "app.merge.remote_delete_failed",
+                            head_ref = head_ref,
+                            e = e
+                        ));
                     }
                 }
 
@@ -2702,7 +2677,6 @@ fn spawn_merge_pr(
                     });
                     match delete_remote_tracking_ref(&repo_path, &name) {
                         Ok(()) => {
-                            message.push_str(&t!("app.merge.tracking_deleted", name = name));
                             refs_changed = true;
                         }
                         Err(e) => {
@@ -2728,11 +2702,11 @@ fn spawn_merge_pr(
                 }
 
                 tx.send(AppEvent::HidePendingOverlay);
-                tx.send(if has_failure {
-                    AppEvent::NotifyWarn(message)
-                } else {
-                    AppEvent::NotifySuccess(message)
-                });
+                // 全部成功不通知；merge 本身成功但清理分支失敗時，訊息開頭保留
+                // 「已 merge」，讓使用者知道 PR 沒事、只有後續刪除失敗。
+                if has_failure {
+                    tx.send(AppEvent::NotifyWarn(message));
+                }
             }
             Err(e) => {
                 tx.send(AppEvent::HidePendingOverlay);
@@ -2784,7 +2758,6 @@ fn spawn_toggle_pr_draft(
         tx.send(AppEvent::HidePendingOverlay);
         match result {
             Ok(()) => {
-                tx.send(AppEvent::NotifySuccess(action.success(number)));
                 tx.send(AppEvent::PrDraftToggled {
                     number,
                     is_draft: action.result_is_draft(),
@@ -2818,7 +2791,6 @@ fn spawn_toggle_state(
         tx.send(AppEvent::HidePendingOverlay);
         match result {
             Ok(()) => {
-                tx.send(AppEvent::NotifySuccess(action.success(kind, number)));
                 tx.send(AppEvent::RefreshGitHub {
                     state: filter_state,
                 });
@@ -2852,9 +2824,6 @@ fn spawn_delete_branch(repo: &Path, ec: &EventController, name: String, force: b
         tx.send(AppEvent::HidePendingOverlay);
         match result {
             Ok(()) => {
-                tx.send(AppEvent::NotifySuccess(
-                    t!("app.delete_branch.done", name = name).into_owned(),
-                ));
                 tx.send(AppEvent::Refresh);
             }
             Err(e) => {
@@ -2895,26 +2864,19 @@ const GIT_PULL_TIMEOUT: Duration = Duration::from_secs(1800);
 /// 回報失敗時 push 不一定真的失敗。
 const GIT_PUSH_TIMEOUT: Duration = Duration::from_secs(1800);
 
-/// `spawn_git_task` 的參數包——原本 7 個位置參數裡 `pending_msg`／
-/// `success_msg`／`error_prefix` 三個相鄰同型別，寫反編譯器抓不到（跟
-/// `AutoFetchOverrides` doc comment 點名的同一類風險），加第 8 個參數
-/// `on_success` 正好是收進具名欄位的時機。
+/// `spawn_git_task` 的參數包——`pending_msg`／`error_prefix` 這類相鄰同型別
+/// 欄位寫反編譯器抓不到，收進具名欄位。
 struct GitTask<'a> {
     repo: &'a Path,
     args: &'a [&'a str],
     pending_msg: String,
-    success_msg: String,
     error_prefix: Cow<'static, str>,
     timeout: Duration,
-    /// 指令成功時（除了固定的 `NotifySuccess` + `AutoRefresh`）額外要送的
-    /// 一個事件；`None` 給不需要的呼叫端（例如 `checkout_commit`）用。目前
-    /// 唯一用途是 `fetch_all()` 送 `AppEvent::AutoFetchResync`，讓手動
-    /// fetch 成功後 auto-fetch 的倒數與基準跟著重整。
+    /// 指令成功時（除了固定的 `AutoRefresh`）額外要送的一個事件；`None`
+    /// 給不需要的呼叫端（例如 `checkout_commit`）用。目前唯一用途是
+    /// `fetch_all()` 送 `AppEvent::AutoFetchResync`，讓手動 fetch 成功後
+    /// auto-fetch 的倒數與基準跟著重整。
     on_success: Option<AppEvent>,
-    /// 成功時固定顯示 `success_msg`，不拿 stderr 當訊息。`git push` 成功時
-    /// stderr 會帶 `remote:` 訊息與 pre-push hook 的輸出，多行接成一行後
-    /// 比「完成」更難讀。
-    ignore_success_stderr: bool,
 }
 
 fn spawn_git_task(ec: &EventController, task: GitTask) {
@@ -2922,11 +2884,9 @@ fn spawn_git_task(ec: &EventController, task: GitTask) {
         repo,
         args,
         pending_msg,
-        success_msg,
         error_prefix,
         timeout,
         on_success,
-        ignore_success_stderr,
     } = task;
     let repo_path = repo.to_path_buf();
     let tx = ec.sender();
@@ -2943,13 +2903,6 @@ fn spawn_git_task(ec: &EventController, task: GitTask) {
         tx.send(AppEvent::HidePendingOverlay);
         match output {
             Ok(o) if o.status.success() => {
-                let detail = String::from_utf8_lossy(&o.stderr).trim().to_string();
-                let msg = if detail.is_empty() || ignore_success_stderr {
-                    success_msg
-                } else {
-                    detail
-                };
-                tx.send(AppEvent::NotifySuccess(msg));
                 // checkout／建立或刪除 tag／ref 一定動到 HEAD 或 refs，
                 // 一律當 Full，不是 WorkingTree；`at = now()`——這是
                 // serie 自己觸發的變更，不需要跟任何「上一次 Full」比對。
@@ -2962,7 +2915,7 @@ fn spawn_git_task(ec: &EventController, task: GitTask) {
                 }
             }
             Ok(o) => {
-                let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
+                let stderr = crate::process::stderr_summary(&o.stderr);
                 tx.send(AppEvent::NotifyError(
                     t!("common.failed_with", prefix = error_prefix, detail = stderr).into_owned(),
                 ));

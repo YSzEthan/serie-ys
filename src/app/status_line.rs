@@ -53,12 +53,6 @@ pub(super) fn update_installed_hint() -> Cow<'static, str> {
     t!("app.status.update_installed")
 }
 
-/// `AppEvent::AutoFetchCompleted` 顯示用的固定文案，唯一生產者是
-/// `app.rs` 的處理端；`auto_fetch` 模組不帶 payload，見該事件的文件。
-pub(super) fn auto_fetch_success_msg() -> Cow<'static, str> {
-    t!("app.status.auto_fetched")
-}
-
 /// 使用者沒有按下重啟：更新其實已經做完了，留一句話提醒手動重啟。
 fn restart_skipped_notice() -> StatusLine {
     StatusLine::NotificationSuccess(update_installed_hint().into_owned())
@@ -804,8 +798,8 @@ impl StatusLineState {
 
     /// 狀態列現在能不能被「背景不請自來」的通知寫入：閒置，或只是壓著
     /// 另一則通知。picker／prompt 都不算。`is_idle`／`is_showing_notification`
-    /// 各自的語意仍然分開（見上），這裡只是把兩者的 `||` 組合具名化，讓
-    /// `can_interrupt` 與背景通知的守衛共用同一份真值，不要各自手寫一次。
+    /// 各自的語意仍然分開（見上），這裡只是把兩者的 `||` 組合具名化，
+    /// 給 `can_interrupt` 用。
     pub(super) fn is_idle_or_notification(&self) -> bool {
         self.is_idle() || self.is_showing_notification()
     }

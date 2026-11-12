@@ -93,6 +93,8 @@ fn run_remote_steps(repo_path: &Path, ref_name: &str, steps: &[RemoteOpt]) -> St
                 let result = delete_remote_branch(repo_path, ref_name);
                 if let (true, Some(oid)) = (result.is_ok(), saved_oid) {
                     if let Err(e) = restore_remote_tracking_ref(repo_path, ref_name, &oid) {
+                        // 要算失敗：全部成功時不通知，不計入就整個看不到這則錯誤。
+                        failed += 1;
                         lines.push(e);
                     }
                 }
@@ -248,11 +250,11 @@ impl<'a> DeleteRefView<'a> {
                 tx.send(AppEvent::Refresh);
             }
             tx.send(AppEvent::HidePendingOverlay);
-            tx.send(match (outcome.succeeded, outcome.failed) {
-                (_, 0) => AppEvent::NotifySuccess(outcome.message),
-                (0, _) => AppEvent::NotifyError(outcome.message),
-                _ => AppEvent::NotifyWarn(outcome.message),
-            });
+            match (outcome.succeeded, outcome.failed) {
+                (_, 0) => {}
+                (0, _) => tx.send(AppEvent::NotifyError(outcome.message)),
+                _ => tx.send(AppEvent::NotifyWarn(outcome.message)),
+            }
         });
     }
 
@@ -320,16 +322,6 @@ impl<'a> DeleteRefView<'a> {
 
             match result {
                 Ok(()) => {
-                    let msg = match ref_type {
-                        RefType::Tag if delete_from_remote => {
-                            t!("view.delete_tag.done_remote", tag = ref_name)
-                        }
-                        RefType::Tag => t!("view.delete_tag.done_local", tag = ref_name),
-                        RefType::Branch => t!("app.delete_branch.done", name = ref_name),
-                        RefType::RemoteBranch => unreachable!("由 delete_remote_branch_rows 處理"),
-                    }
-                    .into_owned();
-                    tx.send(AppEvent::NotifySuccess(msg));
                     tx.send(AppEvent::HidePendingOverlay);
                     tx.send(AppEvent::Refresh);
                 }

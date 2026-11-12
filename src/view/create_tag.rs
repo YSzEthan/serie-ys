@@ -206,13 +206,6 @@ impl<'a> CreateTagView<'a> {
                 }
             }
 
-            // 成功
-            let msg = if push_to_remote {
-                t!("view.create_tag.done_push", tag = tag_name).into_owned()
-            } else {
-                t!("view.create_tag.done", tag = tag_name).into_owned()
-            };
-            tx.send(AppEvent::NotifySuccess(msg));
             tx.send(AppEvent::HidePendingOverlay);
             tx.send(AppEvent::Refresh);
         });

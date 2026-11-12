@@ -404,9 +404,7 @@ pub enum AppEvent {
     },
     /// `auto_fetch` 真的判定要 fetch、且 `git fetch` 成功了——沒有變化、
     /// 不可打斷跳過、或任何一步失敗都不送這個事件（見 `auto_fetch` 模組
-    /// 文件），所以它本身就代表「該讓使用者知道」，不必帶 payload：顯示
-    /// 的文案固定，見 `app.rs` 處理端。顯示與否仍要過守衛：使用者正在
-    /// picker／輸入框裡的時候不搶 status line。
+    /// 文件）。成功不顯示訊息，處理端只負責重新載入。
     AutoFetchCompleted,
     /// 手動 `fetch_all()` 成功後送出——等同「一輪 auto-fetch 已經跑過」，
     /// 讓倒數重新計算、比對基準重新計算，不能讓已排定的舊排程再判定一次
