@@ -201,6 +201,8 @@ pub enum AppEvent {
     /// 訊息、游標在訊息內的 byte 位置、右側的 transient 訊息。
     UpdateStatusInput(String, usize, Option<String>),
     NotifyInfo(String),
+    /// 切換類的一閃即逝提示：只留 `BRIEF_NOTIFICATION_TTL`，不是預設的 15 秒。
+    NotifyInfoBrief(String),
     NotifySuccess(String),
     NotifyWarn(String),
     NotifyError(String),
