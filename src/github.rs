@@ -132,6 +132,11 @@ pub struct GhPullRequest {
     pub labels: Vec<GhLabel>,
     pub author: GhAuthor,
     pub head_ref_name: String,
+    /// fork PR 的 head repo owner；同 repo 的 PR 為 `None`。fork 的 head branch
+    /// 常叫 `main`，列表上要靠 owner 才分得出不是本 repo 的 `main`
+    /// （見 `head_label`）。
+    #[serde(default)]
+    pub head_owner: Option<String>,
     /// PR head branch 目前指向的 commit id（GraphQL `headRefOid`）。用來判斷
     /// 本地同名分支的 tip 是不是就是這次被 merge 的版本——相同才能安全強刪
     /// 本地分支，不必依賴 `git branch -d` 自己的 reachability 判斷（見
@@ -151,6 +156,28 @@ pub struct GhPullRequest {
     #[serde(default, rename = "closingIssuesReferences")]
     pub linked_issues: Vec<GhRelatedIssue>,
     pub diff_stat: DiffStat,
+}
+
+impl GhPullRequest {
+    /// 列表顯示用的 head：同 repo 為 `branch`，fork 為 `owner:branch`。
+    /// branch 以數字結尾時只留結尾那串數字（見 `trailing_digits_or_all`）。
+    pub fn head_label(&self) -> String {
+        let branch = trailing_digits_or_all(&self.head_ref_name);
+        match &self.head_owner {
+            Some(owner) => format!("{owner}:{branch}"),
+            None => branch.to_string(),
+        }
+    }
+}
+
+/// `issue/1234` → `1234`、`issue54321` → `54321`；結尾不是數字就原樣回傳。
+fn trailing_digits_or_all(branch: &str) -> &str {
+    let prefix_len = branch.trim_end_matches(|c: char| c.is_ascii_digit()).len();
+    if prefix_len == branch.len() {
+        branch
+    } else {
+        &branch[prefix_len..]
+    }
 }
 
 /// PR 的變更行數，跟 `baseRefName` 一樣是 PR 本身的屬性，隨 PR 清單查詢
@@ -417,6 +444,7 @@ pub fn list_pull_requests(
                     pageInfo {{ hasNextPage endCursor }}
                     nodes {{
                         number title state body url closedAt updatedAt headRefName headRefOid baseRefName isDraft isCrossRepository additions deletions
+                        headRepositoryOwner {{ login }}
                         author {{ login }}
                         labels(first:20) {{ nodes {{ name color }} }}
                         closingIssuesReferences(first:20) {{ nodes {{ number title state url }} }}
@@ -506,6 +534,9 @@ struct GqlPrNode {
     base_ref_name: String,
     is_draft: bool,
     is_cross_repository: bool,
+    /// fork 被刪掉時 GitHub 回 null。
+    #[serde(default)]
+    head_repository_owner: Option<GhAuthor>,
     #[serde(default)]
     closed_at: Option<String>,
     #[serde(default)]
@@ -525,6 +556,10 @@ impl GqlPrNode {
             &self.base_ref_name,
             default_branch,
         );
+        let head_owner = self.is_cross_repository.then(|| {
+            self.head_repository_owner
+                .map_or_else(|| "ghost".to_string(), |o| o.login)
+        });
         GhPullRequest {
             number: self.number,
             title: self.title,
@@ -534,6 +569,7 @@ impl GqlPrNode {
                 login: "ghost".to_string(),
             }),
             head_ref_name: self.head_ref_name,
+            head_owner,
             head_ref_oid: self.head_ref_oid,
             base_ref_name: self.base_ref_name,
             is_draft: self.is_draft,
@@ -2768,6 +2804,50 @@ mod tests {
         assert_eq!(encode_ref_path("what?"), "what%3F");
     }
 
+    #[test]
+    fn trailing_digits_or_all_keeps_only_trailing_number() {
+        assert_eq!(trailing_digits_or_all("issue/1234"), "1234");
+        assert_eq!(trailing_digits_or_all("issue/32"), "32");
+        assert_eq!(trailing_digits_or_all("issue54321"), "54321");
+        assert_eq!(trailing_digits_or_all("26111215"), "26111215");
+        assert_eq!(trailing_digits_or_all("afdfsdaf"), "afdfsdaf");
+        assert_eq!(trailing_digits_or_all("1234-fix"), "1234-fix");
+        assert_eq!(trailing_digits_or_all(""), "");
+    }
+
+    /// fork 的 `owner:` 前綴照留，只縮 branch 的部分。
+    #[test]
+    fn head_label_shortens_branch_after_owner_prefix() {
+        let json = r#"{
+            "data": {
+                "repository": {
+                    "defaultBranchRef": {"name": "main"},
+                    "pullRequests": {
+                        "pageInfo": {"hasNextPage": false, "endCursor": null},
+                        "nodes": [{
+                            "number": 9,
+                            "title": "fork",
+                            "state": "OPEN",
+                            "headRefName": "issue/12",
+                            "headRefOid": "aaa",
+                            "baseRefName": "main",
+                            "isDraft": false,
+                            "isCrossRepository": true,
+                            "headRepositoryOwner": {"login": "alice"},
+                            "author": {"login": "alice"},
+                            "labels": {"nodes": []},
+                            "closingIssuesReferences": {"nodes": []},
+                            "additions": 0,
+                            "deletions": 0
+                        }]
+                    }
+                }
+            }
+        }"#;
+        let page = parse_prs_graphql(json).unwrap();
+        assert_eq!(page.items[0].head_label(), "alice:12");
+    }
+
     /// `defaultBranchRef` 與 `isCrossRepository` 要能從同一支 query 解析出來，
     /// 且要在 parse 當下就算進 `head_branch_deletable`，而不是留給呼叫端。
     #[test]
@@ -2803,6 +2883,7 @@ mod tests {
                                 "baseRefName": "main",
                                 "isDraft": false,
                                 "isCrossRepository": true,
+                                "headRepositoryOwner": {"login": "bob"},
                                 "author": {"login": "bob"},
                                 "labels": {"nodes": []},
                                 "closingIssuesReferences": {"nodes": []},
@@ -2823,6 +2904,22 @@ mod tests {
                                 "closingIssuesReferences": {"nodes": []},
                                 "additions": 0,
                                 "deletions": 0
+                            },
+                            {
+                                "number": 4,
+                                "title": "fork deleted",
+                                "state": "CLOSED",
+                                "headRefName": "main",
+                                "headRefOid": "ddd444",
+                                "baseRefName": "main",
+                                "isDraft": false,
+                                "isCrossRepository": true,
+                                "headRepositoryOwner": null,
+                                "author": {"login": "dave"},
+                                "labels": {"nodes": []},
+                                "closingIssuesReferences": {"nodes": []},
+                                "additions": 0,
+                                "deletions": 0
                             }
                         ]
                     }
@@ -2833,6 +2930,10 @@ mod tests {
         assert!(page.items[0].head_branch_deletable);
         assert!(!page.items[1].head_branch_deletable);
         assert!(!page.items[2].head_branch_deletable);
+        assert_eq!(page.items[0].head_label(), "feature/x");
+        assert_eq!(page.items[1].head_label(), "bob:feature/y");
+        assert_eq!(page.items[2].head_label(), "main");
+        assert_eq!(page.items[3].head_label(), "ghost:main");
         assert_eq!(
             page.items[0].diff_stat,
             DiffStat {
