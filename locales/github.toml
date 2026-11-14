@@ -336,6 +336,10 @@ en-US = "  (outdated)"
 zh-TW = "  （已解決）"
 en-US = "  (resolved)"
 
+[github.timeline.replies]
+zh-TW = "%{n} 則回覆"
+en-US = "%{n} replies"
+
 [github.timeline.mergeable]
 zh-TW = "  （可 merge）"
 en-US = "  (mergeable)"

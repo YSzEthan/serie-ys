@@ -2349,6 +2349,8 @@ mod tests {
             outdated: false,
             body: body.to_string(),
             resolved: false,
+            replies: 0,
+            reply_to: None,
         }
     }
 

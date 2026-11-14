@@ -648,6 +648,13 @@ pub struct GhReviewComment {
     /// `parse_timeline_graphql` 拿同一次查詢多帶的 `reviewThreads` 回填的。
     #[serde(default)]
     pub resolved: bool,
+    /// 這則留言所在 thread 的回覆數——同樣由 `parse_timeline_graphql` 回填。
+    /// 回覆本身（`reply_to` 有值）會在回填前被濾掉，view 層看到的一律是原留言。
+    #[serde(default)]
+    pub replies: usize,
+    /// 只用來判斷「是不是回覆」，回填後不會再被讀取。
+    #[serde(default, rename = "replyTo")]
+    pub reply_to: Option<serde::de::IgnoredAny>,
 }
 
 /// PR 目前是否可以合併。`UNKNOWN`（GitHub 惰性計算出的第三種狀態，
@@ -694,9 +701,10 @@ const THREADS_PAGE_SIZE: usize = 100;
 /// `PullRequestReviewComment` 沒有 resolved 欄位，只能靠 thread 反查。
 ///
 /// thread 內的留言取前 100 則，單一 thread 超過這個數量時，多出來的留言會被
-/// 當成未 resolved（實測最長的 thread 只有 6 則）。
+/// 當成未 resolved（實測最長的 thread 只有 6 則）。`totalCount` 則是 thread
+/// 的總留言數，回覆數 = `totalCount - 1`。
 const REVIEW_THREADS_SELECTION: &str = r#"pageInfo { hasNextPage endCursor }
-    nodes { isResolved comments(first:100) { nodes { id } } }"#;
+    nodes { isResolved comments(first:100) { totalCount nodes { id } } }"#;
 
 /// 每筆 context 要取的欄位，首頁與續頁查詢共用，不會漂移。
 const CHECK_CONTEXT_NODES: &str = r#"__typename
@@ -792,7 +800,7 @@ fn build_timeline_query(kind: GhItemKind, first_page: bool) -> String {
                                 state body submittedAt author { login }
                                 comments(first:20) {
                                     totalCount
-                                    nodes { id path line originalLine outdated body }
+                                    nodes { id path line originalLine outdated body replyTo { id } }
                                 }
                             }"#,
         ),
@@ -884,17 +892,20 @@ fn parse_timeline_graphql(
     };
     let conn = container.timeline_items;
     let next_cursor = conn.page_info.next_cursor();
-    // resolved 狀態與 line/originalLine 的收斂都在這裡做一次，view 層因此
-    // 只需要認識收斂後的單一 `Option<u32>` 與 `bool`，不必知道 reviewThreads
-    // 這條平行查詢的存在。
+    // resolved／回覆數與 line/originalLine 的收斂都在這裡做一次，view 層因此
+    // 只需要認識收斂後的單一 `Option<u32>`、`bool` 與 `usize`，不必知道
+    // reviewThreads 這條平行查詢的存在。
     let mut items = conn.nodes;
+    drop_replies(&mut items);
     let threads = collect_review_threads(container.review_threads, &items, &mut fetch_more)?;
-    let resolved_ids = resolved_comment_ids(&threads);
+    let info = thread_info(&threads);
     for item in &mut items {
         if let GhTimelineItem::PullRequestReview { comments, .. } = item {
             for c in &mut comments.nodes {
                 c.line = c.line.or(c.original_line);
-                c.resolved = resolved_ids.contains(c.id.as_str());
+                let (resolved, total) = info.get(c.id.as_str()).copied().unwrap_or_default();
+                c.resolved = resolved;
+                c.replies = total.saturating_sub(1);
             }
         }
     }
@@ -936,14 +947,40 @@ struct GqlTimelineContainer {
 }
 
 /// resolved 狀態不在 `PullRequestReviewComment` 上，只在
-/// `PullRequestReviewThread` 上——這裡把已 resolved 的 thread 底下每則
-/// 留言的 id 收集起來，讓 `parse_timeline_graphql` 拿去回填。
-fn resolved_comment_ids(threads: &[GqlReviewThread]) -> FxHashSet<&str> {
+/// `PullRequestReviewThread` 上——這裡把每個 thread 底下每則留言的 id 對應到
+/// `(是否 resolved, thread 總留言數)`，讓 `parse_timeline_graphql` 拿去回填。
+fn thread_info(threads: &[GqlReviewThread]) -> FxHashMap<&str, (bool, usize)> {
     threads
         .iter()
-        .filter(|t| t.is_resolved)
-        .flat_map(|t| t.comments.nodes.iter().map(|c| c.id.as_str()))
+        .flat_map(|t| {
+            let v = (t.is_resolved, t.comments.total_count);
+            t.comments.nodes.iter().map(move |c| (c.id.as_str(), v))
+        })
         .collect()
+}
+
+/// 回覆（`replyTo` 有值）掛在回覆者自己的 review 底下，會變成跟原留言分開的
+/// 區塊。這裡把回覆拿掉，並把內容因此變空的 COMMENTED review 整塊丟掉
+/// （APPROVED／CHANGES_REQUESTED／DISMISSED 本身有意義，一律保留）。
+/// `total_count` 一併扣掉，「還有 N 則留言」才不會多算。
+fn drop_replies(items: &mut Vec<GhTimelineItem>) {
+    items.retain_mut(|item| {
+        let GhTimelineItem::PullRequestReview {
+            state,
+            body,
+            comments,
+            ..
+        } = item
+        else {
+            return true;
+        };
+        let before = comments.nodes.len();
+        comments.nodes.retain(|c| c.reply_to.is_none());
+        comments.total_count = comments
+            .total_count
+            .saturating_sub(before - comments.nodes.len());
+        !(state == "COMMENTED" && body.trim().is_empty() && comments.total_count == 0)
+    });
 }
 
 /// 續頁回應的 `data.repository` 外殼，底下那層（`R`）依查詢而異。
@@ -1054,7 +1091,15 @@ struct GqlReviewThread {
     #[serde(default)]
     is_resolved: bool,
     #[serde(default)]
-    comments: GqlConnection<GqlReviewThreadCommentId>,
+    comments: GqlThreadComments,
+}
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct GqlThreadComments {
+    #[serde(default)]
+    total_count: usize,
+    #[serde(default)]
+    nodes: Vec<GqlReviewThreadCommentId>,
 }
 #[derive(Deserialize)]
 struct GqlReviewThreadCommentId {
@@ -2893,6 +2938,68 @@ mod tests {
         };
         assert!(comments.nodes[0].resolved, "C1's thread is resolved");
         assert!(!comments.nodes[1].resolved, "C2's thread is not resolved");
+    }
+
+    fn review(state: &str, body: &str, comments: serde_json::Value) -> serde_json::Value {
+        let total = comments.as_array().map_or(0, Vec::len);
+        serde_json::json!({
+            "__typename": "PullRequestReview", "state": state, "body": body,
+            "submittedAt": "2026-01-01T00:00:00Z", "author": {"login": "u"},
+            "comments": {"totalCount": total, "nodes": comments},
+        })
+    }
+
+    fn comment(id: &str, reply_to: Option<&str>) -> serde_json::Value {
+        serde_json::json!({
+            "id": id, "path": "a.rs", "line": 1, "originalLine": 1, "outdated": false,
+            "body": "x", "replyTo": reply_to.map(|r| serde_json::json!({"id": r})),
+        })
+    }
+
+    /// 回覆（`replyTo` 有值）從回覆者的 review 拿掉，原留言的回覆數取自 thread
+    /// 的 `totalCount - 1`；內容變空的 COMMENTED review 整塊丟掉，APPROVED 與
+    /// 有 body 的 review 保留，不在 threads 裡的原留言回覆數是 0。
+    #[test]
+    fn parse_timeline_hides_replies_and_counts_them_on_the_root() {
+        let json = serde_json::json!({"data": {"repository": {"pullRequest": {
+            "reviewThreads": {"nodes": [{
+                "isResolved": false,
+                "comments": {"totalCount": 3, "nodes": [{"id": "C1"}, {"id": "R1"}, {"id": "R2"}]},
+            }]},
+            "timelineItems": {"pageInfo": page_info(false, None), "nodes": [
+                review("COMMENTED", "", serde_json::json!([comment("C1", None), comment("C9", None)])),
+                review("COMMENTED", "", serde_json::json!([comment("R1", Some("C1"))])),
+                review("APPROVED", "", serde_json::json!([comment("R2", Some("C1"))])),
+                review("COMMENTED", "總結", serde_json::json!([comment("R3", Some("C1"))])),
+            ]},
+        }}}})
+        .to_string();
+        let page = parse(&json, GhItemKind::PullRequest).unwrap();
+        let shapes: Vec<(String, Vec<(String, usize)>)> = page
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                GhTimelineItem::PullRequestReview {
+                    state, comments, ..
+                } => Some((
+                    state.clone(),
+                    comments
+                        .nodes
+                        .iter()
+                        .map(|c| (c.id.clone(), c.replies))
+                        .collect(),
+                )),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            shapes,
+            vec![
+                ("COMMENTED".into(), vec![("C1".into(), 2), ("C9".into(), 0)]),
+                ("APPROVED".into(), vec![]),
+                ("COMMENTED".into(), vec![]),
+            ]
+        );
     }
 
     /// `line` 為 null（留言所在行被後續 commit 改掉）時 fallback 到
