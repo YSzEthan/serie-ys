@@ -108,6 +108,7 @@ impl<'a> TimelineBlock<'a> {
                     line: c.line,
                     outdated: c.outdated,
                     resolved: c.resolved,
+                    replies: c.replies,
                     body: &c.body,
                 }));
                 if comments.total_count > comments.nodes.len() {
@@ -312,6 +313,7 @@ pub(super) enum TimelineItem<'a> {
         line: Option<u32>,
         outdated: bool,
         resolved: bool,
+        replies: usize,
         body: &'a str,
     },
     Notice(Line<'static>),
@@ -401,6 +403,7 @@ impl<'a> TimelineItem<'a> {
                 line,
                 outdated,
                 resolved,
+                replies,
                 body,
             } => {
                 lines.push(Line::raw(""));
@@ -413,6 +416,12 @@ impl<'a> TimelineItem<'a> {
                 }
                 if resolved {
                     header.push_str(&t!("github.timeline.resolved"));
+                }
+                if replies > 0 {
+                    header.push_str(&format!(
+                        "  \u{f27a} {}",
+                        t!("github.timeline.replies", n = replies)
+                    ));
                 }
                 lines.push(Line::styled(header, Style::default().fg(MUTED_FG)));
                 lines.extend(crate::view::markdown::render(body, width));
