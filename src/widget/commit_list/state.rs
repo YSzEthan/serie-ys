@@ -754,6 +754,25 @@ impl<'a> CommitListState<'a> {
         }
     }
 
+    /// 滑鼠滾輪：視窗捲 `lines` 行（正數往下、負數往上），選取的 commit 留在
+    /// 原處，只有被捲到畫面最上／最下一列時才被推著走。
+    /// 不套 scrolloff：預設的 15 在一般視窗高度下會把游標釘在視窗正中央
+    /// （`effective_scrolloff` 上限是半個視窗），套了的話選取會跟著內容跑，
+    /// 不是「內容滑動」。這跟 Shift-J/K（`scroll_down`／`scroll_up`，維持邊距）
+    /// 是刻意不同的語意。
+    pub fn scroll_view_by(&mut self, lines: isize) {
+        if self.height == 0 {
+            return;
+        }
+        let max_offset = self.total.saturating_sub(self.height);
+        let offset = self.offset.saturating_add_signed(lines).min(max_offset);
+        let cursor = self.offset + self.selected;
+        self.offset = offset;
+        // 游標被捲出視窗上緣 → 貼頂（0）；下緣 → 貼底（height - 1）。
+        // offset ≤ total - height，所以貼底那列一定還在 total 以內。
+        self.selected = cursor.saturating_sub(offset).min(self.height - 1);
+    }
+
     pub fn marked_commit_hash(&self) -> Option<&CommitHash> {
         self.marked_commit_hash.as_ref()
     }
@@ -1323,6 +1342,60 @@ mod tests {
         state.scroll_down();
 
         assert!(state.current_list_status().0 >= 2);
+    }
+
+    /// 滾輪捲視窗不能動選取：就算 scrolloff 大到把游標釘在視窗正中央
+    /// （預設 15、視窗 10 列 → 有效邊距 4），選取的 commit 也要留在原處。
+    #[test]
+    fn scroll_view_by_keeps_the_selected_commit_even_with_a_huge_scrolloff() {
+        let repository = Repository::from_commits(commits_fixture(40));
+        let mut state = scrolloff_fixture(&repository, 10, 15);
+        state.set_visible_selection(VisibleIdx(20));
+        let selected = state.current_visible();
+        let start = state.offset;
+
+        state.scroll_view_by(3);
+        assert_eq!(state.current_visible(), selected, "往下捲不動選取");
+        assert_eq!(state.offset, start + 3, "視窗往下 3 行");
+
+        state.scroll_view_by(-2);
+        assert_eq!(state.current_visible(), selected, "往上捲不動選取");
+        assert_eq!(state.offset, start + 1);
+    }
+
+    #[test]
+    fn scroll_view_by_pushes_the_selection_only_at_the_window_edge() {
+        let repository = Repository::from_commits(commits_fixture(40));
+        let mut state = scrolloff_fixture(&repository, 10, 15);
+        state.set_visible_selection(VisibleIdx(12));
+        let top = state.offset;
+
+        // 視窗被捲過選取列（12）→ 貼在新視窗的最上一列。
+        state.scroll_view_by(100);
+        assert_eq!(state.offset, 30, "上限 = total - height");
+        assert_eq!(state.current_visible(), VisibleIdx(30));
+        assert_eq!(state.selected, 0);
+
+        // 往回捲到頂 → 貼在新視窗的最下一列。
+        state.scroll_view_by(-100);
+        assert_eq!(state.offset, 0);
+        assert_eq!(state.current_visible(), VisibleIdx(9));
+        assert_eq!(state.selected, 9);
+        assert!(state.offset <= top);
+    }
+
+    #[test]
+    fn scroll_view_by_is_noop_when_everything_fits_or_height_is_zero() {
+        let repository = Repository::from_commits(commits_fixture(5));
+        let mut state = scrolloff_fixture(&repository, 10, 3);
+        state.set_visible_selection(VisibleIdx(2));
+        state.scroll_view_by(5);
+        assert_eq!((state.offset, state.current_visible()), (0, VisibleIdx(2)));
+
+        let mut empty = scrolloff_fixture(&repository, 10, 3);
+        empty.reset_height(0);
+        empty.scroll_view_by(5);
+        assert_eq!(empty.offset, 0);
     }
 
     #[test]

@@ -805,13 +805,17 @@ impl CommitList<'_> {
         spans.insert(0, Span::raw(" "));
         spans.push(Span::raw(" "));
         let mut line = Line::from(spans);
-        if row.is_selected {
-            line = line
-                .bg(ratatui_color_to_rgb(self.ctx.color_theme.list_selected_bg))
-                .fg(self.ctx.color_theme.list_selected_fg);
+        let selected_bg = row
+            .is_selected
+            .then(|| ratatui_color_to_rgb(self.ctx.color_theme.list_selected_bg));
+        if let Some(bg) = selected_bg {
+            line = line.bg(bg).fg(self.ctx.color_theme.list_selected_fg);
         }
         let sub = Rect::new(x, y, area.right() - x, 1);
         Widget::render(line, sub, buf);
+        if let Some(bg) = selected_bg {
+            fill_reset_bg(buf, sub, y, bg);
+        }
     }
 
     /// 回傳 (display_idx, raw_idx, &CommitInfo) 的 iterator
@@ -838,6 +842,19 @@ fn apply_row_bg(buf: &mut Buffer, area: Rect, y: u16, bg: Color) {
     // 只覆寫 bg 這個 channel，讓先前寫進 graph cell 的 fg/modifier 得以保留。
     for x in area.left()..area.right() {
         buf[(x, y)].set_bg(bg);
+    }
+}
+
+/// 只補 bg 還是 `Reset` 的格子。ratatui 寫寬字元（CJK）時會把後半格 reset
+/// 成預設樣式，終端機卻兩格都畫上 bg；buffer 不補回的話，選取列換位置
+/// （例如滑鼠滾輪）後那格 diff 認為「沒變」不重畫，舊選取列裡會殘留一格 bg。
+/// 不能用 `apply_row_bg` 整列覆寫：HEAD 標籤、搜尋命中的 span 自帶 bg。
+fn fill_reset_bg(buf: &mut Buffer, area: Rect, y: u16, bg: Color) {
+    for x in area.left()..area.right() {
+        let cell = &mut buf[(x, y)];
+        if cell.bg == Color::Reset {
+            cell.set_bg(bg);
+        }
     }
 }
 
@@ -2500,6 +2517,41 @@ mod tests {
                     "選取列整列 bg 都要覆蓋到，x={x}"
                 );
             }
+        }
+
+        /// ratatui 寫寬字元（CJK）時會把後半格 reset 成預設樣式，但終端機兩格
+        /// 都畫上 bg。buffer 若不補回 bg，選取列換位置後 diff 看那格「沒變」
+        /// 就不重畫，舊選取列裡殘留一格 bg。
+        #[test]
+        fn selected_row_bg_covers_the_trailing_half_of_wide_chars() {
+            let mut commits = text_graph_commits();
+            commits[0].subject = "修正通知 15 秒".into();
+            let repository = Repository::from_commits(commits.clone());
+            let mut state = build_state(&repository, text_graph(&commits), Opts::default());
+            let buf = render_commit_list(&mut state, 10);
+
+            for x in 0..TERM_W {
+                assert_eq!(
+                    buf[(x, 1)].bg,
+                    SELECTED_BG,
+                    "寬字元後半格也要有選取 bg，x={x}"
+                );
+            }
+        }
+
+        /// HEAD 標籤、搜尋命中的 span 自帶 bg，補寬字元後半格時不能蓋掉。
+        #[test]
+        fn fill_reset_bg_keeps_spans_that_carry_their_own_bg() {
+            let area = Rect::new(0, 0, 4, 1);
+            let mut buf = Buffer::empty(area);
+            let own = Color::Rgb(1, 2, 3);
+            buf[(1, 0)].set_bg(own);
+
+            fill_reset_bg(&mut buf, area, 0, SELECTED_BG);
+
+            assert_eq!(buf[(0, 0)].bg, SELECTED_BG, "Reset 的格子要補上");
+            assert_eq!(buf[(1, 0)].bg, own, "自帶 bg 的格子不能被蓋掉");
+            assert_eq!(buf[(3, 0)].bg, SELECTED_BG);
         }
 
         // ---- 滑鼠命中表 --------------------------------------------------

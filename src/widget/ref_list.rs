@@ -72,6 +72,30 @@ impl RefListState {
         true
     }
 
+    /// 指標是否在內容區（滾輪判斷要捲哪一塊用）。
+    pub fn contains(&self, col: u16, row: u16) -> bool {
+        self.inner.contains(Position::new(col, row))
+    }
+
+    /// 滑鼠滾輪：視窗捲 `lines` 行（正數往下），選取列被捲出視窗就貼在邊緣
+    /// 被推著走（Vim Ctrl-E／Ctrl-Y）。回傳選取有沒有變，呼叫端據此讓
+    /// commit list 跟著跳。
+    pub fn scroll(&mut self, lines: isize) -> bool {
+        let height = usize::from(self.inner.height);
+        let max_offset = self.visible_rows.len().saturating_sub(height);
+        self.offset = self.offset.saturating_add_signed(lines).min(max_offset);
+        let Some(index) = self.selected_index() else {
+            return false;
+        };
+        let last_visible = (self.offset + height).saturating_sub(1).max(self.offset);
+        let pushed = index.clamp(self.offset, last_visible);
+        if pushed == index {
+            return false;
+        }
+        self.select_visible_index(pushed);
+        true
+    }
+
     pub fn select_next(&mut self) {
         let next = self
             .selected_index()
@@ -728,6 +752,51 @@ mod tests {
 
         let mut fresh = fixture_state();
         assert!(!fresh.click(3, 0), "還沒 render 過，沒有命中表");
+    }
+
+    fn render_again(state: &mut RefListState, height: u16) {
+        let area = Rect::new(0, 0, 20, height);
+        let mut buf = Buffer::empty(area);
+        RefList::new(test_ctx()).render(area, &mut buf, state);
+    }
+
+    #[test]
+    fn scroll_moves_the_window_but_not_a_selection_that_stays_visible() {
+        // 6 列、視窗 3 列：選第 2 列後往下捲一格，視窗 [1,3] 仍含選取。
+        let mut state = rendered_state(3);
+        state.select_next();
+        state.select_next();
+        render_again(&mut state, 3);
+        let selected = state.selected.clone();
+
+        assert!(!state.scroll(1), "選取沒被推動就不該回報變動");
+        assert_eq!(state.offset, 1);
+        assert_eq!(state.selected, selected);
+
+        render_again(&mut state, 3);
+        assert_eq!(state.offset, 1, "render 不能把視窗拉回選取列");
+    }
+
+    #[test]
+    fn scroll_pushes_the_selection_when_it_hits_the_window_edge() {
+        let mut state = rendered_state(3); // 選取在第 0 列
+        assert!(state.scroll(1), "第 0 列被捲出視窗，選取要被推到新的頂端");
+        assert_eq!(state.offset, 1);
+        assert_eq!(state.selected_index(), Some(1));
+
+        assert!(!state.scroll(-1), "往回捲時選取（第 1 列）仍在視窗內");
+        assert_eq!(state.offset, 0);
+        assert_eq!(state.selected_index(), Some(1));
+    }
+
+    #[test]
+    fn scroll_clamps_to_the_first_and_last_window() {
+        let mut state = rendered_state(3);
+        state.scroll(100);
+        assert_eq!(state.offset, 3, "6 列減 3 列視窗");
+        assert_eq!(state.selected_index(), Some(3));
+        state.scroll(-100);
+        assert_eq!(state.offset, 0);
     }
 
     #[test]
