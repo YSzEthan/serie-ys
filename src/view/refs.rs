@@ -117,6 +117,13 @@ impl<'a> RefsView<'a> {
         }
     }
 
+    /// 滑鼠點擊 refs 側欄：選取被點的 ref，commit list 跟著跳過去。
+    pub fn click(&mut self, col: u16, row: u16) {
+        if self.ref_list_state.click(col, row) {
+            self.update_commit_list_selected();
+        }
+    }
+
     fn checkout_selected_ref(&self) {
         let name = self
             .ref_list_state

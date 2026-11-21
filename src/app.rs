@@ -1294,7 +1294,7 @@ impl App<'_> {
 
     /// 滑鼠左鍵點擊。攔截順序照 `handle_key`：通知、pending、彈窗開著時
     /// 都不能穿透到底下的 view；輸入模式（搜尋、CreateTag、Shell…）也不處理。
-    fn handle_click(&mut self, _col: u16, row: u16) {
+    fn handle_click(&mut self, col: u16, row: u16) {
         if self.notice_message.is_some() {
             self.notice_message = None;
             return;
@@ -1316,7 +1316,8 @@ impl App<'_> {
                     self.open_detail();
                 }
             }
-            View::Detail(ref mut view) => view.click_row(self.repository, row),
+            View::Detail(ref mut view) => view.click(self.repository, col, row),
+            View::Refs(ref mut view) => view.click(col, row),
             View::UserCommand(ref mut view) => view.click_row(
                 self.repository,
                 self.view_area,

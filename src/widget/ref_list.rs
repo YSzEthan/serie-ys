@@ -2,7 +2,7 @@ use std::rc::Rc;
 
 use ratatui::{
     buffer::Buffer,
-    layout::Rect,
+    layout::{Position, Rect},
     style::Style,
     widgets::{Block, Borders, Padding, StatefulWidget, Widget},
 };
@@ -29,6 +29,10 @@ pub struct RefListState {
     selected: Vec<String>,
     opened: FxHashSet<Vec<String>>,
     offset: usize,
+    /// 滑鼠命中用：上一幀內容區（扣掉邊框與 padding）。畫出來的列是從
+    /// `offset` 開始、由 `inner.y` 往下連續的一段，點擊時直接換算 index。
+    /// `RefList::render` 每幀重寫。
+    inner: Rect,
 }
 
 impl RefListState {
@@ -41,9 +45,31 @@ impl RefListState {
             selected,
             opened,
             offset: 0,
+            inner: Rect::default(),
         };
         state.rebuild_visible_rows();
         state
+    }
+
+    /// 滑鼠點擊：選取被點的列；群組／資料夾列再切換展開。回傳是否命中，
+    /// 呼叫端據此讓 commit list 跟著跳到該 ref。
+    pub fn click(&mut self, col: u16, row: u16) -> bool {
+        if !self.inner.contains(Position::new(col, row)) {
+            return false;
+        }
+        let index = self.offset + usize::from(row - self.inner.y);
+        let Some(has_children) = self.visible_rows.get(index).map(|r| r.has_children) else {
+            return false;
+        };
+        self.select_visible_index(index);
+        if has_children {
+            if self.opened.contains(&self.selected) {
+                self.close_node();
+            } else {
+                self.open_node();
+            }
+        }
+        true
     }
 
     pub fn select_next(&mut self) {
@@ -208,6 +234,7 @@ impl StatefulWidget for RefList {
             .padding(Padding::horizontal(1));
         let inner = block.inner(area);
         Widget::render(block, area, buf);
+        state.inner = inner;
         if inner.width == 0 || inner.height == 0 {
             return;
         }
@@ -651,5 +678,72 @@ mod tests {
         );
         let selected_visible_row = state.selected_index().unwrap() - state.offset;
         assert!(selected_visible_row < area.height as usize);
+    }
+
+    /// 畫一幀（左邊框 + padding 1，內容從 x=2 開始），回傳畫好命中表的 state。
+    fn rendered_state(height: u16) -> RefListState {
+        let mut state = fixture_state();
+        let area = Rect::new(0, 0, 20, height);
+        let mut buf = Buffer::empty(area);
+        RefList::new(test_ctx()).render(area, &mut buf, &mut state);
+        state
+    }
+
+    #[test]
+    fn click_leaf_selects_it() {
+        // 列：0 Branches、1 feature、2 main、3 Remotes、4 Tags、5 Stashes
+        let mut state = rendered_state(8);
+        assert!(state.click(3, 2));
+        assert_eq!(state.selected_local_branch(), Some("main".into()));
+        assert_eq!(row_names(&state).len(), 6, "葉節點不會展開／收合任何東西");
+    }
+
+    #[test]
+    fn click_group_selects_and_toggles_open() {
+        let mut state = rendered_state(8);
+        assert!(state.click(3, 3)); // Remotes：展開
+        assert_eq!(state.selected, vec![TREE_REMOTE_ROOT_IDENT.to_string()]);
+        assert_eq!(row_names(&state).len(), 7, "展開後多出 origin 那一列");
+
+        let mut buf = Buffer::empty(Rect::new(0, 0, 20, 8));
+        RefList::new(test_ctx()).render(Rect::new(0, 0, 20, 8), &mut buf, &mut state);
+        assert!(state.click(3, 3)); // 再點一次：收合
+        assert_eq!(row_names(&state).len(), 6);
+    }
+
+    #[test]
+    fn click_folder_expands_nested_branches() {
+        let mut state = rendered_state(8);
+        assert!(state.click(3, 1)); // feature
+        assert_eq!(row_names(&state).len(), 8);
+    }
+
+    #[test]
+    fn click_outside_rows_is_a_miss() {
+        let mut state = rendered_state(8);
+        let before = state.selected.clone();
+        assert!(!state.click(0, 2), "左邊框不是內容區");
+        assert!(!state.click(3, 7), "沒有畫列的空白處");
+        assert_eq!(state.selected, before);
+
+        let mut fresh = fixture_state();
+        assert!(!fresh.click(3, 0), "還沒 render 過，沒有命中表");
+    }
+
+    #[test]
+    fn click_uses_scrolled_offset() {
+        let mut state = rendered_state(3);
+        for _ in 0..4 {
+            state.select_next();
+        }
+        let area = Rect::new(0, 0, 20, 3);
+        let mut buf = Buffer::empty(area);
+        RefList::new(test_ctx()).render(area, &mut buf, &mut state);
+        assert!(state.offset > 0);
+
+        // 畫面第一列對到 visible_rows[offset]，不是 visible_rows[0]。
+        let expected = state.visible_rows[state.offset].identifier.clone();
+        assert!(state.click(3, 0));
+        assert_eq!(state.selected, expected);
     }
 }

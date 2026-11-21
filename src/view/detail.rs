@@ -570,9 +570,20 @@ impl<'a> DetailView<'a> {
         }
     }
 
-    /// 滑鼠點擊 commit 列：原地換成被點的 commit。點到已選取的列、inline
-    /// 面板或空白處都是 no-op——點已選取的列不關閉面板，避免雙擊習慣開了又關。
-    pub fn click_row(&mut self, repository: &Repository, row: u16) {
+    /// 滑鼠點擊：先看有沒有點在 inline 面板內（檔案列 → 游標過去並看 diff、
+    /// 左欄 → 切回 Info），沒有才當成點 commit 列。
+    /// pane 要先切好再 `sync_diff`——Info pane 下 `sync_diff` 不會載入。
+    pub fn click(&mut self, repository: &Repository, col: u16, row: u16) {
+        if self.commit_detail_state.click(col, row) {
+            self.sync_diff();
+        } else {
+            self.click_row(repository, row);
+        }
+    }
+
+    /// 點 commit 列：原地換成被點的 commit。點到已選取的列、inline 面板或
+    /// 空白處都是 no-op——點已選取的列不關閉面板，避免雙擊習慣開了又關。
+    fn click_row(&mut self, repository: &Repository, row: u16) {
         let Some(state) = self.commit_list_state.as_ref() else {
             return;
         };

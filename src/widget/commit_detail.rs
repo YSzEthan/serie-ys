@@ -3,7 +3,7 @@ use std::{borrow::Cow, rc::Rc};
 use chrono::{DateTime, FixedOffset};
 use ratatui::{
     buffer::Buffer,
-    layout::{Constraint, Layout, Rect},
+    layout::{Constraint, Layout, Position, Rect},
     style::{Color, Modifier, Style, Stylize},
     symbols::border,
     text::{Line, Span},
@@ -62,9 +62,34 @@ pub struct CommitDetailState {
     /// 上次 render 時 subject 是否超過 marquee 可用寬度。App tick 迴圈讀這個
     /// 決定要不要繼續推進 marquee_frame。
     subject_overflows: std::cell::Cell<bool>,
+    /// 滑鼠命中用：上一幀 render 的左欄（Info）範圍、檔案樹內容範圍，以及
+    /// 畫出來且可選的檔案列 `(螢幕 y, rows 的 index)`。
+    info_area: Rect,
+    files_inner: Rect,
+    file_hits: Vec<(u16, usize)>,
 }
 
 impl CommitDetailState {
+    /// 滑鼠點擊：點到檔案列 → 游標移過去並切到 Files pane；點到左欄 → 切回
+    /// Info pane。回傳是否命中，呼叫端據此重新載入 diff。
+    /// 目錄／標題列不在命中表裡，點了不動作。
+    pub fn click(&mut self, col: u16, row: u16) -> bool {
+        let pos = Position::new(col, row);
+        if self.files_inner.contains(pos) {
+            let Some(&(_, idx)) = self.file_hits.iter().find(|&&(y, _)| y == row) else {
+                return false;
+            };
+            self.file_cursor = Some(idx);
+            self.active_pane = DetailPane::Files;
+            return true;
+        }
+        if self.info_area.contains(pos) {
+            self.active_pane = DetailPane::Info;
+            return true;
+        }
+        false
+    }
+
     pub fn active_pane(&self) -> DetailPane {
         self.active_pane
     }
@@ -213,46 +238,20 @@ impl StatefulWidget for CommitDetail<'_> {
     type State = CommitDetailState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
-        let [left_area, divider_area, right_area] = Layout::horizontal([
-            Constraint::Percentage(50),
-            Constraint::Length(1),
-            Constraint::Min(0),
-        ])
-        .areas(area);
-
-        let left_active = state.active_pane() == DetailPane::Info;
-
-        let available = left_area.width.saturating_sub(2) as usize;
-        // 寬度基準必須跟下面的 `scroll_window` 一致，理由見 `marquee::display_width`。
-        state
-            .subject_overflows
-            .set(crate::widget::marquee::display_width(&self.commit.subject) > available);
-        let left_lines = self.info_lines(LineMode::Render(available));
-
-        let glyphs = GlyphSet::from_style(self.ctx.graph_style);
-        let block = detail_block(self.ctx.color_theme.divider_fg, glyphs);
-        let inner_h = block.inner(area).height as usize;
-
-        state.clamp_left_offset(left_lines.len(), inner_h);
-        state.set_files_window_height(inner_h);
-        state.resync_files_window(self.rows.len());
-
-        let left_lines: Vec<Line> = left_lines.into_iter().skip(state.left_offset).collect();
-        let left_lines = if left_active {
-            left_lines
-        } else {
-            dim_lines(left_lines)
-        };
-
-        let left_paragraph = Paragraph::new(left_lines)
-            .style(Style::default().fg(self.ctx.color_theme.fg))
-            .block(block);
-        left_paragraph.render(left_area, buf);
-
-        // 渲染垂直分隔線
-        render_vertical_divider(divider_area, buf, self.ctx.color_theme.divider_fg, glyphs);
-
-        render_file_tree_pane(self.rows, right_area, buf, state, &self.ctx);
+        render_detail_panes(
+            area,
+            buf,
+            state,
+            &self.ctx,
+            self.rows,
+            |state, available| {
+                // 寬度基準必須跟 `scroll_window` 一致，理由見 `marquee::display_width`。
+                state
+                    .subject_overflows
+                    .set(crate::widget::marquee::display_width(&self.commit.subject) > available);
+                self.info_lines(LineMode::Render(available))
+            },
+        );
     }
 }
 
@@ -450,21 +449,68 @@ impl CommitDetail<'_> {
     }
 }
 
-/// 檔案樹右側 pane 的共用渲染邏輯：截斷＋補白、選取列 highlight、捲動視窗、
-/// 非 focus 時 dim。`CommitDetail` 與 `WorkingChangesDetail` 共用同一份，
-/// 避免同樣的邏輯抄兩次。`right_available`／`right_active`／`block` 都能從
-/// `area`／`state`／`ctx` 推導，不需要呼叫端各自算好再傳進來。
+/// 左（Info）／分隔線／右（檔案樹）三欄的共用渲染：`CommitDetail` 與
+/// `WorkingChangesDetail` 只差左欄內容怎麼產生，其餘（捲動夾取、dim、分隔線、
+/// 滑鼠命中表）全部在這裡。`left_lines` 拿到狀態與左欄可用寬度。
+fn render_detail_panes<'a>(
+    area: Rect,
+    buf: &mut Buffer,
+    state: &mut CommitDetailState,
+    ctx: &AppContext,
+    rows: &[TreeRow],
+    left_lines: impl FnOnce(&CommitDetailState, usize) -> Vec<Line<'a>>,
+) {
+    let [left_area, divider_area, right_area] = Layout::horizontal([
+        Constraint::Percentage(50),
+        Constraint::Length(1),
+        Constraint::Min(0),
+    ])
+    .areas(area);
+
+    let left_active = state.active_pane() == DetailPane::Info;
+    let available = left_area.width.saturating_sub(2) as usize;
+    let left_lines = left_lines(state, available);
+
+    let glyphs = GlyphSet::from_style(ctx.graph_style);
+    let block = detail_block(ctx.color_theme.divider_fg, glyphs);
+    let inner_h = block.inner(area).height as usize;
+
+    state.clamp_left_offset(left_lines.len(), inner_h);
+    state.set_files_window_height(inner_h);
+    state.resync_files_window(rows.len());
+    state.info_area = left_area;
+
+    let left_lines: Vec<Line> = left_lines.into_iter().skip(state.left_offset).collect();
+    let left_lines = if left_active {
+        left_lines
+    } else {
+        dim_lines(left_lines)
+    };
+
+    let left_paragraph = Paragraph::new(left_lines)
+        .style(Style::default().fg(ctx.color_theme.fg))
+        .block(block);
+    left_paragraph.render(left_area, buf);
+
+    render_vertical_divider(divider_area, buf, ctx.color_theme.divider_fg, glyphs);
+
+    render_file_tree_pane(rows, right_area, buf, state, ctx);
+}
+
+/// 檔案樹右側 pane 的渲染：截斷＋補白、選取列 highlight、捲動視窗、
+/// 非 focus 時 dim，同時把畫出來的檔案列寫進滑鼠命中表。
 fn render_file_tree_pane(
     rows: &[TreeRow],
     area: Rect,
     buf: &mut Buffer,
-    state: &CommitDetailState,
+    state: &mut CommitDetailState,
     ctx: &AppContext,
 ) {
     let right_available = area.width.saturating_sub(2) as usize;
     let right_active = state.active_pane() == DetailPane::Files;
     let glyphs = GlyphSet::from_style(ctx.graph_style);
     let block = detail_block(ctx.color_theme.divider_fg, glyphs);
+    let inner = block.inner(area);
 
     // 先 skip 視窗外的 row 再截斷／highlight，畫面外的列不用白做一次
     // clone＋補白。
@@ -486,6 +532,13 @@ fn render_file_tree_pane(
     } else {
         dim_lines(right_lines)
     };
+
+    let hits = (inner.top()..inner.bottom())
+        .zip(state.files_window_top()..rows.len())
+        .filter(|&(_, i)| rows[i].file.is_some())
+        .collect();
+    state.files_inner = inner;
+    state.file_hits = hits;
 
     let right_paragraph = Paragraph::new(right_lines)
         .style(Style::default().fg(ctx.color_theme.fg))
@@ -604,41 +657,9 @@ impl StatefulWidget for WorkingChangesDetail<'_> {
     type State = CommitDetailState;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
-        let [left_area, divider_area, right_area] = Layout::horizontal([
-            Constraint::Percentage(50),
-            Constraint::Length(1),
-            Constraint::Min(0),
-        ])
-        .areas(area);
-
-        let left_active = state.active_pane() == DetailPane::Info;
-
-        let left_lines = self.info_lines();
-
-        let glyphs = GlyphSet::from_style(self.ctx.graph_style);
-        let block = detail_block(self.ctx.color_theme.divider_fg, glyphs);
-        let inner_h = block.inner(area).height as usize;
-
-        state.clamp_left_offset(left_lines.len(), inner_h);
-        state.set_files_window_height(inner_h);
-        state.resync_files_window(self.rows.len());
-
-        let left_lines: Vec<Line> = left_lines.into_iter().skip(state.left_offset).collect();
-        let left_lines = if left_active {
-            left_lines
-        } else {
-            dim_lines(left_lines)
-        };
-
-        let left_paragraph = Paragraph::new(left_lines)
-            .style(Style::default().fg(self.ctx.color_theme.fg))
-            .block(block);
-        left_paragraph.render(left_area, buf);
-
-        // 渲染垂直分隔線
-        render_vertical_divider(divider_area, buf, self.ctx.color_theme.divider_fg, glyphs);
-
-        render_file_tree_pane(self.rows, right_area, buf, state, &self.ctx);
+        render_detail_panes(area, buf, state, &self.ctx, self.rows, |_, _| {
+            self.info_lines()
+        });
     }
 }
 
@@ -1246,5 +1267,94 @@ mod tests {
             crate::git::DiffTarget::Untracked { path } => assert_eq!(path, "new_file.txt"),
             other => panic!("unexpected target: {other:?}"),
         }
+    }
+
+    // ---- 滑鼠點擊 --------------------------------------------------------
+
+    fn click_ctx() -> crate::app::AppContext {
+        crate::app::AppContext {
+            keybind: crate::keybind::KeyBind::new(None),
+            core_config: crate::config::CoreConfig::default(),
+            ui_config: crate::config::UiConfig::default(),
+            color_theme: ColorTheme::default(),
+            graph_style: crate::GraphStyle::default(),
+            graph_width: None,
+            compact: None,
+            update: crate::update::UpdateSettings::default(),
+            auto_fetch: crate::auto_fetch::AutoFetchSettings::default(),
+            fetch_prune: crate::git::FetchPrune::default(),
+            shell_command: Vec::new(),
+        }
+    }
+
+    /// `src/app.rs`（目錄列 + 檔案列）與 `README.md` 兩個檔案，畫一幀後回傳
+    /// state 與 rows。
+    fn rendered_detail() -> (super::CommitDetailState, Vec<super::TreeRow>) {
+        let changes = vec![
+            FileChange::Modify {
+                path: "src/app.rs".into(),
+                stats: None,
+            },
+            FileChange::Modify {
+                path: "README.md".into(),
+                stats: None,
+            },
+        ];
+        let hash: CommitHash = "abc123".into();
+        let rows = build_commit_tree_rows(&changes, &hash, &ColorTheme::default());
+        let mut state = super::CommitDetailState::default();
+        state.reset(&rows);
+        let area = ratatui::layout::Rect::new(0, 0, 60, 10);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        super::render_detail_panes(area, &mut buf, &mut state, &click_ctx(), &rows, |_, _| {
+            vec![Line::raw("info")]
+        });
+        (state, rows)
+    }
+
+    #[test]
+    fn click_file_row_moves_cursor_and_focuses_files() {
+        let (mut state, rows) = rendered_detail();
+        assert_eq!(state.active_pane(), super::DetailPane::Info);
+        let (y, idx) = *state.file_hits.last().expect("至少一個檔案列");
+        let x = state.files_inner.x;
+
+        assert!(state.click(x, y));
+        assert_eq!(state.file_cursor(), Some(idx));
+        assert_eq!(state.active_pane(), super::DetailPane::Files);
+        assert!(state.selected_file(&rows).is_some());
+    }
+
+    #[test]
+    fn click_directory_row_is_a_miss() {
+        let (mut state, rows) = rendered_detail();
+        let dir_idx = rows.iter().position(|r| r.file.is_none()).unwrap();
+        assert!(
+            state.file_hits.iter().all(|&(_, i)| i != dir_idx),
+            "目錄列不在命中表裡"
+        );
+        // 目錄列畫在檔案樹內容區的第 dir_idx 列。
+        let y = state.files_inner.y + dir_idx as u16;
+        let before = (state.file_cursor(), state.active_pane());
+        assert!(!state.click(state.files_inner.x, y));
+        assert_eq!((state.file_cursor(), state.active_pane()), before);
+    }
+
+    #[test]
+    fn click_info_area_switches_back_to_info() {
+        let (mut state, _) = rendered_detail();
+        state.toggle_pane();
+        assert_eq!(state.active_pane(), super::DetailPane::Files);
+
+        assert!(state.click(state.info_area.x + 2, state.info_area.y + 1));
+        assert_eq!(state.active_pane(), super::DetailPane::Info);
+    }
+
+    #[test]
+    fn click_outside_panels_is_a_miss() {
+        let (mut state, _) = rendered_detail();
+        assert!(!state.click(200, 200));
+        let bottom = state.files_inner.bottom();
+        assert!(!state.click(state.files_inner.x, bottom + 5));
     }
 }
