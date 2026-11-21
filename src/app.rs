@@ -1318,6 +1318,7 @@ impl App<'_> {
             }
             View::Detail(ref mut view) => view.click(self.repository, col, row),
             View::Refs(ref mut view) => view.click(col, row),
+            View::GitHub(ref mut view) => view.click(col, row),
             View::UserCommand(ref mut view) => view.click_row(
                 self.repository,
                 self.view_area,

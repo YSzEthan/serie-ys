@@ -1,6 +1,9 @@
 use std::time::Instant;
 
-use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use ratatui::{
+    crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers},
+    layout::Position,
+};
 use rust_i18n::t;
 use tui_input::{backend::crossterm::EventHandler, Input};
 
@@ -10,7 +13,9 @@ use crate::{
     github::{self, PrDraftAction, StateAction},
 };
 
-use super::{render::state_label, GitHubFocus, GitHubTab, GitHubView, LoadState, TaskListPanel};
+use super::{
+    render::state_label, ClickTarget, GitHubFocus, GitHubTab, GitHubView, LoadState, TaskListPanel,
+};
 
 impl<'a> GitHubView<'a> {
     pub fn handle_event(&mut self, event_with_count: UserEventWithCount, key: KeyEvent) {
@@ -41,6 +46,46 @@ impl<'a> GitHubView<'a> {
                 Some(tab) => self.select_tab(tab),
                 None => self.handle_list_event(event, count),
             },
+        }
+        if self.selected_number_and_kind() != before {
+            self.schedule_timeline_for_selected(Instant::now());
+        }
+    }
+
+    /// 滑鼠左鍵點擊：查上一幀 `render` 登記的命中表。
+    ///
+    /// 只做「選取」與「切換焦點／分頁」，不觸發任何 Enter 才有的動作（CI 卡片
+    /// 的 Enter 會開瀏覽器、checkbox 編輯器會改 PR 內文）。搜尋輸入中與
+    /// checkbox 編輯中是 modal，點擊一律忽略。選取變動後的 timeline 排程
+    /// 照 `handle_event` 的 before/after 比對。
+    pub fn click(&mut self, col: u16, row: u16) {
+        if matches!(self.focus, GitHubFocus::Prompt | GitHubFocus::CheckboxEdit) {
+            return;
+        }
+        let pos = Position::new(col, row);
+        let Some(&(_, target)) = self.click_hits.iter().find(|(rect, _)| rect.contains(pos)) else {
+            return;
+        };
+
+        self.flash_message = None;
+        let before = self.selected_number_and_kind();
+        match target {
+            ClickTarget::Tab(tab) => {
+                self.focus = GitHubFocus::List;
+                self.select_tab(tab);
+            }
+            ClickTarget::Item(index) => {
+                self.focus = GitHubFocus::List;
+                self.selected_index = index;
+                self.preview_offset = 0;
+                self.maybe_load_more();
+            }
+            ClickTarget::LoadMore => {
+                if !self.loading_more && !self.has_active_filter() {
+                    self.dispatch_load_more();
+                }
+            }
+            ClickTarget::Preview => self.focus = GitHubFocus::Preview,
         }
         if self.selected_number_and_kind() != before {
             self.schedule_timeline_for_selected(Instant::now());
