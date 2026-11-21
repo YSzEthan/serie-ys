@@ -989,6 +989,26 @@ impl StatusLineState {
         }
     }
 
+    /// 有 picker／menu／prompt 正在攔截輸入（跟 `handle_intercepting_key`
+    /// 回 true 的範圍一致）。滑鼠點擊在這些彈窗開著時一律吞掉，不穿透到底下。
+    pub(super) fn is_intercepting(&self) -> bool {
+        matches!(
+            self.line,
+            StatusLine::RefPicker { .. }
+                | StatusLine::CheckoutPicker { .. }
+                | StatusLine::ChildPicker { .. }
+                | StatusLine::RelatedPicker { .. }
+                | StatusLine::DeleteBranchPicker { .. }
+                | StatusLine::DeleteBranchConfirm { .. }
+                | StatusLine::CiRerunPrompt { .. }
+                | StatusLine::ToggleStatePrompt { .. }
+                | StatusLine::TogglePrDraftPrompt { .. }
+                | StatusLine::UpdatePrompt { .. }
+                | StatusLine::RestartPrompt { .. }
+                | StatusLine::MergePrPrompt { .. }
+        )
+    }
+
     /// 清掉目前的通知（若有）。回傳 true 表示這把鍵已被吞掉——只有 Warn／Error
     /// 吞鍵：這把鍵的唯一作用就是消除訊息，不會再觸發其他動作。Info／Success
     /// 不吞鍵，按鍵照常執行，通知留到 `expire_notification` 到期或被新內容

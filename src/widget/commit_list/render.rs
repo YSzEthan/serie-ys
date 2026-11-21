@@ -24,7 +24,7 @@ use crate::{
 use super::layout;
 use super::search::{SearchMatch, SearchMatchPosition};
 use super::state::CommitListState;
-use super::{CommitInfo, FilteredIdx, RawCommitIdx};
+use super::{CommitInfo, FilteredIdx, RawCommitIdx, VisibleIdx};
 
 const ELLIPSIS: &str = "...";
 const VIRTUAL_ROW_COLOR: Color = Color::Gray;
@@ -65,6 +65,7 @@ impl<'a> StatefulWidget for CommitList<'a> {
     type State = CommitListState<'a>;
 
     fn render(self, area: Rect, buf: &mut Buffer, state: &mut Self::State) {
+        state.clear_row_hits();
         if area.height < 2 {
             return;
         }
@@ -133,6 +134,10 @@ impl<'a> StatefulWidget for CommitList<'a> {
         // 緊湊模式的 `text_x` 也只有一份算法，不會有 graph 跟 subject
         // 各算各的漂移風險。
         let rows = self.build_visible_rows(state);
+        let row_hits: Vec<(u16, VisibleIdx)> = rows
+            .iter()
+            .map(|r| (content_area.top() + r.y, r.visible))
+            .collect();
         let selected_text_x = rows
             .iter()
             .find(|r| r.is_selected)
@@ -206,6 +211,7 @@ impl<'a> StatefulWidget for CommitList<'a> {
         // `rows` 借了 `state.commits`，`&rows` 的最後一次使用在上面那個
         // for 迴圈 —— 這裡才能重新可變借用 `state` 寫回選取列的 `text_x`。
         state.set_selected_text_x(selected_text_x);
+        state.set_row_hits(row_hits);
     }
 }
 
@@ -216,6 +222,8 @@ impl<'a> StatefulWidget for CommitList<'a> {
 struct VisibleRow<'b> {
     /// 相對 `content_area.top()` 的列位移（已經算進 inline detail 的 gap）。
     y: u16,
+    /// 這一列在可視清單裡的位置（`offset + display_i`），滑鼠命中表用。
+    visible: VisibleIdx,
     is_selected: bool,
     /// 相對 `area.left()`：這一列圖形實際延伸到第幾格。非緊湊模式恆為 0；
     /// 緊湊模式下用來決定文字從哪裡開始（`draw_row_line`）以及
@@ -309,6 +317,7 @@ impl CommitList<'_> {
             let text_x = if compact { cells_extent(&cells) } else { 0 };
             rows.push(VisibleRow {
                 y: 0,
+                visible: VisibleIdx(0),
                 is_selected: state.selected == 0,
                 text_x,
                 content: RowContent::Virtual,
@@ -343,6 +352,7 @@ impl CommitList<'_> {
             });
             rows.push(VisibleRow {
                 y: display_i as u16 + y_offset,
+                visible: VisibleIdx(state.offset + display_i),
                 is_selected: display_i == state.selected,
                 text_x,
                 content: RowContent::Commit { info, highlight },
@@ -2490,6 +2500,105 @@ mod tests {
                     "選取列整列 bg 都要覆蓋到，x={x}"
                 );
             }
+        }
+
+        // ---- 滑鼠命中表 --------------------------------------------------
+        // header 在 y=0，內容從 y=1 開始。
+
+        #[test]
+        fn click_hits_only_drawn_commit_rows() {
+            let commits = text_graph_commits();
+            let repository = Repository::from_commits(commits.clone());
+            let mut state = build_state(&repository, text_graph(&commits), Opts::default());
+            render_commit_list(&mut state, 10);
+
+            assert!(!state.has_row(0), "header 列不是 commit");
+            for y in 1..=3 {
+                assert!(state.has_row(y), "y={y} 是 commit 列");
+            }
+            assert!(!state.has_row(4), "超過 total 的空白列");
+
+            assert!(state.select_row(3));
+            assert_eq!(state.selected, 2);
+            assert!(state.is_row_selected(3));
+            assert!(!state.select_row(0), "未命中不動作");
+            assert_eq!(state.selected, 2);
+        }
+
+        #[test]
+        fn click_reaches_virtual_row_and_offsets_commits() {
+            let commits = text_graph_commits();
+            let repository = Repository::from_commits(commits.clone());
+            let mut state = build_state(
+                &repository,
+                text_graph(&commits),
+                Opts {
+                    working_changes: true,
+                    ..Default::default()
+                },
+            );
+            render_commit_list(&mut state, 10);
+
+            // y=1 是 virtual row，commit 往下位移一列。
+            assert!(state.select_row(2));
+            assert!(!state.is_virtual_row_selected());
+            assert_eq!(state.selected, 1, "y=2 是第一個 commit（visible idx 1）");
+            assert!(state.select_row(1));
+            assert!(state.is_virtual_row_selected());
+        }
+
+        #[test]
+        fn click_skips_inline_detail_gap_rows() {
+            let commits = text_graph_commits();
+            let repository = Repository::from_commits(commits.clone());
+            let mut state = build_state(
+                &repository,
+                text_graph(&commits),
+                Opts {
+                    inline_detail_height: 2,
+                    ..Default::default()
+                },
+            );
+            render_commit_list(&mut state, 10);
+
+            // 選中 c0（y=1）；y=2、3 是 inline 面板；c1 在 y=4、c2 在 y=5。
+            assert!(state.is_row_selected(1));
+            assert!(!state.has_row(2));
+            assert!(!state.has_row(3));
+            assert!(state.select_row(5));
+            assert_eq!(state.selected, 2, "gap 之下的列要扣掉 gap 才是 commit");
+        }
+
+        #[test]
+        fn click_never_scrolls_the_list() {
+            let commits = text_graph_commits();
+            let repository = Repository::from_commits(commits.clone());
+            let mut state = build_state(&repository, text_graph(&commits), Opts::default());
+            state.scrolloff = 1;
+            state.offset = 1;
+            state.selected = 0;
+            // 內容區只有 2 列：可見的是 c1（y=1）、c2（y=2）。
+            render_commit_list(&mut state, 3);
+            assert_eq!(state.offset, 1);
+
+            assert!(state.select_row(2));
+            assert_eq!(
+                state.offset, 1,
+                "點擊不能捲動清單，即使落在 scrolloff 邊距內"
+            );
+            assert_eq!(state.selected, 1);
+        }
+
+        #[test]
+        fn stale_hits_are_cleared_when_nothing_is_drawn() {
+            let commits = text_graph_commits();
+            let repository = Repository::from_commits(commits.clone());
+            let mut state = build_state(&repository, text_graph(&commits), Opts::default());
+            render_commit_list(&mut state, 10);
+            assert!(state.has_row(1));
+
+            render_commit_list(&mut state, 1);
+            assert!(!state.has_row(1), "area 太矮沒畫任何列，舊的命中表要清掉");
         }
     }
 

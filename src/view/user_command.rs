@@ -252,6 +252,26 @@ impl<'a> UserCommandView<'a> {
         }
     }
 
+    /// 滑鼠點擊 commit 列：跟 j/k 一樣原地換 commit 並重跑指令。
+    /// 點到已選取的列或空白處是 no-op。
+    pub fn click_row(
+        &mut self,
+        repository: &Repository,
+        view_area: Rect,
+        exec_command: ExecCommandFn,
+        row: u16,
+    ) {
+        let Some(state) = self.commit_list_state.as_ref() else {
+            return;
+        };
+        if !state.has_row(row) || state.is_row_selected(row) {
+            return;
+        }
+        self.update_selected_commit(repository, view_area, exec_command, |state| {
+            state.select_row(row);
+        });
+    }
+
     /// child picker 選定候選後跳過去並重刷 output pane。
     pub fn select_commit_by_hash(
         &mut self,

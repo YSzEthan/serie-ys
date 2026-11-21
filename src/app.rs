@@ -526,6 +526,9 @@ impl App<'_> {
                 AppEvent::Key(key) => {
                     self.handle_key(key);
                 }
+                AppEvent::Click { col, row } => {
+                    self.handle_click(col, row);
+                }
                 AppEvent::Resize(w) => {
                     self.latest_width = u16::try_from(w).unwrap_or(u16::MAX);
                     if !self.condensed_check_pending {
@@ -1286,6 +1289,41 @@ impl App<'_> {
                     self.key_state.push_digit(c);
                 }
             }
+        }
+    }
+
+    /// 滑鼠左鍵點擊。攔截順序照 `handle_key`：通知、pending、彈窗開著時
+    /// 都不能穿透到底下的 view；輸入模式（搜尋、CreateTag、Shell…）也不處理。
+    fn handle_click(&mut self, _col: u16, row: u16) {
+        if self.notice_message.is_some() {
+            self.notice_message = None;
+            return;
+        }
+        if self.pending_message.is_some() || self.status_line_state.is_intercepting() {
+            return;
+        }
+        if self.status_line_state.dismiss_notification() || self.is_input_mode() {
+            return;
+        }
+
+        match self.view {
+            View::List(_) => {
+                if self
+                    .view
+                    .list_state_mut()
+                    .is_some_and(|state| state.select_row(row))
+                {
+                    self.open_detail();
+                }
+            }
+            View::Detail(ref mut view) => view.click_row(self.repository, row),
+            View::UserCommand(ref mut view) => view.click_row(
+                self.repository,
+                self.view_area,
+                build_external_command_parameters_and_exec_command,
+                row,
+            ),
+            _ => {}
         }
     }
 

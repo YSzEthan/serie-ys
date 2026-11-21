@@ -570,6 +570,20 @@ impl<'a> DetailView<'a> {
         }
     }
 
+    /// 滑鼠點擊 commit 列：原地換成被點的 commit。點到已選取的列、inline
+    /// 面板或空白處都是 no-op——點已選取的列不關閉面板，避免雙擊習慣開了又關。
+    pub fn click_row(&mut self, repository: &Repository, row: u16) {
+        let Some(state) = self.commit_list_state.as_ref() else {
+            return;
+        };
+        if !state.has_row(row) || state.is_row_selected(row) {
+            return;
+        }
+        self.update_selected_commit(repository, |state| {
+            state.select_row(row);
+        });
+    }
+
     /// child picker 選定候選後跳過去並重刷內容面板。
     pub fn select_commit_by_hash(&mut self, repository: &Repository, hash: &CommitHash) {
         self.update_selected_commit(repository, |state| state.step_to_commit_hash(hash));

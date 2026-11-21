@@ -50,6 +50,12 @@ pub enum Scope {
 #[derive(Debug)]
 pub enum AppEvent {
     Key(KeyEvent),
+    /// 滑鼠左鍵按下（螢幕座標）。只有左鍵 Down 會被轉發；滾輪、拖曳、
+    /// 移動、右鍵一律在輸入 thread 丟掉。
+    Click {
+        col: u16,
+        row: u16,
+    },
     Resize(usize),
     Tick,
     Quit,
@@ -750,6 +756,17 @@ impl EventController {
                         Ok(e) => match e {
                             ratatui::crossterm::event::Event::Key(key) => {
                                 tx.send(AppEvent::Key(key));
+                            }
+                            ratatui::crossterm::event::Event::Mouse(m)
+                                if m.kind
+                                    == ratatui::crossterm::event::MouseEventKind::Down(
+                                        ratatui::crossterm::event::MouseButton::Left,
+                                    ) =>
+                            {
+                                tx.send(AppEvent::Click {
+                                    col: m.column,
+                                    row: m.row,
+                                });
                             }
                             ratatui::crossterm::event::Event::Resize(w, _) => {
                                 tx.send(AppEvent::Resize(w as usize));

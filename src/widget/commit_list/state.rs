@@ -132,6 +132,12 @@ pub struct CommitListState<'a> {
     working_changes: Option<WorkingChanges>,
 
     pub(crate) selected_row_overflows: Cell<bool>,
+
+    /// 上一幀實際畫出來的列：`(螢幕 y, VisibleIdx)`。滑鼠點擊只查這張表，
+    /// 不在事件端重算版面——inline detail 的 gap、virtual row、header 列、
+    /// 被 `text_cells_for_raw` 跳過的列，沒畫出來的就不在表裡。
+    /// `CommitList::render` 開頭清空、結尾寫入。
+    row_hits: Vec<(u16, VisibleIdx)>,
 }
 
 impl<'a> CommitListState<'a> {
@@ -193,6 +199,7 @@ impl<'a> CommitListState<'a> {
             needs_graph_clear: false,
             working_changes,
             selected_row_overflows: Cell::new(false),
+            row_hits: Vec::new(),
         }
     }
 
@@ -483,17 +490,54 @@ impl<'a> CommitListState<'a> {
     /// `self.offset` 得到「移動」語意（最小捲動）。`target >= self.total`
     /// 或 `height == 0` 時整個 no-op，維持 `selected < height` 的不變式。
     fn place(&mut self, target: VisibleIdx, prev_offset: usize) {
+        self.place_with_scrolloff(target, prev_offset, self.scrolloff);
+    }
+
+    /// `place` 的實作；`scrolloff` 獨立成參數是給滑鼠點擊用——點擊的目標
+    /// 本來就在畫面上，傳 0 + `prev_offset = self.offset` 時 `offset` 不會動。
+    fn place_with_scrolloff(&mut self, target: VisibleIdx, prev_offset: usize, scrolloff: usize) {
         if target.0 >= self.total || self.height == 0 {
             return;
         }
-        self.offset = scroll::scrolled_offset(
-            target.0,
-            self.height,
-            self.total,
-            prev_offset,
-            self.scrolloff,
-        );
+        self.offset =
+            scroll::scrolled_offset(target.0, self.height, self.total, prev_offset, scrolloff);
         self.selected = target.0 - self.offset;
+    }
+
+    /// 上一幀由 `CommitList::render` 寫入；resize 或換 view 後下一幀就會更新。
+    pub(super) fn set_row_hits(&mut self, hits: Vec<(u16, VisibleIdx)>) {
+        self.row_hits = hits;
+    }
+
+    pub(super) fn clear_row_hits(&mut self) {
+        self.row_hits.clear();
+    }
+
+    fn hit_at(&self, row: u16) -> Option<VisibleIdx> {
+        self.row_hits
+            .iter()
+            .find_map(|&(y, idx)| (y == row).then_some(idx))
+    }
+
+    /// 螢幕列 `row` 是不是上一幀畫出來的 commit 列（含 virtual row）。
+    pub fn has_row(&self, row: u16) -> bool {
+        self.hit_at(row).is_some()
+    }
+
+    /// 螢幕列 `row` 是不是目前選取的那一列。
+    pub fn is_row_selected(&self, row: u16) -> bool {
+        self.hit_at(row) == Some(self.current_visible())
+    }
+
+    /// 滑鼠點擊選取：命中上一幀畫出來的列才動作，回傳是否命中。
+    /// 不捲動（scrolloff 0、以目前 offset 為基準）——使用者點的列本來就
+    /// 在畫面上，清單往上跳會讓滑鼠底下變成別的 commit。
+    pub fn select_row(&mut self, row: u16) -> bool {
+        let Some(target) = self.hit_at(row) else {
+            return false;
+        };
+        self.place_with_scrolloff(target, self.offset, 0);
+        true
     }
 
     pub fn working_changes(&self) -> Option<&WorkingChanges> {
