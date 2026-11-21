@@ -1,5 +1,6 @@
 use std::{
     borrow::Cow,
+    cell::Cell,
     ffi::OsStr,
     fmt::{self, Debug, Formatter},
     path::{Component, Path, PathBuf},
@@ -50,6 +51,18 @@ pub enum Scope {
 #[derive(Debug)]
 pub enum AppEvent {
     Key(KeyEvent),
+    /// 滑鼠左鍵按下（螢幕座標）。拖曳、移動、右鍵一律在輸入 thread 丟掉。
+    Click {
+        col: u16,
+        row: u16,
+    },
+    /// 滑鼠滾輪（螢幕座標）。`delta` 是格數，正數往下、負數往上。輸入 thread
+    /// 每個事件只送 ±1，同位置連續的滾輪由 `Receiver::recv` 合併成一個。
+    Wheel {
+        col: u16,
+        row: u16,
+        delta: i16,
+    },
     Resize(usize),
     Tick,
     Quit,
@@ -592,11 +605,52 @@ impl Sender {
 
 pub struct Receiver {
     rx: mpsc::Receiver<AppEvent>,
+    /// 合併滾輪時讀到、但不屬於這一批的事件；下次 `recv` 先交出去，順序不變。
+    pending: Cell<Option<AppEvent>>,
 }
 
 impl Receiver {
+    fn new(rx: mpsc::Receiver<AppEvent>) -> Self {
+        Self {
+            rx,
+            pending: Cell::new(None),
+        }
+    }
+
+    /// 取下一個事件。滾輪會把 channel 裡緊接著、同位置的滾輪一併累加：
+    /// 積壓發生在 render 慢、事件堆在 channel 的時候（觸控板一甩幾十個），
+    /// 不合併就是幾十次完整重畫。累加後 `delta == 0`（上下相消）就不送。
     fn recv(&self) -> AppEvent {
-        self.rx.recv().unwrap_or(AppEvent::Quit)
+        loop {
+            let first = self
+                .pending
+                .take()
+                .unwrap_or_else(|| self.rx.recv().unwrap_or(AppEvent::Quit));
+            let AppEvent::Wheel {
+                col,
+                row,
+                mut delta,
+            } = first
+            else {
+                return first;
+            };
+            while let Ok(next) = self.rx.try_recv() {
+                match next {
+                    AppEvent::Wheel {
+                        col: c,
+                        row: r,
+                        delta: d,
+                    } if (c, r) == (col, row) => delta = delta.saturating_add(d),
+                    other => {
+                        self.pending.set(Some(other));
+                        break;
+                    }
+                }
+            }
+            if delta != 0 {
+                return AppEvent::Wheel { col, row, delta };
+            }
+        }
     }
 }
 
@@ -648,7 +702,7 @@ impl EventController {
     pub fn init() -> Self {
         let (tx, rx) = mpsc::channel();
         let tx = Sender { tx };
-        let rx = Receiver { rx };
+        let rx = Receiver::new(rx);
 
         let term_signal = Arc::new(AtomicBool::new(false));
         #[cfg(unix)]
@@ -750,6 +804,32 @@ impl EventController {
                         Ok(e) => match e {
                             ratatui::crossterm::event::Event::Key(key) => {
                                 tx.send(AppEvent::Key(key));
+                            }
+                            ratatui::crossterm::event::Event::Mouse(m)
+                                if m.kind
+                                    == ratatui::crossterm::event::MouseEventKind::Down(
+                                        ratatui::crossterm::event::MouseButton::Left,
+                                    ) =>
+                            {
+                                tx.send(AppEvent::Click {
+                                    col: m.column,
+                                    row: m.row,
+                                });
+                            }
+                            ratatui::crossterm::event::Event::Mouse(m) => {
+                                use ratatui::crossterm::event::MouseEventKind;
+                                let delta = match m.kind {
+                                    MouseEventKind::ScrollDown => 1,
+                                    MouseEventKind::ScrollUp => -1,
+                                    _ => 0,
+                                };
+                                if delta != 0 {
+                                    tx.send(AppEvent::Wheel {
+                                        col: m.column,
+                                        row: m.row,
+                                        delta,
+                                    });
+                                }
                             }
                             ratatui::crossterm::event::Event::Resize(w, _) => {
                                 tx.send(AppEvent::Resize(w as usize));
@@ -1717,6 +1797,81 @@ mod tests {
             "心跳週期 {TICK_INTERVAL:?} 對 stall 門檻 {WATCHDOG_STALL_TIMEOUT:?} 來說太長"
         );
         assert!(WATCHDOG_INTERVAL < WATCHDOG_STALL_TIMEOUT);
+    }
+
+    // ── Receiver 滾輪合併 ──
+
+    fn wheel(col: u16, row: u16, delta: i16) -> AppEvent {
+        AppEvent::Wheel { col, row, delta }
+    }
+
+    fn wheel_receiver(events: Vec<AppEvent>) -> Receiver {
+        let (tx, rx) = mpsc::channel();
+        for e in events {
+            tx.send(e).unwrap();
+        }
+        // tx 掉了之後 channel 清空會讓 `recv` 回 Quit，測試用它當結尾哨兵。
+        Receiver::new(rx)
+    }
+
+    #[test]
+    fn recv_sums_consecutive_wheel_events_at_the_same_position() {
+        let rx = wheel_receiver(vec![wheel(3, 4, 1), wheel(3, 4, 1), wheel(3, 4, 1)]);
+        assert!(matches!(
+            rx.recv(),
+            AppEvent::Wheel {
+                col: 3,
+                row: 4,
+                delta: 3
+            }
+        ));
+        assert!(matches!(rx.recv(), AppEvent::Quit));
+    }
+
+    #[test]
+    fn recv_drops_a_batch_whose_directions_cancel_out() {
+        let rx = wheel_receiver(vec![wheel(3, 4, 1), wheel(3, 4, -1)]);
+        assert!(
+            matches!(rx.recv(), AppEvent::Quit),
+            "相消到 0 的滾輪不該送出"
+        );
+    }
+
+    #[test]
+    fn recv_keeps_other_events_in_order_after_a_wheel_batch() {
+        let rx = wheel_receiver(vec![
+            wheel(1, 1, -1),
+            wheel(1, 1, -1),
+            AppEvent::Tick,
+            wheel(1, 1, 1),
+        ]);
+        assert!(matches!(rx.recv(), AppEvent::Wheel { delta: -2, .. }));
+        assert!(
+            matches!(rx.recv(), AppEvent::Tick),
+            "夾在中間的事件不能被吞"
+        );
+        assert!(matches!(rx.recv(), AppEvent::Wheel { delta: 1, .. }));
+    }
+
+    #[test]
+    fn recv_does_not_merge_wheel_events_at_different_positions() {
+        let rx = wheel_receiver(vec![wheel(1, 1, 1), wheel(2, 2, 1)]);
+        assert!(matches!(
+            rx.recv(),
+            AppEvent::Wheel {
+                col: 1,
+                row: 1,
+                delta: 1
+            }
+        ));
+        assert!(matches!(
+            rx.recv(),
+            AppEvent::Wheel {
+                col: 2,
+                row: 2,
+                delta: 1
+            }
+        ));
     }
 
     // ── AutoFetchClock ──

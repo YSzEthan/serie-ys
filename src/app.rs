@@ -263,6 +263,9 @@ pub struct App<'a> {
 /// 就重算 graph（linux 規模是秒級）不划算。
 const CONDENSED_CHECK_DELAY: Duration = Duration::from_millis(250);
 
+/// 滑鼠滾輪一格捲幾行。
+pub(crate) const WHEEL_LINES: isize = 3;
+
 /// GitHub 資料的排程狀態機。`(loading=false, pending=Some(_))`
 /// 這種非法組合曾經可達（Bug A）—— 用 enum 讓它在型別層直接不存在。
 ///
@@ -525,6 +528,12 @@ impl App<'_> {
                 }
                 AppEvent::Key(key) => {
                     self.handle_key(key);
+                }
+                AppEvent::Click { col, row } => {
+                    self.handle_click(col, row);
+                }
+                AppEvent::Wheel { col, row, delta } => {
+                    self.handle_wheel(col, row, delta);
                 }
                 AppEvent::Resize(w) => {
                     self.latest_width = u16::try_from(w).unwrap_or(u16::MAX);
@@ -1286,6 +1295,73 @@ impl App<'_> {
                     self.key_state.push_digit(c);
                 }
             }
+        }
+    }
+
+    /// 滑鼠左鍵點擊。攔截順序照 `handle_key`：通知、pending、彈窗開著時
+    /// 都不能穿透到底下的 view；輸入模式（搜尋、CreateTag、Shell…）也不處理。
+    fn handle_click(&mut self, col: u16, row: u16) {
+        if self.notice_message.is_some() {
+            self.notice_message = None;
+            return;
+        }
+        if self.pending_message.is_some() || self.status_line_state.is_intercepting() {
+            return;
+        }
+        if self.status_line_state.dismiss_notification() || self.is_input_mode() {
+            return;
+        }
+
+        match self.view {
+            View::List(_) => {
+                if self
+                    .view
+                    .list_state_mut()
+                    .is_some_and(|state| state.select_row(row))
+                {
+                    self.open_detail();
+                }
+            }
+            View::Detail(ref mut view) => view.click(self.repository, col, row),
+            View::Refs(ref mut view) => view.click(col, row),
+            View::GitHub(ref mut view) => view.click(col, row),
+            View::UserCommand(ref mut view) => view.click_row(
+                self.repository,
+                self.view_area,
+                build_external_command_parameters_and_exec_command,
+                row,
+            ),
+            _ => {}
+        }
+    }
+
+    /// 滑鼠滾輪：捲指標底下那塊的內容，不移動選取。notice／pending／狀態列
+    /// 彈窗與輸入列開著時忽略（不關通知）。不看 `is_input_mode()`——Shell 的
+    /// 輸出也要能捲，各 view 自己決定要不要處理。
+    fn handle_wheel(&mut self, col: u16, row: u16, delta: i16) {
+        if self.notice_message.is_some()
+            || self.pending_message.is_some()
+            || self.status_line_state.is_intercepting()
+            || self.status_line_state.is_input_mode_variant()
+        {
+            return;
+        }
+        let lines = isize::from(delta) * WHEEL_LINES;
+
+        match self.view {
+            View::List(_) => {
+                if let Some(state) = self.view.list_state_mut() {
+                    state.scroll_view_by(lines);
+                }
+            }
+            View::Refs(ref mut view) => view.wheel(col, row, lines),
+            View::Detail(ref mut view) => view.wheel(col, row, lines),
+            View::UserCommand(ref mut view) => view.wheel(col, row, lines),
+            View::Shell(ref mut view) => view.wheel(col, row, lines),
+            View::GitHub(ref mut view) => view.wheel(col, row, lines),
+            View::Help(ref mut view) => view.wheel(lines),
+            View::ReleaseNotes(ref mut view) => view.wheel(lines),
+            _ => {}
         }
     }
 

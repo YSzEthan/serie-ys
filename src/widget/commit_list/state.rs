@@ -132,6 +132,12 @@ pub struct CommitListState<'a> {
     working_changes: Option<WorkingChanges>,
 
     pub(crate) selected_row_overflows: Cell<bool>,
+
+    /// 上一幀實際畫出來的列：`(螢幕 y, VisibleIdx)`。滑鼠點擊只查這張表，
+    /// 不在事件端重算版面——inline detail 的 gap、virtual row、header 列、
+    /// 被 `text_cells_for_raw` 跳過的列，沒畫出來的就不在表裡。
+    /// `CommitList::render` 開頭清空、結尾寫入。
+    row_hits: Vec<(u16, VisibleIdx)>,
 }
 
 impl<'a> CommitListState<'a> {
@@ -193,6 +199,7 @@ impl<'a> CommitListState<'a> {
             needs_graph_clear: false,
             working_changes,
             selected_row_overflows: Cell::new(false),
+            row_hits: Vec::new(),
         }
     }
 
@@ -483,17 +490,54 @@ impl<'a> CommitListState<'a> {
     /// `self.offset` 得到「移動」語意（最小捲動）。`target >= self.total`
     /// 或 `height == 0` 時整個 no-op，維持 `selected < height` 的不變式。
     fn place(&mut self, target: VisibleIdx, prev_offset: usize) {
+        self.place_with_scrolloff(target, prev_offset, self.scrolloff);
+    }
+
+    /// `place` 的實作；`scrolloff` 獨立成參數是給滑鼠點擊用——點擊的目標
+    /// 本來就在畫面上，傳 0 + `prev_offset = self.offset` 時 `offset` 不會動。
+    fn place_with_scrolloff(&mut self, target: VisibleIdx, prev_offset: usize, scrolloff: usize) {
         if target.0 >= self.total || self.height == 0 {
             return;
         }
-        self.offset = scroll::scrolled_offset(
-            target.0,
-            self.height,
-            self.total,
-            prev_offset,
-            self.scrolloff,
-        );
+        self.offset =
+            scroll::scrolled_offset(target.0, self.height, self.total, prev_offset, scrolloff);
         self.selected = target.0 - self.offset;
+    }
+
+    /// 上一幀由 `CommitList::render` 寫入；resize 或換 view 後下一幀就會更新。
+    pub(super) fn set_row_hits(&mut self, hits: Vec<(u16, VisibleIdx)>) {
+        self.row_hits = hits;
+    }
+
+    pub(super) fn clear_row_hits(&mut self) {
+        self.row_hits.clear();
+    }
+
+    fn hit_at(&self, row: u16) -> Option<VisibleIdx> {
+        self.row_hits
+            .iter()
+            .find_map(|&(y, idx)| (y == row).then_some(idx))
+    }
+
+    /// 螢幕列 `row` 是不是上一幀畫出來的 commit 列（含 virtual row）。
+    pub fn has_row(&self, row: u16) -> bool {
+        self.hit_at(row).is_some()
+    }
+
+    /// 螢幕列 `row` 是不是目前選取的那一列。
+    pub fn is_row_selected(&self, row: u16) -> bool {
+        self.hit_at(row) == Some(self.current_visible())
+    }
+
+    /// 滑鼠點擊選取：命中上一幀畫出來的列才動作，回傳是否命中。
+    /// 不捲動（scrolloff 0、以目前 offset 為基準）——使用者點的列本來就
+    /// 在畫面上，清單往上跳會讓滑鼠底下變成別的 commit。
+    pub fn select_row(&mut self, row: u16) -> bool {
+        let Some(target) = self.hit_at(row) else {
+            return false;
+        };
+        self.place_with_scrolloff(target, self.offset, 0);
+        true
     }
 
     pub fn working_changes(&self) -> Option<&WorkingChanges> {
@@ -708,6 +752,25 @@ impl<'a> CommitListState<'a> {
             let margin = self.effective_scrolloff();
             self.selected = (self.selected + 1).min(self.height - 1 - margin);
         }
+    }
+
+    /// 滑鼠滾輪：視窗捲 `lines` 行（正數往下、負數往上），選取的 commit 留在
+    /// 原處，只有被捲到畫面最上／最下一列時才被推著走。
+    /// 不套 scrolloff：預設的 15 在一般視窗高度下會把游標釘在視窗正中央
+    /// （`effective_scrolloff` 上限是半個視窗），套了的話選取會跟著內容跑，
+    /// 不是「內容滑動」。這跟 Shift-J/K（`scroll_down`／`scroll_up`，維持邊距）
+    /// 是刻意不同的語意。
+    pub fn scroll_view_by(&mut self, lines: isize) {
+        if self.height == 0 {
+            return;
+        }
+        let max_offset = self.total.saturating_sub(self.height);
+        let offset = self.offset.saturating_add_signed(lines).min(max_offset);
+        let cursor = self.offset + self.selected;
+        self.offset = offset;
+        // 游標被捲出視窗上緣 → 貼頂（0）；下緣 → 貼底（height - 1）。
+        // offset ≤ total - height，所以貼底那列一定還在 total 以內。
+        self.selected = cursor.saturating_sub(offset).min(self.height - 1);
     }
 
     pub fn marked_commit_hash(&self) -> Option<&CommitHash> {
@@ -1279,6 +1342,60 @@ mod tests {
         state.scroll_down();
 
         assert!(state.current_list_status().0 >= 2);
+    }
+
+    /// 滾輪捲視窗不能動選取：就算 scrolloff 大到把游標釘在視窗正中央
+    /// （預設 15、視窗 10 列 → 有效邊距 4），選取的 commit 也要留在原處。
+    #[test]
+    fn scroll_view_by_keeps_the_selected_commit_even_with_a_huge_scrolloff() {
+        let repository = Repository::from_commits(commits_fixture(40));
+        let mut state = scrolloff_fixture(&repository, 10, 15);
+        state.set_visible_selection(VisibleIdx(20));
+        let selected = state.current_visible();
+        let start = state.offset;
+
+        state.scroll_view_by(3);
+        assert_eq!(state.current_visible(), selected, "往下捲不動選取");
+        assert_eq!(state.offset, start + 3, "視窗往下 3 行");
+
+        state.scroll_view_by(-2);
+        assert_eq!(state.current_visible(), selected, "往上捲不動選取");
+        assert_eq!(state.offset, start + 1);
+    }
+
+    #[test]
+    fn scroll_view_by_pushes_the_selection_only_at_the_window_edge() {
+        let repository = Repository::from_commits(commits_fixture(40));
+        let mut state = scrolloff_fixture(&repository, 10, 15);
+        state.set_visible_selection(VisibleIdx(12));
+        let top = state.offset;
+
+        // 視窗被捲過選取列（12）→ 貼在新視窗的最上一列。
+        state.scroll_view_by(100);
+        assert_eq!(state.offset, 30, "上限 = total - height");
+        assert_eq!(state.current_visible(), VisibleIdx(30));
+        assert_eq!(state.selected, 0);
+
+        // 往回捲到頂 → 貼在新視窗的最下一列。
+        state.scroll_view_by(-100);
+        assert_eq!(state.offset, 0);
+        assert_eq!(state.current_visible(), VisibleIdx(9));
+        assert_eq!(state.selected, 9);
+        assert!(state.offset <= top);
+    }
+
+    #[test]
+    fn scroll_view_by_is_noop_when_everything_fits_or_height_is_zero() {
+        let repository = Repository::from_commits(commits_fixture(5));
+        let mut state = scrolloff_fixture(&repository, 10, 3);
+        state.set_visible_selection(VisibleIdx(2));
+        state.scroll_view_by(5);
+        assert_eq!((state.offset, state.current_visible()), (0, VisibleIdx(2)));
+
+        let mut empty = scrolloff_fixture(&repository, 10, 3);
+        empty.reset_height(0);
+        empty.scroll_view_by(5);
+        assert_eq!(empty.offset, 0);
     }
 
     #[test]

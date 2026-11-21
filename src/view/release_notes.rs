@@ -103,6 +103,15 @@ impl<'a> ReleaseNotesView<'a> {
         self.offset = self.offset.saturating_sub(n);
     }
 
+    /// 滑鼠滾輪：捲 `lines` 行（正數往下）；上限由 render 夾住。
+    pub fn wheel(&mut self, lines: isize) {
+        if lines > 0 {
+            self.scroll_down(lines.unsigned_abs());
+        } else {
+            self.scroll_up(lines.unsigned_abs());
+        }
+    }
+
     /// 沒有內容快取：CHANGELOG 一節通常只有 10–60 行，`markdown::render`
     /// 是逐行純字串處理，這個 view 也沒有 marquee（只有按鍵才會重畫），
     /// 不值得為它另外維護一個依 width 判斷的快取（對比

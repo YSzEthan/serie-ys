@@ -19,7 +19,7 @@ use crate::{
 use super::{
     branches, ci,
     preview::{borrow_lines, RowData},
-    GitHubFocus, GitHubTab, GitHubView, LabelMode, LoadState,
+    ClickTarget, GitHubFocus, GitHubTab, GitHubView, LabelMode, LoadState,
 };
 
 /// 列表列的欄位配置：paragraph padding (1) + indicator (2)。
@@ -55,6 +55,10 @@ impl<'a> GitHubView<'a> {
         // render 是溢出狀態的唯一真相來源——在進入時重置，讓跳過 render_list
         // 的 focus（CheckboxEdit、Prompt）能自動清除。
         self.selected_row_overflows.set(false);
+        // 滑鼠命中表跟畫面同步：每幀重建，提早 return 的路徑也不會留下舊表。
+        self.click_hits.clear();
+        self.scroll_area = Rect::default();
+        self.scroll_rows = 0;
 
         // ── 三區 split：頂部 tab/prompt + 下半 list|preview ──
         let [header_area, content_area] =
@@ -81,6 +85,7 @@ impl<'a> GitHubView<'a> {
             // 窄版單欄：焦點在 preview（含 checkbox 編輯）就畫 preview，其餘畫清單
             if matches!(self.focus, GitHubFocus::Preview | GitHubFocus::CheckboxEdit) {
                 self.render_preview(f, content_area);
+                self.click_hits.push((content_area, ClickTarget::Preview));
             } else {
                 self.render_list(f, content_area, marquee_frame);
             }
@@ -91,6 +96,7 @@ impl<'a> GitHubView<'a> {
 
             self.render_list(f, list_area, marquee_frame);
             self.render_preview(f, preview_area);
+            self.click_hits.push((preview_area, ClickTarget::Preview));
         }
 
         // ── 提示訊息 ──
@@ -111,7 +117,7 @@ impl<'a> GitHubView<'a> {
         }
     }
 
-    fn render_header(&self, f: &mut Frame, area: Rect) {
+    fn render_header(&mut self, f: &mut Frame, area: Rect) {
         let narrow = self.is_narrow();
         let pending_ci = self
             .ci
@@ -142,15 +148,33 @@ impl<'a> GitHubView<'a> {
             }
         };
 
-        let mut tab_spans = vec![
-            Span::styled(issues_label, tab_style(GitHubTab::Issues)),
-            Span::raw(" "),
-            Span::styled(prs_label, tab_style(GitHubTab::PullRequests)),
-            Span::raw(" "),
-            Span::styled(branches_label, tab_style(GitHubTab::Branches)),
-            Span::raw(" "),
-            Span::styled(ci_label, tab_style(GitHubTab::Ci)),
+        let [tab_area, prompt_area] =
+            Layout::vertical([Constraint::Length(2), Constraint::Length(1)]).areas(area);
+        let pad_x = if narrow { 0 } else { 2 };
+
+        // 分頁標籤邊排邊登記命中範圍：Paragraph 的 padding 讓標籤從
+        // `(tab_area.x + pad_x, tab_area.y + 1)` 開始，標籤之間隔一格。
+        let tabs = [
+            (GitHubTab::Issues, issues_label),
+            (GitHubTab::PullRequests, prs_label),
+            (GitHubTab::Branches, branches_label),
+            (GitHubTab::Ci, ci_label),
         ];
+        let mut tab_spans = Vec::new();
+        let mut x = tab_area.x + pad_x;
+        let y = tab_area.y + 1;
+        for (i, (tab, label)) in tabs.into_iter().enumerate() {
+            if i > 0 {
+                tab_spans.push(Span::raw(" "));
+                x += 1;
+            }
+            let width = (console::measure_text_width(&label) as u16)
+                .min(tab_area.right().saturating_sub(x));
+            self.click_hits
+                .push((Rect::new(x, y, width, 1), ClickTarget::Tab(tab)));
+            x += width;
+            tab_spans.push(Span::styled(label, tab_style(tab)));
+        }
         // 篩選標籤、符合數、重新載入提示在窄版放不下，篩選狀態看 prompt 列即可
         if !narrow {
             let filter_label = self.state_filter.label();
@@ -204,10 +228,6 @@ impl<'a> GitHubView<'a> {
             prompt_value,
         ]);
 
-        let [tab_area, prompt_area] =
-            Layout::vertical([Constraint::Length(2), Constraint::Length(1)]).areas(area);
-
-        let pad_x = if narrow { 0 } else { 2 };
         f.render_widget(
             Paragraph::new(tab_line)
                 .block(Block::default().padding(Padding::new(pad_x, pad_x, 1, 0))),
@@ -223,7 +243,7 @@ impl<'a> GitHubView<'a> {
         }
     }
 
-    fn render_list(&self, f: &mut Frame, area: Rect, marquee_frame: u64) {
+    fn render_list(&mut self, f: &mut Frame, area: Rect, marquee_frame: u64) {
         // 內層 Paragraph 的 Padding 不覆蓋最左欄，會留下 list view text-mode
         // graph 的字元；先 Clear 整個 list area 擋住殘留。
         f.render_widget(Clear, area);
@@ -247,10 +267,22 @@ impl<'a> GitHubView<'a> {
             inner.height as usize
         };
 
+        self.scroll_area = inner;
+        self.scroll_rows = visible_height;
+
         let rows = self.current_viewport_rows(visible_height, inner.width, marquee_frame);
         let mut lines: Vec<Line<'static>> = rows.iter().map(|r| r.line.clone()).collect();
 
+        // 命中表：第 i 列是可視索引 `offset + i`（見 `current_viewport_rows`），
+        // 「more…」緊接在最後一個項目之後。
+        for i in 0..rows.len() {
+            let rect = Rect::new(inner.x, inner.top() + i as u16, inner.width, 1);
+            self.click_hits
+                .push((rect, ClickTarget::Item(self.offset + i)));
+        }
         if has_next {
+            let rect = Rect::new(inner.x, inner.top() + rows.len() as u16, inner.width, 1);
+            self.click_hits.push((rect, ClickTarget::LoadMore));
             let hint = if self.loading_more {
                 t!("github.render.loading_more")
             } else {
@@ -515,18 +547,20 @@ impl<'a> GitHubView<'a> {
     }
 
     /// CI 分頁：沿用 Branches 的卡片版面，沒有 preview。
-    fn render_ci(&self, f: &mut Frame, area: Rect) {
+    fn render_ci(&mut self, f: &mut Frame, area: Rect) {
         f.render_widget(Clear, area);
+        self.scroll_area = area;
         for (vis_i, card_area) in self.card_slots(area) {
             let Some(entry) = self.ci.get(self.actual_index(vis_i)) else {
                 break;
             };
+            self.click_hits.push((card_area, ClickTarget::Item(vis_i)));
             ci::render_card(f, card_area, entry, vis_i == self.selected_index);
         }
     }
 
     /// Branches 分頁：內容區依寬度排成多欄固定高度的卡片，沒有 preview。
-    fn render_branches(&self, f: &mut Frame, area: Rect) {
+    fn render_branches(&mut self, f: &mut Frame, area: Rect) {
         f.render_widget(Clear, area);
 
         // 候選超過上限時，底部留一列說明只顯示了最近的一部分
@@ -535,11 +569,13 @@ impl<'a> GitHubView<'a> {
             height: area.height - u16::from(footer),
             ..area
         };
+        self.scroll_area = cards_area;
 
         for (vis_i, card_area) in self.card_slots(cards_area) {
             let Some(branch) = self.branches.get(self.actual_index(vis_i)) else {
                 break;
             };
+            self.click_hits.push((card_area, ClickTarget::Item(vis_i)));
             branches::render_card(
                 f,
                 card_area,

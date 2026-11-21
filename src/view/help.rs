@@ -130,16 +130,8 @@ impl HelpView<'_> {
             | UserEvent::NavigateLeft => {
                 self.tx.send(AppEvent::CloseHelp);
             }
-            UserEvent::NavigateDown | UserEvent::SelectDown => {
-                for _ in 0..count {
-                    self.scroll_down();
-                }
-            }
-            UserEvent::NavigateUp | UserEvent::SelectUp => {
-                for _ in 0..count {
-                    self.scroll_up();
-                }
-            }
+            UserEvent::NavigateDown | UserEvent::SelectDown => self.scroll_down(count),
+            UserEvent::NavigateUp | UserEvent::SelectUp => self.scroll_up(count),
             _ => {}
         }
     }
@@ -185,13 +177,22 @@ impl<'a> HelpView<'a> {
         &mut self.before
     }
 
-    fn scroll_down(&mut self) {
+    fn scroll_down(&mut self, n: usize) {
         let max_offset = self.rows.len().saturating_sub(self.height);
-        self.offset = self.offset.saturating_add(1).min(max_offset);
+        self.offset = self.offset.saturating_add(n).min(max_offset);
     }
 
-    fn scroll_up(&mut self) {
-        self.offset = self.offset.saturating_sub(1);
+    fn scroll_up(&mut self, n: usize) {
+        self.offset = self.offset.saturating_sub(n);
+    }
+
+    /// 滑鼠滾輪：捲 `lines` 行（正數往下）。
+    pub fn wheel(&mut self, lines: isize) {
+        if lines > 0 {
+            self.scroll_down(lines.unsigned_abs());
+        } else {
+            self.scroll_up(lines.unsigned_abs());
+        }
     }
 
     fn update_state(&mut self, area: Rect) {

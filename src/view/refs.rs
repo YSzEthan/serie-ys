@@ -117,6 +117,25 @@ impl<'a> RefsView<'a> {
         }
     }
 
+    /// 滑鼠點擊 refs 側欄：選取被點的 ref，commit list 跟著跳過去。
+    pub fn click(&mut self, col: u16, row: u16) {
+        if self.ref_list_state.click(col, row) {
+            self.update_commit_list_selected();
+        }
+    }
+
+    /// 滑鼠滾輪：指標在 refs 側欄就捲側欄（選取被推動時 commit list 跟著
+    /// 跳），否則捲 commit list。
+    pub fn wheel(&mut self, col: u16, row: u16, lines: isize) {
+        if self.ref_list_state.contains(col, row) {
+            if self.ref_list_state.scroll(lines) {
+                self.update_commit_list_selected();
+            }
+        } else {
+            self.as_mut_list_state().scroll_view_by(lines);
+        }
+    }
+
     fn checkout_selected_ref(&self) {
         let name = self
             .ref_list_state
