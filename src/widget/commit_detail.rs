@@ -67,6 +67,9 @@ pub struct CommitDetailState {
     info_area: Rect,
     files_inner: Rect,
     file_hits: Vec<(u16, usize)>,
+    /// 上次把檔案樹視窗對齊游標時的 `(游標, 視窗高度)`。兩者都沒變，就代表
+    /// 視窗位置是使用者用滾輪自己捲的，`resync_files_window` 不能把它拉回游標。
+    files_synced: (Option<usize>, usize),
 }
 
 impl CommitDetailState {
@@ -131,8 +134,8 @@ impl CommitDetailState {
     /// 不像 `reset` 那樣無條件跳回第一列——不然存檔工具每次 autosave 都會
     /// 把游標拉回檔案樹頂端。`target` 是重新整理前選到的檔案；新的 rows
     /// 裡找不到同一個檔案（已經沒有變更了）才退化成 `reset` 的行為。
-    /// `right_offset` 不必在這裡重新收斂，下一次 render 的
-    /// `resync_files_window` 會自己用新游標算。
+    /// `right_offset` 不必在這裡重新收斂：游標換了，下一次 render 的
+    /// `resync_files_window` 會用新游標算；選回同一個檔案則視窗原地不動。
     pub fn reselect(&mut self, rows: &[TreeRow], target: Option<&DiffTarget>) {
         self.file_cursor = target
             .and_then(|t| rows.iter().position(|r| r.file.as_ref() == Some(t)))
@@ -181,19 +184,49 @@ impl CommitDetailState {
         self.right_offset
     }
 
-    /// render 時的安全網：終端機縮放讓視窗高度變化時，重新套用 scrolloff
-    /// 確保游標仍在可視範圍內。與游標移動共用同一個 `scrolled_offset`，
-    /// 不分裂成兩處各自實作。
+    /// render 時對齊檔案樹視窗：游標或視窗高度變了（游標移動、點擊、換
+    /// commit、終端機縮放）才重新套用 scrolloff 讓游標回到可視範圍，與游標
+    /// 移動共用同一個 `scrolled_offset`。兩者都沒變就只夾上限——視窗位置是
+    /// 滑鼠滾輪捲的，working changes 背景重新整理（`reselect` 選回同一個
+    /// 檔案）也不會把它拉回游標。
     fn resync_files_window(&mut self, rows_len: usize) {
-        if let Some(cursor) = self.file_cursor {
-            self.right_offset = scrolled_offset(
-                cursor,
-                self.files_window_height,
-                rows_len,
-                self.right_offset,
-                FILE_TREE_SCROLLOFF,
-            );
+        let key = (self.file_cursor, self.files_window_height);
+        if key != self.files_synced {
+            if let Some(cursor) = self.file_cursor {
+                self.right_offset = scrolled_offset(
+                    cursor,
+                    self.files_window_height,
+                    rows_len,
+                    self.right_offset,
+                    FILE_TREE_SCROLLOFF,
+                );
+            }
+            self.files_synced = key;
         }
+        self.right_offset = self
+            .right_offset
+            .min(rows_len.saturating_sub(self.files_window_height));
+    }
+
+    /// 滑鼠滾輪：指標在檔案樹就捲檔案樹視窗（游標不動），在左欄就捲 Info。
+    /// 上限由 render 夾住。回傳有沒有命中。
+    pub fn wheel(&mut self, col: u16, row: u16, lines: isize) -> bool {
+        let pos = Position::new(col, row);
+        if self.files_inner.contains(pos) {
+            self.right_offset = self.right_offset.saturating_add_signed(lines);
+        } else if self.info_area.contains(pos) {
+            self.left_offset = self.left_offset.saturating_add_signed(lines);
+        } else {
+            return false;
+        }
+        true
+    }
+
+    /// 這一幀沒有畫 inline 面板時呼叫，免得命中範圍留著上一幀的舊值。
+    pub fn clear_hits(&mut self) {
+        self.info_area = Rect::default();
+        self.files_inner = Rect::default();
+        self.file_hits.clear();
     }
 
     fn clamp_left_offset(&mut self, left_len: usize, inner_height: usize) {
@@ -1310,6 +1343,99 @@ mod tests {
             vec![Line::raw("info")]
         });
         (state, rows)
+    }
+
+    /// 畫 `files` 個檔案（都在根目錄）的 Detail，高度 `height`，左欄有 50 行。
+    fn rendered_many_files(
+        files: usize,
+        height: u16,
+    ) -> (super::CommitDetailState, Vec<super::TreeRow>) {
+        let changes: Vec<FileChange> = (0..files)
+            .map(|i| FileChange::Modify {
+                path: format!("f{i:02}.rs"),
+                stats: None,
+            })
+            .collect();
+        let hash: CommitHash = "abc123".into();
+        let rows = build_commit_tree_rows(&changes, &hash, &ColorTheme::default());
+        let mut state = super::CommitDetailState::default();
+        state.reset(&rows);
+        render_many(&mut state, &rows, height);
+        (state, rows)
+    }
+
+    fn render_many(state: &mut super::CommitDetailState, rows: &[super::TreeRow], height: u16) {
+        let area = ratatui::layout::Rect::new(0, 0, 60, height);
+        let mut buf = ratatui::buffer::Buffer::empty(area);
+        super::render_detail_panes(area, &mut buf, state, &click_ctx(), rows, |_, _| {
+            (0..50).map(|i| Line::raw(format!("l{i}"))).collect()
+        });
+    }
+
+    #[test]
+    fn wheel_on_file_tree_scrolls_the_window_but_not_the_cursor() {
+        let (mut state, rows) = rendered_many_files(30, 10);
+        let cursor = state.file_cursor();
+
+        assert!(state.wheel(state.files_inner.x, state.files_inner.y, 5));
+        assert_eq!(state.right_offset, 5);
+        assert_eq!(state.file_cursor(), cursor, "游標不動");
+
+        render_many(&mut state, &rows, 10);
+        assert_eq!(state.right_offset, 5, "render 不能把視窗拉回游標");
+
+        // 鍵盤移動游標才把視窗帶回游標附近。
+        state.move_file_cursor_down(&rows);
+        render_many(&mut state, &rows, 10);
+        assert!(state.right_offset < 5, "游標移動後視窗要回到游標");
+    }
+
+    #[test]
+    fn wheel_on_file_tree_is_clamped_by_render() {
+        let (mut state, rows) = rendered_many_files(30, 10);
+        state.wheel(state.files_inner.x, state.files_inner.y, 1000);
+        render_many(&mut state, &rows, 10);
+        let max = rows.len() - state.files_window_height;
+        assert_eq!(state.right_offset, max);
+        state.wheel(state.files_inner.x, state.files_inner.y, -1000);
+        render_many(&mut state, &rows, 10);
+        assert_eq!(state.right_offset, 0);
+    }
+
+    #[test]
+    fn reselecting_the_same_file_keeps_the_scrolled_window() {
+        let (mut state, rows) = rendered_many_files(30, 10);
+        state.wheel(state.files_inner.x, state.files_inner.y, 8);
+        render_many(&mut state, &rows, 10);
+
+        // working changes 背景重新整理：選回同一個檔案。
+        let target = state.selected_file(&rows).cloned();
+        state.reselect(&rows, target.as_ref());
+        render_many(&mut state, &rows, 10);
+        assert_eq!(
+            state.right_offset, 8,
+            "autosave 不能把使用者捲好的視窗拉回去"
+        );
+    }
+
+    #[test]
+    fn wheel_on_info_area_scrolls_info_and_render_clamps_it() {
+        let (mut state, rows) = rendered_many_files(30, 10);
+        assert!(state.wheel(state.info_area.x + 1, state.info_area.y + 1, 4));
+        assert_eq!(state.left_offset, 4);
+        state.wheel(state.info_area.x + 1, state.info_area.y + 1, 1000);
+        render_many(&mut state, &rows, 10);
+        assert!(state.left_offset < 50, "上限由 render 夾住");
+    }
+
+    #[test]
+    fn wheel_outside_the_panels_is_a_miss_and_cleared_hits_stay_silent() {
+        let (mut state, _) = rendered_many_files(30, 10);
+        assert!(!state.wheel(state.files_inner.right() + 20, 0, 3));
+
+        state.clear_hits();
+        assert!(!state.wheel(2, 2, 3), "清掉命中範圍後不能再命中舊位置");
+        assert_eq!((state.left_offset, state.right_offset), (0, 0));
     }
 
     #[test]

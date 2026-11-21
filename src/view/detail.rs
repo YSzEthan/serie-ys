@@ -25,7 +25,7 @@ use crate::{
 };
 use ratatui::{
     crossterm::event::KeyEvent,
-    layout::{Constraint, Layout, Rect},
+    layout::{Constraint, Layout, Position, Rect},
     style::{Style, Stylize},
     text::{Line, Span},
     widgets::Clear,
@@ -167,6 +167,9 @@ pub struct DetailView<'a> {
     /// 永遠只裝「一個」檔案的內容——不是整包 commit diff。
     diff: RenderedDiff,
     diff_pane_state: OutputPaneState,
+    /// 上一幀 diff pane 的範圍（滾輪判斷指標在不在上面用）。每幀都寫，diff
+    /// 沒顯示時 Layout 算出來的高度是 0，`contains` 自然不命中。
+    diff_area: Rect,
     /// `diff` 目前對應的目標；跟游標算出的「應該顯示的目標」不一致時
     /// 才重新載入，藉此避免同一個檔案被重複 spawn git。
     diff_target: Option<DiffTarget>,
@@ -197,6 +200,7 @@ impl<'a> DetailView<'a> {
             content,
             diff: RenderedDiff::default(),
             diff_pane_state: OutputPaneState::default(),
+            diff_area: Rect::default(),
             diff_target: None,
             repository,
             ctx,
@@ -221,6 +225,7 @@ impl<'a> DetailView<'a> {
             content,
             diff: RenderedDiff::default(),
             diff_pane_state: OutputPaneState::default(),
+            diff_area: Rect::default(),
             diff_target: None,
             repository,
             ctx,
@@ -366,6 +371,9 @@ impl<'a> DetailView<'a> {
 
         let [list_area, diff_area] =
             Layout::vertical([Constraint::Min(0), Constraint::Length(diff_height)]).areas(area);
+        self.diff_area = diff_area;
+        // inline 面板這幀沒畫（被擠到沒空間）時，不能留著上一幀的命中範圍。
+        self.commit_detail_state.clear_hits();
 
         let area_cap = list_area.height.saturating_sub(2);
         let max_height =
@@ -578,6 +586,18 @@ impl<'a> DetailView<'a> {
             self.sync_diff();
         } else {
             self.click_row(repository, row);
+        }
+    }
+
+    /// 滑鼠滾輪：捲指標底下那塊內容，不動選取。diff pane 直接捲 `diff_pane_state`
+    /// （不走 `scroll_diff`——它要求 Files pane，滾輪以指標位置為準）；inline
+    /// 面板交給 `CommitDetailState`；commit 列表上不動作，免得正在看的 commit
+    /// 被換掉。
+    pub fn wheel(&mut self, col: u16, row: u16, lines: isize) {
+        if self.diff_area.contains(Position::new(col, row)) {
+            self.diff_pane_state.scroll_by(lines);
+        } else {
+            self.commit_detail_state.wheel(col, row, lines);
         }
     }
 

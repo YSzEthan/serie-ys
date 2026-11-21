@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use ratatui::{
     crossterm::event::KeyEvent,
-    layout::{Constraint, Layout, Rect},
+    layout::{Constraint, Layout, Position, Rect},
     text::Line,
     Frame,
 };
@@ -50,6 +50,8 @@ type ExecCommandFn =
 pub struct UserCommandView<'a> {
     commit_list_state: Option<CommitListState<'a>>,
     output_pane_state: OutputPaneState,
+    /// 上一幀輸出 pane 的範圍，滾輪判斷指標在不在上面用。
+    output_area: Rect,
 
     user_command_number: usize,
     user_command_output_lines: Vec<Line<'static>>,
@@ -75,6 +77,7 @@ impl<'a> UserCommandView<'a> {
         UserCommandView {
             commit_list_state: Some(commit_list_state),
             output_pane_state: OutputPaneState::default(),
+            output_area: Rect::default(),
             user_command_number,
             user_command_output_lines,
             ctx,
@@ -166,8 +169,17 @@ impl<'a> UserCommandView<'a> {
         let commit_list = CommitList::new(self.ctx.clone(), 0);
         f.render_stateful_widget(commit_list, list_area, self.as_mut_list_state());
 
+        self.output_area = user_command_area;
         let output_pane = OutputPane::new(&self.user_command_output_lines, self.ctx.clone());
         f.render_stateful_widget(output_pane, user_command_area, &mut self.output_pane_state);
+    }
+
+    /// 滑鼠滾輪：只捲輸出 pane。上方 commit 列表上不動作——選取一換就會
+    /// 重跑指令。
+    pub fn wheel(&mut self, col: u16, row: u16, lines: isize) {
+        if self.output_area.contains(Position::new(col, row)) {
+            self.output_pane_state.scroll_by(lines);
+        }
     }
 }
 

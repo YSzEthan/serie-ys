@@ -1355,6 +1355,9 @@ impl App<'_> {
                 }
             }
             View::Refs(ref mut view) => view.wheel(col, row, lines),
+            View::Detail(ref mut view) => view.wheel(col, row, lines),
+            View::UserCommand(ref mut view) => view.wheel(col, row, lines),
+            View::Shell(ref mut view) => view.wheel(col, row, lines),
             View::Help(ref mut view) => view.wheel(lines),
             View::ReleaseNotes(ref mut view) => view.wheel(lines),
             _ => {}
