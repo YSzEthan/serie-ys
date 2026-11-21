@@ -8,6 +8,7 @@ use rust_i18n::t;
 use tui_input::{backend::crossterm::EventHandler, Input};
 
 use crate::{
+    app::WHEEL_LINES,
     event::{AppEvent, RelatedGroup, RelatedItem, UserEvent, UserEventWithCount},
     fuzzy::SearchMatcher,
     github::{self, PrDraftAction, StateAction},
@@ -89,6 +90,69 @@ impl<'a> GitHubView<'a> {
         }
         if self.selected_number_and_kind() != before {
             self.schedule_timeline_for_selected(Instant::now());
+        }
+    }
+
+    /// 滑鼠滾輪：捲指標底下那塊內容。
+    ///
+    /// - Preview：捲 `preview_offset`，往下照鍵盤路徑補載 timeline。
+    /// - Issues／PRs 清單：只捲視窗，`selected_index` 不動（這兩個分頁本來就
+    ///   允許選取在畫面外，下次鍵盤移動 `adjust_scroll` 會拉回來）。上限要在
+    ///   這裡夾：render 不夾 `offset`，超過清單長度會整片空白。
+    /// - Branches／CI 卡片：一格捲一整列卡片，選取被捲出畫面就貼邊被推著走
+    ///   （render 每幀 `adjust_scroll` 會把選取拉回畫面，單捲 offset 會被蓋掉）。
+    ///
+    /// 搜尋輸入與 checkbox 編輯是 modal，一律忽略。
+    pub fn wheel(&mut self, col: u16, row: u16, lines: isize) {
+        if matches!(self.focus, GitHubFocus::Prompt | GitHubFocus::CheckboxEdit) {
+            return;
+        }
+        let pos = Position::new(col, row);
+        let on_preview = self
+            .click_hits
+            .iter()
+            .any(|&(rect, target)| target == ClickTarget::Preview && rect.contains(pos));
+        if on_preview {
+            self.preview_offset = self.preview_offset.saturating_add_signed(lines);
+            if lines > 0 {
+                self.maybe_load_more_timeline();
+            }
+            return;
+        }
+        if !self.scroll_area.contains(pos) {
+            return;
+        }
+        if self.active_tab.is_card_tab() {
+            self.wheel_cards(lines / WHEEL_LINES);
+        } else {
+            let max_offset = self.current_list_len().saturating_sub(self.scroll_rows);
+            self.offset = self.offset.saturating_add_signed(lines).min(max_offset);
+        }
+    }
+
+    /// 卡片分頁滾輪：`rows` 整列卡片（正數往下），`offset` 永遠對齊列首。
+    fn wheel_cards(&mut self, rows: isize) {
+        let cols = self.branch_columns().max(1);
+        let len = self.current_list_len();
+        // 跟 render 每幀的 `adjust_branch_scroll` 同一個來源，兩邊才不會互相拉扯。
+        let rows_on_screen = self.branch_visible_rows().max(1);
+        let max_first = len.div_ceil(cols).saturating_sub(rows_on_screen);
+        let first = (self.offset / cols)
+            .saturating_add_signed(rows)
+            .min(max_first);
+        self.offset = first * cols;
+
+        let last = (self.offset + rows_on_screen * cols)
+            .min(len)
+            .saturating_sub(1)
+            .max(self.offset);
+        let selected = self.selected_index.clamp(self.offset, last);
+        if selected != self.selected_index {
+            self.selected_index = selected;
+            self.preview_offset = 0;
+            if rows > 0 {
+                self.maybe_load_more();
+            }
         }
     }
 

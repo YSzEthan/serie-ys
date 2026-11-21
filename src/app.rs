@@ -264,7 +264,7 @@ pub struct App<'a> {
 const CONDENSED_CHECK_DELAY: Duration = Duration::from_millis(250);
 
 /// 滑鼠滾輪一格捲幾行。
-const WHEEL_LINES: isize = 3;
+pub(crate) const WHEEL_LINES: isize = 3;
 
 /// GitHub 資料的排程狀態機。`(loading=false, pending=Some(_))`
 /// 這種非法組合曾經可達（Bug A）—— 用 enum 讓它在型別層直接不存在。
@@ -1358,6 +1358,7 @@ impl App<'_> {
             View::Detail(ref mut view) => view.wheel(col, row, lines),
             View::UserCommand(ref mut view) => view.wheel(col, row, lines),
             View::Shell(ref mut view) => view.wheel(col, row, lines),
+            View::GitHub(ref mut view) => view.wheel(col, row, lines),
             View::Help(ref mut view) => view.wheel(lines),
             View::ReleaseNotes(ref mut view) => view.wheel(lines),
             _ => {}

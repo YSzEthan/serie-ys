@@ -275,6 +275,12 @@ pub struct GitHubView<'a> {
     /// 滑鼠命中表：上一幀畫出來的可點區域。`render` 開頭清空，tab、清單列、
     /// 卡片、preview 各自在畫的時候登記。
     click_hits: Vec<(Rect, ClickTarget)>,
+    /// 滾輪捲動用：上一幀清單（Issues／PRs）或卡片區（Branches／CI）的範圍。
+    /// `scroll_rows` 是清單一屏的列數（已扣掉 more… 那列），只有清單用；卡片
+    /// 的一屏列數走 `branch_visible_rows()`，跟 `adjust_branch_scroll` 同源。
+    /// `render` 開頭清成空，沒畫清單的畫面（載入中、空清單）不會命中。
+    scroll_area: Rect,
+    scroll_rows: usize,
     /// commit／CI 區塊是逐筆顯示還是收合成單一摘要列，預設收合。全有全無
     /// （`z` 切換整個區塊），不是逐筆切換。
     expand_commits: bool,
@@ -359,6 +365,8 @@ impl<'a> GitHubView<'a> {
             preview_cache: PreviewCache::default(),
             preview_height: 0,
             click_hits: Vec::new(),
+            scroll_area: Rect::default(),
+            scroll_rows: 0,
             expand_commits: false,
             label_mode: LabelMode::default(),
             diff_stat_thresholds: DiffStatThresholds::default(),
@@ -1624,6 +1632,7 @@ impl<'a> GitHubView<'a> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::app::WHEEL_LINES;
     use crate::color::MUTED_FG;
     use ratatui::{backend::TestBackend, Terminal};
 
@@ -5223,6 +5232,106 @@ mod tests {
         render_to_string_at_width(&mut view, 100);
         view.click(500, 500);
         assert_eq!(view.selected_index, 0);
+    }
+
+    // ---- 滑鼠滾輪 --------------------------------------------------------
+
+    /// `n` 個 PR 的清單（寬版，有 preview），畫過一幀。
+    fn many_prs(n: u64) -> (GitHubView<'static>, std::sync::mpsc::Receiver<AppEvent>) {
+        let prs = (1..=n).rev().map(|i| pr_by(i, "alice", "t")).collect();
+        let (mut view, rx) = view_with_items(Vec::new(), prs);
+        render_to_string_at_width(&mut view, 100);
+        (view, rx)
+    }
+
+    fn list_point(view: &GitHubView<'_>) -> (u16, u16) {
+        (view.scroll_area.x + 1, view.scroll_area.y)
+    }
+
+    #[test]
+    fn wheel_on_list_scrolls_the_window_but_not_the_selection_and_clamps() {
+        let (mut view, _rx) = many_prs(40);
+        let (x, y) = list_point(&view);
+        assert!(view.scroll_rows > 0 && view.scroll_rows < 40);
+
+        view.wheel(x, y, 3);
+        assert_eq!(view.offset, 3);
+        assert_eq!(view.selected_index, 0, "選取不動");
+
+        view.wheel(x, y, 1000);
+        assert_eq!(view.offset, 40 - view.scroll_rows, "上限 = 總數 - 一屏");
+        view.wheel(x, y, -1000);
+        assert_eq!(view.offset, 0);
+    }
+
+    #[test]
+    fn wheel_on_preview_scrolls_preview_offset_only() {
+        let (mut view, _rx) = many_prs(3);
+        let preview = hit_rect(&view, ClickTarget::Preview);
+
+        view.wheel(preview.x + 1, preview.y + 1, 6);
+        assert_eq!(view.preview_offset, 6);
+        assert_eq!((view.offset, view.selected_index), (0, 0));
+
+        view.wheel(preview.x + 1, preview.y + 1, -100);
+        assert_eq!(view.preview_offset, 0);
+    }
+
+    #[test]
+    fn wheel_on_cards_moves_whole_rows_and_pushes_the_selection_along() {
+        let (mut view, _rx) = branches_view();
+        view.branches = (0..24)
+            .map(|i| test_branch(&format!("b{i:02}"), i, 0))
+            .collect();
+        render_to_string_at_width(&mut view, 100);
+        let cols = view.branch_columns();
+        let (x, y) = list_point(&view);
+        let rows = view.branch_visible_rows();
+        assert!(rows > 0 && rows * cols < 24);
+
+        view.wheel(x, y, WHEEL_LINES * 2);
+        assert_eq!(view.offset, 2 * cols, "兩格 = 兩整列卡片，offset 對齊列首");
+        assert_eq!(
+            view.selected_index,
+            2 * cols,
+            "原選取被捲出畫面 → 貼頂被推著走"
+        );
+
+        // render 的 adjust_scroll 不能把視窗拉回去。
+        render_to_string_at_width(&mut view, 100);
+        assert_eq!(view.offset, 2 * cols);
+
+        view.wheel(x, y, WHEEL_LINES * -100);
+        assert_eq!(view.offset, 0);
+        assert!(view.selected_index < rows * cols, "往回捲選取貼底");
+
+        view.wheel(x, y, WHEEL_LINES * 100);
+        let max_first = 24usize.div_ceil(cols) - rows;
+        assert_eq!(view.offset, max_first * cols, "上限 = 最後一屏的列首");
+    }
+
+    #[test]
+    fn wheel_is_ignored_in_modal_focus_and_outside_the_panes() {
+        for focus in [GitHubFocus::Prompt, GitHubFocus::CheckboxEdit] {
+            let (mut view, _rx) = many_prs(40);
+            let (x, y) = list_point(&view);
+            view.focus = focus;
+            view.wheel(x, y, 9);
+            assert_eq!(view.offset, 0, "{focus:?}");
+        }
+
+        let (mut view, _rx) = many_prs(40);
+        view.wheel(0, 0, 9); // header 的 tab 列
+        view.wheel(500, 500, 9);
+        assert_eq!((view.offset, view.preview_offset), (0, 0));
+    }
+
+    #[test]
+    fn wheel_does_nothing_when_no_list_was_drawn() {
+        let (mut view, _rx) = view_with_items(Vec::new(), Vec::new());
+        render_to_string_at_width(&mut view, 100); // 空清單：只有置中提示
+        view.wheel(10, 10, 9);
+        assert_eq!(view.offset, 0);
     }
 
     #[test]

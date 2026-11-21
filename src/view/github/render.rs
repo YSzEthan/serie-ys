@@ -57,6 +57,8 @@ impl<'a> GitHubView<'a> {
         self.selected_row_overflows.set(false);
         // 滑鼠命中表跟畫面同步：每幀重建，提早 return 的路徑也不會留下舊表。
         self.click_hits.clear();
+        self.scroll_area = Rect::default();
+        self.scroll_rows = 0;
 
         // ── 三區 split：頂部 tab/prompt + 下半 list|preview ──
         let [header_area, content_area] =
@@ -264,6 +266,9 @@ impl<'a> GitHubView<'a> {
         } else {
             inner.height as usize
         };
+
+        self.scroll_area = inner;
+        self.scroll_rows = visible_height;
 
         let rows = self.current_viewport_rows(visible_height, inner.width, marquee_frame);
         let mut lines: Vec<Line<'static>> = rows.iter().map(|r| r.line.clone()).collect();
@@ -544,6 +549,7 @@ impl<'a> GitHubView<'a> {
     /// CI 分頁：沿用 Branches 的卡片版面，沒有 preview。
     fn render_ci(&mut self, f: &mut Frame, area: Rect) {
         f.render_widget(Clear, area);
+        self.scroll_area = area;
         for (vis_i, card_area) in self.card_slots(area) {
             let Some(entry) = self.ci.get(self.actual_index(vis_i)) else {
                 break;
@@ -563,6 +569,7 @@ impl<'a> GitHubView<'a> {
             height: area.height - u16::from(footer),
             ..area
         };
+        self.scroll_area = cards_area;
 
         for (vis_i, card_area) in self.card_slots(cards_area) {
             let Some(branch) = self.branches.get(self.actual_index(vis_i)) else {
