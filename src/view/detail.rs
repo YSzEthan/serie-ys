@@ -581,13 +581,17 @@ impl<'a> DetailView<'a> {
         }
     }
 
-    /// 點 commit 列：原地換成被點的 commit。點到已選取的列、inline 面板或
-    /// 空白處都是 no-op——點已選取的列不關閉面板，避免雙擊習慣開了又關。
+    /// 點 commit 列：點已選取的那列關閉面板（跟 Enter 一致）；點別的 commit
+    /// 原地換過去。點到 inline 面板或空白處是 no-op。
     fn click_row(&mut self, repository: &Repository, row: u16) {
         let Some(state) = self.commit_list_state.as_ref() else {
             return;
         };
-        if !state.has_row(row) || state.is_row_selected(row) {
+        if !state.has_row(row) {
+            return;
+        }
+        if state.is_row_selected(row) {
+            self.tx.send(AppEvent::CloseDetail);
             return;
         }
         self.update_selected_commit(repository, |state| {
