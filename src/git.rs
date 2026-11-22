@@ -541,11 +541,21 @@ fn truncate_diff_output(bytes: &[u8]) -> (String, bool) {
     (out, truncated)
 }
 
+/// 一次 `rev-parse` 同時問「在 work tree 裡嗎」與「是 bare repo 嗎」。成功時
+/// git 對每個旗標各印一行 `true`／`false`，work tree 與 bare repo 都收，所以
+/// 任一行是 `true` 就算通過。
 fn check_git_repository(path: &Path) -> Result<()> {
-    if !is_inside_work_tree(path) && !is_bare_repository(path) {
-        return Err(t!("git.repo.not_a_repo").into());
+    let is_repo = git_read(path)
+        .args(["rev-parse", "--is-inside-work-tree", "--is-bare-repository"])
+        .output()
+        .is_ok_and(|o| {
+            o.status.success() && o.stdout.split(|&b| b == b'\n').any(|line| line == b"true")
+        });
+    if is_repo {
+        Ok(())
+    } else {
+        Err(t!("git.repo.not_a_repo", path = path.display()).into())
     }
-    Ok(())
 }
 
 /// 唯讀 git 呼叫共用的設定：`current_dir` + `GIT_OPTIONAL_LOCKS=0`。
@@ -568,15 +578,6 @@ pub fn is_inside_work_tree(path: &Path) -> bool {
     git_read(path)
         .arg("rev-parse")
         .arg("--is-inside-work-tree")
-        .output()
-        .map(|o| o.status.success() && o.stdout == b"true\n")
-        .unwrap_or(false)
-}
-
-fn is_bare_repository(path: &Path) -> bool {
-    git_read(path)
-        .arg("rev-parse")
-        .arg("--is-bare-repository")
         .output()
         .map(|o| o.status.success() && o.stdout == b"true\n")
         .unwrap_or(false)
@@ -2081,6 +2082,26 @@ mod tests {
         let out = "3\t1\ta.rs\n-\t-\timg.png\n10\t0\tb.rs\n";
         assert_eq!(parse_numstat(out), (13, 1));
         assert_eq!(parse_numstat(""), (0, 0));
+    }
+
+    #[test]
+    fn check_git_repository_accepts_work_tree_and_bare_repo() {
+        let work_tree = tempfile::tempdir().unwrap();
+        git_env(work_tree.path(), &["init", "-q", "-b", "main"], &[]);
+        assert!(check_git_repository(work_tree.path()).is_ok());
+
+        // bare repo：`--is-inside-work-tree` 印 false、`--is-bare-repository` 印 true
+        let bare = tempfile::tempdir().unwrap();
+        git_env(bare.path(), &["init", "-q", "--bare"], &[]);
+        assert!(check_git_repository(bare.path()).is_ok());
+    }
+
+    #[test]
+    fn check_git_repository_error_names_the_path() {
+        let dir = tempfile::tempdir().unwrap();
+        let error = check_git_repository(dir.path()).unwrap_err().to_string();
+
+        assert!(error.contains(&dir.path().display().to_string()), "{error}");
     }
 
     #[test]
