@@ -7,8 +7,12 @@ use std::{
     sync::Arc,
 };
 
-use chrono::{DateTime, FixedOffset};
 use clap::ValueEnum;
+use jiff::{
+    fmt::{strtime, temporal::Pieces},
+    tz::{Offset, TimeZone},
+    Timestamp,
+};
 use rust_i18n::t;
 use rustc_hash::{FxHashMap, FxHashSet};
 use serde::Deserialize;
@@ -58,6 +62,58 @@ pub enum CommitType {
     Stash,
 }
 
+/// commit 的作者／提交時間：Unix 秒加上寫入時的 UTC offset。
+///
+/// 刻意不用 `jiff::Zoned`：它內含 `TimeZone`，不是 `Copy`，而 `Commit` 在大 repo
+/// （linux 148 萬筆）常駐記憶體；這裡只存兩個整數，共 16 bytes。
+/// 欄位用原生整數而非 `jiff::Timestamp`／`Offset`，是因為 git 的時間只到秒，
+/// 不需要奈秒那 4 bytes。
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct GitDate {
+    unix_seconds: i64,
+    offset_seconds: i32,
+}
+
+impl GitDate {
+    /// 解析 git `--date=iso-strict` 的輸出（RFC 3339，保留原本的 offset）。
+    fn parse_rfc3339(s: &str) -> Option<Self> {
+        let pieces = Pieces::parse(s).ok()?;
+        let offset = pieces.to_numeric_offset()?;
+        let timestamp = offset
+            .to_timestamp(pieces.date().to_datetime(pieces.time()?))
+            .ok()?;
+        Some(Self {
+            unix_seconds: timestamp.as_second(),
+            offset_seconds: offset.seconds(),
+        })
+    }
+
+    /// 是否同一個時間點（忽略 offset）。`==` 會連 offset 一起比。
+    pub fn same_instant(&self, other: &Self) -> bool {
+        self.unix_seconds == other.unix_seconds
+    }
+
+    /// 依 strftime 格式輸出。`local` 為 true 時轉成系統時區，否則用 commit 寫入時的 offset。
+    /// 格式字串無效時原樣回傳格式字串，渲染路徑永遠不會 panic
+    /// （設定檔的格式在載入時已驗證，這裡是最後一道防線）。
+    pub fn format(&self, format: &str, local: bool) -> String {
+        let time_zone = if local {
+            TimeZone::system()
+        } else {
+            Offset::from_seconds(self.offset_seconds).map_or(TimeZone::UTC, TimeZone::fixed)
+        };
+        self.format_in(format, time_zone)
+    }
+
+    fn format_in(&self, format: &str, time_zone: TimeZone) -> String {
+        let Ok(timestamp) = Timestamp::from_second(self.unix_seconds) else {
+            return format.to_string();
+        };
+        strtime::format(format, &timestamp.to_zoned_datetime(time_zone))
+            .unwrap_or_else(|_| format.to_string())
+    }
+}
+
 #[derive(Debug, Default, Clone, PartialEq)]
 pub struct Commit {
     pub commit_hash: CommitHash,
@@ -66,7 +122,7 @@ pub struct Commit {
     /// 同一份配置。
     pub author_name: Arc<str>,
     pub author_email: Arc<str>,
-    pub author_date: DateTime<FixedOffset>,
+    pub author_date: GitDate,
     pub subject: String,
     pub parent_commit_hashes: Vec<CommitHash>,
     pub commit_type: CommitType,
@@ -79,7 +135,7 @@ pub struct Commit {
 pub struct CommitExtra {
     pub committer_name: String,
     pub committer_email: String,
-    pub committer_date: DateTime<FixedOffset>,
+    pub committer_date: GitDate,
     pub body: String,
 }
 
@@ -125,7 +181,28 @@ pub enum Ref {
     },
 }
 
+/// ref 屬於哪一類，涵蓋 Stash，用來區分同名的 branch 與 tag。
+/// 與 [`RefType`] 不同：後者只給可刪除的 ref 用，不含 Stash。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum RefKind {
+    Branch,
+    RemoteBranch,
+    Tag,
+    Stash,
+}
+
+pub type RefKey<'a> = (RefKind, &'a str);
+
 impl Ref {
+    pub fn kind(&self) -> RefKind {
+        match self {
+            Ref::Branch { .. } => RefKind::Branch,
+            Ref::RemoteBranch { .. } => RefKind::RemoteBranch,
+            Ref::Tag { .. } => RefKind::Tag,
+            Ref::Stash { .. } => RefKind::Stash,
+        }
+    }
+
     pub fn name(&self) -> &str {
         match self {
             Ref::Tag { name, .. } => name,
@@ -929,8 +1006,8 @@ fn load_commits_format() -> String {
     ["%H", "%aN", "%aE", "%ad", "%s", "%P"].join("%x1f") // 用 Unit Separator 作為分隔符
 }
 
-fn parse_iso_date(s: &str) -> DateTime<FixedOffset> {
-    DateTime::parse_from_rfc3339(s).expect("git --format=%aI should always produce valid RFC3339")
+fn parse_iso_date(s: &str) -> GitDate {
+    GitDate::parse_rfc3339(s).expect("git --date=iso-strict should always produce valid RFC3339")
 }
 
 fn parse_parent_commit_hashes(s: &str) -> Vec<CommitHash> {
@@ -1933,7 +2010,71 @@ pub fn remote_branch_state(path: &Path, remote: &str, branch: &str) -> RemoteSta
 
 #[cfg(test)]
 mod tests {
+    use rstest::rstest;
+
     use super::*;
+
+    #[rstest]
+    #[case("2024-01-01T01:02:03Z", 1_704_070_923, "2024-01-01 01:02:03 +0000")]
+    #[case(
+        "2024-01-01T01:02:03+00:00",
+        1_704_070_923,
+        "2024-01-01 01:02:03 +0000"
+    )]
+    #[case(
+        "2024-01-01T01:02:03+09:30",
+        1_704_036_723,
+        "2024-01-01 01:02:03 +0930"
+    )]
+    #[case(
+        "2024-01-01T01:02:03-03:30",
+        1_704_083_523,
+        "2024-01-01 01:02:03 -0330"
+    )]
+    fn parse_iso_date_preserves_offset(
+        #[case] input: &str,
+        #[case] unix_seconds: i64,
+        #[case] expected: &str,
+    ) {
+        let date = parse_iso_date(input);
+
+        assert_eq!(date.unix_seconds, unix_seconds);
+        assert_eq!(date.format("%Y-%m-%d %H:%M:%S %z", false), expected);
+    }
+
+    #[rstest]
+    #[case("2024-03-10T06:59:59+00:00", "2024-03-10 01:59:59 -0500")]
+    #[case("2024-03-10T07:00:00+00:00", "2024-03-10 03:00:00 -0400")]
+    fn format_in_respects_daylight_saving_time(#[case] input: &str, #[case] expected: &str) {
+        let time_zone = TimeZone::posix("EST5EDT,M3.2.0,M11.1.0").unwrap();
+
+        let actual = parse_iso_date(input).format_in("%Y-%m-%d %H:%M:%S %z", time_zone);
+
+        assert_eq!(actual, expected);
+    }
+
+    #[test]
+    fn format_with_invalid_format_returns_format_string_instead_of_panicking() {
+        let date = parse_iso_date("2024-01-01T01:02:03Z");
+
+        assert_eq!(date.format("%J", false), "%J");
+    }
+
+    #[test]
+    fn same_instant_ignores_offset_but_eq_does_not() {
+        let a = parse_iso_date("2024-01-01T10:32:03+09:30");
+        let b = parse_iso_date("2024-01-01T01:02:03Z");
+
+        assert!(a.same_instant(&b));
+        assert_ne!(a, b);
+    }
+
+    #[test]
+    fn commit_stays_compact_for_huge_repos() {
+        // linux 148 萬筆 commit 常駐記憶體，欄位變大會直接放大 RSS。
+        assert_eq!(std::mem::size_of::<GitDate>(), 16);
+        assert_eq!(std::mem::size_of::<Commit>(), 120);
+    }
 
     #[test]
     fn parse_numstat_sums_and_skips_binary() {

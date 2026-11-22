@@ -4,7 +4,7 @@ use ratatui::{layout::Rect, style::Color};
 use rustc_hash::FxHashMap;
 use tui_input::Input;
 
-use crate::git::{CommitHash, Head, Ref, Repository, WorkingChanges};
+use crate::git::{CommitHash, Head, Ref, RefKey, Repository, WorkingChanges};
 use crate::graph::{first_kept, CellWidthType, Condensed, Graph, TextCell};
 use crate::widget::scroll;
 use crate::CommitMask;
@@ -77,7 +77,7 @@ pub struct CommitListState<'a> {
     // Filtered graph（remote-only commits 被隱藏時使用）
     filtered: Option<Rc<Graph>>,
 
-    ref_name_to_commit_index_map: FxHashMap<String, RawCommitIdx>,
+    ref_commit_indices: FxHashMap<RefKey<'a>, RawCommitIdx>,
 
     pub(super) search_state: SearchState,
     pub(super) search_input: Input,
@@ -148,7 +148,6 @@ impl<'a> CommitListState<'a> {
         graph_colors: Vec<Color>,
         head_raw: Option<RawCommitIdx>,
         head: Head,
-        ref_name_to_commit_index_map: FxHashMap<String, RawCommitIdx>,
         search_defaults: MatchOptions,
         filtered: Option<Rc<Graph>>,
         remote_only_commits: CommitMask,
@@ -156,6 +155,12 @@ impl<'a> CommitListState<'a> {
         scrolloff: usize,
     ) -> CommitListState<'a> {
         let commit_count = commits.len();
+        let mut ref_commit_indices = FxHashMap::default();
+        for (i, commit) in commits.iter().enumerate() {
+            for r in commit.refs() {
+                ref_commit_indices.insert((r.kind(), r.name()), RawCommitIdx(i));
+            }
+        }
         let has_virtual_row = working_changes.as_ref().is_some_and(|wc| !wc.is_empty());
         let vr_offset = if has_virtual_row { 1 } else { 0 };
         let total = commit_count + vr_offset;
@@ -174,7 +179,7 @@ impl<'a> CommitListState<'a> {
             selected_text_x: 0,
             head,
             filtered,
-            ref_name_to_commit_index_map,
+            ref_commit_indices,
             search_state: SearchState::Inactive,
             search_input: Input::default(),
             last_search: String::new(),
@@ -859,8 +864,8 @@ impl<'a> CommitListState<'a> {
         self.place(target, prev_offset);
     }
 
-    pub fn select_ref(&mut self, ref_name: &str) {
-        let Some(&raw) = self.ref_name_to_commit_index_map.get(ref_name) else {
+    pub fn select_ref(&mut self, key: RefKey<'_>) {
+        let Some(&raw) = self.ref_commit_indices.get(&key) else {
             return;
         };
         if let Some(target) = self.raw_to_visible(raw) {
@@ -1000,7 +1005,7 @@ fn compute_selection(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::{Commit, FileChange};
+    use crate::git::{Commit, FileChange, RefKind};
 
     // --- 座標系 regression tests ---------------------------------------------
     // 這些 test 聚焦在 pure function（`resolve_*` / `compute_selection`），
@@ -1423,7 +1428,6 @@ mod tests {
             Vec::new(),
             None,
             Head::None,
-            FxHashMap::default(),
             MatchOptions::default(),
             None,
             crate::CommitMask::default(),
@@ -1589,6 +1593,45 @@ mod tests {
 
     // --- select_parent() / select_child() 回歸測試 ----------------------------
 
+    #[test]
+    fn select_ref_distinguishes_branch_and_tag_with_same_name() {
+        let repository =
+            Repository::from_commits(vec![commit_fixture("c0", &[]), commit_fixture("c1", &[])]);
+        let branch = Ref::Branch {
+            name: "dev".into(),
+            target: "c0".into(),
+        };
+        let tag = Ref::Tag {
+            name: "dev".into(),
+            target: "c1".into(),
+        };
+        let infos = vec![
+            CommitInfo::new(&repository.all_commits()[0], vec![&branch]),
+            CommitInfo::new(&repository.all_commits()[1], vec![&tag]),
+        ];
+        let graph =
+            Graph::from_materialized(repository.all_commits().len(), Vec::new(), Vec::new());
+        let mut state = CommitListState::new(
+            infos,
+            &repository,
+            Rc::new(graph),
+            Vec::new(),
+            None,
+            Head::None,
+            MatchOptions::default(),
+            None,
+            crate::CommitMask::default(),
+            None,
+            0,
+        );
+        state.reset_height(10);
+
+        state.select_ref((RefKind::Tag, "dev"));
+        assert_eq!(state.selected_commit_hash(), &CommitHash::from("c1"));
+        state.select_ref((RefKind::Branch, "dev"));
+        assert_eq!(state.selected_commit_hash(), &CommitHash::from("c0"));
+    }
+
     fn commit_fixture(hash: &str, parents: &[&str]) -> Commit {
         Commit {
             commit_hash: hash.into(),
@@ -1617,7 +1660,6 @@ mod tests {
             Vec::new(),
             None,
             Head::None,
-            FxHashMap::default(),
             MatchOptions::default(),
             None,
             crate::CommitMask::default(),
@@ -1883,7 +1925,6 @@ mod tests {
             Vec::new(),
             None,
             Head::None,
-            FxHashMap::default(),
             MatchOptions::default(),
             None,
             crate::CommitMask::default(),

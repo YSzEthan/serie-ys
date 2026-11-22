@@ -11,7 +11,6 @@ use ratatui::{
     DefaultTerminal, Frame,
 };
 use rust_i18n::t;
-use rustc_hash::FxHashMap;
 
 use crate::{
     auto_fetch,
@@ -24,7 +23,7 @@ use crate::{
     },
     git::{
         background_command, fill_working_changes_stats, remote_branch_state, Commit, CommitHash,
-        FetchPrune, Head, Ref, RefType, RemoteState, Repository, WorkingChanges,
+        FetchPrune, Head, Ref, RefKind, RefType, RemoteState, Repository, WorkingChanges,
     },
     github::{
         delete_remote_branch as gh_delete_remote_branch, is_merge_conflict_error, merge_pr,
@@ -334,18 +333,10 @@ impl<'a> App<'a> {
             .and_then(|h| repository.index_of(&h))
             .map(RawCommitIdx);
 
-        let mut ref_name_to_commit_index_map = FxHashMap::default();
         let commits = repository
             .all_commits()
             .iter()
-            .enumerate()
-            .map(|(i, commit)| {
-                let refs = repository.refs(&commit.commit_hash);
-                for r in &refs {
-                    ref_name_to_commit_index_map.insert(r.name().to_string(), RawCommitIdx(i));
-                }
-                CommitInfo::new(commit, refs)
-            })
+            .map(|commit| CommitInfo::new(commit, repository.refs(&commit.commit_hash)))
             .collect();
 
         let head = repository.head().clone();
@@ -357,7 +348,6 @@ impl<'a> App<'a> {
             graph_colors,
             head_raw,
             head,
-            ref_name_to_commit_index_map,
             MatchOptions {
                 ignore_case: ctx.core_config.search.ignore_case,
                 fuzzy: ctx.core_config.search.fuzzy,
@@ -373,7 +363,7 @@ impl<'a> App<'a> {
         }
         if let InitialSelection::Head = initial_selection {
             match repository.head() {
-                Head::Branch { name } => commit_list_state.select_ref(name),
+                Head::Branch { name } => commit_list_state.select_ref((RefKind::Branch, name)),
                 Head::Detached { target } => commit_list_state.select_commit_hash(target),
                 Head::None => {}
             }

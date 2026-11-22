@@ -535,8 +535,7 @@ Commit 清單中 author date 的日期格式。
 - 型別：`string`
 - 預設值：`"%Y-%m-%d"`
 
-格式須使用 strftime 格式：
-https://docs.rs/chrono/latest/chrono/format/strftime/index.html
+格式字串會直接交給 [Jiff 的 `strftime` formatter](https://docs.rs/jiff/latest/jiff/fmt/strtime/index.html)，無效的格式會在載入設定時報錯。
 
 ### `ui.list.date_width`
 
@@ -635,8 +634,7 @@ Commit 詳情中 author／committer date 的日期格式。
 - 型別：`string`
 - 預設值：`"%Y-%m-%d %H:%M:%S %z"`
 
-格式須使用 strftime 格式：
-https://docs.rs/chrono/latest/chrono/format/strftime/index.html
+格式字串會直接交給 [Jiff 的 `strftime` formatter](https://docs.rs/jiff/latest/jiff/fmt/strtime/index.html)，無效的格式會在載入設定時報錯。
 
 ### `ui.detail.date_local`
 

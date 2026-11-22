@@ -10,7 +10,11 @@ use rust_i18n::t;
 use rustc_hash::FxHashSet;
 use semver::Version;
 
-use crate::{app::AppContext, git::Ref, widget::scroll};
+use crate::{
+    app::AppContext,
+    git::{Ref, RefKey, RefKind},
+    widget::scroll,
+};
 
 const TREE_BRANCH_ROOT_IDENT: &str = "__branches__";
 const TREE_REMOTE_ROOT_IDENT: &str = "__remotes__";
@@ -140,8 +144,18 @@ impl RefListState {
         self.selected.len() <= 1
     }
 
-    pub fn selected_ref_name(&self) -> Option<String> {
-        self.selected.last().cloned()
+    pub fn selected_ref_key(&self) -> Option<RefKey<'_>> {
+        let [root, .., name] = self.selected.as_slice() else {
+            return None;
+        };
+        let kind = match root.as_str() {
+            TREE_BRANCH_ROOT_IDENT => RefKind::Branch,
+            TREE_REMOTE_ROOT_IDENT => RefKind::RemoteBranch,
+            TREE_TAG_ROOT_IDENT => RefKind::Tag,
+            TREE_STASH_ROOT_IDENT => RefKind::Stash,
+            _ => return None,
+        };
+        Some((kind, name))
     }
 
     pub fn selected_tag(&self) -> Option<String> {
@@ -551,7 +565,10 @@ mod tests {
         assert_eq!(row_names(&state).len(), 8, "展開後多兩個子節點列");
         assert_eq!(state.selected_local_branch(), Some("feature/a".into()));
         assert_eq!(state.selected_remote_branch(), None);
-        assert_eq!(state.selected_ref_name(), Some("feature/a".into()));
+        assert_eq!(
+            state.selected_ref_key(),
+            Some((RefKind::Branch, "feature/a"))
+        );
     }
 
     #[test]
