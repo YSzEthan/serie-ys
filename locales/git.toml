@@ -105,8 +105,8 @@ zh-TW = "這個 repository 裡沒有任何 commit"
 en-US = "No commits in this repository"
 
 [git.repo.not_a_repo]
-zh-TW = "這裡不是 git repository（上層目錄也都不是）"
-en-US = "Not a git repository (or any of the parent directories)"
+zh-TW = "這裡不是 git repository（上層目錄也都不是）：%{path}"
+en-US = "Not a git repository (or any of the parent directories): %{path}"
 
 [git.diff.spawn_failed]
 zh-TW = "無法執行 git diff：%{error}"

@@ -210,10 +210,11 @@ impl<'a> RefsView<'a> {
     }
 
     fn update_commit_list_selected(&mut self) {
-        if let Some(selected) = self.ref_list_state.selected_ref_name() {
-            if let Some(list_state) = self.commit_list_state.as_mut() {
-                list_state.select_ref(&selected);
-            }
+        if let (Some(key), Some(list_state)) = (
+            self.ref_list_state.selected_ref_key(),
+            self.commit_list_state.as_mut(),
+        ) {
+            list_state.select_ref(key);
         }
     }
 
@@ -237,5 +238,9 @@ impl<'a> RefsView<'a> {
     pub fn reset_refs_with(&mut self, refs_context: RefsRefreshViewContext) {
         self.ref_list_state
             .reset_tree_status(refs_context.selected, refs_context.opened);
+
+        let (selected_row, _, _) = self.as_list_state().current_list_status();
+        self.update_commit_list_selected();
+        self.as_mut_list_state().restore_selected_row(selected_row);
     }
 }

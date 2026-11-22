@@ -168,6 +168,10 @@ en-US = "The command key must not be empty, for example `commands_`"
 zh-TW = "`commands` 不是合法的 key，請改用 `commands_n` 格式"
 en-US = "`commands` is not a valid key, use the `commands_n` format instead"
 
+[cli.config.invalid_date_format]
+zh-TW = "日期格式無效：%{error}"
+en-US = "invalid date format: %{error}"
+
 [cli.config.inline_refresh]
 zh-TW = "inline command 的 refresh 不能是 true"
 en-US = "refresh must not be true for an inline command"

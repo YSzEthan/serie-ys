@@ -1,6 +1,5 @@
 use std::{borrow::Cow, rc::Rc};
 
-use chrono::{DateTime, FixedOffset};
 use ratatui::{
     buffer::Buffer,
     layout::{Constraint, Layout, Position, Rect},
@@ -15,7 +14,7 @@ use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 use crate::{
     app::AppContext,
     color::ColorTheme,
-    git::{Commit, CommitExtra, CommitHash, DiffTarget, FileChange, Ref, WorkingChanges},
+    git::{Commit, CommitExtra, CommitHash, DiffTarget, FileChange, GitDate, Ref, WorkingChanges},
     graph::GlyphSet,
     widget::scroll::scrolled_offset,
 };
@@ -450,16 +449,9 @@ impl CommitDetail<'_> {
         lines
     }
 
-    fn format_date(&self, date: &DateTime<FixedOffset>) -> String {
-        if self.ctx.ui_config.detail.date_local {
-            let local = date.with_timezone(&chrono::Local);
-            local
-                .format(&self.ctx.ui_config.detail.date_format)
-                .to_string()
-        } else {
-            date.format(&self.ctx.ui_config.detail.date_format)
-                .to_string()
-        }
+    fn format_date(&self, date: &GitDate) -> String {
+        let detail = &self.ctx.ui_config.detail;
+        date.format(&detail.date_format, detail.date_local)
     }
 
     fn refs_span(&self) -> Span<'_> {
@@ -647,7 +639,7 @@ fn detail_block(divider_fg: Color, glyphs: GlyphSet) -> Block<'static> {
 fn is_author_committer_different(commit: &Commit, extra: &CommitExtra) -> bool {
     commit.author_name.as_ref() != extra.committer_name
         || commit.author_email.as_ref() != extra.committer_email
-        || commit.author_date != extra.committer_date
+        || !commit.author_date.same_instant(&extra.committer_date)
 }
 
 fn has_parent(commit: &Commit) -> bool {

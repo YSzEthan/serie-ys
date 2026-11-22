@@ -756,16 +756,11 @@ impl CommitList<'_> {
             let spans = match &row.content {
                 RowContent::Virtual => vec!["-".fg(VIRTUAL_ROW_COLOR)],
                 RowContent::Commit { info, .. } => {
-                    let date = &info.commit.author_date;
-                    let date_str = if self.ctx.ui_config.list.date_local {
-                        let local = date.with_timezone(&chrono::Local);
-                        local
-                            .format(&self.ctx.ui_config.list.date_format)
-                            .to_string()
-                    } else {
-                        date.format(&self.ctx.ui_config.list.date_format)
-                            .to_string()
-                    };
+                    let list = &self.ctx.ui_config.list;
+                    let date_str = info
+                        .commit
+                        .author_date
+                        .format(&list.date_format, list.date_local);
                     vec![date_str.fg(self.ctx.color_theme.list_date_fg)]
                 }
             };
@@ -1335,7 +1330,6 @@ mod tests {
                 graph_colors,
                 head_raw,
                 Head::None,
-                FxHashMap::default(),
                 MatchOptions::default(),
                 filtered.clone(),
                 CommitMask::from_bits(remote_only),
@@ -1898,7 +1892,6 @@ mod tests {
                 Vec::new(),
                 Some(RawCommitIdx(0)),
                 Head::None,
-                FxHashMap::default(),
                 MatchOptions::default(),
                 None,
                 CommitMask::default(),
@@ -2251,7 +2244,6 @@ mod tests {
                 Vec::new(),
                 None,
                 Head::None,
-                FxHashMap::default(),
                 MatchOptions::default(),
                 Some(Rc::new(filtered)),
                 CommitMask::default(),

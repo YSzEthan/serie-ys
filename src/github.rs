@@ -2013,11 +2013,11 @@ fn into_branches(nodes: Vec<GqlRefNode>, default: &str, repo_url: &str) -> (Vec<
 
 /// RFC 3339 的 UTC 時間轉本地日期 `YYYY-MM-DD`；解析不了就截前 10 個字元。
 fn local_date(rfc3339: &str) -> String {
-    chrono::DateTime::parse_from_rfc3339(rfc3339).map_or_else(
+    rfc3339.parse::<jiff::Timestamp>().map_or_else(
         |_| rfc3339.chars().take(10).collect(),
-        |d| {
-            d.with_timezone(&chrono::Local)
-                .format("%Y-%m-%d")
+        |t| {
+            t.to_zoned_datetime(jiff::tz::TimeZone::system())
+                .date()
                 .to_string()
         },
     )
