@@ -132,6 +132,11 @@ pub struct GhPullRequest {
     pub labels: Vec<GhLabel>,
     pub author: GhAuthor,
     pub head_ref_name: String,
+    /// fork PR 的 head repo owner；同 repo 的 PR 為 `None`。fork 的 head branch
+    /// 常叫 `main`，列表上要靠 owner 才分得出不是本 repo 的 `main`
+    /// （見 `head_label`）。
+    #[serde(default)]
+    pub head_owner: Option<String>,
     /// PR head branch 目前指向的 commit id（GraphQL `headRefOid`）。用來判斷
     /// 本地同名分支的 tip 是不是就是這次被 merge 的版本——相同才能安全強刪
     /// 本地分支，不必依賴 `git branch -d` 自己的 reachability 判斷（見
@@ -151,6 +156,28 @@ pub struct GhPullRequest {
     #[serde(default, rename = "closingIssuesReferences")]
     pub linked_issues: Vec<GhRelatedIssue>,
     pub diff_stat: DiffStat,
+}
+
+impl GhPullRequest {
+    /// 列表顯示用的 head：同 repo 為 `branch`，fork 為 `owner:branch`。
+    /// branch 以數字結尾時只留結尾那串數字（見 `trailing_digits_or_all`）。
+    pub fn head_label(&self) -> String {
+        let branch = trailing_digits_or_all(&self.head_ref_name);
+        match &self.head_owner {
+            Some(owner) => format!("{owner}:{branch}"),
+            None => branch.to_string(),
+        }
+    }
+}
+
+/// `issue/1234` → `1234`、`issue54321` → `54321`；結尾不是數字就原樣回傳。
+fn trailing_digits_or_all(branch: &str) -> &str {
+    let prefix_len = branch.trim_end_matches(|c: char| c.is_ascii_digit()).len();
+    if prefix_len == branch.len() {
+        branch
+    } else {
+        &branch[prefix_len..]
+    }
 }
 
 /// PR 的變更行數，跟 `baseRefName` 一樣是 PR 本身的屬性，隨 PR 清單查詢
@@ -186,7 +213,7 @@ fn run_gh(path: &Path, args: &[&str]) -> Result<String, String> {
     let output = run_with_timeout(cmd, None, GH_TIMEOUT)?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = crate::process::stderr_summary(&output.stderr);
         return Err(t!("github.error.gh_failed", detail = stderr).into_owned());
     }
 
@@ -417,6 +444,7 @@ pub fn list_pull_requests(
                     pageInfo {{ hasNextPage endCursor }}
                     nodes {{
                         number title state body url closedAt updatedAt headRefName headRefOid baseRefName isDraft isCrossRepository additions deletions
+                        headRepositoryOwner {{ login }}
                         author {{ login }}
                         labels(first:20) {{ nodes {{ name color }} }}
                         closingIssuesReferences(first:20) {{ nodes {{ number title state url }} }}
@@ -506,6 +534,9 @@ struct GqlPrNode {
     base_ref_name: String,
     is_draft: bool,
     is_cross_repository: bool,
+    /// fork 被刪掉時 GitHub 回 null。
+    #[serde(default)]
+    head_repository_owner: Option<GhAuthor>,
     #[serde(default)]
     closed_at: Option<String>,
     #[serde(default)]
@@ -525,6 +556,10 @@ impl GqlPrNode {
             &self.base_ref_name,
             default_branch,
         );
+        let head_owner = self.is_cross_repository.then(|| {
+            self.head_repository_owner
+                .map_or_else(|| "ghost".to_string(), |o| o.login)
+        });
         GhPullRequest {
             number: self.number,
             title: self.title,
@@ -534,6 +569,7 @@ impl GqlPrNode {
                 login: "ghost".to_string(),
             }),
             head_ref_name: self.head_ref_name,
+            head_owner,
             head_ref_oid: self.head_ref_oid,
             base_ref_name: self.base_ref_name,
             is_draft: self.is_draft,
@@ -648,6 +684,13 @@ pub struct GhReviewComment {
     /// `parse_timeline_graphql` 拿同一次查詢多帶的 `reviewThreads` 回填的。
     #[serde(default)]
     pub resolved: bool,
+    /// 這則留言所在 thread 的回覆數——同樣由 `parse_timeline_graphql` 回填。
+    /// 回覆本身（`reply_to` 有值）會在回填前被濾掉，view 層看到的一律是原留言。
+    #[serde(default)]
+    pub replies: usize,
+    /// 只用來判斷「是不是回覆」，回填後不會再被讀取。
+    #[serde(default, rename = "replyTo")]
+    pub reply_to: Option<serde::de::IgnoredAny>,
 }
 
 /// PR 目前是否可以合併。`UNKNOWN`（GitHub 惰性計算出的第三種狀態，
@@ -694,9 +737,10 @@ const THREADS_PAGE_SIZE: usize = 100;
 /// `PullRequestReviewComment` 沒有 resolved 欄位，只能靠 thread 反查。
 ///
 /// thread 內的留言取前 100 則，單一 thread 超過這個數量時，多出來的留言會被
-/// 當成未 resolved（實測最長的 thread 只有 6 則）。
+/// 當成未 resolved（實測最長的 thread 只有 6 則）。`totalCount` 則是 thread
+/// 的總留言數，回覆數 = `totalCount - 1`。
 const REVIEW_THREADS_SELECTION: &str = r#"pageInfo { hasNextPage endCursor }
-    nodes { isResolved comments(first:100) { nodes { id } } }"#;
+    nodes { isResolved comments(first:100) { totalCount nodes { id } } }"#;
 
 /// 每筆 context 要取的欄位，首頁與續頁查詢共用，不會漂移。
 const CHECK_CONTEXT_NODES: &str = r#"__typename
@@ -792,7 +836,7 @@ fn build_timeline_query(kind: GhItemKind, first_page: bool) -> String {
                                 state body submittedAt author { login }
                                 comments(first:20) {
                                     totalCount
-                                    nodes { id path line originalLine outdated body }
+                                    nodes { id path line originalLine outdated body replyTo { id } }
                                 }
                             }"#,
         ),
@@ -884,17 +928,20 @@ fn parse_timeline_graphql(
     };
     let conn = container.timeline_items;
     let next_cursor = conn.page_info.next_cursor();
-    // resolved 狀態與 line/originalLine 的收斂都在這裡做一次，view 層因此
-    // 只需要認識收斂後的單一 `Option<u32>` 與 `bool`，不必知道 reviewThreads
-    // 這條平行查詢的存在。
+    // resolved／回覆數與 line/originalLine 的收斂都在這裡做一次，view 層因此
+    // 只需要認識收斂後的單一 `Option<u32>`、`bool` 與 `usize`，不必知道
+    // reviewThreads 這條平行查詢的存在。
     let mut items = conn.nodes;
+    drop_replies(&mut items);
     let threads = collect_review_threads(container.review_threads, &items, &mut fetch_more)?;
-    let resolved_ids = resolved_comment_ids(&threads);
+    let info = thread_info(&threads);
     for item in &mut items {
         if let GhTimelineItem::PullRequestReview { comments, .. } = item {
             for c in &mut comments.nodes {
                 c.line = c.line.or(c.original_line);
-                c.resolved = resolved_ids.contains(c.id.as_str());
+                let (resolved, total) = info.get(c.id.as_str()).copied().unwrap_or_default();
+                c.resolved = resolved;
+                c.replies = total.saturating_sub(1);
             }
         }
     }
@@ -936,14 +983,40 @@ struct GqlTimelineContainer {
 }
 
 /// resolved 狀態不在 `PullRequestReviewComment` 上，只在
-/// `PullRequestReviewThread` 上——這裡把已 resolved 的 thread 底下每則
-/// 留言的 id 收集起來，讓 `parse_timeline_graphql` 拿去回填。
-fn resolved_comment_ids(threads: &[GqlReviewThread]) -> FxHashSet<&str> {
+/// `PullRequestReviewThread` 上——這裡把每個 thread 底下每則留言的 id 對應到
+/// `(是否 resolved, thread 總留言數)`，讓 `parse_timeline_graphql` 拿去回填。
+fn thread_info(threads: &[GqlReviewThread]) -> FxHashMap<&str, (bool, usize)> {
     threads
         .iter()
-        .filter(|t| t.is_resolved)
-        .flat_map(|t| t.comments.nodes.iter().map(|c| c.id.as_str()))
+        .flat_map(|t| {
+            let v = (t.is_resolved, t.comments.total_count);
+            t.comments.nodes.iter().map(move |c| (c.id.as_str(), v))
+        })
         .collect()
+}
+
+/// 回覆（`replyTo` 有值）掛在回覆者自己的 review 底下，會變成跟原留言分開的
+/// 區塊。這裡把回覆拿掉，並把內容因此變空的 COMMENTED review 整塊丟掉
+/// （APPROVED／CHANGES_REQUESTED／DISMISSED 本身有意義，一律保留）。
+/// `total_count` 一併扣掉，「還有 N 則留言」才不會多算。
+fn drop_replies(items: &mut Vec<GhTimelineItem>) {
+    items.retain_mut(|item| {
+        let GhTimelineItem::PullRequestReview {
+            state,
+            body,
+            comments,
+            ..
+        } = item
+        else {
+            return true;
+        };
+        let before = comments.nodes.len();
+        comments.nodes.retain(|c| c.reply_to.is_none());
+        comments.total_count = comments
+            .total_count
+            .saturating_sub(before - comments.nodes.len());
+        !(state == "COMMENTED" && body.trim().is_empty() && comments.total_count == 0)
+    });
 }
 
 /// 續頁回應的 `data.repository` 外殼，底下那層（`R`）依查詢而異。
@@ -1054,7 +1127,15 @@ struct GqlReviewThread {
     #[serde(default)]
     is_resolved: bool,
     #[serde(default)]
-    comments: GqlConnection<GqlReviewThreadCommentId>,
+    comments: GqlThreadComments,
+}
+#[derive(Deserialize, Default)]
+#[serde(rename_all = "camelCase")]
+struct GqlThreadComments {
+    #[serde(default)]
+    total_count: usize,
+    #[serde(default)]
+    nodes: Vec<GqlReviewThreadCommentId>,
 }
 #[derive(Deserialize)]
 struct GqlReviewThreadCommentId {
@@ -1658,7 +1739,7 @@ pub fn update_body(path: &Path, number: u64, kind: GhItemKind, body: &str) -> Re
     let output = run_with_timeout(cmd, Some(body.as_bytes()), GH_TIMEOUT)?;
 
     if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stderr = crate::process::stderr_summary(&output.stderr);
         return Err(t!("github.error.edit_failed", detail = stderr).into_owned());
     }
     Ok(())
@@ -1729,24 +1810,6 @@ impl StateAction {
             }
             (StateAction::Reopen, GhItemKind::PullRequest) => {
                 t!("github.state_action.reopen_pr.pending", number = number)
-            }
-        }
-        .into_owned()
-    }
-
-    pub fn success(self, kind: GhItemKind, number: u64) -> String {
-        match (self, kind) {
-            (StateAction::Close, GhItemKind::Issue) => {
-                t!("github.state_action.close_issue.success", number = number)
-            }
-            (StateAction::Reopen, GhItemKind::Issue) => {
-                t!("github.state_action.reopen_issue.success", number = number)
-            }
-            (StateAction::Close, GhItemKind::PullRequest) => {
-                t!("github.state_action.close_pr.success", number = number)
-            }
-            (StateAction::Reopen, GhItemKind::PullRequest) => {
-                t!("github.state_action.reopen_pr.success", number = number)
             }
         }
         .into_owned()
@@ -1950,11 +2013,11 @@ fn into_branches(nodes: Vec<GqlRefNode>, default: &str, repo_url: &str) -> (Vec<
 
 /// RFC 3339 的 UTC 時間轉本地日期 `YYYY-MM-DD`；解析不了就截前 10 個字元。
 fn local_date(rfc3339: &str) -> String {
-    chrono::DateTime::parse_from_rfc3339(rfc3339).map_or_else(
+    rfc3339.parse::<jiff::Timestamp>().map_or_else(
         |_| rfc3339.chars().take(10).collect(),
-        |d| {
-            d.with_timezone(&chrono::Local)
-                .format("%Y-%m-%d")
+        |t| {
+            t.to_zoned_datetime(jiff::tz::TimeZone::system())
+                .date()
                 .to_string()
         },
     )
@@ -2134,14 +2197,6 @@ impl PrDraftAction {
         .into_owned()
     }
 
-    pub fn success(self, number: u64) -> String {
-        match self {
-            PrDraftAction::MarkReady => t!("github.draft.mark_ready.success", number = number),
-            PrDraftAction::ConvertToDraft => t!("github.draft.to_draft.success", number = number),
-        }
-        .into_owned()
-    }
-
     pub fn hint_label(self) -> Cow<'static, str> {
         match self {
             PrDraftAction::MarkReady => t!("github.draft.mark_ready.hint"),
@@ -2204,10 +2259,6 @@ mod tests {
         assert_eq!(
             StateAction::Close.prompt(GhItemKind::Issue, 12),
             "關閉 issue #12？ "
-        );
-        assert_eq!(
-            StateAction::Reopen.success(GhItemKind::PullRequest, 12),
-            "已重新開啟 PR #12"
         );
         assert_eq!(
             StateAction::Close.pending(GhItemKind::Issue, 12),
@@ -2798,6 +2849,50 @@ mod tests {
         assert_eq!(encode_ref_path("what?"), "what%3F");
     }
 
+    #[test]
+    fn trailing_digits_or_all_keeps_only_trailing_number() {
+        assert_eq!(trailing_digits_or_all("issue/1234"), "1234");
+        assert_eq!(trailing_digits_or_all("issue/32"), "32");
+        assert_eq!(trailing_digits_or_all("issue54321"), "54321");
+        assert_eq!(trailing_digits_or_all("26111215"), "26111215");
+        assert_eq!(trailing_digits_or_all("afdfsdaf"), "afdfsdaf");
+        assert_eq!(trailing_digits_or_all("1234-fix"), "1234-fix");
+        assert_eq!(trailing_digits_or_all(""), "");
+    }
+
+    /// fork 的 `owner:` 前綴照留，只縮 branch 的部分。
+    #[test]
+    fn head_label_shortens_branch_after_owner_prefix() {
+        let json = r#"{
+            "data": {
+                "repository": {
+                    "defaultBranchRef": {"name": "main"},
+                    "pullRequests": {
+                        "pageInfo": {"hasNextPage": false, "endCursor": null},
+                        "nodes": [{
+                            "number": 9,
+                            "title": "fork",
+                            "state": "OPEN",
+                            "headRefName": "issue/12",
+                            "headRefOid": "aaa",
+                            "baseRefName": "main",
+                            "isDraft": false,
+                            "isCrossRepository": true,
+                            "headRepositoryOwner": {"login": "alice"},
+                            "author": {"login": "alice"},
+                            "labels": {"nodes": []},
+                            "closingIssuesReferences": {"nodes": []},
+                            "additions": 0,
+                            "deletions": 0
+                        }]
+                    }
+                }
+            }
+        }"#;
+        let page = parse_prs_graphql(json).unwrap();
+        assert_eq!(page.items[0].head_label(), "alice:12");
+    }
+
     /// `defaultBranchRef` 與 `isCrossRepository` 要能從同一支 query 解析出來，
     /// 且要在 parse 當下就算進 `head_branch_deletable`，而不是留給呼叫端。
     #[test]
@@ -2833,6 +2928,7 @@ mod tests {
                                 "baseRefName": "main",
                                 "isDraft": false,
                                 "isCrossRepository": true,
+                                "headRepositoryOwner": {"login": "bob"},
                                 "author": {"login": "bob"},
                                 "labels": {"nodes": []},
                                 "closingIssuesReferences": {"nodes": []},
@@ -2853,6 +2949,22 @@ mod tests {
                                 "closingIssuesReferences": {"nodes": []},
                                 "additions": 0,
                                 "deletions": 0
+                            },
+                            {
+                                "number": 4,
+                                "title": "fork deleted",
+                                "state": "CLOSED",
+                                "headRefName": "main",
+                                "headRefOid": "ddd444",
+                                "baseRefName": "main",
+                                "isDraft": false,
+                                "isCrossRepository": true,
+                                "headRepositoryOwner": null,
+                                "author": {"login": "dave"},
+                                "labels": {"nodes": []},
+                                "closingIssuesReferences": {"nodes": []},
+                                "additions": 0,
+                                "deletions": 0
                             }
                         ]
                     }
@@ -2863,6 +2975,10 @@ mod tests {
         assert!(page.items[0].head_branch_deletable);
         assert!(!page.items[1].head_branch_deletable);
         assert!(!page.items[2].head_branch_deletable);
+        assert_eq!(page.items[0].head_label(), "feature/x");
+        assert_eq!(page.items[1].head_label(), "bob:feature/y");
+        assert_eq!(page.items[2].head_label(), "main");
+        assert_eq!(page.items[3].head_label(), "ghost:main");
         assert_eq!(
             page.items[0].diff_stat,
             DiffStat {
@@ -2923,6 +3039,68 @@ mod tests {
         };
         assert!(comments.nodes[0].resolved, "C1's thread is resolved");
         assert!(!comments.nodes[1].resolved, "C2's thread is not resolved");
+    }
+
+    fn review(state: &str, body: &str, comments: serde_json::Value) -> serde_json::Value {
+        let total = comments.as_array().map_or(0, Vec::len);
+        serde_json::json!({
+            "__typename": "PullRequestReview", "state": state, "body": body,
+            "submittedAt": "2026-01-01T00:00:00Z", "author": {"login": "u"},
+            "comments": {"totalCount": total, "nodes": comments},
+        })
+    }
+
+    fn comment(id: &str, reply_to: Option<&str>) -> serde_json::Value {
+        serde_json::json!({
+            "id": id, "path": "a.rs", "line": 1, "originalLine": 1, "outdated": false,
+            "body": "x", "replyTo": reply_to.map(|r| serde_json::json!({"id": r})),
+        })
+    }
+
+    /// 回覆（`replyTo` 有值）從回覆者的 review 拿掉，原留言的回覆數取自 thread
+    /// 的 `totalCount - 1`；內容變空的 COMMENTED review 整塊丟掉，APPROVED 與
+    /// 有 body 的 review 保留，不在 threads 裡的原留言回覆數是 0。
+    #[test]
+    fn parse_timeline_hides_replies_and_counts_them_on_the_root() {
+        let json = serde_json::json!({"data": {"repository": {"pullRequest": {
+            "reviewThreads": {"nodes": [{
+                "isResolved": false,
+                "comments": {"totalCount": 3, "nodes": [{"id": "C1"}, {"id": "R1"}, {"id": "R2"}]},
+            }]},
+            "timelineItems": {"pageInfo": page_info(false, None), "nodes": [
+                review("COMMENTED", "", serde_json::json!([comment("C1", None), comment("C9", None)])),
+                review("COMMENTED", "", serde_json::json!([comment("R1", Some("C1"))])),
+                review("APPROVED", "", serde_json::json!([comment("R2", Some("C1"))])),
+                review("COMMENTED", "總結", serde_json::json!([comment("R3", Some("C1"))])),
+            ]},
+        }}}})
+        .to_string();
+        let page = parse(&json, GhItemKind::PullRequest).unwrap();
+        let shapes: Vec<(String, Vec<(String, usize)>)> = page
+            .items
+            .iter()
+            .filter_map(|i| match i {
+                GhTimelineItem::PullRequestReview {
+                    state, comments, ..
+                } => Some((
+                    state.clone(),
+                    comments
+                        .nodes
+                        .iter()
+                        .map(|c| (c.id.clone(), c.replies))
+                        .collect(),
+                )),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(
+            shapes,
+            vec![
+                ("COMMENTED".into(), vec![("C1".into(), 2), ("C9".into(), 0)]),
+                ("APPROVED".into(), vec![]),
+                ("COMMENTED".into(), vec![]),
+            ]
+        );
     }
 
     /// `line` 為 null（留言所在行被後續 commit 改掉）時 fallback 到

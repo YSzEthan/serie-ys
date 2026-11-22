@@ -8,7 +8,7 @@ use std::{
 
 use ratatui::{
     crossterm::event::{KeyCode, KeyEvent, KeyEventKind},
-    layout::{Constraint, Layout, Rect},
+    layout::{Constraint, Layout, Position, Rect},
     style::Style,
     text::{Line, Span},
     widgets::{Block, Borders, Padding, Paragraph},
@@ -106,6 +106,9 @@ pub struct ShellView<'a> {
 
     output_lines: Vec<Line<'static>>,
     output_pane_state: OutputPaneState,
+    /// 上一幀輸出 pane 的範圍，滾輪判斷指標在不在上面用。沒顯示輸出時
+    /// Layout 算出來的高度是 0，不會命中。
+    output_area: Rect,
     /// `Some` = 指令在背景執行緒跑，`try_recv` 拿得到結果就轉成 `None`。
     /// 這個欄位本身就是「執行中」旗標，不需要額外的 generation 計數——
     /// `ShellView` 被 drop（例如使用者中途按 Esc）時 `Receiver` 跟著被
@@ -147,6 +150,7 @@ impl<'a> ShellView<'a> {
             history_index: None,
             output_lines: Vec::new(),
             output_pane_state: OutputPaneState::default(),
+            output_area: Rect::default(),
             rx: None,
             child: Arc::new(Mutex::new(None)),
             ctx,
@@ -156,6 +160,13 @@ impl<'a> ShellView<'a> {
 
     pub fn take_before_view(&mut self) -> View<'a> {
         std::mem::take(&mut self.before)
+    }
+
+    /// 滑鼠滾輪：只捲輸出 pane；上方的 commit 列表／Detail 不動作。
+    pub fn wheel(&mut self, col: u16, row: u16, lines: isize) {
+        if self.output_area.contains(Position::new(col, row)) {
+            self.output_pane_state.scroll_by(lines);
+        }
     }
 
     pub(super) fn before_view_mut(&mut self) -> &mut View<'a> {
@@ -393,6 +404,7 @@ impl<'a> ShellView<'a> {
         ])
         .areas(area);
 
+        self.output_area = output_area;
         self.before.render(f, before_area, marquee_frame);
         self.render_input(f, input_area, running);
 
@@ -403,14 +415,16 @@ impl<'a> ShellView<'a> {
     }
 
     fn render_input(&mut self, f: &mut Frame, area: Rect, running: bool) {
-        const PROMPT: &str = "$ ";
+        const PROMPT: &str = "\u{f120} $ ";
+        // 顯示寬度（icon、空白、$、空白各 1 格），不能用 `len()`：那是 UTF-8 byte 數
+        const PROMPT_WIDTH: u16 = 4;
         let block = Block::default()
             .borders(Borders::TOP)
             .style(Style::default().fg(self.ctx.color_theme.divider_fg))
             .padding(Padding::horizontal(1));
         let inner = block.inner(area);
 
-        let inner_width = inner.width.saturating_sub(PROMPT.len() as u16).max(1) as usize;
+        let inner_width = inner.width.saturating_sub(PROMPT_WIDTH).max(1) as usize;
         // `visual_scroll` 回傳的是顯示寬度（tui-input 用 UnicodeWidthChar 累加），
         // 不是 byte offset——直接拿去切 `&value()[scroll..]` 在中文輸入下會切在
         // char 中間、當場 panic。`split_at_width` 就是用同一套寬度計算找 char
@@ -432,7 +446,7 @@ impl<'a> ShellView<'a> {
         f.render_widget(paragraph, area);
 
         if !running {
-            let x = inner.x + PROMPT.len() as u16 + (self.input.visual_cursor() - scroll) as u16;
+            let x = inner.x + PROMPT_WIDTH + (self.input.visual_cursor() - scroll) as u16;
             let y = inner.y;
             match &self.ctx.ui_config.cursor_type {
                 CursorType::Native => f.set_cursor_position((x, y)),

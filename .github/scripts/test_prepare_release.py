@@ -5,7 +5,7 @@
 測試框架不划算。CI 在 build.yml 裡跑同一行。
 
 測的都是純函式（吃字串、吐結果，不碰 git 也不碰檔案系統）。會動到 git 的
-`load_commits` / `build_pr_map` 不在這裡測——它們是薄薄一層 subprocess 包裝，
+`load_commits` 不在這裡測——它是薄薄一層 subprocess 包裝，
 真正的邏輯都在被測的這幾個函式裡。
 """
 
@@ -23,8 +23,6 @@ from prepare_release import (
     build_changelog_block,
     bump_version,
     classify,
-    entry_link,
-    squashed_pr_commit,
     subject_problem,
 )
 
@@ -137,27 +135,13 @@ expect(logged == ["fix: 修正"], f"格式不合的 commit 不該進 CHANGELOG�
 # --- build_changelog_block：CHANGELOG 與 GitHub Release 內文的長相 --------
 
 _, sections, _ = classify([c("feat: 新功能"), c("fix: 修正")])
-block = build_changelog_block("o/r", "1.0.0", "1.1.0", sections, [], {}, "2026-08-12")
+block = build_changelog_block("o/r", "1.0.0", "1.1.0", sections, [], "2026-08-12")
 expect(
     block.index("### Features") < block.index("### Bug Fixes"),
     "CHANGELOG 區塊順序應跟著 TYPE_TABLE 的宣告順序",
 )
-expect("* 新功能 ([0000000]" in block, "沒有 PR 編號時應退回 commit 連結")
+expect("* 新功能 ([0000000](https://github.com/o/r/commit/" in block, "應是 commit 連結")
 expect("## [1.1.0]" in block and "(2026-08-12)" in block, "版本標題或日期缺漏")
-
-
-# --- squashed_pr_commit：發版併進功能 PR 時，模擬 squash 後的 commit ------
-
-one = squashed_pr_commit(42, [c("feat: 新功能 (#41)")], None)
-expect(one.subject == "feat: 新功能 (#41) (#42)", f"單一 commit 應沿用自己的 subject：{one.subject}")
-expect("/pull/42)" in entry_link("o/r", one, {}), "合成 commit 應連到 PR")
-
-many = squashed_pr_commit(
-    42, [c("feat: 前半"), c("fix: 後半", "BREAKING CHANGE: 改了設定格式")], "feat: 整體 (#41)"
-)
-expect(many.subject == "feat: 整體 (#41) (#42)", f"多個 commit 應改用 PR 標題：{many.subject}")
-bump, _, _ = classify([many])
-expect(bump == "major", "合成 commit 要保留各 commit body 的 BREAKING CHANGE footer")
 
 
 # --- bump_version ---------------------------------------------------------

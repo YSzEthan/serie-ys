@@ -56,9 +56,9 @@ en-US = "Updated to %{tag}. Restart ysgit to use the new version."
 zh-TW = "Windows 請至 GitHub Releases 頁面手動下載更新"
 en-US = "On Windows, download the update manually from the GitHub Releases page"
 
-[cli.update.err.debug_build]
-zh-TW = "開發版本（debug build）不支援自我更新"
-en-US = "Self-update is not supported in debug builds"
+[cli.update.err.cargo_target]
+zh-TW = "cargo 建置產物不支援自我更新，請先用 make 部署再更新"
+en-US = "Self-update is not supported for cargo build artifacts; deploy with make first"
 
 [cli.update.err.in_progress]
 zh-TW = "已經有一個更新在進行中"
@@ -167,6 +167,10 @@ en-US = "The command key must not be empty, for example `commands_`"
 [cli.config.commands_key_invalid]
 zh-TW = "`commands` 不是合法的 key，請改用 `commands_n` 格式"
 en-US = "`commands` is not a valid key, use the `commands_n` format instead"
+
+[cli.config.invalid_date_format]
+zh-TW = "日期格式無效：%{error}"
+en-US = "invalid date format: %{error}"
 
 [cli.config.inline_refresh]
 zh-TW = "inline command 的 refresh 不能是 true"

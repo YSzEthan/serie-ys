@@ -4,10 +4,10 @@ use ratatui::{layout::Rect, style::Color};
 use rustc_hash::FxHashMap;
 use tui_input::Input;
 
-use crate::git::{CommitHash, Head, Ref, Repository, WorkingChanges};
-use crate::graph::{CellWidthType, Graph, TextCell};
+use crate::git::{CommitHash, Head, Ref, RefKey, Repository, WorkingChanges};
+use crate::graph::{first_kept, CellWidthType, Condensed, Graph, TextCell};
 use crate::widget::scroll;
-use crate::RemoteOnly;
+use crate::CommitMask;
 
 use super::search::{FilterState, MatchOptions, MatchSet, SearchState};
 use super::{ChildPickOption, CommitInfo, FilteredIdx, RawCommitIdx, VisibleIdx};
@@ -77,10 +77,12 @@ pub struct CommitListState<'a> {
     // Filtered graph（remote-only commits 被隱藏時使用）
     filtered: Option<Rc<Graph>>,
 
-    ref_name_to_commit_index_map: FxHashMap<String, RawCommitIdx>,
+    ref_commit_indices: FxHashMap<RefKey<'a>, RawCommitIdx>,
 
     pub(super) search_state: SearchState,
     pub(super) search_input: Input,
+    /// 最近一次被清掉的非空 search 字串；輸入列空白時再按一次搜尋鍵可還原
+    pub(super) last_search: String,
     /// 目前生效的搜尋設定。刻意不放進 `SearchState::Searching`：套用之後
     /// （`Applied`）這組設定還要繼續驅動 refresh 還原，跟輸入模式無關。
     pub(super) search_options: MatchOptions,
@@ -91,6 +93,8 @@ pub struct CommitListState<'a> {
     // Filter 模式
     pub(super) filter_state: FilterState,
     pub(super) filter_input: Input,
+    /// 同 `last_search`，給 filter 用
+    pub(super) last_filter: String,
     /// 目前生效的 filter 設定，理由同 `search_options`。
     pub(super) filter_options: MatchOptions,
     /// `None` = 沒有 filter 生效；`Some(v)` = filter 生效（`v` 可以是空的，
@@ -118,12 +122,22 @@ pub struct CommitListState<'a> {
     pub(super) inline_detail_height: u16,
 
     pub(super) show_remote_refs: bool,
-    remote_only_commits: RemoteOnly,
+    remote_only_commits: CommitMask,
+    /// 精簡模式（#215）開啟時的遮罩與 `hidden_below`；`None` = 關閉。
+    /// 這裡的遮罩一律是**完整圖**上算出來的那一份，`graph` / `filtered` 是否
+    /// 已經套用它由呼叫端經 `apply_condensed` 一起換，兩者永遠同步。
+    condensed: Option<Rc<Condensed>>,
     needs_graph_clear: bool,
 
     working_changes: Option<WorkingChanges>,
 
     pub(crate) selected_row_overflows: Cell<bool>,
+
+    /// 上一幀實際畫出來的列：`(螢幕 y, VisibleIdx)`。滑鼠點擊只查這張表，
+    /// 不在事件端重算版面——inline detail 的 gap、virtual row、header 列、
+    /// 被 `text_cells_for_raw` 跳過的列，沒畫出來的就不在表裡。
+    /// `CommitList::render` 開頭清空、結尾寫入。
+    row_hits: Vec<(u16, VisibleIdx)>,
 }
 
 impl<'a> CommitListState<'a> {
@@ -134,14 +148,19 @@ impl<'a> CommitListState<'a> {
         graph_colors: Vec<Color>,
         head_raw: Option<RawCommitIdx>,
         head: Head,
-        ref_name_to_commit_index_map: FxHashMap<String, RawCommitIdx>,
         search_defaults: MatchOptions,
         filtered: Option<Rc<Graph>>,
-        remote_only_commits: RemoteOnly,
+        remote_only_commits: CommitMask,
         working_changes: Option<WorkingChanges>,
         scrolloff: usize,
     ) -> CommitListState<'a> {
         let commit_count = commits.len();
+        let mut ref_commit_indices = FxHashMap::default();
+        for (i, commit) in commits.iter().enumerate() {
+            for r in commit.refs() {
+                ref_commit_indices.insert((r.kind(), r.name()), RawCommitIdx(i));
+            }
+        }
         let has_virtual_row = working_changes.as_ref().is_some_and(|wc| !wc.is_empty());
         let vr_offset = if has_virtual_row { 1 } else { 0 };
         let total = commit_count + vr_offset;
@@ -160,13 +179,15 @@ impl<'a> CommitListState<'a> {
             selected_text_x: 0,
             head,
             filtered,
-            ref_name_to_commit_index_map,
+            ref_commit_indices,
             search_state: SearchState::Inactive,
             search_input: Input::default(),
+            last_search: String::new(),
             search_options: search_defaults,
             search: MatchSet::default(),
             filter_state: FilterState::Inactive,
             filter_input: Input::default(),
+            last_filter: String::new(),
             filter_options: MatchOptions::FILTER_DEFAULT,
             filtered_indices: None,
             filter: MatchSet::default(),
@@ -179,13 +200,15 @@ impl<'a> CommitListState<'a> {
             inline_detail_height: 0,
             show_remote_refs: true,
             remote_only_commits,
+            condensed: None,
             needs_graph_clear: false,
             working_changes,
             selected_row_overflows: Cell::new(false),
+            row_hits: Vec::new(),
         }
     }
 
-    pub fn into_graph_parts(self) -> (Option<Rc<Graph>>, RemoteOnly) {
+    pub fn into_graph_parts(self) -> (Option<Rc<Graph>>, CommitMask) {
         (self.filtered, self.remote_only_commits)
     }
 
@@ -202,7 +225,7 @@ impl<'a> CommitListState<'a> {
         self.current_cell_count().min(self.col_limit)
     }
 
-    /// 目前的 graph 啟用了長線截斷；欄寬上限只在這時候套用。
+    /// 目前的 graph 啟用了長線截斷；非精簡模式的欄寬上限只在這時候套用。
     pub(super) fn current_graph_truncated(&self) -> bool {
         self.current_graph().truncated()
     }
@@ -384,9 +407,66 @@ impl<'a> CommitListState<'a> {
         VisibleIdx(f.0 + self.virtual_row_offset())
     }
 
+    /// `raw` 所在的可視列。精簡模式下 `raw` 被藏就落到最近的保留祖先，所以
+    /// 所有「跳到某個 commit」的入口（hash、ref、parent、HEAD）都不會因為
+    /// 目標被藏而默默沒反應。
     pub(super) fn raw_to_visible(&self, raw: RawCommitIdx) -> Option<VisibleIdx> {
-        self.raw_to_filtered(raw)
+        self.raw_to_filtered(self.landing_raw(raw))
             .map(|f| self.filtered_to_visible(f))
+    }
+
+    /// 精簡模式下被藏的 `raw` 回傳最近的保留祖先，其他情況原樣回傳。
+    fn landing_raw(&self, raw: RawCommitIdx) -> RawCommitIdx {
+        match &self.condensed {
+            Some(c) if c.mask.contains(raw.0) => {
+                let (parent_start, parent_idx) = self.repository.parent_csr();
+                RawCommitIdx(first_kept(parent_start, parent_idx, &c.mask, raw.0 as u32).0 as usize)
+            }
+            _ => raw,
+        }
+    }
+
+    /// 精簡模式下，`raw` 的 parent 經過改寫之後的樣子（被藏的 parent 換成
+    /// 最近的保留祖先）；沒開精簡模式時就是已載入的 parent 本身。
+    fn effective_parents(&self, raw: RawCommitIdx) -> impl Iterator<Item = RawCommitIdx> + '_ {
+        self.repository
+            .loaded_parents(raw.0)
+            .map(|p| self.landing_raw(RawCommitIdx(p)))
+    }
+
+    /// 精簡模式下 `raw` 底下被藏了幾顆 commit；沒開精簡模式是 0。
+    pub(super) fn hidden_below(&self, raw: RawCommitIdx) -> u32 {
+        self.condensed.as_ref().map_or(0, |c| c.hidden_below(raw.0))
+    }
+
+    pub fn condensed_enabled(&self) -> bool {
+        self.condensed.is_some()
+    }
+
+    /// 只設定精簡遮罩（graph 呼叫端已經換好）：`App::new` 建立時用。
+    pub fn set_condensed(&mut self, condensed: Option<Rc<Condensed>>) {
+        self.condensed = condensed;
+        self.rebuild_filtered_indices();
+    }
+
+    /// 開關精簡模式：graph 與 `condensed` 要一起換，不然 `filtered_indices`
+    /// 和 graph 的列會對不上。選取的 commit 被藏就落到最近的保留祖先。
+    /// 約定同 `toggle_remote_refs`：呼叫端不必另外重繪，這裡會要求清畫面。
+    pub fn apply_condensed(
+        &mut self,
+        condensed: Option<Rc<Condensed>>,
+        graph: Rc<Graph>,
+        filtered: Option<Rc<Graph>>,
+    ) {
+        let prev = (self.total != 0 && !self.is_virtual_row_selected())
+            .then(|| self.current_selected_raw());
+        self.graph = graph;
+        self.filtered = filtered;
+        self.request_graph_clear();
+        self.set_condensed(condensed);
+        if let Some(target) = prev.and_then(|raw| self.raw_to_visible(raw)) {
+            self.set_visible_selection(target);
+        }
     }
 
     fn current_visible(&self) -> VisibleIdx {
@@ -415,17 +495,54 @@ impl<'a> CommitListState<'a> {
     /// `self.offset` 得到「移動」語意（最小捲動）。`target >= self.total`
     /// 或 `height == 0` 時整個 no-op，維持 `selected < height` 的不變式。
     fn place(&mut self, target: VisibleIdx, prev_offset: usize) {
+        self.place_with_scrolloff(target, prev_offset, self.scrolloff);
+    }
+
+    /// `place` 的實作；`scrolloff` 獨立成參數是給滑鼠點擊用——點擊的目標
+    /// 本來就在畫面上，傳 0 + `prev_offset = self.offset` 時 `offset` 不會動。
+    fn place_with_scrolloff(&mut self, target: VisibleIdx, prev_offset: usize, scrolloff: usize) {
         if target.0 >= self.total || self.height == 0 {
             return;
         }
-        self.offset = scroll::scrolled_offset(
-            target.0,
-            self.height,
-            self.total,
-            prev_offset,
-            self.scrolloff,
-        );
+        self.offset =
+            scroll::scrolled_offset(target.0, self.height, self.total, prev_offset, scrolloff);
         self.selected = target.0 - self.offset;
+    }
+
+    /// 上一幀由 `CommitList::render` 寫入；resize 或換 view 後下一幀就會更新。
+    pub(super) fn set_row_hits(&mut self, hits: Vec<(u16, VisibleIdx)>) {
+        self.row_hits = hits;
+    }
+
+    pub(super) fn clear_row_hits(&mut self) {
+        self.row_hits.clear();
+    }
+
+    fn hit_at(&self, row: u16) -> Option<VisibleIdx> {
+        self.row_hits
+            .iter()
+            .find_map(|&(y, idx)| (y == row).then_some(idx))
+    }
+
+    /// 螢幕列 `row` 是不是上一幀畫出來的 commit 列（含 virtual row）。
+    pub fn has_row(&self, row: u16) -> bool {
+        self.hit_at(row).is_some()
+    }
+
+    /// 螢幕列 `row` 是不是目前選取的那一列。
+    pub fn is_row_selected(&self, row: u16) -> bool {
+        self.hit_at(row) == Some(self.current_visible())
+    }
+
+    /// 滑鼠點擊選取：命中上一幀畫出來的列才動作，回傳是否命中。
+    /// 不捲動（scrolloff 0、以目前 offset 為基準）——使用者點的列本來就
+    /// 在畫面上，清單往上跳會讓滑鼠底下變成別的 commit。
+    pub fn select_row(&mut self, row: u16) -> bool {
+        let Some(target) = self.hit_at(row) else {
+            return false;
+        };
+        self.place_with_scrolloff(target, self.offset, 0);
+        true
     }
 
     pub fn working_changes(&self) -> Option<&WorkingChanges> {
@@ -481,25 +598,26 @@ impl<'a> CommitListState<'a> {
     pub(super) fn rebuild_filtered_indices(&mut self) {
         let has_text_filter = !self.filter_input.value().is_empty();
         let has_remote_filter = !self.show_remote_refs;
+        let condensed_mask = self.condensed.as_deref().map(|c| &c.mask);
         let vr = self.virtual_row_offset();
         let prev_visible = self.current_visible();
 
-        self.filtered_indices = if !has_text_filter && !has_remote_filter {
-            None
-        } else {
-            let base: Box<dyn Iterator<Item = RawCommitIdx>> = if has_text_filter {
-                Box::new(self.filter.hits.iter().copied())
+        self.filtered_indices =
+            if !has_text_filter && !has_remote_filter && condensed_mask.is_none() {
+                None
             } else {
-                Box::new((0..self.commits.len()).map(RawCommitIdx))
-            };
+                let base: Box<dyn Iterator<Item = RawCommitIdx>> = if has_text_filter {
+                    Box::new(self.filter.hits.iter().copied())
+                } else {
+                    Box::new((0..self.commits.len()).map(RawCommitIdx))
+                };
 
-            Some(if has_remote_filter {
-                base.filter(|raw| !self.remote_only_commits.contains(raw.0))
-                    .collect()
-            } else {
-                base.collect()
-            })
-        };
+                let hidden = |raw: &RawCommitIdx| {
+                    (has_remote_filter && self.remote_only_commits.contains(raw.0))
+                        || condensed_mask.is_some_and(|mask| mask.contains(raw.0))
+                };
+                Some(base.filter(|raw| !hidden(raw)).collect())
+            };
         self.total = self
             .filtered_indices
             .as_ref()
@@ -524,13 +642,19 @@ impl<'a> CommitListState<'a> {
     }
 
     pub fn select_parent(&mut self) {
-        let Some(parent) = self.selected_commit_parent_hash() else {
+        if self.total == 0 || self.is_virtual_row_selected() {
             return;
-        };
-        let Some(raw) = self.repository.index_of(parent).map(RawCommitIdx) else {
-            return;
-        };
-        self.step_to_raw(raw);
+        }
+        // first parent 沒載入就不動；被藏的 parent 由 `step_to_raw` 的落點
+        // 規則帶到最近的保留祖先。
+        let parent = self
+            .commit(self.current_selected_raw())
+            .commit
+            .parent_commit_hashes
+            .first();
+        if let Some(raw) = parent.and_then(|hash| self.repository.index_of(hash)) {
+            self.step_to_raw(RawCommitIdx(raw));
+        }
     }
 
     /// 把游標移到 `raw` 所在的可視列，沿用 `select_next`／`select_prev` 的
@@ -542,16 +666,6 @@ impl<'a> CommitListState<'a> {
             return;
         };
         self.select_visible_index(target);
-    }
-
-    pub fn selected_commit_parent_hash(&self) -> Option<&CommitHash> {
-        if self.total == 0 || self.is_virtual_row_selected() {
-            return None;
-        }
-        self.commit(self.current_selected_raw())
-            .commit
-            .parent_commit_hashes
-            .first()
     }
 
     /// 跳到目前 commit 的 child —— `select_parent()` 的反向。清單由新到舊
@@ -588,14 +702,13 @@ impl<'a> CommitListState<'a> {
             return Vec::new();
         }
         let current = self.current_selected_raw();
-        let hash = self.commit(current).commit_hash();
         let Some(current_filtered) = self.raw_to_filtered(current) else {
             return Vec::new();
         };
         (0..current_filtered.0)
             .rev()
             .filter_map(|i| self.filtered_to_raw(FilteredIdx(i)))
-            .filter(|&raw| self.commit(raw).commit.parent_commit_hashes.contains(hash))
+            .filter(|&raw| self.effective_parents(raw).any(|p| p == current))
             .collect()
     }
 
@@ -644,6 +757,25 @@ impl<'a> CommitListState<'a> {
             let margin = self.effective_scrolloff();
             self.selected = (self.selected + 1).min(self.height - 1 - margin);
         }
+    }
+
+    /// 滑鼠滾輪：視窗捲 `lines` 行（正數往下、負數往上），選取的 commit 留在
+    /// 原處，只有被捲到畫面最上／最下一列時才被推著走。
+    /// 不套 scrolloff：預設的 15 在一般視窗高度下會把游標釘在視窗正中央
+    /// （`effective_scrolloff` 上限是半個視窗），套了的話選取會跟著內容跑，
+    /// 不是「內容滑動」。這跟 Shift-J/K（`scroll_down`／`scroll_up`，維持邊距）
+    /// 是刻意不同的語意。
+    pub fn scroll_view_by(&mut self, lines: isize) {
+        if self.height == 0 {
+            return;
+        }
+        let max_offset = self.total.saturating_sub(self.height);
+        let offset = self.offset.saturating_add_signed(lines).min(max_offset);
+        let cursor = self.offset + self.selected;
+        self.offset = offset;
+        // 游標被捲出視窗上緣 → 貼頂（0）；下緣 → 貼底（height - 1）。
+        // offset ≤ total - height，所以貼底那列一定還在 total 以內。
+        self.selected = cursor.saturating_sub(offset).min(self.height - 1);
     }
 
     pub fn marked_commit_hash(&self) -> Option<&CommitHash> {
@@ -732,8 +864,8 @@ impl<'a> CommitListState<'a> {
         self.place(target, prev_offset);
     }
 
-    pub fn select_ref(&mut self, ref_name: &str) {
-        let Some(&raw) = self.ref_name_to_commit_index_map.get(ref_name) else {
+    pub fn select_ref(&mut self, key: RefKey<'_>) {
+        let Some(&raw) = self.ref_commit_indices.get(&key) else {
             return;
         };
         if let Some(target) = self.raw_to_visible(raw) {
@@ -873,7 +1005,7 @@ fn compute_selection(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::git::{Commit, FileChange};
+    use crate::git::{Commit, FileChange, RefKind};
 
     // --- 座標系 regression tests ---------------------------------------------
     // 這些 test 聚焦在 pure function（`resolve_*` / `compute_selection`），
@@ -1217,6 +1349,60 @@ mod tests {
         assert!(state.current_list_status().0 >= 2);
     }
 
+    /// 滾輪捲視窗不能動選取：就算 scrolloff 大到把游標釘在視窗正中央
+    /// （預設 15、視窗 10 列 → 有效邊距 4），選取的 commit 也要留在原處。
+    #[test]
+    fn scroll_view_by_keeps_the_selected_commit_even_with_a_huge_scrolloff() {
+        let repository = Repository::from_commits(commits_fixture(40));
+        let mut state = scrolloff_fixture(&repository, 10, 15);
+        state.set_visible_selection(VisibleIdx(20));
+        let selected = state.current_visible();
+        let start = state.offset;
+
+        state.scroll_view_by(3);
+        assert_eq!(state.current_visible(), selected, "往下捲不動選取");
+        assert_eq!(state.offset, start + 3, "視窗往下 3 行");
+
+        state.scroll_view_by(-2);
+        assert_eq!(state.current_visible(), selected, "往上捲不動選取");
+        assert_eq!(state.offset, start + 1);
+    }
+
+    #[test]
+    fn scroll_view_by_pushes_the_selection_only_at_the_window_edge() {
+        let repository = Repository::from_commits(commits_fixture(40));
+        let mut state = scrolloff_fixture(&repository, 10, 15);
+        state.set_visible_selection(VisibleIdx(12));
+        let top = state.offset;
+
+        // 視窗被捲過選取列（12）→ 貼在新視窗的最上一列。
+        state.scroll_view_by(100);
+        assert_eq!(state.offset, 30, "上限 = total - height");
+        assert_eq!(state.current_visible(), VisibleIdx(30));
+        assert_eq!(state.selected, 0);
+
+        // 往回捲到頂 → 貼在新視窗的最下一列。
+        state.scroll_view_by(-100);
+        assert_eq!(state.offset, 0);
+        assert_eq!(state.current_visible(), VisibleIdx(9));
+        assert_eq!(state.selected, 9);
+        assert!(state.offset <= top);
+    }
+
+    #[test]
+    fn scroll_view_by_is_noop_when_everything_fits_or_height_is_zero() {
+        let repository = Repository::from_commits(commits_fixture(5));
+        let mut state = scrolloff_fixture(&repository, 10, 3);
+        state.set_visible_selection(VisibleIdx(2));
+        state.scroll_view_by(5);
+        assert_eq!((state.offset, state.current_visible()), (0, VisibleIdx(2)));
+
+        let mut empty = scrolloff_fixture(&repository, 10, 3);
+        empty.reset_height(0);
+        empty.scroll_view_by(5);
+        assert_eq!(empty.offset, 0);
+    }
+
     #[test]
     fn virtual_row_at_visible_zero_respects_scrolloff() {
         let commits = commits_fixture(20);
@@ -1242,10 +1428,9 @@ mod tests {
             Vec::new(),
             None,
             Head::None,
-            FxHashMap::default(),
             MatchOptions::default(),
             None,
-            crate::RemoteOnly::default(),
+            crate::CommitMask::default(),
             Some(working_changes),
             2,
         );
@@ -1408,6 +1593,45 @@ mod tests {
 
     // --- select_parent() / select_child() 回歸測試 ----------------------------
 
+    #[test]
+    fn select_ref_distinguishes_branch_and_tag_with_same_name() {
+        let repository =
+            Repository::from_commits(vec![commit_fixture("c0", &[]), commit_fixture("c1", &[])]);
+        let branch = Ref::Branch {
+            name: "dev".into(),
+            target: "c0".into(),
+        };
+        let tag = Ref::Tag {
+            name: "dev".into(),
+            target: "c1".into(),
+        };
+        let infos = vec![
+            CommitInfo::new(&repository.all_commits()[0], vec![&branch]),
+            CommitInfo::new(&repository.all_commits()[1], vec![&tag]),
+        ];
+        let graph =
+            Graph::from_materialized(repository.all_commits().len(), Vec::new(), Vec::new());
+        let mut state = CommitListState::new(
+            infos,
+            &repository,
+            Rc::new(graph),
+            Vec::new(),
+            None,
+            Head::None,
+            MatchOptions::default(),
+            None,
+            crate::CommitMask::default(),
+            None,
+            0,
+        );
+        state.reset_height(10);
+
+        state.select_ref((RefKind::Tag, "dev"));
+        assert_eq!(state.selected_commit_hash(), &CommitHash::from("c1"));
+        state.select_ref((RefKind::Branch, "dev"));
+        assert_eq!(state.selected_commit_hash(), &CommitHash::from("c0"));
+    }
+
     fn commit_fixture(hash: &str, parents: &[&str]) -> Commit {
         Commit {
             commit_hash: hash.into(),
@@ -1436,10 +1660,9 @@ mod tests {
             Vec::new(),
             None,
             Head::None,
-            FxHashMap::default(),
             MatchOptions::default(),
             None,
-            crate::RemoteOnly::default(),
+            crate::CommitMask::default(),
             None,
             0,
         );
@@ -1672,5 +1895,157 @@ mod tests {
 
         let none = CommitInfo::new(&commit, vec![]);
         assert_eq!(child_pick_label(&none), "fix things");
+    }
+
+    // --- 精簡模式（#215）-------------------------------------------------------
+
+    /// c0(HEAD) ← c1 ← c2 ← c3 ← c4(root)：精簡後只剩 c0 與 c4。
+    fn condensed_chain() -> (Repository, Rc<Condensed>) {
+        let repository = Repository::from_commits(vec![
+            commit_fixture("c0", &["c1"]),
+            commit_fixture("c1", &["c2"]),
+            commit_fixture("c2", &["c3"]),
+            commit_fixture("c3", &["c4"]),
+            commit_fixture("c4", &[]),
+        ]);
+        let condensed = Rc::new(crate::graph::condense(&repository, Some(0)));
+        (repository, condensed)
+    }
+
+    fn plain_state(repository: &Repository) -> CommitListState<'_> {
+        let infos = repository
+            .all_commits()
+            .iter()
+            .map(|c| CommitInfo::new(c, Vec::new()))
+            .collect();
+        let mut state = CommitListState::new(
+            infos,
+            repository,
+            Rc::new(empty_graph(repository)),
+            Vec::new(),
+            None,
+            Head::None,
+            MatchOptions::default(),
+            None,
+            crate::CommitMask::default(),
+            None,
+            0,
+        );
+        state.reset_height(10);
+        state
+    }
+
+    fn empty_graph(repository: &Repository) -> Graph {
+        Graph::from_materialized(repository.all_commits().len(), Vec::new(), Vec::new())
+    }
+
+    fn apply(state: &mut CommitListState<'_>, repository: &Repository, c: Option<&Rc<Condensed>>) {
+        state.apply_condensed(c.cloned(), Rc::new(empty_graph(repository)), None);
+    }
+
+    fn selected_raw(state: &CommitListState<'_>) -> usize {
+        state.current_selected_raw().0
+    }
+
+    #[test]
+    fn apply_condensed_hides_middle_commits_and_off_restores_them() {
+        let (repository, condensed) = condensed_chain();
+        let mut state = plain_state(&repository);
+        assert_eq!(state.total, 5);
+
+        apply(&mut state, &repository, Some(&condensed));
+        assert_eq!(
+            state.filtered_indices,
+            Some(vec![RawCommitIdx(0), RawCommitIdx(4)])
+        );
+        assert_eq!(state.total, 2);
+
+        apply(&mut state, &repository, None);
+        assert_eq!(state.filtered_indices, None);
+        assert_eq!(state.total, 5);
+    }
+
+    #[test]
+    fn apply_condensed_moves_hidden_selection_to_nearest_kept_ancestor() {
+        let (repository, condensed) = condensed_chain();
+        let mut state = plain_state(&repository);
+        state.set_visible_selection(VisibleIdx(2)); // c2
+
+        apply(&mut state, &repository, Some(&condensed));
+
+        assert_eq!(selected_raw(&state), 4);
+    }
+
+    #[test]
+    fn apply_condensed_keeps_selection_when_it_stays_visible() {
+        let (repository, condensed) = condensed_chain();
+        let mut state = plain_state(&repository);
+        state.set_visible_selection(VisibleIdx(4)); // c4
+
+        apply(&mut state, &repository, Some(&condensed));
+        assert_eq!(selected_raw(&state), 4);
+
+        apply(&mut state, &repository, None);
+        assert_eq!(selected_raw(&state), 4);
+    }
+
+    #[test]
+    fn select_parent_steps_over_hidden_commits() {
+        let (repository, condensed) = condensed_chain();
+        let mut state = plain_state(&repository);
+        apply(&mut state, &repository, Some(&condensed));
+        state.select_first(); // c0
+
+        state.select_parent();
+
+        assert_eq!(selected_raw(&state), 4);
+    }
+
+    #[test]
+    fn select_child_finds_child_whose_parent_was_rewritten() {
+        let (repository, condensed) = condensed_chain();
+        let mut state = plain_state(&repository);
+        apply(&mut state, &repository, Some(&condensed));
+        state.select_last(); // c4
+
+        assert!(matches!(state.select_child(), ChildJump::Jumped));
+
+        assert_eq!(selected_raw(&state), 0);
+    }
+
+    #[test]
+    fn select_child_without_condensed_is_unchanged() {
+        let (repository, _) = condensed_chain();
+        let mut state = plain_state(&repository);
+        state.set_visible_selection(VisibleIdx(3)); // c3
+
+        assert!(matches!(state.select_child(), ChildJump::Jumped));
+
+        assert_eq!(selected_raw(&state), 2);
+    }
+
+    #[test]
+    fn select_commit_hash_of_hidden_commit_lands_on_kept_ancestor() {
+        let (repository, condensed) = condensed_chain();
+        let mut state = plain_state(&repository);
+        apply(&mut state, &repository, Some(&condensed));
+
+        state.select_commit_hash(&"c1".into());
+
+        assert_eq!(selected_raw(&state), 4);
+    }
+
+    #[test]
+    fn condensed_composes_with_remote_filter() {
+        let (repository, condensed) = condensed_chain();
+        let mut state = plain_state(&repository);
+        state.remote_only_commits =
+            crate::CommitMask::from_bits(vec![false, false, false, false, true]);
+        state.show_remote_refs = false;
+
+        apply(&mut state, &repository, Some(&condensed));
+
+        // c4 被 remote 過濾藏起來，c1～c3 被精簡藏起來
+        assert_eq!(state.filtered_indices, Some(vec![RawCommitIdx(0)]));
     }
 }

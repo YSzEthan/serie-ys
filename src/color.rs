@@ -4,6 +4,13 @@ use serde::{Deserialize, Serialize};
 use smart_default::SmartDefault;
 use umbra::optional;
 
+/// 一般次要文字（卡片內文、運作中的狀態點）。
+pub const TEXT_COLOR: RatatuiColor = RatatuiColor::Gray;
+/// 非選取 tab、邊框、分隔線、loading 提示用的淡灰。ANSI 8 的 `DarkGray`
+/// 在多數深色主題太接近背景；245（#8a8a8a）在常見深色主題下介於
+/// `DarkGray` 與 `Gray` 之間，256 色終端都支援。
+pub const MUTED_FG: RatatuiColor = RatatuiColor::Indexed(245);
+
 #[optional(derives = [Deserialize], visibility = pub)]
 #[derive(Debug, Clone, Serialize, PartialEq, Eq, SmartDefault, Validate)]
 #[garde(allow_unvalidated)]
@@ -89,7 +96,7 @@ pub struct ColorTheme {
     pub virtual_cursor_fg: RatatuiColor,
     #[default(RatatuiColor::Reset)]
     pub status_input_fg: RatatuiColor,
-    #[default(RatatuiColor::DarkGray)]
+    #[default(MUTED_FG)]
     pub status_input_transient_fg: RatatuiColor,
     #[default(RatatuiColor::Yellow)]
     pub status_interactive_fg: RatatuiColor,
@@ -102,7 +109,7 @@ pub struct ColorTheme {
     #[default(RatatuiColor::Red)]
     pub status_error_fg: RatatuiColor,
 
-    #[default(RatatuiColor::DarkGray)]
+    #[default(MUTED_FG)]
     pub divider_fg: RatatuiColor,
 
     #[garde(dive)]

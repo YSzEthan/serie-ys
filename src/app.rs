@@ -11,7 +11,6 @@ use ratatui::{
     DefaultTerminal, Frame,
 };
 use rust_i18n::t;
-use rustc_hash::FxHashMap;
 
 use crate::{
     auto_fetch,
@@ -24,14 +23,15 @@ use crate::{
     },
     git::{
         background_command, fill_working_changes_stats, remote_branch_state, Commit, CommitHash,
-        FetchPrune, Head, Ref, RefType, RemoteState, Repository, WorkingChanges,
+        FetchPrune, Head, Ref, RefKind, RefType, RemoteState, Repository, WorkingChanges,
     },
     github::{
         delete_remote_branch as gh_delete_remote_branch, is_merge_conflict_error, merge_pr,
         set_item_state, set_pr_draft, GhItemKind, MergeMethod, PrDraftAction, StateAction,
         StateFilter,
     },
-    graph::{Graph, GraphStyle},
+    graph::{Condensed, Graph, GraphStyle, Truncation},
+    is_narrow,
     keybind::KeyBind,
     process::run_with_timeout,
     reload::{Loaded, Reloader},
@@ -42,10 +42,10 @@ use crate::{
         force_update_after_style_edges,
         pending_overlay::PendingOverlay,
     },
-    CompactType, GraphWidthType, RemoteOnly,
+    CommitMask, CompactType, CondensedType, GraphWidthType,
 };
 
-use status_line::StatusLineState;
+use status_line::{StatusLineState, BRIEF_NOTIFICATION_TTL};
 
 mod status_line;
 
@@ -77,6 +77,9 @@ pub struct Swap {
 #[derive(Debug)]
 pub struct Carry {
     view: RefreshViewContext,
+    /// 舊 `App` 最後一次 render 量到的 view 區域。新 `App` 的 `view_area`
+    /// 在第一次 render 前是 0×0，還原 inline user command 時要先有正確值。
+    view_area: Rect,
     notification: Option<status_line::Notification>,
     notice_message: Option<String>,
     github_data: Option<crate::github::GitHubData>,
@@ -159,6 +162,9 @@ enum QuitDecision {
     Second,
 }
 
+/// 「再按一次 q 離開」的雙擊視窗，同時也是提示訊息的顯示時間：訊息還在，第二個 q 就要能離開
+const QUIT_PRESS_WINDOW: Duration = Duration::from_millis(600);
+
 /// 按鍵處理過程中會累積、之後又清空的狀態——數字前綴與 `q` 雙擊退出計時。
 /// 獨立於 `App`，不吃 `Repository`/`EventController`，可以直接 `new` 出來
 /// 測純轉移邏輯，不用假裝建一個完整的 `App`。
@@ -192,7 +198,7 @@ impl KeyState {
     fn register_quit_press(&mut self, now: Instant) -> QuitDecision {
         if self
             .last_quit_press
-            .is_some_and(|t| now.duration_since(t) < Duration::from_millis(500))
+            .is_some_and(|t| now.duration_since(t) < QUIT_PRESS_WINDOW)
         {
             self.last_quit_press = None;
             QuitDecision::Second
@@ -243,7 +249,21 @@ pub struct App<'a> {
     /// （見 `run()` 的 `Tick` arm）。跟上面兩個欄位同一類「上一幀畫了什麼」的
     /// 狀態；`App` 重建時歸 `None`，最多多畫一幀，無妨。
     last_countdown_secs: Option<u64>,
+    /// 精簡模式的寬度判斷（#215）：上一次判定時，終端寬度是否在窄螢幕門檻
+    /// 下方。只有「跨過門檻」才會觸發重算，沒跨過的 resize 一律忽略。
+    narrow: bool,
+    /// 最近一次 `Resize` 看到的寬度，`CondensedCheck` 到點時才拿來判斷。
+    latest_width: u16,
+    /// 已經排了一個 `CondensedCheck`，拖拉視窗時不重複排。
+    condensed_check_pending: bool,
 }
+
+/// resize 停住這麼久才檢查寬度：拖拉視窗時寬度會在門檻兩側來回，每跨一次
+/// 就重算 graph（linux 規模是秒級）不划算。
+const CONDENSED_CHECK_DELAY: Duration = Duration::from_millis(250);
+
+/// 滑鼠滾輪一格捲幾行。
+pub(crate) const WHEEL_LINES: isize = 3;
 
 /// GitHub 資料的排程狀態機。`(loading=false, pending=Some(_))`
 /// 這種非法組合曾經可達（Bug A）—— 用 enum 讓它在型別層直接不存在。
@@ -294,7 +314,8 @@ impl<'a> App<'a> {
         repository: &'a Repository,
         graph: &Rc<Graph>,
         filtered_graph: Option<Rc<Graph>>,
-        remote_only_commits: RemoteOnly,
+        remote_only_commits: CommitMask,
+        condensed: Option<Rc<Condensed>>,
         graph_color_set: &'a GraphColorSet,
         initial_selection: InitialSelection,
         ctx: Rc<AppContext>,
@@ -312,18 +333,10 @@ impl<'a> App<'a> {
             .and_then(|h| repository.index_of(&h))
             .map(RawCommitIdx);
 
-        let mut ref_name_to_commit_index_map = FxHashMap::default();
         let commits = repository
             .all_commits()
             .iter()
-            .enumerate()
-            .map(|(i, commit)| {
-                let refs = repository.refs(&commit.commit_hash);
-                for r in &refs {
-                    ref_name_to_commit_index_map.insert(r.name().to_string(), RawCommitIdx(i));
-                }
-                CommitInfo::new(commit, refs)
-            })
+            .map(|commit| CommitInfo::new(commit, repository.refs(&commit.commit_hash)))
             .collect();
 
         let head = repository.head().clone();
@@ -335,7 +348,6 @@ impl<'a> App<'a> {
             graph_colors,
             head_raw,
             head,
-            ref_name_to_commit_index_map,
             MatchOptions {
                 ignore_case: ctx.core_config.search.ignore_case,
                 fuzzy: ctx.core_config.search.fuzzy,
@@ -346,9 +358,12 @@ impl<'a> App<'a> {
             working_changes_opt,
             ctx.ui_config.list.scrolloff as usize,
         );
+        if condensed.is_some() {
+            commit_list_state.set_condensed(condensed);
+        }
         if let InitialSelection::Head = initial_selection {
             match repository.head() {
-                Head::Branch { name } => commit_list_state.select_ref(name),
+                Head::Branch { name } => commit_list_state.select_ref((RefKind::Branch, name)),
                 Head::Detached { target } => commit_list_state.select_commit_hash(target),
                 Head::None => {}
             }
@@ -375,21 +390,72 @@ impl<'a> App<'a> {
             marquee_needed: false,
             last_marquee_id: None,
             last_countdown_secs: None,
+            narrow: false,
+            latest_width: u16::MAX,
+            condensed_check_pending: false,
         };
+        // 量不到寬度就當寬螢幕，跟 `lib.rs::run()` 啟動時的判斷一致。
+        let width = crate::terminal_width();
+        app.latest_width = width;
+        app.narrow = is_narrow(width);
 
         if let Some(carry) = carry {
             app.apply_carry(carry);
         }
 
+        // 背景載入期間使用者切換過、或寬度跨過門檻：載入結果的精簡狀態可能
+        // 已經過期，原地補一次。
+        let want = app.reloader.want_condensed();
+        if app
+            .view
+            .list_state_mut()
+            .is_some_and(|s| s.condensed_enabled() != want)
+        {
+            app.set_condensed(want);
+        }
+
         app
     }
 
-    pub fn into_parts(self) -> (Option<Rc<Graph>>, RemoteOnly) {
+    pub fn into_parts(self) -> (Option<Rc<Graph>>, CommitMask) {
         self.view.into_commit_list_state().into_graph_parts()
     }
 }
 
 impl App<'_> {
+    /// 精簡模式開關：重算 graph 後直接換進 `CommitListState`，不 reload、不重建
+    /// `App`，所以開著任何 view（GitHub、help……）都能切，也不掉狀態。
+    fn set_condensed(&mut self, on: bool) {
+        let trunc = Truncation::new(self.ctx.ui_config.list.graph_edge_max_rows);
+        let set = crate::compute_graphs(self.repository, trunc, on);
+        self.reloader.set_want_condensed(on);
+        if let Some(state) = self.view.list_state_mut() {
+            state.apply_condensed(
+                set.condensed.map(Rc::new),
+                Rc::new(set.graph),
+                set.filtered.map(Rc::new),
+            );
+        }
+    }
+
+    /// `auto` 時：寬度跨過窄螢幕門檻才切換；`on`／`off` 不受寬度影響。
+    fn check_condensed(&mut self) {
+        let narrow = is_narrow(self.latest_width);
+        if narrow == self.narrow {
+            return;
+        }
+        self.narrow = narrow;
+        let setting = self
+            .ctx
+            .core_config
+            .option
+            .condensed
+            .unwrap_or(CondensedType::Auto);
+        if setting == CondensedType::Auto {
+            self.set_condensed(narrow);
+        }
+    }
+
     pub fn run(&mut self, terminal: &mut DefaultTerminal) -> Result<Ret, std::io::Error> {
         let mut skip_draw = false;
         loop {
@@ -424,7 +490,7 @@ impl App<'_> {
 
             match self.ec.recv() {
                 AppEvent::Tick => {
-                    if let View::GitHub(ref mut view) = self.view {
+                    if let Some(view) = self.view.github_view_mut() {
                         view.on_tick(Instant::now());
                     }
                     // Tick 是 100ms 一次，但倒數每秒才需要動一次——以「該顯示
@@ -435,8 +501,12 @@ impl App<'_> {
                     // 這三行放在 `if` 外面、無條件執行，不要搬進 `else`
                     // 分支：那樣跑馬燈期間根本不會算，欄位會一路發霉，跑馬燈
                     // 停下來的那一刻就用一個過期值去比對。
+                    //
+                    // `expire_notification` 必須排在 `countdown_secs()` 前面：通知一清掉
+                    // 狀態列就變 idle，倒數要在同一幀出現。
+                    let expired = self.status_line_state.expire_notification(Instant::now());
                     let countdown = self.status_line_state.countdown_secs();
-                    let changed = countdown != self.last_countdown_secs;
+                    let changed = expired || countdown != self.last_countdown_secs;
                     self.last_countdown_secs = countdown;
 
                     if self.marquee_needed {
@@ -449,8 +519,38 @@ impl App<'_> {
                 AppEvent::Key(key) => {
                     self.handle_key(key);
                 }
-                AppEvent::Resize(w, h) => {
-                    let _ = (w, h);
+                AppEvent::Click { col, row } => {
+                    self.handle_click(col, row);
+                }
+                AppEvent::Wheel { col, row, delta } => {
+                    self.handle_wheel(col, row, delta);
+                }
+                AppEvent::Resize(w) => {
+                    self.latest_width = u16::try_from(w).unwrap_or(u16::MAX);
+                    if !self.condensed_check_pending {
+                        self.condensed_check_pending = true;
+                        self.ec
+                            .sender()
+                            .send_after(AppEvent::CondensedCheck, CONDENSED_CHECK_DELAY);
+                    }
+                }
+                AppEvent::CondensedCheck => {
+                    self.condensed_check_pending = false;
+                    self.check_condensed();
+                }
+                AppEvent::ToggleCondensed => {
+                    let on = !self
+                        .view
+                        .list_state_mut()
+                        .is_some_and(|s| s.condensed_enabled());
+                    self.set_condensed(on);
+                    let msg = if on {
+                        t!("view.list.condensed_on")
+                    } else {
+                        t!("view.list.condensed_off")
+                    };
+                    self.status_line_state
+                        .set_notification_info_for(msg.into_owned(), BRIEF_NOTIFICATION_TTL);
                 }
                 AppEvent::Quit => {
                     return Ok(Ret::Quit(None));
@@ -554,7 +654,7 @@ impl App<'_> {
                     next_cursor,
                     generation,
                 } => {
-                    if let View::GitHub(ref mut view) = self.view {
+                    if let Some(view) = self.view.github_view_mut() {
                         view.append_issues(items, next_cursor, generation);
                     }
                 }
@@ -563,7 +663,7 @@ impl App<'_> {
                     next_cursor,
                     generation,
                 } => {
-                    if let View::GitHub(ref mut view) = self.view {
+                    if let Some(view) = self.view.github_view_mut() {
                         view.append_pull_requests(items, next_cursor, generation);
                     }
                 }
@@ -571,7 +671,7 @@ impl App<'_> {
                     self.load_github_branches();
                 }
                 AppEvent::GitHubBranchesLoaded { result } => {
-                    if let View::GitHub(ref mut view) = self.view {
+                    if let Some(view) = self.view.github_view_mut() {
                         view.set_branches(result);
                     }
                 }
@@ -579,7 +679,7 @@ impl App<'_> {
                     self.load_github_ci(generation);
                 }
                 AppEvent::GitHubCiLoaded { generation, result } => {
-                    if let View::GitHub(ref mut view) = self.view {
+                    if let Some(view) = self.view.github_view_mut() {
                         view.set_ci(generation, result, Instant::now());
                     }
                 }
@@ -599,7 +699,7 @@ impl App<'_> {
                     self.rerun_github_ci(number, run_ids, scope);
                 }
                 AppEvent::GitHubCiRerunDone { number, result } => {
-                    if let View::GitHub(ref mut view) = self.view {
+                    if let Some(view) = self.view.github_view_mut() {
                         view.on_ci_rerun_done(number, result, Instant::now());
                     }
                 }
@@ -616,7 +716,7 @@ impl App<'_> {
                     after,
                     page,
                 } => {
-                    if let View::GitHub(ref mut view) = self.view {
+                    if let Some(view) = self.view.github_view_mut() {
                         view.append_timeline_items(number, kind, after, page);
                     }
                 }
@@ -625,12 +725,12 @@ impl App<'_> {
                     kind,
                     error,
                 } => {
-                    if let View::GitHub(ref mut view) = self.view {
+                    if let Some(view) = self.view.github_view_mut() {
                         view.set_timeline_error(number, kind, error);
                     }
                 }
                 AppEvent::GitHubFlash { message, is_error } => {
-                    if let View::GitHub(ref mut view) = self.view {
+                    if let Some(view) = self.view.github_view_mut() {
                         view.set_flash(message, is_error);
                     }
                 }
@@ -686,6 +786,10 @@ impl App<'_> {
                 }
                 AppEvent::NotifyInfo(msg) => {
                     self.status_line_state.set_notification_info(msg);
+                }
+                AppEvent::NotifyInfoBrief(msg) => {
+                    self.status_line_state
+                        .set_notification_info_for(msg, BRIEF_NOTIFICATION_TTL);
                 }
                 AppEvent::NotifySuccess(msg) => {
                     self.status_line_state.set_notification_success(msg);
@@ -804,15 +908,6 @@ impl App<'_> {
                     }
                 }
                 AppEvent::AutoFetchCompleted => {
-                    // 使用者正在 picker／輸入框裡的時候不搶 status line；
-                    // refresh 照做，只有要不要出聲用這道守衛。刻意不用
-                    // `can_interrupt()`——它連 GitHub view 都排除，而盯著
-                    // GitHub view 等 PR 被 merge 正是這個功能存在的理由。
-                    if self.status_line_state.is_idle_or_notification() {
-                        self.status_line_state.set_notification_success(
-                            status_line::auto_fetch_success_msg().into_owned(),
-                        );
-                    }
                     self.reloader.request_full(Instant::now());
                     self.reload_github_branches();
                 }
@@ -896,7 +991,7 @@ impl App<'_> {
                     );
                 }
                 AppEvent::PrDraftToggled { number, is_draft } => {
-                    if let View::GitHub(ref mut view) = self.view {
+                    if let Some(view) = self.view.github_view_mut() {
                         view.set_pr_draft_flag(number, is_draft);
                     } else if let Some(ref mut data) = self.github_data {
                         if let Some(pr) = data.pull_requests.iter_mut().find(|p| p.number == number)
@@ -956,7 +1051,7 @@ impl App<'_> {
                     );
                 }
                 AppEvent::GitHubJumpToIssue { number } => {
-                    if let View::GitHub(ref mut view) = self.view {
+                    if let Some(view) = self.view.github_view_mut() {
                         if !view.jump_to_issue(number) {
                             self.ec.send(AppEvent::NotifyWarn(
                                 t!("app.github.issue_not_in_list", number = number).into_owned(),
@@ -1088,6 +1183,7 @@ impl App<'_> {
             loaded,
             carry: Carry {
                 view,
+                view_area: self.view_area,
                 notification: self.status_line_state.take_notification(),
                 notice_message: self.notice_message.take(),
                 github_data: self.github_data.take(),
@@ -1127,7 +1223,11 @@ impl App<'_> {
             return;
         }
 
-        if self.status_line_state.dismiss_notification() {
+        // Quit 例外：Warn／Error 顯示時按 q 要直接進入離開流程，不要只用來消掉通知
+        // （Info／Success 本來就不吞鍵，包括 q 第一次按下的「再按一次」）
+        if !self.ctx.keybind.has(&key, UserEvent::Quit)
+            && self.status_line_state.dismiss_notification()
+        {
             return;
         }
 
@@ -1153,11 +1253,10 @@ impl App<'_> {
                     self.ec.send(AppEvent::Quit);
                     return;
                 } else {
-                    self.status_line_state
-                        .set_notification_info(t!("app.quit.press_again").into_owned());
-                    self.ec
-                        .sender()
-                        .send_after(AppEvent::ClearStatusLine, Duration::from_millis(600));
+                    self.status_line_state.set_notification_info_for(
+                        t!("app.quit.press_again").into_owned(),
+                        QUIT_PRESS_WINDOW,
+                    );
                 }
                 self.key_state.clear_count();
             }
@@ -1168,6 +1267,7 @@ impl App<'_> {
                 if let Some(app_event) = global_app_event(
                     event_with_count.event,
                     self.view.is_browsing_view(),
+                    matches!(self.view, View::GitHub(_)),
                     self.is_input_mode(),
                 ) {
                     self.ec.send(app_event);
@@ -1185,6 +1285,73 @@ impl App<'_> {
                     self.key_state.push_digit(c);
                 }
             }
+        }
+    }
+
+    /// 滑鼠左鍵點擊。攔截順序照 `handle_key`：通知、pending、彈窗開著時
+    /// 都不能穿透到底下的 view；輸入模式（搜尋、CreateTag、Shell…）也不處理。
+    fn handle_click(&mut self, col: u16, row: u16) {
+        if self.notice_message.is_some() {
+            self.notice_message = None;
+            return;
+        }
+        if self.pending_message.is_some() || self.status_line_state.is_intercepting() {
+            return;
+        }
+        if self.status_line_state.dismiss_notification() || self.is_input_mode() {
+            return;
+        }
+
+        match self.view {
+            View::List(_) => {
+                if self
+                    .view
+                    .list_state_mut()
+                    .is_some_and(|state| state.select_row(row))
+                {
+                    self.open_detail();
+                }
+            }
+            View::Detail(ref mut view) => view.click(self.repository, col, row),
+            View::Refs(ref mut view) => view.click(col, row),
+            View::GitHub(ref mut view) => view.click(col, row),
+            View::UserCommand(ref mut view) => view.click_row(
+                self.repository,
+                self.view_area,
+                build_external_command_parameters_and_exec_command,
+                row,
+            ),
+            _ => {}
+        }
+    }
+
+    /// 滑鼠滾輪：捲指標底下那塊的內容，不移動選取。notice／pending／狀態列
+    /// 彈窗與輸入列開著時忽略（不關通知）。不看 `is_input_mode()`——Shell 的
+    /// 輸出也要能捲，各 view 自己決定要不要處理。
+    fn handle_wheel(&mut self, col: u16, row: u16, delta: i16) {
+        if self.notice_message.is_some()
+            || self.pending_message.is_some()
+            || self.status_line_state.is_intercepting()
+            || self.status_line_state.is_input_mode_variant()
+        {
+            return;
+        }
+        let lines = isize::from(delta) * WHEEL_LINES;
+
+        match self.view {
+            View::List(_) => {
+                if let Some(state) = self.view.list_state_mut() {
+                    state.scroll_view_by(lines);
+                }
+            }
+            View::Refs(ref mut view) => view.wheel(col, row, lines),
+            View::Detail(ref mut view) => view.wheel(col, row, lines),
+            View::UserCommand(ref mut view) => view.wheel(col, row, lines),
+            View::Shell(ref mut view) => view.wheel(col, row, lines),
+            View::GitHub(ref mut view) => view.wheel(col, row, lines),
+            View::Help(ref mut view) => view.wheel(lines),
+            View::ReleaseNotes(ref mut view) => view.wheel(lines),
+            _ => {}
         }
     }
 
@@ -1771,7 +1938,7 @@ impl App<'_> {
             return;
         }
 
-        if let View::GitHub(ref mut view) = self.view {
+        if let Some(view) = self.view.github_view_mut() {
             // 已在 GitHub 視圖：資料只有 view 這一份，直接寫進去；
             // 有沒有變更、要不要重置捲動位置由 view 自己決定
             view.update_data(
@@ -1800,7 +1967,7 @@ impl App<'_> {
             self.refresh_github(refetch);
             return;
         }
-        if let View::GitHub(ref mut view) = self.view {
+        if let Some(view) = self.view.github_view_mut() {
             view.set_error(error);
         }
     }
@@ -1882,7 +2049,7 @@ impl App<'_> {
     /// 所以這裡固定從 view 讀，不是從 `github_data`——view 開著時
     /// `github_data` 是 `None`，讀那邊會讓「載入更多」永久失效。
     fn load_more_github(&mut self, kind: GhItemKind, generation: u64) {
-        let View::GitHub(ref view) = self.view else {
+        let Some(view) = self.view.github_view_mut().map(|v| &*v) else {
             return;
         };
         let state = view.state_filter();
@@ -1945,7 +2112,7 @@ impl App<'_> {
     /// fetch 之後 Branches 分頁的行數才算得出來（本機終於有那些 commit）；在事件處理當下
     /// 才看 view，所以 fetch 途中才打開或已關掉 GitHub view 都對。
     fn reload_github_branches(&mut self) {
-        if let View::GitHub(ref mut view) = self.view {
+        if let Some(view) = self.view.github_view_mut() {
             view.reload_branches_after_fetch();
         }
     }
@@ -1962,7 +2129,7 @@ impl App<'_> {
 
     /// 快取與重跑觀察期都在 view 手上；view 不在了（關閉）就不必載入，也不會有回應。
     fn load_github_ci(&mut self, generation: u64) {
-        let View::GitHub(ref mut view) = self.view else {
+        let Some(view) = self.view.github_view_mut() else {
             return;
         };
         let (cache, observing) = view.ci_snapshot(Instant::now());
@@ -1996,7 +2163,7 @@ impl App<'_> {
 
     /// 關閉後的換資料時機同 `close_help`。
     fn close_github(&mut self) {
-        if let View::GitHub(ref mut view) = self.view {
+        if let Some(view) = self.view.github_view_mut() {
             self.github_label_mode = view.label_mode();
             self.github_data = Some(view.take_data());
             self.view = view.take_before_view();
@@ -2051,7 +2218,7 @@ impl App<'_> {
     fn on_checkbox_toggled(&mut self, number: u64, kind: GhItemKind, new_body: &str) {
         // 更新 list item 的 body 欄位，preview 直接從 body 渲染（零 API）。
         // 寫進資料目前唯一的擁有者：view 開著寫 view，關著寫 github_data。
-        if let View::GitHub(ref mut view) = self.view {
+        if let Some(view) = self.view.github_view_mut() {
             view.update_body_for_item(number, kind, new_body.to_string());
         } else if let Some(ref mut data) = self.github_data {
             match kind {
@@ -2211,6 +2378,7 @@ impl App<'_> {
     fn apply_carry(&mut self, carry: Carry) {
         let Carry {
             view,
+            view_area,
             notification,
             notice_message,
             github_data,
@@ -2218,6 +2386,7 @@ impl App<'_> {
             github_label_mode,
         } = carry;
 
+        self.view_area = view_area;
         self.init_with_context(view);
         if let Some(notification) = notification {
             self.status_line_state.restore_notification(notification);
@@ -2291,9 +2460,7 @@ impl App<'_> {
     /// 長出一份守衛。
     ///
     /// 狀態列那半（閒置或僅顯示通知）另外抽成
-    /// `StatusLineState::is_idle_or_notification`，`AppEvent::AutoFetchCompleted`
-    /// 的守衛也共用同一份——它刻意不要求 `is_browsing_view()`（見該處註解），
-    /// 所以不能直接呼叫這個函式。
+    /// `StatusLineState::is_idle_or_notification`。
     fn can_interrupt(&self) -> bool {
         self.pending_message.is_none()
             && self.view.is_browsing_view()
@@ -2328,13 +2495,11 @@ impl App<'_> {
                 repo: self.repository.path(),
                 args: self.ctx.fetch_prune.fetch_all_args(),
                 pending_msg: t!("app.fetch.pending").into_owned(),
-                success_msg: t!("app.fetch.done").into_owned(),
                 error_prefix: t!("app.fetch.failed"),
                 timeout: GIT_FETCH_TIMEOUT,
                 // 手動 fetch 成功等同「一輪 auto-fetch 已經跑過」，讓倒數與
                 // 基準指紋重新計算，見 `auto_fetch::spawn_resync`。
                 on_success: Some(AppEvent::AutoFetchResync),
-                ignore_success_stderr: false,
             },
         );
     }
@@ -2353,7 +2518,7 @@ impl App<'_> {
     /// `on_success` 刻意不送 `AutoFetchResync`：auto-fetch 的基準是所有 remote
     /// 的 ls-remote 指紋，pull 只 fetch upstream 所在的 remote，在這裡重算會把
     /// 其他 remote 的新內容當成已經看過而漏 fetch。代價是下一輪 auto-fetch 會
-    /// 多跑一次（跳出「自動 fetch 中…」overlay 與成功通知），而且
+    /// 多跑一次（跳出「自動 fetch 中…」overlay），而且
     /// `AutoFetchResync` 順帶的 `reload_github_branches()` 也不會觸發。
     fn pull(&self) {
         spawn_git_task(
@@ -2368,11 +2533,9 @@ impl App<'_> {
                     "--ff-only",
                 ],
                 pending_msg: t!("app.pull.pending").into_owned(),
-                success_msg: t!("app.pull.done").into_owned(),
                 error_prefix: t!("app.pull.failed"),
                 timeout: GIT_PULL_TIMEOUT,
                 on_success: None,
-                ignore_success_stderr: false,
             },
         );
     }
@@ -2402,11 +2565,9 @@ impl App<'_> {
                     "push",
                 ],
                 pending_msg: t!("app.push.pending").into_owned(),
-                success_msg: t!("app.push.done").into_owned(),
                 error_prefix: t!("app.push.failed"),
                 timeout: GIT_PUSH_TIMEOUT,
                 on_success: None,
-                ignore_success_stderr: true,
             },
         );
     }
@@ -2418,11 +2579,9 @@ impl App<'_> {
                 repo: self.repository.path(),
                 args: &["checkout", &target],
                 pending_msg: t!("app.checkout.pending", target = target).into_owned(),
-                success_msg: t!("app.checkout.done", target = target).into_owned(),
                 error_prefix: t!("app.checkout.failed"),
                 timeout: GIT_CHECKOUT_TIMEOUT,
                 on_success: None,
-                ignore_success_stderr: false,
             },
         );
     }
@@ -2543,7 +2702,6 @@ fn spawn_merge_pr(
                     };
                     match result {
                         Ok(()) => {
-                            message.push_str(&t!("app.merge.local_deleted", name = name));
                             refs_changed = true;
                         }
                         Err(e) => {
@@ -2569,18 +2727,13 @@ fn spawn_merge_pr(
                     tx.send(AppEvent::ShowPendingOverlay {
                         message: t!("app.merge.deleting_remote").into_owned(),
                     });
-                    match gh_delete_remote_branch(&repo_path, &head_ref) {
-                        Ok(()) => {
-                            message.push_str(&t!("app.merge.remote_deleted", head_ref = head_ref))
-                        }
-                        Err(e) => {
-                            has_failure = true;
-                            message.push_str(&t!(
-                                "app.merge.remote_delete_failed",
-                                head_ref = head_ref,
-                                e = e
-                            ));
-                        }
+                    if let Err(e) = gh_delete_remote_branch(&repo_path, &head_ref) {
+                        has_failure = true;
+                        message.push_str(&t!(
+                            "app.merge.remote_delete_failed",
+                            head_ref = head_ref,
+                            e = e
+                        ));
                     }
                 }
 
@@ -2593,7 +2746,6 @@ fn spawn_merge_pr(
                     });
                     match delete_remote_tracking_ref(&repo_path, &name) {
                         Ok(()) => {
-                            message.push_str(&t!("app.merge.tracking_deleted", name = name));
                             refs_changed = true;
                         }
                         Err(e) => {
@@ -2619,11 +2771,11 @@ fn spawn_merge_pr(
                 }
 
                 tx.send(AppEvent::HidePendingOverlay);
-                tx.send(if has_failure {
-                    AppEvent::NotifyWarn(message)
-                } else {
-                    AppEvent::NotifySuccess(message)
-                });
+                // 全部成功不通知；merge 本身成功但清理分支失敗時，訊息開頭保留
+                // 「已 merge」，讓使用者知道 PR 沒事、只有後續刪除失敗。
+                if has_failure {
+                    tx.send(AppEvent::NotifyWarn(message));
+                }
             }
             Err(e) => {
                 tx.send(AppEvent::HidePendingOverlay);
@@ -2675,7 +2827,6 @@ fn spawn_toggle_pr_draft(
         tx.send(AppEvent::HidePendingOverlay);
         match result {
             Ok(()) => {
-                tx.send(AppEvent::NotifySuccess(action.success(number)));
                 tx.send(AppEvent::PrDraftToggled {
                     number,
                     is_draft: action.result_is_draft(),
@@ -2709,7 +2860,6 @@ fn spawn_toggle_state(
         tx.send(AppEvent::HidePendingOverlay);
         match result {
             Ok(()) => {
-                tx.send(AppEvent::NotifySuccess(action.success(kind, number)));
                 tx.send(AppEvent::RefreshGitHub {
                     state: filter_state,
                 });
@@ -2743,9 +2893,6 @@ fn spawn_delete_branch(repo: &Path, ec: &EventController, name: String, force: b
         tx.send(AppEvent::HidePendingOverlay);
         match result {
             Ok(()) => {
-                tx.send(AppEvent::NotifySuccess(
-                    t!("app.delete_branch.done", name = name).into_owned(),
-                ));
                 tx.send(AppEvent::Refresh);
             }
             Err(e) => {
@@ -2786,26 +2933,19 @@ const GIT_PULL_TIMEOUT: Duration = Duration::from_secs(1800);
 /// 回報失敗時 push 不一定真的失敗。
 const GIT_PUSH_TIMEOUT: Duration = Duration::from_secs(1800);
 
-/// `spawn_git_task` 的參數包——原本 7 個位置參數裡 `pending_msg`／
-/// `success_msg`／`error_prefix` 三個相鄰同型別，寫反編譯器抓不到（跟
-/// `AutoFetchOverrides` doc comment 點名的同一類風險），加第 8 個參數
-/// `on_success` 正好是收進具名欄位的時機。
+/// `spawn_git_task` 的參數包——`pending_msg`／`error_prefix` 這類相鄰同型別
+/// 欄位寫反編譯器抓不到，收進具名欄位。
 struct GitTask<'a> {
     repo: &'a Path,
     args: &'a [&'a str],
     pending_msg: String,
-    success_msg: String,
     error_prefix: Cow<'static, str>,
     timeout: Duration,
-    /// 指令成功時（除了固定的 `NotifySuccess` + `AutoRefresh`）額外要送的
-    /// 一個事件；`None` 給不需要的呼叫端（例如 `checkout_commit`）用。目前
-    /// 唯一用途是 `fetch_all()` 送 `AppEvent::AutoFetchResync`，讓手動
-    /// fetch 成功後 auto-fetch 的倒數與基準跟著重整。
+    /// 指令成功時（除了固定的 `AutoRefresh`）額外要送的一個事件；`None`
+    /// 給不需要的呼叫端（例如 `checkout_commit`）用。目前唯一用途是
+    /// `fetch_all()` 送 `AppEvent::AutoFetchResync`，讓手動 fetch 成功後
+    /// auto-fetch 的倒數與基準跟著重整。
     on_success: Option<AppEvent>,
-    /// 成功時固定顯示 `success_msg`，不拿 stderr 當訊息。`git push` 成功時
-    /// stderr 會帶 `remote:` 訊息與 pre-push hook 的輸出，多行接成一行後
-    /// 比「完成」更難讀。
-    ignore_success_stderr: bool,
 }
 
 fn spawn_git_task(ec: &EventController, task: GitTask) {
@@ -2813,11 +2953,9 @@ fn spawn_git_task(ec: &EventController, task: GitTask) {
         repo,
         args,
         pending_msg,
-        success_msg,
         error_prefix,
         timeout,
         on_success,
-        ignore_success_stderr,
     } = task;
     let repo_path = repo.to_path_buf();
     let tx = ec.sender();
@@ -2834,13 +2972,6 @@ fn spawn_git_task(ec: &EventController, task: GitTask) {
         tx.send(AppEvent::HidePendingOverlay);
         match output {
             Ok(o) if o.status.success() => {
-                let detail = String::from_utf8_lossy(&o.stderr).trim().to_string();
-                let msg = if detail.is_empty() || ignore_success_stderr {
-                    success_msg
-                } else {
-                    detail
-                };
-                tx.send(AppEvent::NotifySuccess(msg));
                 // checkout／建立或刪除 tag／ref 一定動到 HEAD 或 refs，
                 // 一律當 Full，不是 WorkingTree；`at = now()`——這是
                 // serie 自己觸發的變更，不需要跟任何「上一次 Full」比對。
@@ -2853,7 +2984,7 @@ fn spawn_git_task(ec: &EventController, task: GitTask) {
                 }
             }
             Ok(o) => {
-                let stderr = String::from_utf8_lossy(&o.stderr).trim().to_string();
+                let stderr = crate::process::stderr_summary(&o.stderr);
                 tx.send(AppEvent::NotifyError(
                     t!("common.failed_with", prefix = error_prefix, detail = stderr).into_owned(),
                 ));
@@ -2880,14 +3011,23 @@ fn spawn_git_task(ec: &EventController, task: GitTask) {
 ///
 /// 放行之後不需要另外轉換事件：`view::list` 的 `resolve_input_action` 有
 /// catch-all，非控制類事件一律當成文字輸入。
-fn global_app_event(event: UserEvent, browsing_view: bool, input_mode: bool) -> Option<AppEvent> {
-    if !browsing_view || input_mode {
+///
+/// `help_allowed` 是 `?` 專用的額外放行：GitHub view 不是 browsing view（自己的
+/// keymap 不能被攔），但手機上沒有別的辦法看說明，所以 `?` 例外；文字輸入中
+/// （`input_mode`）一樣不攔。
+fn global_app_event(
+    event: UserEvent,
+    browsing_view: bool,
+    help_allowed: bool,
+    input_mode: bool,
+) -> Option<AppEvent> {
+    if input_mode {
         return None;
     }
     match event {
-        UserEvent::GitHubToggle => Some(AppEvent::OpenGitHub),
-        UserEvent::HelpToggle => Some(AppEvent::OpenHelp),
-        UserEvent::CheckUpdate => Some(AppEvent::CheckUpdate),
+        UserEvent::HelpToggle if browsing_view || help_allowed => Some(AppEvent::OpenHelp),
+        UserEvent::GitHubToggle if browsing_view => Some(AppEvent::OpenGitHub),
+        UserEvent::CheckUpdate if browsing_view => Some(AppEvent::CheckUpdate),
         _ => None,
     }
 }
@@ -3096,26 +3236,32 @@ mod tests {
     #[rustfmt::skip]
     #[rstest]
     // browsing view + 非輸入模式：正常攔截
-    #[case(UserEvent::GitHubToggle, true,  false, true)]
-    #[case(UserEvent::HelpToggle,   true,  false, true)]
-    #[case(UserEvent::CheckUpdate,  true,  false, true)]
+    #[case(UserEvent::GitHubToggle, true,  false, false, true)]
+    #[case(UserEvent::HelpToggle,   true,  false, false, true)]
+    #[case(UserEvent::CheckUpdate,  true,  false, false, true)]
     // 輸入模式：一律放行給 view 當文字處理
-    #[case(UserEvent::GitHubToggle, true,  true,  false)]
-    #[case(UserEvent::HelpToggle,   true,  true,  false)]
-    #[case(UserEvent::CheckUpdate,  true,  true,  false)]
+    #[case(UserEvent::GitHubToggle, true,  false, true,  false)]
+    #[case(UserEvent::HelpToggle,   true,  false, true,  false)]
+    #[case(UserEvent::CheckUpdate,  true,  false, true,  false)]
     // 非 browsing view（modal）：本來就不攔
-    #[case(UserEvent::GitHubToggle, false, false, false)]
-    #[case(UserEvent::HelpToggle,   false, false, false)]
+    #[case(UserEvent::GitHubToggle, false, false, false, false)]
+    #[case(UserEvent::HelpToggle,   false, false, false, false)]
+    // GitHub view：只有 `?` 例外放行；打字中（prompt）不攔
+    #[case(UserEvent::HelpToggle,   false, true,  false, true)]
+    #[case(UserEvent::HelpToggle,   false, true,  true,  false)]
+    #[case(UserEvent::GitHubToggle, false, true,  false, false)]
+    #[case(UserEvent::CheckUpdate,  false, true,  false, false)]
     // 其他事件無論如何都不是全域事件
-    #[case(UserEvent::NavigateDown, true,  false, false)]
-    #[case(UserEvent::Search,       true,  false, false)]
+    #[case(UserEvent::NavigateDown, true,  false, false, false)]
+    #[case(UserEvent::Search,       true,  false, false, false)]
     fn global_app_event_never_swallows_typed_keys(
         #[case] event: UserEvent,
         #[case] browsing_view: bool,
+        #[case] help_allowed: bool,
         #[case] input_mode: bool,
         #[case] intercepted: bool,
     ) {
-        let actual = global_app_event(event, browsing_view, input_mode);
+        let actual = global_app_event(event, browsing_view, help_allowed, input_mode);
         assert_eq!(
             actual.is_some(),
             intercepted,
@@ -3141,14 +3287,46 @@ mod tests {
         assert!(unbound_key_goes_to_view(&View::Default, true));
     }
 
+    /// 說明蓋在 GitHub view 上時，背景載入結果仍要找得到它（不然關掉說明
+    /// 回來會卡在載入中）。
+    #[test]
+    fn github_view_mut_reaches_through_help() {
+        let (tx, _rx) = crate::event::Sender::channel_for_test();
+        let github = View::of_github(
+            View::Default,
+            Default::default(),
+            Default::default(),
+            Default::default(),
+            Duration::from_secs(60),
+            tx.clone(),
+        );
+        let ctx = Rc::new(AppContext {
+            keybind: KeyBind::new(None),
+            core_config: Default::default(),
+            ui_config: Default::default(),
+            color_theme: Default::default(),
+            graph_style: Default::default(),
+            graph_width: None,
+            compact: None,
+            update: Default::default(),
+            auto_fetch: Default::default(),
+            fetch_prune: Default::default(),
+            shell_command: Vec::new(),
+        });
+        let mut view = View::of_help(github, ctx, tx);
+        assert!(matches!(view, View::Help(_)));
+        assert!(view.github_view_mut().is_some());
+        assert!(View::Default.github_view_mut().is_none());
+    }
+
     #[test]
     fn global_app_event_maps_to_the_matching_view() {
         assert!(matches!(
-            global_app_event(UserEvent::GitHubToggle, true, false),
+            global_app_event(UserEvent::GitHubToggle, true, false, false),
             Some(AppEvent::OpenGitHub)
         ));
         assert!(matches!(
-            global_app_event(UserEvent::HelpToggle, true, false),
+            global_app_event(UserEvent::HelpToggle, true, false, false),
             Some(AppEvent::OpenHelp)
         ));
     }

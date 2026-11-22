@@ -8,7 +8,11 @@ use ratatui::{
 
 use rust_i18n::t;
 
-use crate::{github::GhBranch, widget::truncate_line};
+use crate::{
+    color::{MUTED_FG, TEXT_COLOR},
+    github::GhBranch,
+    widget::truncate_line,
+};
 
 use super::timeline::{diff_stat_spans, DiffStatThresholds};
 
@@ -24,9 +28,6 @@ pub(super) fn columns(width: usize) -> usize {
     (width / MIN_CARD_WIDTH).max(1)
 }
 
-/// 邊框以外的文字一律用亮灰色（`Color::Gray`），不用 `DarkGray`，深色背景下才看得清楚。
-pub(super) const TEXT_COLOR: Color = Color::Gray;
-
 /// 邊框 2 格 + title 兩側各 1 格空白。
 const TITLE_CHROME: usize = 4;
 
@@ -35,7 +36,7 @@ pub(super) fn card_block(title: &str, width: u16, selected: bool) -> Block<'stat
     let (border_color, title_style) = if selected {
         (Color::Cyan, Style::default().fg(Color::Cyan).bold())
     } else {
-        (Color::DarkGray, Style::default().fg(TEXT_COLOR))
+        (MUTED_FG, Style::default().fg(TEXT_COLOR))
     };
 
     let title = truncate_line(
@@ -62,19 +63,31 @@ pub(super) fn render_card(
     let block = card_block(&branch.name, area.width, selected);
 
     f.render_widget(
-        Paragraph::new(card_body(branch, diff_stat_thresholds)).block(block),
+        Paragraph::new(card_body(
+            branch,
+            diff_stat_thresholds,
+            area.width.saturating_sub(2) as usize,
+        ))
+        .block(block),
         area,
     );
 }
 
-fn card_body(branch: &GhBranch, diff_stat_thresholds: DiffStatThresholds) -> Vec<Line<'static>> {
+fn card_body(
+    branch: &GhBranch,
+    diff_stat_thresholds: DiffStatThresholds,
+    width: usize,
+) -> Vec<Line<'static>> {
     let short_oid: String = branch.head_oid.chars().take(7).collect();
-    let meta = Line::styled(
-        format!(
-            " {short_oid} · {} · @{}",
-            branch.committer_date, branch.author
+    let meta = truncate_line(
+        Line::styled(
+            format!(
+                " {short_oid} · {} · @{}",
+                branch.committer_date, branch.author
+            ),
+            Style::default().fg(TEXT_COLOR),
         ),
-        Style::default().fg(TEXT_COLOR),
+        width,
     );
     // `diff_stat_spans` 自帶開頭兩格空白，剛好當卡片內縮
     let stat = match branch.diff_stat {
@@ -84,7 +97,7 @@ fn card_body(branch: &GhBranch, diff_stat_thresholds: DiffStatThresholds) -> Vec
             Style::default().fg(TEXT_COLOR),
         ),
     };
-    vec![meta, stat]
+    vec![meta, truncate_line(stat, width)]
 }
 
 #[cfg(test)]
@@ -93,6 +106,23 @@ mod tests {
 
     use super::*;
     use crate::github::DiffStat;
+
+    /// 窄卡片：meta 列放不下時截成 `…`，不是被邊框硬切。
+    #[test]
+    fn card_meta_is_truncated_with_ellipsis_when_narrow() {
+        let mut b = branch("topic");
+        b.author = "a-very-long-author-name-indeed".to_string();
+        let thresholds = DiffStatThresholds::default();
+        let text = |w| -> String {
+            card_body(&b, thresholds, w)[0]
+                .spans
+                .iter()
+                .map(|s| s.content.as_ref())
+                .collect()
+        };
+        assert!(text(20).ends_with('…'), "{}", text(20));
+        assert!(text(100).ends_with("indeed"));
+    }
 
     fn branch(name: &str) -> GhBranch {
         GhBranch {
@@ -181,10 +211,10 @@ mod tests {
             .unwrap();
         let buf = terminal.backend().buffer().clone();
 
-        // 非選取：title（第 0 列）與 meta（第 1 列）文字是亮灰，邊框維持 DarkGray
+        // 非選取：title（第 0 列）與 meta（第 1 列）文字是亮灰，邊框維持 MUTED_FG
         assert_eq!(buf[(2, 0)].fg, Color::Gray);
         assert_eq!(buf[(2, 1)].fg, Color::Gray);
-        assert_eq!(buf[(0, 0)].fg, Color::DarkGray);
+        assert_eq!(buf[(0, 0)].fg, MUTED_FG);
     }
 
     #[test]

@@ -3,6 +3,9 @@
 //! 以 frame 驅動的暫停 → 滑動 → 暫停 → 滑回 循環。呼叫端每個動畫 tick
 //! 推進一次 `frame`（見 `App::marquee_frame`）。
 
+use std::ops::Range;
+
+use ratatui::text::Span;
 use unicode_width::UnicodeWidthChar;
 
 use crate::event::TICK_INTERVAL;
@@ -121,6 +124,57 @@ pub fn scroll_window(text: &str, available: usize, frame: u64) -> MarqueeSlice {
     }
 }
 
+/// 依原字串（所有 span 內容串起來）的 byte 範圍切回多個 span，保留各自的
+/// style，交集為空的 span 丟掉。範圍必須落在字元邊界（`scroll_window` 與
+/// `split_at_width` 的回傳值都是）。
+fn slice_spans(spans: &[Span<'_>], range: Range<usize>) -> Vec<Span<'static>> {
+    let mut out = Vec::new();
+    let mut start = 0usize;
+    for span in spans {
+        let text = span.content.as_ref();
+        let end = start + text.len();
+        let (lo, hi) = (range.start.max(start), range.end.min(end));
+        if lo < hi {
+            out.push(Span::styled(
+                text[lo - start..hi - start].to_string(),
+                span.style,
+            ));
+        }
+        start = end;
+    }
+    out
+}
+
+fn joined(spans: &[Span<'_>]) -> String {
+    spans.iter().map(|s| s.content.as_ref()).collect()
+}
+
+/// 多個 span 串起來的顯示寬度，基準同 `display_width`。
+pub fn spans_display_width(spans: &[Span<'_>]) -> usize {
+    spans.iter().map(|s| display_width(&s.content)).sum()
+}
+
+/// 選取列用：整串 span 放不下 `available` 時依 `frame` 捲動，保留各段顏色。
+pub fn scroll_spans(spans: &[Span<'_>], available: usize, frame: u64) -> Vec<Span<'static>> {
+    let slice = scroll_window(&joined(spans), available, frame);
+    let mut out = slice_spans(spans, slice.start_byte..slice.end_byte);
+    if slice.prepended_space {
+        out.insert(0, Span::raw(" "));
+    }
+    out
+}
+
+/// 非選取列用：放不下 `available` 時截到 `available - 1` 格再補 `…`，保留
+/// 各段顏色。以字元為單位切（不是以 span），所以長 ref 名稱會截在名稱中間
+/// 而不是整段消失。`available` 至少要 2（1 以下會比可用寬度還寬）。
+pub fn truncate_spans(spans: &[Span<'_>], available: usize) -> Vec<Span<'static>> {
+    let text = joined(spans);
+    let (head, _) = crate::widget::split_at_width(&text, available.saturating_sub(1));
+    let mut out = slice_spans(spans, 0..head.len());
+    out.push(Span::raw(crate::widget::ELLIPSIS));
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -188,5 +242,91 @@ mod tests {
         let s = scroll_window(text, 6, PAUSE_TICKS + 1);
         assert!(s.prepended_space);
         assert!(s.text.starts_with(' '));
+    }
+
+    fn styled(text: &'static str, color: ratatui::style::Color) -> Span<'static> {
+        Span::styled(text, ratatui::style::Style::default().fg(color))
+    }
+
+    #[test]
+    fn slice_spans_keeps_styles_across_span_boundaries() {
+        use ratatui::style::Color;
+        let spans = [
+            styled("(", Color::Red),
+            styled("origin", Color::Blue),
+            styled(")", Color::Red),
+        ];
+        let out = slice_spans(&spans, 0..4);
+        assert_eq!(joined(&out), "(ori");
+        assert_eq!(out[0].style.fg, Some(Color::Red));
+        assert_eq!(out[1].style.fg, Some(Color::Blue));
+        // 範圍完全落在第二段：第一、三段被丟掉
+        let out = slice_spans(&spans, 2..5);
+        assert_eq!(out.len(), 1);
+        assert_eq!(joined(&out), "rig");
+    }
+
+    #[test]
+    fn truncate_spans_cuts_inside_a_long_name_and_appends_ellipsis() {
+        use ratatui::style::Color;
+        let spans = [
+            styled("(", Color::Red),
+            styled("origin/feature-very-long", Color::Blue),
+            styled(")", Color::Red),
+        ];
+        let out = truncate_spans(&spans, 12);
+        assert_eq!(joined(&out), "(origin/fea…");
+        assert!(spans_display_width(&out) <= 12);
+        assert_eq!(out[1].style.fg, Some(Color::Blue));
+    }
+
+    #[test]
+    fn truncate_spans_never_splits_a_double_width_char() {
+        let spans = [Span::raw("分支名稱很長")];
+        let out = truncate_spans(&spans, 6);
+        // 5 格放得下兩個雙寬字（4 格）；第三個字會超過，所以不切半個
+        assert_eq!(joined(&out), "分支…");
+        assert!(spans_display_width(&out) <= 6);
+    }
+
+    #[test]
+    fn scroll_spans_moves_the_window_and_keeps_colors() {
+        use ratatui::style::Color;
+        let spans = [
+            styled("(", Color::Red),
+            styled("origin/feature-very-long", Color::Blue),
+            styled(")", Color::Red),
+        ];
+        let first = scroll_spans(&spans, 10, 0);
+        assert_eq!(joined(&first), "(origin/fe");
+        // 全長 26 格、視窗 10 格：捲動距離 16，frame = PAUSE + 16 停在尾端
+        let last = scroll_spans(&spans, 10, PAUSE_TICKS + 16);
+        assert!(joined(&last).ends_with(')'), "{}", joined(&last));
+        assert_eq!(last.last().unwrap().style.fg, Some(Color::Red));
+        assert!(spans_display_width(&last) <= 10);
+    }
+
+    #[test]
+    fn scroll_spans_prepends_a_space_when_a_wide_char_straddles_the_edge() {
+        let spans = [Span::raw("分支名稱很長很長")];
+        for frame in PAUSE_TICKS..PAUSE_TICKS + 8 {
+            let out = scroll_spans(&spans, 5, frame);
+            assert!(
+                spans_display_width(&out) <= 5,
+                "frame {frame}: {}",
+                joined(&out)
+            );
+        }
+    }
+
+    #[test]
+    fn spans_display_width_agrees_with_scroll_window_on_variation_selectors() {
+        // VS16 序列：呼叫端判定 overflow 的寬度必須跟 scroll_window 一致，
+        // 否則 marquee 不動卻每個 tick 重繪
+        let spans = [Span::raw("⚠️warn-ref")];
+        let w = spans_display_width(&spans);
+        assert_eq!(w, display_width("⚠️warn-ref"));
+        let out = scroll_spans(&spans, w, 0);
+        assert_eq!(joined(&out), "⚠️warn-ref");
     }
 }

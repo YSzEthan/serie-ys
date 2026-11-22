@@ -6,7 +6,7 @@ use ratatui::{
 
 use rust_i18n::t;
 
-use crate::github::Mergeable;
+use crate::{color::MUTED_FG, github::Mergeable};
 
 use super::{
     render::{label_spans, state_color, state_label},
@@ -29,7 +29,7 @@ pub(super) fn build_preview_content(
     let Some(item) = input.item.as_ref() else {
         let lines = vec![Line::styled(
             t!("github.preview.no_item"),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(MUTED_FG),
         )];
         let leading_start = lines.len();
         return (lines, overlay, leading_start);
@@ -45,7 +45,7 @@ pub(super) fn build_preview_content(
         });
     }
     lines.push(Line::from(vec![
-        Span::styled(format!("#{number} "), Style::default().fg(Color::DarkGray)),
+        Span::styled(format!("#{number} "), Style::default().fg(MUTED_FG)),
         Span::styled(
             item.title.to_string(),
             Style::default()
@@ -59,10 +59,7 @@ pub(super) fn build_preview_content(
             state_label(item.state),
             Style::default().fg(state_color(item.state)),
         ),
-        Span::styled(
-            format!("  @{}", item.author),
-            Style::default().fg(Color::DarkGray),
-        ),
+        Span::styled(format!("  @{}", item.author), Style::default().fg(MUTED_FG)),
     ];
     if !item.labels.is_empty() {
         meta_spans.push(Span::raw("  "));
@@ -78,7 +75,7 @@ pub(super) fn build_preview_content(
     {
         let mut spans = vec![
             Span::styled(base_ref_name.to_string(), Style::default().fg(Color::Cyan)),
-            Span::styled("  ←  ", Style::default().fg(Color::DarkGray)),
+            Span::styled("  ←  ", Style::default().fg(MUTED_FG)),
             Span::styled(head_ref_name.to_string(), Style::default().fg(Color::Cyan)),
         ];
         if let Some((text, color)) = mergeable_marker(input.entry.and_then(|e| e.mergeable)) {
@@ -117,7 +114,7 @@ pub(super) fn build_preview_content(
     if item.body.is_empty() {
         lines.push(Line::styled(
             t!("github.preview.no_body"),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(MUTED_FG),
         ));
     } else {
         lines.extend(crate::view::markdown::render(item.body, width));
@@ -354,10 +351,7 @@ pub(super) struct RowData {
 fn related_issue_line(indent: &'static str, r: &crate::github::GhRelatedIssue) -> Line<'static> {
     Line::from(vec![
         Span::raw(indent),
-        Span::styled(
-            format!("#{} ", r.number),
-            Style::default().fg(Color::DarkGray),
-        ),
+        Span::styled(format!("#{} ", r.number), Style::default().fg(MUTED_FG)),
         Span::raw(r.title.clone()),
         Span::raw(" "),
         Span::styled(
@@ -375,13 +369,10 @@ fn append_relation_lines(
 ) {
     if let Some(parent) = parent {
         lines.push(Line::from(vec![
-            Span::styled(
-                t!("github.preview.parent"),
-                Style::default().fg(Color::DarkGray),
-            ),
+            Span::styled(t!("github.preview.parent"), Style::default().fg(MUTED_FG)),
             Span::styled(
                 format!("#{} ", parent.number),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(MUTED_FG),
             ),
             Span::raw(parent.title.clone()),
             Span::raw(" "),
@@ -395,7 +386,7 @@ fn append_relation_lines(
         let indent = "  ";
         lines.push(Line::styled(
             t!("github.preview.sub_issues", n = sub_issues.len()),
-            Style::default().fg(Color::DarkGray),
+            Style::default().fg(MUTED_FG),
         ));
         for sub in sub_issues {
             lines.push(related_issue_line(indent, sub));
@@ -412,7 +403,7 @@ fn rule(prev: Option<Section>, next: Section, width: usize) -> Line<'static> {
     crate::view::markdown::labeled_rule(
         width,
         &next.label(),
-        prev.map_or(Color::DarkGray, Section::color),
+        prev.map_or(MUTED_FG, Section::color),
         next.color(),
     )
 }
@@ -420,12 +411,7 @@ fn rule(prev: Option<Section>, next: Section, width: usize) -> Line<'static> {
 /// header／relations 區塊下方的分隔線：線條維持 markdown 分隔線的灰色，
 /// 標籤用 body 區段的顏色。
 fn header_rule(width: usize, label: impl AsRef<str>) -> Line<'static> {
-    crate::view::markdown::labeled_rule(
-        width,
-        label.as_ref(),
-        Color::DarkGray,
-        Section::Body.color(),
-    )
+    crate::view::markdown::labeled_rule(width, label.as_ref(), MUTED_FG, Section::Body.color())
 }
 
 #[cfg(test)]
@@ -654,7 +640,7 @@ mod tests {
         assert_eq!(
             colors[..3],
             [
-                Some(Color::DarkGray),         // header → CI
+                Some(MUTED_FG),                // header → CI
                 Some(Section::Ci.color()),     // CI → Commit
                 Some(Section::Commit.color()), // Commit → Body
             ]
@@ -663,7 +649,7 @@ mod tests {
         // 沒有 CI／commit：header → Body 仍是灰線，跟改動前一致
         let entry = entry_with(0, 0);
         let (lines, _, _) = build_preview_content(&pr_input(&entry));
-        assert_eq!(rules(&lines)[0].1, Some(Color::DarkGray));
+        assert_eq!(rules(&lines)[0].1, Some(MUTED_FG));
     }
 
     /// 載入前（沒有 entry）與載入後的差別只在 leading 區；起點是同一行，
@@ -692,7 +678,7 @@ mod tests {
             ..item
         });
         let (lines, _, start) = build_preview_content(&input);
-        assert_eq!(rules(&lines)[0].1, Some(Color::DarkGray));
+        assert_eq!(rules(&lines)[0].1, Some(MUTED_FG));
         assert!(text(&lines[start]).starts_with(&label_of(Section::Body)));
     }
 }

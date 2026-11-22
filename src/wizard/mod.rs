@@ -619,7 +619,7 @@ enum NumberField {
     ListScrolloff,
     /// `ui.list.graph_edge_max_rows`（長線截斷的 K）。
     ListGraphEdgeMaxRows,
-    /// `ui.list.graph_max_width_percent`（截斷時的欄寬上限）。
+    /// `ui.list.graph_max_width_percent`（截斷時與精簡模式的欄寬上限）。
     ListGraphMaxWidthPercent,
     /// `ui.github.diff_stat_target`（GitHub view PR 變更行數 `Δ` 的目標數）。
     GithubDiffStatTarget,

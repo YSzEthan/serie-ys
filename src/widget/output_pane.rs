@@ -38,6 +38,11 @@ impl OutputPaneState {
         self.offset = self.offset.min(line_count.saturating_sub(self.height));
     }
 
+    /// 滑鼠滾輪：捲 `lines` 行（正數往下）。上限由下一次 `render` 的 `clamp` 夾住。
+    pub fn scroll_by(&mut self, lines: isize) {
+        self.offset = self.offset.saturating_add_signed(lines);
+    }
+
     pub fn scroll_down(&mut self) {
         self.offset = self.offset.saturating_add(1);
     }

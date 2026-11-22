@@ -263,8 +263,8 @@ pub fn download_and_replace(tag: &str) -> Result<PathBuf, String> {
     if cfg!(windows) {
         return Err(t!("cli.update.err.windows").into_owned());
     }
-    if cfg!(debug_assertions) {
-        return Err(t!("cli.update.err.debug_build").into_owned());
+    if exe_dir().is_some_and(is_cargo_profile_dir) {
+        return Err(t!("cli.update.err.cargo_target").into_owned());
     }
     if exe_is_stale() {
         return Err(exe_replaced_msg().into_owned());
@@ -711,8 +711,7 @@ pub fn mark_version_seen() {
 /// 的 notes 就永遠看不到了。
 ///
 /// debug build 不自動跳：`cargo clean` 後每次 `cargo run` 都會被擋在
-/// commit list 前面，跟 `download_and_replace` 的 `cfg!(debug_assertions)`
-/// 早退同一個先例。`--whats-new` 不受這個限制，隨時能手動看。
+/// commit list 前面。`--whats-new` 不受這個限制，隨時能手動看。
 pub fn pending_release_notes(settings: UpdateSettings) -> Option<&'static str> {
     if cfg!(debug_assertions) || !settings.release_notes {
         return None;
@@ -982,6 +981,15 @@ pub(crate) fn exe_dir() -> Option<&'static Path> {
                 .and_then(|p| p.parent().map(Path::to_path_buf))
         })
         .as_deref()
+}
+
+/// cargo 的 profile 輸出目錄（`target/debug`、`target/release`、自訂
+/// `CARGO_TARGET_DIR` 也一樣）一定有 `.fingerprint/`。執行檔在這裡代表
+/// 是直接跑建置產物，自我更新會覆蓋 cargo 的輸出；部署出去的副本
+/// （`make debug` → `~/dotfiles/ysgit`）不受影響。不比對目錄名稱是不是
+/// `target`：Makefile 讓所有 worktree 共用主 repo 的 `target/`。
+fn is_cargo_profile_dir(dir: &Path) -> bool {
+    dir.join(".fingerprint").is_dir()
 }
 
 fn curl_spawn_error(e: &std::io::Error) -> String {
@@ -1445,5 +1453,18 @@ ca0a1ac34d2e1138b9308820e3a53b6822552268907e87a11a1350b98f1a6ada  ysgit_2.4.1-ma
     fn is_stale_tmp_name_rejects_unrelated_dotfile() {
         assert!(!is_stale_tmp_name(".ysgit.toml"));
         assert!(!is_stale_tmp_name(".ysgit.update_check"));
+    }
+
+    #[test]
+    fn is_cargo_profile_dir_detects_fingerprint_subdir() {
+        let dir = tempfile::tempdir().unwrap();
+        fs::create_dir(dir.path().join(".fingerprint")).unwrap();
+        assert!(is_cargo_profile_dir(dir.path()));
+    }
+
+    #[test]
+    fn is_cargo_profile_dir_rejects_plain_dir() {
+        let dir = tempfile::tempdir().unwrap();
+        assert!(!is_cargo_profile_dir(dir.path()));
     }
 }

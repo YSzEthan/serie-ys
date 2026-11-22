@@ -1,6 +1,6 @@
 [package]
 name = "ysgit"
-version = "4.16.0"
+version = "4.17.0"
 description = "Git Graph in Terminal"
 authors = ["YSEthan"]
 homepage = "https://github.com/YSzEthan/serie-ys"
@@ -23,25 +23,25 @@ path = "src/main.rs"
 
 [dependencies]
 ansi-to-tui = "8.0.1"
-arboard = { version = "3.7.0", features = ["wayland-data-control"] }
+arboard = { version = "3.7.0", default-features = false, features = ["wayland-data-control"] }
 base64 = { version = "0.23.1", default-features = false, features = ["std"] }
-chrono = "0.4.44"
-clap = { version = "4.6.0", features = ["derive"] }
+clap = { version = "4.6.8", features = ["derive"] }
 console = "0.16.3"
 emojis = "0.9.0"
 fuzzy-matcher = "0.3.7"
 garde = { version = "0.23.0", features = ["derive", "regex"] }
-laurier = "0.3.0"
-ratatui = { version = "0.30.2", features = ["serde", "unstable-rendered-line-info"] }
+jiff = "1.0.1"
+laurier = "0.4.0"
+ratatui = { version = "0.30.2", default-features = false, features = ["crossterm", "layout-cache", "underline-color", "serde", "unstable-rendered-line-info"] }
 rustc-hash = "2.1.2"
 semver = "1.0.28"
 serde = { version = "1.0.228", features = ["derive"] }
 serde_json = "1"
 signal-hook = { version = "0.3", default-features = false }
 smart-default = "0.7.1"
-toml = { version = "1.1.2", features = ["preserve_order"] }
+toml = { version = "1.2.1", default-features = false, features = ["std", "serde", "parse", "preserve_order"] }
 toml_edit = "0.25.17"
-tui-input = "0.15.1"
+tui-input = { version = "0.15.1", default-features = false, features = ["crossterm"] }
 notify = { version = "8.2.0", features = ["macos_fsevent"] }
 notify-debouncer-mini = "0.7.0"
 umbra = "0.6.0"
@@ -49,7 +49,7 @@ unicode-width = "0.2"
 rust-i18n = "4"
 
 [dev-dependencies]
-rstest = "0.28.0"
+rstest = { version = "0.28.0", default-features = false }
 tempfile = "3.27.0"
 
 [profile.release]

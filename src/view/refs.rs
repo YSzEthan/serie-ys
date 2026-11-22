@@ -117,6 +117,25 @@ impl<'a> RefsView<'a> {
         }
     }
 
+    /// 滑鼠點擊 refs 側欄：選取被點的 ref，commit list 跟著跳過去。
+    pub fn click(&mut self, col: u16, row: u16) {
+        if self.ref_list_state.click(col, row) {
+            self.update_commit_list_selected();
+        }
+    }
+
+    /// 滑鼠滾輪：指標在 refs 側欄就捲側欄（選取被推動時 commit list 跟著
+    /// 跳），否則捲 commit list。
+    pub fn wheel(&mut self, col: u16, row: u16, lines: isize) {
+        if self.ref_list_state.contains(col, row) {
+            if self.ref_list_state.scroll(lines) {
+                self.update_commit_list_selected();
+            }
+        } else {
+            self.as_mut_list_state().scroll_view_by(lines);
+        }
+    }
+
     fn checkout_selected_ref(&self) {
         let name = self
             .ref_list_state
@@ -191,10 +210,11 @@ impl<'a> RefsView<'a> {
     }
 
     fn update_commit_list_selected(&mut self) {
-        if let Some(selected) = self.ref_list_state.selected_ref_name() {
-            if let Some(list_state) = self.commit_list_state.as_mut() {
-                list_state.select_ref(&selected);
-            }
+        if let (Some(key), Some(list_state)) = (
+            self.ref_list_state.selected_ref_key(),
+            self.commit_list_state.as_mut(),
+        ) {
+            list_state.select_ref(key);
         }
     }
 
@@ -218,5 +238,9 @@ impl<'a> RefsView<'a> {
     pub fn reset_refs_with(&mut self, refs_context: RefsRefreshViewContext) {
         self.ref_list_state
             .reset_tree_status(refs_context.selected, refs_context.opened);
+
+        let (selected_row, _, _) = self.as_list_state().current_list_status();
+        self.update_commit_list_selected();
+        self.as_mut_list_state().restore_selected_row(selected_row);
     }
 }

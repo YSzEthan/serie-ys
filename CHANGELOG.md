@@ -1,5 +1,42 @@
 # Changelog
 
+## [4.17.0](https://github.com/YSzEthan/serie-ys/compare/v4.16.0...v4.17.0) (2026-11-22)
+
+
+### Features
+
+* 窄螢幕（手機）支援：精簡 git graph 與 GitHub view 窄版 (#214) (#215) (#218) ([3cfd0e0](https://github.com/YSzEthan/serie-ys/commit/3cfd0e024cbd6922f64575c49eee1eae7cc10fcf))
+* GitHub view 所有介面按 0 至底 (#219) (#220) ([350b8fb](https://github.com/YSzEthan/serie-ys/commit/350b8fb8b0e8c5386597b29dc40f87a92677aeb8))
+* Detail 與 GitHub view 按 O 開啟 repo 首頁 (#221) ([293987e](https://github.com/YSzEthan/serie-ys/commit/293987e0fff5fa4b1639ab6de983332821f5c8bc))
+* GitHub view 列表改為 #編號 狀態 標籤 @作者 標題，加 " 作者篩選 (#227) (#228) ([7866c66](https://github.com/YSzEthan/serie-ys/commit/7866c668c4b0ff60c70a5136043ea615bb9c3644))
+* 狀態列選擇全部改為彈窗，統一 jkl／h／數字快選 (#229) (#230) ([185a7b9](https://github.com/YSzEthan/serie-ys/commit/185a7b95e19455d8c8a8a243d74a25710bfa9b79))
+* 搜尋／過濾改為每次從空白開始、再按一次還原，調整輸入列 icon，修正 qq 離開 (#234) (#235) ([75c6eca](https://github.com/YSzEthan/serie-ys/commit/75c6ecacc35fce5640a680092c81c8e12da97411))
+* GitHub 檢視 PR 列表編號後附 head branch (#244) (#245) ([005dc5f](https://github.com/YSzEthan/serie-ys/commit/005dc5ff892fdbeb37194db33e5af289ac4d632c))
+* PR review 留言標示回覆數並隱藏回覆內容 (#246) (#247) ([464c203](https://github.com/YSzEthan/serie-ys/commit/464c20324ea778f43395c81359062f349838f41b))
+* 支援滑鼠左鍵點擊與滾輪捲動 (#249) (#251) (#250) ([910a375](https://github.com/YSzEthan/serie-ys/commit/910a3758aa28752511985deff2e9abeaf95f10f2))
+
+
+### Bug Fixes
+
+* 狀態列顯示任何通知時，按任一鍵只消除訊息、不觸發其他動作 (#231) ([0a0e0e7](https://github.com/YSzEthan/serie-ys/commit/0a0e0e78640f9d2b10a1f0369522a3c71abd2d4b))
+* 自我更新改看執行檔是否在 cargo 輸出目錄，debug 部署版也能 -U (#232) (#233) ([bbb285c](https://github.com/YSzEthan/serie-ys/commit/bbb285c0a7770a8cb201177aceb5b8a275ab5876))
+* refresh 還原 inline user command 時帶入 view_area，terminal.clear 失敗也還原終端機 (#236) (#237) ([ed863d4](https://github.com/YSzEthan/serie-ys/commit/ed863d40bb74b3aa4da5ff35704f59fa60a943da))
+* 彈窗的標題、群組標題與 footer 灰字改用 MUTED_FG，與其他灰字一致 (#238) (#239) ([c01b0ce](https://github.com/YSzEthan/serie-ys/commit/c01b0ce655ef8f815cf1a72854684cb2641672ad))
+* 狀態列只顯示 git／GitHub 操作失敗，失敗訊息縮成 stderr 關鍵一行 (#240) (#241) ([7c53e17](https://github.com/YSzEthan/serie-ys/commit/7c53e17c5d110eb95fd4701df1d6a5fb14706429))
+* 狀態列 Info／Success 通知 15 秒自動消失且不吞鍵 (#242) (#243) ([58b35c5](https://github.com/YSzEthan/serie-ys/commit/58b35c550b58eb9dd7930b027cc210e24e43f8be))
+* 同步 upstream v0.11.0，修正同名 refs 選取與剪貼簿失敗，並以 jiff 取代 chrono (#252) (#253) ([1642049](https://github.com/YSzEthan/serie-ys/commit/16420498b9ffa49a70497fdc704d0480505c4378))
+
+
+### CI
+
+* 取消 Intel macOS (x86_64-apple-darwin) 版本的 build 與發佈 ([602c557](https://github.com/YSzEthan/serie-ys/commit/602c5570da345a75fad0569cb9cfd151d9b08332))
+* beta 版號 N 改成每個基底版號從 1 重新計數 (#223) ([56252ae](https://github.com/YSzEthan/serie-ys/commit/56252ae3253d55dd4c85ab4a9802039168f427e7))
+
+
+### Chores
+
+* 版號 PR 改走 dev，移除 prepare_release 的 --pr 與 build_pr_map (#222) (#225) ([8fcc98c](https://github.com/YSzEthan/serie-ys/commit/8fcc98cb56cead6757f86081c3b921943559f9a3))
+
 ## [4.16.0](https://github.com/YSzEthan/serie-ys/compare/v4.15.0...v4.16.0) (2026-11-01)
 
 

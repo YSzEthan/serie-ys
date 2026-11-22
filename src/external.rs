@@ -191,14 +191,18 @@ fn copy_to_clipboard_custom(value: String, commands: &[String]) -> Result<(), St
             .into_owned()
         })?;
 
-    child.wait().map_err(|e| {
+    let command_failed = |error: &dyn std::fmt::Display| {
         t!(
             "git.external.command_failed",
             program = commands[0],
-            error = e
+            error = error
         )
         .into_owned()
-    })?;
+    };
+    let status = child.wait().map_err(|e| command_failed(&e))?;
+    if !status.success() {
+        return Err(command_failed(&status));
+    }
 
     Ok(())
 }

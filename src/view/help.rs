@@ -130,16 +130,8 @@ impl HelpView<'_> {
             | UserEvent::NavigateLeft => {
                 self.tx.send(AppEvent::CloseHelp);
             }
-            UserEvent::NavigateDown | UserEvent::SelectDown => {
-                for _ in 0..count {
-                    self.scroll_down();
-                }
-            }
-            UserEvent::NavigateUp | UserEvent::SelectUp => {
-                for _ in 0..count {
-                    self.scroll_up();
-                }
-            }
+            UserEvent::NavigateDown | UserEvent::SelectDown => self.scroll_down(count),
+            UserEvent::NavigateUp | UserEvent::SelectUp => self.scroll_up(count),
             _ => {}
         }
     }
@@ -181,17 +173,26 @@ impl<'a> HelpView<'a> {
         std::mem::take(&mut self.before)
     }
 
-    pub(super) fn before_view_mut(&mut self) -> &mut View<'a> {
+    pub(crate) fn before_view_mut(&mut self) -> &mut View<'a> {
         &mut self.before
     }
 
-    fn scroll_down(&mut self) {
+    fn scroll_down(&mut self, n: usize) {
         let max_offset = self.rows.len().saturating_sub(self.height);
-        self.offset = self.offset.saturating_add(1).min(max_offset);
+        self.offset = self.offset.saturating_add(n).min(max_offset);
     }
 
-    fn scroll_up(&mut self) {
-        self.offset = self.offset.saturating_sub(1);
+    fn scroll_up(&mut self, n: usize) {
+        self.offset = self.offset.saturating_sub(n);
+    }
+
+    /// 滑鼠滾輪：捲 `lines` 行（正數往下）。
+    pub fn wheel(&mut self, lines: isize) {
+        if lines > 0 {
+            self.scroll_down(lines.unsigned_abs());
+        } else {
+            self.scroll_up(lines.unsigned_abs());
+        }
     }
 
     fn update_state(&mut self, area: Rect) {
@@ -281,6 +282,7 @@ fn help_blocks(
         b(vec![UserEvent::DeleteTag], t!("help.list.delete_tag_from_commit")),
         b(vec![UserEvent::DeleteRef], t!("help.list.delete_local_branch_from_commit")),
         b(vec![UserEvent::RemoteRefsToggle], t!("help.list.toggle_remote_refs")),
+        b(vec![UserEvent::CondensedToggle], t!("help.list.toggle_condensed")),
         b(vec![UserEvent::GitHubToggle], t!("help.list.open_github_issues_prs")),
         b(vec![UserEvent::Fetch], t!("help.list.fetch_all_remotes")),
         b(vec![UserEvent::Pull], t!("help.list.pull_fast_forward_only")),
@@ -315,12 +317,14 @@ fn help_blocks(
         b(vec![UserEvent::FullBranchCopy], t!("help.detail.copy_remote_branch_name")),
         b(vec![UserEvent::TagCopy], t!("help.detail.copy_tag_name")),
         b(vec![UserEvent::RemoteRefsToggle], t!("help.detail.toggle_remote_refs")),
+        b(vec![UserEvent::CondensedToggle], t!("help.detail.toggle_condensed")),
         b(vec![UserEvent::RefList], t!("help.detail.open_refs_list")),
         // 這個一直都能用（`is_browsing_view()` 含 Detail，事件由 `global_app_event`
         // 在 App 層攔下），只是說明頁從來沒列出來。
         b(vec![UserEvent::GitHubToggle], t!("help.detail.open_github_issues_prs")),
         b(vec![UserEvent::HelpToggle], t!("help.detail.open_help")),
         b(vec![UserEvent::MarkToggle], t!("help.detail.toggle_mark")),
+        b(vec![UserEvent::OpenRepoWeb], t!("help.detail.open_repo_web")),
         b(vec![UserEvent::Refresh], t!("help.detail.refresh")),
         b(vec![UserEvent::ShellToggle], t!("help.detail.open_shell")),
     ];
@@ -337,6 +341,7 @@ fn help_blocks(
     ];
 
     let github = vec![
+        b(vec![UserEvent::HelpToggle], t!("help.github.open_help")),
         b(vec![UserEvent::GitHubToggle, UserEvent::Cancel, UserEvent::Close], t!("help.github.close_github_view")),
         b(vec![UserEvent::RefList, UserEvent::RefListPrev], t!("help.github.switch_issue_pr_tab")),
         b(vec![UserEvent::NavigateDown, UserEvent::SelectDown], t!("help.github.move_down")),
@@ -351,12 +356,17 @@ fn help_blocks(
         b(vec![UserEvent::NavigateLeft], t!("help.github.back_cancel")),
         b(vec![UserEvent::Search], t!("help.github.search_type_number_to_jump_to_n")),
         b(vec![UserEvent::Filter], t!("help.github.filter")),
+        b(
+            vec![UserEvent::AuthorFilter],
+            t!("help.github.author_filter"),
+        ),
         b(vec![UserEvent::ShortCopy], t!("help.github.copy_issue_pr_url")),
         b(vec![UserEvent::FullCopy], t!("help.github.open_issue_pr_in_browser")),
         b(vec![UserEvent::TagCopy], t!("help.github.copy_issue_pr_number_n")),
         b(vec![UserEvent::DetailPaneToggle], t!("help.github.open_related_issue_pr_picker")),
         b(vec![UserEvent::Refresh], t!("help.github.refresh")),
         b(vec![UserEvent::Fetch], t!("help.github.fetch")),
+        b(vec![UserEvent::OpenRepoWeb], t!("help.github.open_repo_web")),
         b(vec![UserEvent::MergePr], t!("help.github.merge_pr_form_then_confirm")),
         b(vec![UserEvent::ToggleIssueState], t!("help.github.close_reopen_issue_or_pr")),
         b(vec![UserEvent::TogglePrDraft], t!("help.github.mark_pr_ready_back_to_draft")),
@@ -738,10 +748,13 @@ mod tests {
     /// 這些 event 由 `App` 的事件迴圈直接處理，不會進 view —— 但只在
     /// `is_browsing_view()` 的三個 view 生效（見 `view::views::is_browsing_view`）。
     fn app_level_ok(block: HelpBlock, event: UserEvent) -> bool {
-        matches!(
-            block,
-            Some(KeyScope::List | KeyScope::Detail | KeyScope::Refs)
-        ) && matches!(event, UserEvent::HelpToggle | UserEvent::GitHubToggle)
+        match block {
+            Some(KeyScope::List | KeyScope::Detail | KeyScope::Refs) => {
+                matches!(event, UserEvent::HelpToggle | UserEvent::GitHubToggle)
+            }
+            Some(KeyScope::GitHub) => event == UserEvent::HelpToggle,
+            _ => false,
+        }
     }
 
     /// mdBook 上的鍵位頁。內容由本測試產生 —— 那是全 repo 唯一有讀者的鍵位文件

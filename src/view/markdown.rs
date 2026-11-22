@@ -14,7 +14,7 @@ use ratatui::{
 
 use unicode_width::UnicodeWidthStr;
 
-use crate::widget::split_at_width;
+use crate::{color::MUTED_FG, widget::split_at_width};
 
 const RULE_WIDTH: usize = 40;
 
@@ -120,7 +120,7 @@ pub fn render(body: &str, width: usize) -> Vec<Line<'static>> {
         // 引言區塊
         if let Some(rest) = trimmed.strip_prefix("> ") {
             out.push(Line::from(vec![
-                Span::styled("│ ", Style::default().fg(Color::DarkGray)),
+                Span::styled("│ ", Style::default().fg(MUTED_FG)),
                 Span::styled(rest.to_string(), Style::default().fg(Color::Gray)),
             ]));
             i += 1;
@@ -194,7 +194,7 @@ pub fn render(body: &str, width: usize) -> Vec<Line<'static>> {
 pub(super) fn rule_line(width: usize) -> Line<'static> {
     Line::styled(
         "─".repeat(RULE_WIDTH.min(width)),
-        Style::default().fg(Color::DarkGray),
+        Style::default().fg(MUTED_FG),
     )
 }
 
@@ -379,7 +379,7 @@ fn render_table(out: &mut Vec<Line<'static>>, rows: &[Vec<String>], width: usize
             let total = widths.iter().sum::<usize>() + cols.saturating_sub(1) * COL_GAP;
             out.push(Line::styled(
                 "─".repeat(total.min(width)),
-                Style::default().fg(Color::DarkGray),
+                Style::default().fg(MUTED_FG),
             ));
         }
     }

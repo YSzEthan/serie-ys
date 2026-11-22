@@ -188,6 +188,10 @@ en-US = "Delete local branch from commit"
 zh-TW = "切換 remote refs"
 en-US = "Toggle remote refs"
 
+[help.list.toggle_condensed]
+zh-TW = "切換精簡模式（只顯示分支與分岔處，窄螢幕自動開啟）"
+en-US = "Toggle condensed graph (branches and fork points only; auto on narrow terminals)"
+
 [help.list.open_github_issues_prs]
 zh-TW = "開啟 GitHub issues/PRs"
 en-US = "Open GitHub issues/PRs"
@@ -312,6 +316,10 @@ en-US = "Copy tag name"
 zh-TW = "切換 remote refs"
 en-US = "Toggle remote refs"
 
+[help.detail.toggle_condensed]
+zh-TW = "切換精簡模式（只顯示分支與分岔處，窄螢幕自動開啟）"
+en-US = "Toggle condensed graph (branches and fork points only; auto on narrow terminals)"
+
 [help.detail.open_refs_list]
 zh-TW = "開啟 refs 清單"
 en-US = "Open refs list"
@@ -327,6 +335,10 @@ en-US = "Open help"
 [help.detail.toggle_mark]
 zh-TW = "切換 commit 標記"
 en-US = "Toggle commit mark"
+
+[help.detail.open_repo_web]
+zh-TW = "用瀏覽器開 repo 首頁（origin，或唯一的 remote）"
+en-US = "Open repo homepage in browser (origin, or the only remote)"
 
 [help.detail.refresh]
 zh-TW = "重新整理"
@@ -368,6 +380,10 @@ en-US = "Delete ref"
 zh-TW = "重新整理"
 en-US = "Refresh"
 
+[help.github.open_help]
+zh-TW = "開啟說明"
+en-US = "Open help"
+
 [help.github.close_github_view]
 zh-TW = "關閉 GitHub view"
 en-US = "Close GitHub view"
@@ -405,8 +421,8 @@ zh-TW = "跳到頂端"
 en-US = "Go to top"
 
 [help.github.go_to_bottom]
-zh-TW = "跳到底端"
-en-US = "Go to bottom"
+zh-TW = "跳到底端（或 `0`）"
+en-US = "Go to bottom (or `0`)"
 
 [help.github.preview_toggle_checkbox]
 zh-TW = "預覽內容／切換 checkbox（Branches：Right/l 移到右側卡片，Enter 無作用；CI：Enter 開啟 PR 的 checks 頁，Right/l 移到右側卡片）"
@@ -421,8 +437,12 @@ zh-TW = "搜尋／輸入純數字跳到 #N"
 en-US = "Search / type number to jump to #N"
 
 [help.github.filter]
-zh-TW = "過濾（Branches：依作者篩選）"
-en-US = "Filter (Branches: by author)"
+zh-TW = "過濾（Issues／PRs：切換狀態；Branches：依作者篩選）"
+en-US = "Filter (Issues/PRs: state; Branches: by author)"
+
+[help.github.author_filter]
+zh-TW = "依作者篩選（Issues／PRs／Branches）"
+en-US = "Filter by author (Issues/PRs/Branches)"
 
 [help.github.copy_issue_pr_url]
 zh-TW = "複製 issue/PR URL（Branches：compare URL）"
@@ -439,6 +459,10 @@ en-US = "Copy issue/PR number (#N) (Branches: branch name)"
 [help.github.open_related_issue_pr_picker]
 zh-TW = "開啟相關 issue/PR 選單"
 en-US = "Open related issue/PR picker"
+
+[help.github.open_repo_web]
+zh-TW = "用瀏覽器開 repo 首頁（origin，或唯一的 remote）"
+en-US = "Open repo homepage in browser (origin, or the only remote)"
 
 [help.github.refresh]
 zh-TW = "重新整理"

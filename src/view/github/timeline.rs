@@ -6,7 +6,10 @@ use ratatui::{
 };
 use rust_i18n::t;
 
-use crate::github::{CheckState, DiffStat, GhCheck, GhTimelineItem, Mergeable};
+use crate::{
+    color::{MUTED_FG, TEXT_COLOR},
+    github::{CheckState, DiffStat, GhCheck, GhTimelineItem, Mergeable},
+};
 
 use super::{render::SWATCH, Section};
 
@@ -105,6 +108,7 @@ impl<'a> TimelineBlock<'a> {
                     line: c.line,
                     outdated: c.outdated,
                     resolved: c.resolved,
+                    replies: c.replies,
                     body: &c.body,
                 }));
                 if comments.total_count > comments.nodes.len() {
@@ -113,7 +117,7 @@ impl<'a> TimelineBlock<'a> {
                             "github.timeline.more_review_comments",
                             n = comments.total_count - comments.nodes.len()
                         ),
-                        Color::DarkGray,
+                        MUTED_FG,
                     ));
                 }
                 Some(TimelineBlock {
@@ -135,12 +139,12 @@ impl<'a> TimelineBlock<'a> {
 /// local 預設值折疊進去——那樣會產生 dangling reference。
 pub(super) fn build_timeline(entry: Option<&TimelineEntry>) -> Vec<TimelineBlock<'_>> {
     let Some(entry) = entry else {
-        return vec![notice_block(t!("github.timeline.loading"), Color::DarkGray)];
+        return vec![notice_block(t!("github.timeline.loading"), MUTED_FG)];
     };
 
     match &entry.state {
         TimelineLoad::NotRequested | TimelineLoad::Loading => {
-            vec![notice_block(t!("github.timeline.loading"), Color::DarkGray)]
+            vec![notice_block(t!("github.timeline.loading"), MUTED_FG)]
         }
         TimelineLoad::Error(e) => {
             vec![notice_block(
@@ -168,9 +172,9 @@ pub(super) fn build_timeline(entry: Option<&TimelineEntry>) -> Vec<TimelineBlock
                 } else {
                     t!("github.timeline.more")
                 };
-                blocks.push(notice_block(text, Color::DarkGray));
+                blocks.push(notice_block(text, MUTED_FG));
             } else if blocks.is_empty() {
-                blocks.push(notice_block(t!("github.timeline.empty"), Color::DarkGray));
+                blocks.push(notice_block(t!("github.timeline.empty"), MUTED_FG));
             }
             blocks
         }
@@ -309,6 +313,7 @@ pub(super) enum TimelineItem<'a> {
         line: Option<u32>,
         outdated: bool,
         resolved: bool,
+        replies: usize,
         body: &'a str,
     },
     Notice(Line<'static>),
@@ -333,10 +338,7 @@ impl<'a> TimelineItem<'a> {
                             .fg(Color::Cyan)
                             .add_modifier(Modifier::BOLD),
                     ),
-                    Span::styled(
-                        format!("  {created_at}"),
-                        Style::default().fg(Color::DarkGray),
-                    ),
+                    Span::styled(format!("  {created_at}"), Style::default().fg(MUTED_FG)),
                 ]));
                 lines.extend(crate::view::markdown::render(body, width));
             }
@@ -350,7 +352,7 @@ impl<'a> TimelineItem<'a> {
             TimelineItem::CollapsedCommits(n) => {
                 lines.push(Line::styled(
                     t!("github.timeline.collapsed_commits", n = n),
-                    Style::default().fg(Color::DarkGray),
+                    Style::default().fg(MUTED_FG),
                 ));
             }
             TimelineItem::Check(check) => {
@@ -367,7 +369,7 @@ impl<'a> TimelineItem<'a> {
                 // 色塊只取塞得進剩餘寬度的數量：保證單行，捲動補償才算得準。
                 // `checks` 依 fail → pending → pass 排序，截斷時優先丟掉綠色。
                 let room = width.saturating_sub(console::measure_text_width(&label));
-                let mut spans = vec![Span::styled(label, Style::default().fg(Color::DarkGray))];
+                let mut spans = vec![Span::styled(label, Style::default().fg(MUTED_FG))];
                 spans.extend(checks.iter().take(room).map(|c| {
                     Span::styled(SWATCH, Style::default().fg(check_state_marker(c.state).1))
                 }));
@@ -392,10 +394,7 @@ impl<'a> TimelineItem<'a> {
                         format!("  {}", review_state_label(state)),
                         Style::default().fg(marker_color),
                     ),
-                    Span::styled(
-                        format!("  {submitted_at}"),
-                        Style::default().fg(Color::DarkGray),
-                    ),
+                    Span::styled(format!("  {submitted_at}"), Style::default().fg(MUTED_FG)),
                 ]));
                 lines.extend(crate::view::markdown::render(body, width));
             }
@@ -404,6 +403,7 @@ impl<'a> TimelineItem<'a> {
                 line,
                 outdated,
                 resolved,
+                replies,
                 body,
             } => {
                 lines.push(Line::raw(""));
@@ -417,7 +417,13 @@ impl<'a> TimelineItem<'a> {
                 if resolved {
                     header.push_str(&t!("github.timeline.resolved"));
                 }
-                lines.push(Line::styled(header, Style::default().fg(Color::DarkGray)));
+                if replies > 0 {
+                    header.push_str(&format!(
+                        "  \u{f27a} {}",
+                        t!("github.timeline.replies", n = replies)
+                    ));
+                }
+                lines.push(Line::styled(header, Style::default().fg(MUTED_FG)));
                 lines.extend(crate::view::markdown::render(body, width));
             }
             TimelineItem::Notice(line) => lines.push(line),
@@ -433,8 +439,8 @@ fn review_state_marker(state: &str) -> (&'static str, Color) {
         "APPROVED" => ("✓ ", Color::Green),
         "CHANGES_REQUESTED" => ("✗ ", Color::Red),
         "COMMENTED" => ("● ", Color::Blue),
-        "DISMISSED" => ("- ", Color::DarkGray),
-        _ => ("  ", Color::DarkGray),
+        "DISMISSED" => ("- ", MUTED_FG),
+        _ => ("  ", MUTED_FG),
     }
 }
 
@@ -445,7 +451,7 @@ fn commit_ci_marker(state: Option<&str>) -> (&'static str, Color) {
         Some("SUCCESS") => ("✓ ", Color::Green),
         Some("FAILURE" | "ERROR") => ("✗ ", Color::Red),
         Some("PENDING" | "EXPECTED") => ("● ", Color::Yellow),
-        _ => ("  ", Color::DarkGray),
+        _ => ("  ", MUTED_FG),
     }
 }
 
@@ -453,7 +459,7 @@ fn commit_ci_marker(state: Option<&str>) -> (&'static str, Color) {
 fn check_state_marker(state: CheckState) -> (&'static str, Color) {
     match state {
         CheckState::Failed => ("✗ ", Color::Red),
-        CheckState::Pending => ("● ", Color::DarkGray),
+        CheckState::Pending => ("● ", TEXT_COLOR),
         CheckState::Passed => ("✓ ", Color::Green),
     }
 }
@@ -546,7 +552,7 @@ fn commit_line(oid: &str, headline: &str, ci_state: Option<&str>, width: usize) 
         console::truncate_str(headline, width.saturating_sub(prefix_width), "…").to_string();
     Line::from(vec![
         Span::styled(marker, Style::default().fg(marker_color)),
-        Span::styled(oid.to_string(), Style::default().fg(Color::DarkGray)),
+        Span::styled(oid.to_string(), Style::default().fg(MUTED_FG)),
         Span::raw("  "),
         Span::raw(headline),
     ])
@@ -824,7 +830,7 @@ mod tests {
         let colors: Vec<_> = lines.iter().map(|l| l.spans[0].style.fg).collect();
         assert_eq!(
             colors,
-            [Some(Color::Red), Some(Color::DarkGray), Some(Color::Green)]
+            [Some(Color::Red), Some(TEXT_COLOR), Some(Color::Green)]
         );
     }
 
@@ -838,7 +844,7 @@ mod tests {
         let swatch_colors: Vec<_> = lines[0].spans[1..].iter().map(|s| s.style.fg).collect();
         assert_eq!(
             swatch_colors,
-            [Some(Color::Red), Some(Color::DarkGray), Some(Color::Green)]
+            [Some(Color::Red), Some(TEXT_COLOR), Some(Color::Green)]
         );
     }
 

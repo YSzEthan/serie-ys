@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use ratatui::{
     crossterm::event::KeyEvent,
-    layout::{Constraint, Layout, Rect},
+    layout::{Constraint, Layout, Position, Rect},
     text::Line,
     Frame,
 };
@@ -50,6 +50,8 @@ type ExecCommandFn =
 pub struct UserCommandView<'a> {
     commit_list_state: Option<CommitListState<'a>>,
     output_pane_state: OutputPaneState,
+    /// 上一幀輸出 pane 的範圍，滾輪判斷指標在不在上面用。
+    output_area: Rect,
 
     user_command_number: usize,
     user_command_output_lines: Vec<Line<'static>>,
@@ -75,6 +77,7 @@ impl<'a> UserCommandView<'a> {
         UserCommandView {
             commit_list_state: Some(commit_list_state),
             output_pane_state: OutputPaneState::default(),
+            output_area: Rect::default(),
             user_command_number,
             user_command_output_lines,
             ctx,
@@ -166,8 +169,17 @@ impl<'a> UserCommandView<'a> {
         let commit_list = CommitList::new(self.ctx.clone(), 0);
         f.render_stateful_widget(commit_list, list_area, self.as_mut_list_state());
 
+        self.output_area = user_command_area;
         let output_pane = OutputPane::new(&self.user_command_output_lines, self.ctx.clone());
         f.render_stateful_widget(output_pane, user_command_area, &mut self.output_pane_state);
+    }
+
+    /// 滑鼠滾輪：只捲輸出 pane。上方 commit 列表上不動作——選取一換就會
+    /// 重跑指令。
+    pub fn wheel(&mut self, col: u16, row: u16, lines: isize) {
+        if self.output_area.contains(Position::new(col, row)) {
+            self.output_pane_state.scroll_by(lines);
+        }
     }
 }
 
@@ -250,6 +262,26 @@ impl<'a> UserCommandView<'a> {
                 self.update_selected_commit(repository, view_area, exec_command, |_| {});
             }
         }
+    }
+
+    /// 滑鼠點擊 commit 列：跟 j/k 一樣原地換 commit 並重跑指令。
+    /// 點到已選取的列或空白處是 no-op。
+    pub fn click_row(
+        &mut self,
+        repository: &Repository,
+        view_area: Rect,
+        exec_command: ExecCommandFn,
+        row: u16,
+    ) {
+        let Some(state) = self.commit_list_state.as_ref() else {
+            return;
+        };
+        if !state.has_row(row) || state.is_row_selected(row) {
+            return;
+        }
+        self.update_selected_commit(repository, view_area, exec_command, |state| {
+            state.select_row(row);
+        });
     }
 
     /// child picker 選定候選後跳過去並重刷 output pane。

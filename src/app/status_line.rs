@@ -1,9 +1,14 @@
-use std::{borrow::Cow, path::PathBuf, rc::Rc};
+use std::{
+    borrow::Cow,
+    path::PathBuf,
+    rc::Rc,
+    time::{Duration, Instant},
+};
 
 use rust_i18n::t;
 
 use ratatui::{
-    crossterm::event::{KeyCode, KeyEvent},
+    crossterm::event::{KeyCode, KeyEvent, KeyModifiers},
     layout::{Constraint, Layout, Rect},
     style::{Modifier, Style, Stylize},
     text::{Line, Span},
@@ -12,24 +17,22 @@ use ratatui::{
 };
 
 use crate::{
+    color::MUTED_FG,
     config::CursorType,
     event::{
         AppEvent, AutoFetchClock, CheckoutPickKind, RefCopyKind, RelatedItem, Sender, UserEvent,
     },
     github::{GhItemKind, MergeMethod, PrDraftAction, RerunScope, StateAction, StateFilter},
+    keybind::KeyBind,
     reload::FullStatus,
     view::View,
     widget::{
-        commit_list::ChildPickOption, h, hint_line, hint_pairs, keybind_hint_line, truncate_line,
-        HintSpec,
+        commit_list::ChildPickOption, fit_key_groups, h, hint_line, hint_pairs, truncate_line,
+        wrap_key_groups, HintSpec,
     },
 };
 
 use super::AppContext;
-
-fn esc_cancel() -> Cow<'static, str> {
-    t!("common.esc_cancel")
-}
 
 /// 輸入框要顯示的整串，以及游標前那段內容。
 ///
@@ -55,11 +58,12 @@ pub(super) fn update_installed_hint() -> Cow<'static, str> {
     t!("app.status.update_installed")
 }
 
-/// `AppEvent::AutoFetchCompleted` 顯示用的固定文案，唯一生產者是
-/// `app.rs` 的處理端；`auto_fetch` 模組不帶 payload，見該事件的文件。
-pub(super) fn auto_fetch_success_msg() -> Cow<'static, str> {
-    t!("app.status.auto_fetched")
-}
+/// Info／Success 通知預設顯示多久。到期由 `expire_notification` 在 Tick 清掉；
+/// 期間按鍵不會被吞（見 `dismiss_notification`）。
+const NOTIFICATION_TTL: Duration = Duration::from_secs(15);
+
+/// 切換類的一閃即逝提示（remote refs、condensed）顯示多久。
+pub(super) const BRIEF_NOTIFICATION_TTL: Duration = Duration::from_secs(3);
 
 fn picker_digit_index(key: KeyEvent) -> Option<usize> {
     let KeyCode::Char(c) = key.code else {
@@ -69,26 +73,131 @@ fn picker_digit_index(key: KeyEvent) -> Option<usize> {
     (digit as usize).checked_sub(1)
 }
 
-/// 單階段 y/n 確認的狀態列，與 [`StatusLineState::yes_no_answer`] 接受的鍵一致。
-/// `confirm_desc` 讓呼叫端換掉「confirm」這個字（例如合併 PR 用「execute」更貼切），
-/// 按鍵本身固定是 `UserEvent::Confirm`／`UserEvent::Cancel`。
-fn confirm_line(
-    prompt: String,
-    confirm_desc: Cow<'static, str>,
-    ctx: &AppContext,
-) -> Line<'static> {
-    let specs = [
-        h(&[UserEvent::Confirm], confirm_desc),
-        h(&[UserEvent::Cancel], t!("common.hint.cancel")),
-    ];
-    let hints = hint_pairs(&ctx.keybind, &specs);
-    let mut spans: Vec<Span<'static>> = vec![prompt.into()];
-    let hint_fg = ctx.color_theme.status_interactive_fg;
-    spans.extend(hint_line(&ctx.color_theme, &hints, hint_fg).spans);
-    Line::from(spans)
+/// 彈窗選單的游標與勾選位置。放在各個選單變體裡而不是 `StatusLineState`，
+/// 狀態才會跟著變體一起產生、一起消失（例如 `DeleteBranchPicker` 轉成
+/// `DeleteBranchConfirm` 時不會殘留上一個畫面的游標）。
+#[derive(Debug, Clone, Copy, Default)]
+struct Menu {
+    cursor: usize,
+    marked: Option<usize>,
 }
 
-fn build_hotkey_hints(view: &View, ctx: &AppContext) -> Line<'static> {
+/// 選單的一列。`quick` 是直接執行的字母快選鍵（數字鍵另外處理）。
+struct MenuItem {
+    quick: Option<char>,
+    label: String,
+    /// 已結束（closed／merged）的項目用暗色顯示。
+    dim: bool,
+    /// 這一列前面要插入的分組標題（不可選）。
+    group: Option<String>,
+}
+
+impl MenuItem {
+    fn new(label: impl Into<String>) -> Self {
+        Self {
+            quick: None,
+            label: label.into(),
+            dim: false,
+            group: None,
+        }
+    }
+
+    fn quick(mut self, key: char) -> Self {
+        self.quick = Some(key);
+        self
+    }
+}
+
+/// 一個選單彈窗要畫的全部內容。`handle_menu_key` 與 `render_menu_popup`
+/// 都從這裡取，列數與快選表只在 [`StatusLine::menu_spec`] 算一次。
+struct MenuSpec {
+    title: String,
+    items: Vec<MenuItem>,
+    /// 不可選的尾註，例如「還有 N 項」。
+    footer: Option<String>,
+}
+
+/// 標題原本是狀態列上的提示句（結尾帶冒號或空白），放進框線標題前先清掉。
+fn clean_title(s: &str) -> String {
+    s.trim_end_matches([' ', ':', '：']).to_string()
+}
+
+/// `y`／`n` 二選一的選單：第一列確認，第二列取消。
+fn yes_no_items(confirm: Cow<'static, str>) -> Vec<MenuItem> {
+    vec![
+        MenuItem::new(confirm).quick('y'),
+        MenuItem::new(t!("common.hint.cancel")).quick('n'),
+    ]
+}
+
+/// CI 重跑可選的範圍，順序就是選單的列順序；空的那一項不出現。
+fn ci_rerun_scopes(failed_runs: &[u64], all_runs: &[u64]) -> Vec<RerunScope> {
+    [
+        (!failed_runs.is_empty()).then_some(RerunScope::FailedOnly),
+        (!all_runs.is_empty()).then_some(RerunScope::All),
+    ]
+    .into_iter()
+    .flatten()
+    .collect()
+}
+
+enum MenuKey {
+    Cancel,
+    Pick(usize),
+    Consumed,
+}
+
+/// 選單按鍵的共同規則。順序有意義：
+///
+/// 1. 沒有任何選項時只認取消，避免後面對 `len` 取餘數 panic。
+/// 2. 字母快選與數字鍵先於 `Cancel`／`Confirm`——預設 keybind 的
+///    `y`／`n` 同時屬於這兩個事件，不先比對就會被吃掉。快選比對原始字元，
+///    所以 `f` 被綁成別的功能也不受影響；帶 Ctrl／Alt 時不算快選。
+/// 3. `Enter` 只送出已勾選的列，沒勾就什麼都不做（double check）。
+fn menu_key(menu: &mut Menu, quick: &[Option<char>], key: KeyEvent, keybind: &KeyBind) -> MenuKey {
+    let len = quick.len();
+    let cancel = keybind.has(&key, UserEvent::Cancel) || keybind.has(&key, UserEvent::NavigateLeft);
+    if len == 0 {
+        return if cancel {
+            MenuKey::Cancel
+        } else {
+            MenuKey::Consumed
+        };
+    }
+    let plain = !key
+        .modifiers
+        .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT);
+    if plain {
+        if let KeyCode::Char(c) = key.code {
+            if let Some(idx) = quick
+                .iter()
+                .position(|q| q.is_some_and(|q| q.eq_ignore_ascii_case(&c)))
+            {
+                return MenuKey::Pick(idx);
+            }
+        }
+        if let Some(idx) = picker_digit_index(key).filter(|&i| i < len) {
+            return MenuKey::Pick(idx);
+        }
+    }
+    if cancel {
+        return MenuKey::Cancel;
+    }
+    if keybind.has(&key, UserEvent::NavigateDown) {
+        menu.cursor = (menu.cursor + 1) % len;
+    } else if keybind.has(&key, UserEvent::NavigateUp) {
+        menu.cursor = (menu.cursor + len - 1) % len;
+    } else if keybind.has(&key, UserEvent::NavigateRight) {
+        menu.marked = (menu.marked != Some(menu.cursor)).then_some(menu.cursor);
+    } else if keybind.has(&key, UserEvent::Confirm) || key.code == KeyCode::Enter {
+        if let Some(idx) = menu.marked {
+            return MenuKey::Pick(idx);
+        }
+    }
+    MenuKey::Consumed
+}
+
+fn build_hotkey_hints(view: &View, ctx: &AppContext, max_width: usize) -> Line<'static> {
     let hints: Vec<HintSpec> = match view {
         View::List(_) => vec![
             h(&[UserEvent::Search], t!("common.hint.search")),
@@ -99,6 +208,7 @@ fn build_hotkey_hints(view: &View, ctx: &AppContext) -> Line<'static> {
             h(&[UserEvent::CreateTag], t!("common.hint.tag")),
             h(&[UserEvent::RefList], t!("common.hint.refs")),
             h(&[UserEvent::RemoteRefsToggle], t!("common.hint.remote")),
+            h(&[UserEvent::CondensedToggle], t!("common.hint.condensed")),
             h(&[UserEvent::GitHubToggle], t!("common.hint.github")),
             h(&[UserEvent::Refresh], t!("common.hint.refresh")),
             h(&[UserEvent::HelpToggle], t!("common.hint.help")),
@@ -126,7 +236,7 @@ fn build_hotkey_hints(view: &View, ctx: &AppContext) -> Line<'static> {
         // Up/Down／PageUp/PageDown 不經過 `KeyBind`（見
         // `view::shell::resolve` 的文件註解），沒有 `UserEvent` 可以掛，早
         // return 手動補上這兩組固定提示——其餘 view 都走尾端共用的
-        // `keybind_hint_line` 入口，不必為了這一個特例把它拆開。
+        // `hint_pairs` → `fit_key_groups` → `hint_line` 流程，不必為了這一個特例把它拆開。
         View::Shell(_) => {
             let specs = [
                 h(&[UserEvent::Confirm], t!("common.hint.run")),
@@ -139,7 +249,8 @@ fn build_hotkey_hints(view: &View, ctx: &AppContext) -> Line<'static> {
                 ("↑↓".to_string(), history.as_ref()),
                 ("PgUp/PgDn".to_string(), scroll.as_ref()),
             ]);
-            return hint_line(&ctx.color_theme, &pairs, ctx.color_theme.help_key_fg);
+            let pairs = fit_key_groups(&pairs, max_width);
+            return hint_line(&ctx.color_theme, pairs, ctx.color_theme.help_key_fg);
         }
         View::Help(_) => vec![
             h(
@@ -163,7 +274,12 @@ fn build_hotkey_hints(view: &View, ctx: &AppContext) -> Line<'static> {
         View::Default => vec![],
     };
 
-    keybind_hint_line(&ctx.color_theme, &ctx.keybind, &hints)
+    let pairs = hint_pairs(&ctx.keybind, &hints);
+    hint_line(
+        &ctx.color_theme,
+        fit_key_groups(&pairs, max_width),
+        ctx.color_theme.help_key_fg,
+    )
 }
 
 /// merge PR 表單裡可勾選的 head branch 處置。
@@ -239,14 +355,6 @@ fn merge_pr_prompt_line(
     }
 }
 
-/// 單階段 y/n 確認的答案。
-#[derive(Debug, Clone, Copy)]
-enum Answer {
-    Confirm,
-    Cancel,
-    Ignore,
-}
-
 #[derive(Debug, Default)]
 #[cfg_attr(test, derive(Clone))]
 enum StatusLine {
@@ -254,13 +362,16 @@ enum StatusLine {
     None,
     /// 訊息、游標在訊息內的 byte 位置、右側的 transient 訊息。
     Input(String, usize, Option<String>),
+    // 以下帶 `menu` 的變體都是彈窗選單，共用 `handle_menu_key`／`render_menu_popup`。
     RefPicker {
         options: Vec<String>,
         kind: RefCopyKind,
+        menu: Menu,
     },
     CheckoutPicker {
         options: Vec<String>,
         kind: CheckoutPickKind,
+        menu: Menu,
     },
     /// `options` 已經截斷到 9 個（數字鍵上限），`total` 是截斷前的實際候選數，
     /// 供 render 顯示「還有幾個沒列出」。截斷在 `open_child_picker` 做，
@@ -269,13 +380,16 @@ enum StatusLine {
     ChildPicker {
         options: Vec<ChildPickOption>,
         total: usize,
+        menu: Menu,
     },
     DeleteBranchPicker {
         options: Vec<String>,
         total: usize,
+        menu: Menu,
     },
     DeleteBranchConfirm {
         name: String,
+        menu: Menu,
     },
     MergePrPrompt {
         number: u64,
@@ -296,11 +410,13 @@ enum StatusLine {
         kind: GhItemKind,
         action: StateAction,
         filter_state: StateFilter,
+        menu: Menu,
     },
     TogglePrDraftPrompt {
         number: u64,
         action: PrDraftAction,
         filter_state: StateFilter,
+        menu: Menu,
     },
     /// CI 監測 tab 的重跑選擇：`f` 只重跑失敗、`a` 全部重跑。兩份 run id 都由
     /// view 依卡片的 check 算好，空的那個選項不出現也不接受。
@@ -308,24 +424,175 @@ enum StatusLine {
         number: u64,
         failed_runs: Vec<u64>,
         all_runs: Vec<u64>,
+        menu: Menu,
     },
-    /// 有新版 GitHub Release 可更新。跟其他 y/n prompt 共用
-    /// `handle_yes_no_prompt_key`，唯一差異是確認後送的事件不同。
+    /// 有新版 GitHub Release 可更新。跟其他 y/n prompt 一樣是「確認／取消」
+    /// 兩列選單，唯一差異是確認後送的事件不同。
     UpdatePrompt {
         tag: String,
+        menu: Menu,
     },
     /// 下載＋替換執行檔完成，問是否要離開並以新版重啟。
     RestartPrompt {
         tag: String,
         exe: PathBuf,
+        menu: Menu,
     },
     RelatedPicker {
         items: Vec<RelatedItem>,
+        menu: Menu,
     },
     NotificationInfo(String),
     NotificationSuccess(String),
     NotificationWarn(String),
     NotificationError(String),
+}
+
+impl StatusLine {
+    fn menu(&self) -> Option<&Menu> {
+        match self {
+            StatusLine::RefPicker { menu, .. }
+            | StatusLine::CheckoutPicker { menu, .. }
+            | StatusLine::ChildPicker { menu, .. }
+            | StatusLine::DeleteBranchPicker { menu, .. }
+            | StatusLine::DeleteBranchConfirm { menu, .. }
+            | StatusLine::CiRerunPrompt { menu, .. }
+            | StatusLine::ToggleStatePrompt { menu, .. }
+            | StatusLine::TogglePrDraftPrompt { menu, .. }
+            | StatusLine::UpdatePrompt { menu, .. }
+            | StatusLine::RestartPrompt { menu, .. }
+            | StatusLine::RelatedPicker { menu, .. } => Some(menu),
+            _ => None,
+        }
+    }
+
+    /// 彈窗選單變體的游標狀態；其餘變體回 `None`。
+    fn menu_mut(&mut self) -> Option<&mut Menu> {
+        match self {
+            StatusLine::RefPicker { menu, .. }
+            | StatusLine::CheckoutPicker { menu, .. }
+            | StatusLine::ChildPicker { menu, .. }
+            | StatusLine::DeleteBranchPicker { menu, .. }
+            | StatusLine::DeleteBranchConfirm { menu, .. }
+            | StatusLine::CiRerunPrompt { menu, .. }
+            | StatusLine::ToggleStatePrompt { menu, .. }
+            | StatusLine::TogglePrDraftPrompt { menu, .. }
+            | StatusLine::UpdatePrompt { menu, .. }
+            | StatusLine::RestartPrompt { menu, .. }
+            | StatusLine::RelatedPicker { menu, .. } => Some(menu),
+            _ => None,
+        }
+    }
+
+    /// 彈窗選單的內容；不是選單變體回 `None`。列數、快選鍵與畫面標籤都從
+    /// 這裡取，`handle_menu_key` 與 `render_menu_popup` 不各算一次。
+    fn menu_spec(&self) -> Option<MenuSpec> {
+        let plain = |title: String, labels: Vec<&str>| MenuSpec {
+            title,
+            items: labels.into_iter().map(MenuItem::new).collect(),
+            footer: None,
+        };
+        Some(match self {
+            StatusLine::RefPicker { options, kind, .. } => plain(
+                clean_title(&kind.picker_prompt()),
+                options.iter().map(String::as_str).collect(),
+            ),
+            StatusLine::CheckoutPicker { options, kind, .. } => plain(
+                clean_title(&kind.picker_prompt()),
+                options.iter().map(String::as_str).collect(),
+            ),
+            StatusLine::ChildPicker { options, total, .. } => MenuSpec {
+                footer: (*total > options.len())
+                    .then(|| t!("app.status.more", n = total - options.len()).into_owned()),
+                ..plain(
+                    clean_title(&t!("app.status.go_to_child")),
+                    options.iter().map(|o| o.label.as_str()).collect(),
+                )
+            },
+            StatusLine::DeleteBranchPicker { options, total, .. } => MenuSpec {
+                footer: (*total > options.len()).then(|| {
+                    t!("app.status.more_tab_view", n = total - options.len()).into_owned()
+                }),
+                ..plain(
+                    clean_title(&t!("app.status.delete_branch")),
+                    options.iter().map(String::as_str).collect(),
+                )
+            },
+            StatusLine::DeleteBranchConfirm { name, .. } => MenuSpec {
+                title: clean_title(&t!("app.status.delete_branch_confirm", name = name)),
+                items: vec![
+                    MenuItem::new(t!("common.yes")).quick('y'),
+                    MenuItem::new(t!("common.force")).quick('f'),
+                    MenuItem::new(t!("common.no")).quick('n'),
+                ],
+                footer: None,
+            },
+            StatusLine::CiRerunPrompt {
+                number,
+                failed_runs,
+                all_runs,
+                ..
+            } => MenuSpec {
+                title: clean_title(&t!("app.status.ci_rerun", number = number)),
+                items: ci_rerun_scopes(failed_runs, all_runs)
+                    .into_iter()
+                    .map(|scope| match scope {
+                        RerunScope::FailedOnly => {
+                            MenuItem::new(t!("app.status.ci_rerun_failed")).quick('f')
+                        }
+                        RerunScope::All => MenuItem::new(t!("app.status.ci_rerun_all")).quick('a'),
+                    })
+                    .collect(),
+                footer: None,
+            },
+            StatusLine::ToggleStatePrompt {
+                number,
+                kind,
+                action,
+                ..
+            } => MenuSpec {
+                title: clean_title(&action.prompt(*kind, *number)),
+                items: yes_no_items(t!("common.hint.confirm")),
+                footer: None,
+            },
+            StatusLine::TogglePrDraftPrompt { number, action, .. } => MenuSpec {
+                title: clean_title(&action.prompt(*number)),
+                items: yes_no_items(t!("common.hint.confirm")),
+                footer: None,
+            },
+            StatusLine::UpdatePrompt { tag, .. } => MenuSpec {
+                title: format!("v{} → {tag}", env!("CARGO_PKG_VERSION")),
+                items: yes_no_items(t!("common.hint.update")),
+                footer: None,
+            },
+            StatusLine::RestartPrompt { tag, .. } => MenuSpec {
+                title: clean_title(&t!("app.status.updated_to", tag = tag)),
+                items: yes_no_items(t!("common.hint.restart")),
+                footer: None,
+            },
+            StatusLine::RelatedPicker { items, .. } => {
+                let mut last_group = None;
+                MenuSpec {
+                    title: t!("common.hint.related").into_owned(),
+                    items: items
+                        .iter()
+                        .map(|item| {
+                            let mut entry = MenuItem::new(format!("#{}", item.number));
+                            entry.dim = item.state.eq_ignore_ascii_case("CLOSED")
+                                || item.state.eq_ignore_ascii_case("MERGED");
+                            if last_group != Some(item.group) {
+                                last_group = Some(item.group);
+                                entry.group = Some(item.group.label().into_owned());
+                            }
+                            entry
+                        })
+                        .collect(),
+                    footer: None,
+                }
+            }
+            _ => return None,
+        })
+    }
 }
 
 /// Phase 6 換資料時要保留的通知——不透明包住 `StatusLine`，`app.rs` 拿到手
@@ -334,11 +601,14 @@ enum StatusLine {
 /// 擋掉 picker／prompt／輸入框，走到這裡的 `StatusLine` 只可能是四種
 /// `Notification*` variant 之一。
 #[derive(Debug)]
-pub(super) struct Notification(StatusLine);
+pub(super) struct Notification(StatusLine, Option<Instant>);
 
 #[derive(Debug)]
 pub(super) struct StatusLineState {
     line: StatusLine,
+    /// Info／Success 的到期時間。只由 `set_transient` 寫入；只有 `line` 是這兩種
+    /// 通知時才有意義，其餘變體不讀它。
+    notification_deadline: Option<Instant>,
     ctx: Rc<AppContext>,
     tx: Sender,
     /// 下一輪 auto-fetch 的 deadline，倒數用。在這裡持有而不是每次 render
@@ -351,6 +621,7 @@ impl StatusLineState {
     pub(super) fn new(ctx: Rc<AppContext>, tx: Sender, auto_fetch_clock: AutoFetchClock) -> Self {
         Self {
             line: StatusLine::default(),
+            notification_deadline: None,
             ctx,
             tx,
             auto_fetch_clock,
@@ -379,17 +650,29 @@ impl StatusLineState {
     }
 
     pub(super) fn open_ref_picker(&mut self, options: Vec<String>, kind: RefCopyKind) {
-        self.line = StatusLine::RefPicker { options, kind };
+        self.line = StatusLine::RefPicker {
+            options,
+            kind,
+            menu: Menu::default(),
+        };
     }
 
     pub(super) fn open_checkout_picker(&mut self, options: Vec<String>, kind: CheckoutPickKind) {
-        self.line = StatusLine::CheckoutPicker { options, kind };
+        self.line = StatusLine::CheckoutPicker {
+            options,
+            kind,
+            menu: Menu::default(),
+        };
     }
 
     pub(super) fn open_child_picker(&mut self, options: Vec<ChildPickOption>) {
         let total = options.len();
         let options = options.into_iter().take(9).collect();
-        self.line = StatusLine::ChildPicker { options, total };
+        self.line = StatusLine::ChildPicker {
+            options,
+            total,
+            menu: Menu::default(),
+        };
     }
 
     /// 空清單走同步賦值，不透過 `tx` 送 `AppEvent::NotifyInfo`——`App::run()`
@@ -400,16 +683,26 @@ impl StatusLineState {
         if items.is_empty() {
             self.set_notification_info(t!("app.status.no_related").into_owned());
         } else {
-            self.line = StatusLine::RelatedPicker { items };
+            self.line = StatusLine::RelatedPicker {
+                items,
+                menu: Menu::default(),
+            };
         }
     }
 
     pub(super) fn open_delete_branch_picker(&mut self, options: Vec<String>, total: usize) {
-        self.line = StatusLine::DeleteBranchPicker { options, total };
+        self.line = StatusLine::DeleteBranchPicker {
+            options,
+            total,
+            menu: Menu::default(),
+        };
     }
 
     pub(super) fn open_delete_branch_confirm(&mut self, name: String) {
-        self.line = StatusLine::DeleteBranchConfirm { name };
+        self.line = StatusLine::DeleteBranchConfirm {
+            name,
+            menu: Menu::default(),
+        };
     }
 
     pub(super) fn open_merge_pr_prompt(
@@ -443,6 +736,7 @@ impl StatusLineState {
             kind,
             action,
             filter_state,
+            menu: Menu::default(),
         };
     }
 
@@ -456,6 +750,7 @@ impl StatusLineState {
             number,
             action,
             filter_state,
+            menu: Menu::default(),
         };
     }
 
@@ -469,15 +764,23 @@ impl StatusLineState {
             number,
             failed_runs,
             all_runs,
+            menu: Menu::default(),
         };
     }
 
     pub(super) fn open_update_prompt(&mut self, tag: String) {
-        self.line = StatusLine::UpdatePrompt { tag };
+        self.line = StatusLine::UpdatePrompt {
+            tag,
+            menu: Menu::default(),
+        };
     }
 
     pub(super) fn open_restart_prompt(&mut self, tag: String, exe: PathBuf) {
-        self.line = StatusLine::RestartPrompt { tag, exe };
+        self.line = StatusLine::RestartPrompt {
+            tag,
+            exe,
+            menu: Menu::default(),
+        };
     }
 
     /// 給 `App::maybe_open_update_prompt` 的守衛用：狀態列現在有沒有被別的
@@ -492,10 +795,9 @@ impl StatusLineState {
     /// 的結果，蓋掉一則同樣在講這件事的通知不算冒犯——跟 `is_idle` 服務的
     /// 「背景不請自來」語意不同，不要合併這兩個判斷式。
     ///
-    /// **不含 `NotificationError`**：跟 `dismiss_notification` 既有的三分類
-    /// 一致——錯誤要使用者主動按鍵確認過才能清掉（見該方法），這裡若也蓋得掉
-    /// 錯誤，使用者原本想按任意鍵去確認錯誤，卻可能誤觸重啟提示的 y/n
-    /// （例如習慣性按 `y`），後果比通知被覆寫嚴重得多。
+    /// **不含 `NotificationError`**：這裡若也蓋得掉錯誤，使用者原本想按任意鍵
+    /// 去確認錯誤，卻可能誤觸重啟提示的 y/n（例如習慣性按 `y`），後果比通知
+    /// 被覆寫嚴重得多。
     pub(super) fn is_showing_notification(&self) -> bool {
         matches!(
             self.line,
@@ -507,8 +809,8 @@ impl StatusLineState {
 
     /// 狀態列現在能不能被「背景不請自來」的通知寫入：閒置，或只是壓著
     /// 另一則通知。picker／prompt 都不算。`is_idle`／`is_showing_notification`
-    /// 各自的語意仍然分開（見上），這裡只是把兩者的 `||` 組合具名化，讓
-    /// `can_interrupt` 與背景通知的守衛共用同一份真值，不要各自手寫一次。
+    /// 各自的語意仍然分開（見上），這裡只是把兩者的 `||` 組合具名化，
+    /// 給 `can_interrupt` 用。
     pub(super) fn is_idle_or_notification(&self) -> bool {
         self.is_idle() || self.is_showing_notification()
     }
@@ -540,7 +842,9 @@ impl StatusLineState {
             line @ (StatusLine::NotificationInfo(_)
             | StatusLine::NotificationSuccess(_)
             | StatusLine::NotificationWarn(_)
-            | StatusLine::NotificationError(_)) => Some(Notification(line)),
+            | StatusLine::NotificationError(_)) => {
+                Some(Notification(line, self.notification_deadline))
+            }
             other => {
                 self.line = other;
                 None
@@ -552,6 +856,7 @@ impl StatusLineState {
     /// 新的 `StatusLineState` 上。
     pub(super) fn restore_notification(&mut self, notification: Notification) {
         self.line = notification.0;
+        self.notification_deadline = notification.1;
     }
 
     /// Full 重載狀態指示——插在 hotkey hints／輸入框那一列最前面，跟倒數
@@ -586,11 +891,59 @@ impl StatusLineState {
     }
 
     pub(super) fn set_notification_info(&mut self, msg: String) {
-        self.line = StatusLine::NotificationInfo(msg);
+        self.set_notification_info_for(msg, NOTIFICATION_TTL);
+    }
+
+    /// 顯示一則只留 `ttl` 的 Info。切換類提示用這個，不要再送延遲的
+    /// `ClearStatusLine`——那個事件不看狀態列現在是什麼，會誤清掉期間
+    /// 打開的搜尋輸入框或 picker。
+    pub(super) fn set_notification_info_for(&mut self, msg: String, ttl: Duration) {
+        self.set_transient(StatusLine::NotificationInfo(msg), Instant::now() + ttl);
     }
 
     pub(super) fn set_notification_success(&mut self, msg: String) {
-        self.line = StatusLine::NotificationSuccess(msg);
+        self.set_transient(
+            StatusLine::NotificationSuccess(msg),
+            Instant::now() + NOTIFICATION_TTL,
+        );
+    }
+
+    /// Info／Success 唯一的寫入點，到期時間在這裡一起蓋。
+    fn set_transient(&mut self, line: StatusLine, deadline: Instant) {
+        self.line = line;
+        self.notification_deadline = Some(deadline);
+    }
+
+    /// Tick 呼叫：Info／Success 到期就清成 `None`，回傳 true 表示畫面要重畫。
+    /// 其餘變體（picker、輸入框、Warn、Error）一律不動——它們不會自己消失。
+    /// 窮舉 match，理由同 `handle_intercepting_key`。
+    pub(super) fn expire_notification(&mut self, now: Instant) -> bool {
+        match self.line {
+            StatusLine::NotificationInfo(_) | StatusLine::NotificationSuccess(_) => {
+                if self.notification_deadline.is_some_and(|d| now >= d) {
+                    self.line = StatusLine::None;
+                    self.notification_deadline = None;
+                    return true;
+                }
+                false
+            }
+            StatusLine::None
+            | StatusLine::Input(_, _, _)
+            | StatusLine::RefPicker { .. }
+            | StatusLine::CheckoutPicker { .. }
+            | StatusLine::ChildPicker { .. }
+            | StatusLine::RelatedPicker { .. }
+            | StatusLine::DeleteBranchPicker { .. }
+            | StatusLine::DeleteBranchConfirm { .. }
+            | StatusLine::MergePrPrompt { .. }
+            | StatusLine::CiRerunPrompt { .. }
+            | StatusLine::ToggleStatePrompt { .. }
+            | StatusLine::TogglePrDraftPrompt { .. }
+            | StatusLine::UpdatePrompt { .. }
+            | StatusLine::RestartPrompt { .. }
+            | StatusLine::NotificationWarn(_)
+            | StatusLine::NotificationError(_) => false,
+        }
     }
 
     pub(super) fn set_notification_warn(&mut self, msg: String) {
@@ -601,52 +954,30 @@ impl StatusLineState {
         self.line = StatusLine::NotificationError(msg);
     }
 
-    /// 回傳 true 表示這是 12 個攔截變體之一（9 個 handler：`ToggleStatePrompt`、
-    /// `TogglePrDraftPrompt`、`UpdatePrompt`、`RestartPrompt` 四個共用
-    /// `handle_yes_no_prompt_key`，其餘各自一個 handler）、鍵已被吃掉。
+    /// 回傳 true 表示這是 12 個攔截變體之一（11 個彈窗選單變體共用
+    /// `handle_menu_key`，`MergePrPrompt` 另有自己的 handler）、鍵已被吃掉。
     ///
     /// 尾巴刻意窮舉非攔截變體而非 `_ => false`：漏接一個新變體只會讓它卡在
     /// 畫面上完全不吃鍵，編譯器不會提醒（比照 app.rs 原本就有的同款警告，
     /// 這裡原封不動繼承）。
     pub(super) fn handle_intercepting_key(&mut self, key: KeyEvent) -> bool {
         match self.line {
-            StatusLine::RefPicker { .. } => {
-                self.handle_ref_picker_key(key);
-                true
-            }
-            StatusLine::CheckoutPicker { .. } => {
-                self.handle_checkout_picker_key(key);
-                true
-            }
-            StatusLine::ChildPicker { .. } => {
-                self.handle_child_picker_key(key);
-                true
-            }
-            StatusLine::RelatedPicker { .. } => {
-                self.handle_related_picker_key(key);
-                true
-            }
-            StatusLine::DeleteBranchPicker { .. } => {
-                self.handle_delete_branch_picker_key(key);
-                true
-            }
-            StatusLine::DeleteBranchConfirm { .. } => {
-                self.handle_delete_branch_confirm_key(key);
+            StatusLine::RefPicker { .. }
+            | StatusLine::CheckoutPicker { .. }
+            | StatusLine::ChildPicker { .. }
+            | StatusLine::RelatedPicker { .. }
+            | StatusLine::DeleteBranchPicker { .. }
+            | StatusLine::DeleteBranchConfirm { .. }
+            | StatusLine::CiRerunPrompt { .. }
+            | StatusLine::ToggleStatePrompt { .. }
+            | StatusLine::TogglePrDraftPrompt { .. }
+            | StatusLine::UpdatePrompt { .. }
+            | StatusLine::RestartPrompt { .. } => {
+                self.handle_menu_key(key);
                 true
             }
             StatusLine::MergePrPrompt { .. } => {
                 self.handle_merge_pr_prompt_key(key);
-                true
-            }
-            StatusLine::CiRerunPrompt { .. } => {
-                self.handle_ci_rerun_prompt_key(key);
-                true
-            }
-            StatusLine::ToggleStatePrompt { .. }
-            | StatusLine::TogglePrDraftPrompt { .. }
-            | StatusLine::UpdatePrompt { .. }
-            | StatusLine::RestartPrompt { .. } => {
-                self.handle_yes_no_prompt_key(key);
                 true
             }
             StatusLine::None
@@ -658,9 +989,30 @@ impl StatusLineState {
         }
     }
 
-    /// 清掉目前的通知（若有）。回傳 true 表示這把鍵已被吞掉——只有 Error
-    /// 通知會吞鍵，其餘通知清完後讓鍵繼續往下走。窮盡 match，理由同
-    /// `handle_intercepting_key`。
+    /// 有 picker／menu／prompt 正在攔截輸入（跟 `handle_intercepting_key`
+    /// 回 true 的範圍一致）。滑鼠點擊在這些彈窗開著時一律吞掉，不穿透到底下。
+    pub(super) fn is_intercepting(&self) -> bool {
+        matches!(
+            self.line,
+            StatusLine::RefPicker { .. }
+                | StatusLine::CheckoutPicker { .. }
+                | StatusLine::ChildPicker { .. }
+                | StatusLine::RelatedPicker { .. }
+                | StatusLine::DeleteBranchPicker { .. }
+                | StatusLine::DeleteBranchConfirm { .. }
+                | StatusLine::CiRerunPrompt { .. }
+                | StatusLine::ToggleStatePrompt { .. }
+                | StatusLine::TogglePrDraftPrompt { .. }
+                | StatusLine::UpdatePrompt { .. }
+                | StatusLine::RestartPrompt { .. }
+                | StatusLine::MergePrPrompt { .. }
+        )
+    }
+
+    /// 清掉目前的通知（若有）。回傳 true 表示這把鍵已被吞掉——只有 Warn／Error
+    /// 吞鍵：這把鍵的唯一作用就是消除訊息，不會再觸發其他動作。Info／Success
+    /// 不吞鍵，按鍵照常執行，通知留到 `expire_notification` 到期或被新內容
+    /// 取代。窮盡 match，理由同 `handle_intercepting_key`。
     pub(super) fn dismiss_notification(&mut self) -> bool {
         match self.line {
             StatusLine::None
@@ -676,14 +1028,10 @@ impl StatusLineState {
             | StatusLine::ToggleStatePrompt { .. }
             | StatusLine::TogglePrDraftPrompt { .. }
             | StatusLine::UpdatePrompt { .. }
-            | StatusLine::RestartPrompt { .. } => false,
-            StatusLine::NotificationInfo(_)
-            | StatusLine::NotificationSuccess(_)
-            | StatusLine::NotificationWarn(_) => {
-                self.line = StatusLine::None;
-                false
-            }
-            StatusLine::NotificationError(_) => {
+            | StatusLine::RestartPrompt { .. }
+            | StatusLine::NotificationInfo(_)
+            | StatusLine::NotificationSuccess(_) => false,
+            StatusLine::NotificationWarn(_) | StatusLine::NotificationError(_) => {
                 self.line = StatusLine::None;
                 true
             }
@@ -720,154 +1068,141 @@ impl StatusLineState {
         }
     }
 
-    fn handle_ref_picker_key(&mut self, key: KeyEvent) {
-        if self.ctx.keybind.has(&key, UserEvent::Cancel) {
-            self.line = StatusLine::None;
-            return;
-        }
-        let StatusLine::RefPicker { options, kind } = &self.line else {
-            return;
-        };
-        let Some(idx) = picker_digit_index(key) else {
-            return;
-        };
-        let Some(name) = options.get(idx) else {
-            return;
-        };
-        let label = kind.copy_label();
-        let value = name.clone();
-        self.line = StatusLine::None;
-        self.tx.send(AppEvent::CopyToClipboard {
-            name: label.into(),
-            value,
-        });
-    }
-
-    fn handle_related_picker_key(&mut self, key: KeyEvent) {
-        if self.ctx.keybind.has(&key, UserEvent::Cancel)
-            || self.ctx.keybind.has(&key, UserEvent::DetailPaneToggle)
+    /// 所有彈窗選單（picker 與 y/n 類 prompt）共用的按鍵處理，規則見 [`menu_key`]。
+    fn handle_menu_key(&mut self, key: KeyEvent) {
+        // related picker 的開啟鍵同時是關閉鍵
+        if matches!(self.line, StatusLine::RelatedPicker { .. })
+            && self.ctx.keybind.has(&key, UserEvent::DetailPaneToggle)
         {
-            self.line = StatusLine::None;
+            self.cancel_menu();
             return;
         }
-        let StatusLine::RelatedPicker { items } = &self.line else {
+        let Some(spec) = self.line.menu_spec() else {
             return;
         };
-        let Some(idx) = picker_digit_index(key) else {
+        let quick: Vec<Option<char>> = spec.items.iter().map(|item| item.quick).collect();
+        let Some(menu) = self.line.menu_mut() else {
             return;
         };
-        let Some(item) = items.get(idx) else {
-            return;
-        };
-        let number = item.number;
-        self.line = StatusLine::None;
-        self.tx.send(AppEvent::GitHubJumpToIssue { number });
+        match menu_key(menu, &quick, key, &self.ctx.keybind) {
+            MenuKey::Cancel => self.cancel_menu(),
+            MenuKey::Pick(idx) => self.pick(idx),
+            MenuKey::Consumed => {}
+        }
     }
 
-    fn handle_checkout_picker_key(&mut self, key: KeyEvent) {
-        if self.ctx.keybind.has(&key, UserEvent::Cancel) {
-            self.line = StatusLine::None;
-            return;
-        }
-        let StatusLine::CheckoutPicker { options, .. } = &self.line else {
-            return;
-        };
-        let Some(idx) = picker_digit_index(key) else {
-            return;
-        };
-        let Some(name) = options.get(idx) else {
-            return;
-        };
-        let target = name.clone();
-        self.line = StatusLine::None;
-        self.tx.send(AppEvent::CheckoutCommit { target });
-    }
-
-    fn handle_child_picker_key(&mut self, key: KeyEvent) {
-        if self.ctx.keybind.has(&key, UserEvent::Cancel) {
-            self.line = StatusLine::None;
-            return;
-        }
-        let StatusLine::ChildPicker { options, .. } = &self.line else {
-            return;
-        };
-        let Some(idx) = picker_digit_index(key) else {
-            return;
-        };
-        let Some(option) = options.get(idx) else {
-            return;
-        };
-        let hash = option.commit_hash.clone();
-        self.line = StatusLine::None;
-        self.tx.send(AppEvent::SelectChildCommitByHash { hash });
-    }
-
-    fn handle_delete_branch_picker_key(&mut self, key: KeyEvent) {
-        if self.ctx.keybind.has(&key, UserEvent::Cancel) {
-            self.line = StatusLine::None;
-            return;
-        }
-        let StatusLine::DeleteBranchPicker { options, .. } = &self.line else {
-            return;
-        };
-        let Some(idx) = picker_digit_index(key) else {
-            return;
-        };
-        let Some(name) = options.get(idx) else {
-            return;
-        };
-        let name = name.clone();
-        self.line = StatusLine::DeleteBranchConfirm { name };
-    }
-
-    fn handle_delete_branch_confirm_key(&mut self, key: KeyEvent) {
-        if self.ctx.keybind.has(&key, UserEvent::Cancel) {
-            self.line = StatusLine::None;
-            return;
-        }
-        let StatusLine::DeleteBranchConfirm { name } = &self.line else {
-            return;
-        };
-        let force = if self.ctx.keybind.has(&key, UserEvent::Confirm) {
-            false
-        } else if matches!(key.code, KeyCode::Char('f') | KeyCode::Char('F')) {
-            true
+    /// 關掉選單。`RestartPrompt` 取消時更新其實已經做完了，跟其餘選單「取消 =
+    /// 什麼都沒發生」不同——靜默清空會讓使用者忘記要手動重啟，留一句話。
+    fn cancel_menu(&mut self) {
+        if matches!(self.line, StatusLine::RestartPrompt { .. }) {
+            self.set_notification_success(update_installed_hint().into_owned());
         } else {
-            return;
-        };
-        let name = name.clone();
-        self.line = StatusLine::None;
-        self.tx
-            .send(AppEvent::DeleteBranchRequested { name, force });
+            self.line = StatusLine::None;
+        }
     }
 
-    fn handle_ci_rerun_prompt_key(&mut self, key: KeyEvent) {
-        if self.ctx.keybind.has(&key, UserEvent::Cancel) {
-            self.line = StatusLine::None;
-            return;
-        }
-        let StatusLine::CiRerunPrompt {
-            number,
-            failed_runs,
-            all_runs,
-        } = &self.line
-        else {
-            return;
-        };
-        let (run_ids, scope) = match key.code {
-            KeyCode::Char('f' | 'F') if !failed_runs.is_empty() => {
-                (failed_runs.clone(), RerunScope::FailedOnly)
+    /// 執行選單的第 `idx` 列。列的順序與 [`StatusLine::menu_spec`] 一致。
+    fn pick(&mut self, idx: usize) {
+        // take 同時結束對 line 的借用並清掉彈窗；要轉場的變體再自己放回去
+        let line = std::mem::take(&mut self.line);
+        match line {
+            StatusLine::RefPicker { options, kind, .. } => {
+                if let Some(value) = options.into_iter().nth(idx) {
+                    self.tx.send(AppEvent::CopyToClipboard {
+                        name: kind.copy_label().into(),
+                        value,
+                    });
+                }
             }
-            KeyCode::Char('a' | 'A') if !all_runs.is_empty() => (all_runs.clone(), RerunScope::All),
-            _ => return,
-        };
-        let number = *number;
-        self.line = StatusLine::None;
-        self.tx.send(AppEvent::CiRerunRequested {
-            number,
-            run_ids,
-            scope,
-        });
+            StatusLine::CheckoutPicker { options, .. } => {
+                if let Some(target) = options.into_iter().nth(idx) {
+                    self.tx.send(AppEvent::CheckoutCommit { target });
+                }
+            }
+            StatusLine::ChildPicker { options, .. } => {
+                if let Some(option) = options.into_iter().nth(idx) {
+                    self.tx.send(AppEvent::SelectChildCommitByHash {
+                        hash: option.commit_hash,
+                    });
+                }
+            }
+            StatusLine::RelatedPicker { items, .. } => {
+                if let Some(item) = items.get(idx) {
+                    self.tx.send(AppEvent::GitHubJumpToIssue {
+                        number: item.number,
+                    });
+                }
+            }
+            StatusLine::DeleteBranchPicker { options, .. } => {
+                if let Some(name) = options.into_iter().nth(idx) {
+                    self.open_delete_branch_confirm(name);
+                }
+            }
+            // 0 = 刪除、1 = 強制刪除、2 = 取消
+            StatusLine::DeleteBranchConfirm { name, .. } => {
+                if idx < 2 {
+                    self.tx.send(AppEvent::DeleteBranchRequested {
+                        name,
+                        force: idx == 1,
+                    });
+                }
+            }
+            StatusLine::CiRerunPrompt {
+                number,
+                failed_runs,
+                all_runs,
+                ..
+            } => {
+                if let Some(scope) = ci_rerun_scopes(&failed_runs, &all_runs).get(idx).copied() {
+                    let run_ids = match scope {
+                        RerunScope::FailedOnly => failed_runs,
+                        RerunScope::All => all_runs,
+                    };
+                    self.tx.send(AppEvent::CiRerunRequested {
+                        number,
+                        run_ids,
+                        scope,
+                    });
+                }
+            }
+            // y/n 類：0 = 確認、1 = 取消
+            StatusLine::ToggleStatePrompt {
+                number,
+                kind,
+                action,
+                filter_state,
+                ..
+            } if idx == 0 => {
+                self.tx.send(AppEvent::ToggleItemStateRequested {
+                    number,
+                    kind,
+                    action,
+                    filter_state,
+                });
+            }
+            StatusLine::TogglePrDraftPrompt {
+                number,
+                action,
+                filter_state,
+                ..
+            } if idx == 0 => {
+                self.tx.send(AppEvent::TogglePrDraftRequested {
+                    number,
+                    action,
+                    filter_state,
+                });
+            }
+            StatusLine::UpdatePrompt { tag, .. } if idx == 0 => {
+                self.tx.send(AppEvent::UpdateRequested { tag });
+            }
+            StatusLine::RestartPrompt { exe, .. } if idx == 0 => {
+                self.tx.send(AppEvent::RestartRequested { exe });
+            }
+            StatusLine::RestartPrompt { .. } => {
+                self.set_notification_success(update_installed_hint().into_owned());
+            }
+            _ => {}
+        }
     }
 
     fn handle_merge_pr_prompt_key(&mut self, key: KeyEvent) {
@@ -946,76 +1281,6 @@ impl StatusLineState {
         }
     }
 
-    /// 解讀 y/n 確認鍵。cancel 必須先判 — 預設 `cancel = ["esc", "n"]` 含 `n`，
-    /// 順序反了「no」就會被當成確認。把這個順序依賴收在這裡，呼叫端不必再記。
-    fn yes_no_answer(&self, key: KeyEvent) -> Answer {
-        if self.ctx.keybind.has(&key, UserEvent::Cancel)
-            || matches!(key.code, KeyCode::Char('n') | KeyCode::Char('N'))
-        {
-            return Answer::Cancel;
-        }
-        if self.ctx.keybind.has(&key, UserEvent::Confirm)
-            || matches!(
-                key.code,
-                KeyCode::Enter | KeyCode::Char('y') | KeyCode::Char('Y')
-            )
-        {
-            return Answer::Confirm;
-        }
-        Answer::Ignore
-    }
-
-    /// 單階段 y/n 確認的 modal。答完就收掉狀態列，取出的 prompt 決定要跑什麼。
-    fn handle_yes_no_prompt_key(&mut self, key: KeyEvent) {
-        let answer = self.yes_no_answer(key);
-        if matches!(answer, Answer::Ignore) {
-            return;
-        }
-        // take 同時結束對 line 的借用並清掉 modal
-        let prompt = std::mem::take(&mut self.line);
-        if matches!(answer, Answer::Cancel) {
-            // RestartPrompt 取消時更新其實已經做完了，跟其餘 prompt「取消 =
-            // 什麼都沒發生」不同——靜默清空會讓使用者忘記要手動重啟，留一句話。
-            if matches!(prompt, StatusLine::RestartPrompt { .. }) {
-                self.line = StatusLine::NotificationSuccess(update_installed_hint().into_owned());
-            }
-            return;
-        }
-        match prompt {
-            StatusLine::ToggleStatePrompt {
-                number,
-                kind,
-                action,
-                filter_state,
-            } => {
-                self.tx.send(AppEvent::ToggleItemStateRequested {
-                    number,
-                    kind,
-                    action,
-                    filter_state,
-                });
-            }
-            StatusLine::TogglePrDraftPrompt {
-                number,
-                action,
-                filter_state,
-            } => {
-                self.tx.send(AppEvent::TogglePrDraftRequested {
-                    number,
-                    action,
-                    filter_state,
-                });
-            }
-            StatusLine::UpdatePrompt { tag } => {
-                self.tx.send(AppEvent::UpdateRequested { tag });
-            }
-            StatusLine::RestartPrompt { exe, .. } => {
-                self.tx.send(AppEvent::RestartRequested { exe });
-            }
-            _ => {}
-        }
-    }
-
     /// `nf-cod-git_fetch`（U+EC1D）+ 剩餘時間。
     ///
     /// 不足一分鐘印 `29s`，超過才印 `9:58`——`interval` 最小值是 30 秒，
@@ -1054,6 +1319,19 @@ impl StatusLineState {
         // 同時被插進最前面，兩處若各自重算一次容易對不上。
         let full_reload_span = self.full_reload_span(full_status);
         let full_reload_w = full_reload_span.as_ref().map_or(0, Span::width);
+        // 倒數 span 只在 `StatusLine::None`（也就是提示列）出現，一樣要先量好
+        let countdown_span = self.countdown_secs().map(|s| self.countdown_span(s));
+
+        let block = Block::default()
+            .borders(Borders::TOP)
+            .style(Style::default().fg(self.ctx.color_theme.divider_fg))
+            .padding(Padding::horizontal(1));
+        // 可用寬度從 `block.inner()` 拿，不要手算 padding。提示列／確認列照扣掉
+        // 前綴後的寬度整組取捨，之後才不會被 `truncate_line` 再切出殘字。
+        let inner = block.inner(area);
+        let max_width = inner.width as usize;
+        let hint_width = max_width
+            .saturating_sub(full_reload_w + countdown_span.as_ref().map_or(0, Span::width));
 
         // `Input` 分支算出的「游標前內容的顯示寬度」，渲染後定位游標用。
         let mut cursor_col = 0usize;
@@ -1061,7 +1339,7 @@ impl StatusLineState {
         let mut text: Line = match &self.line {
             StatusLine::None => {
                 if numeric_prefix.is_empty() {
-                    build_hotkey_hints(view, &self.ctx)
+                    build_hotkey_hints(view, &self.ctx, hint_width)
                 } else {
                     Line::raw(numeric_prefix).fg(self.ctx.color_theme.status_input_transient_fg)
                 }
@@ -1091,101 +1369,19 @@ impl StatusLineState {
                     Line::raw(display).fg(self.ctx.color_theme.status_input_fg)
                 }
             }
-            StatusLine::RefPicker { options, kind } => self.render_picker_line(
-                kind.picker_prompt(),
-                options.iter().map(String::as_str),
-                esc_cancel(),
-            ),
-            StatusLine::CheckoutPicker { options, kind } => self.render_picker_line(
-                kind.picker_prompt(),
-                options.iter().map(String::as_str),
-                esc_cancel(),
-            ),
-            StatusLine::ChildPicker { options, total } => {
-                let tail = if *total > options.len() {
-                    t!("app.status.more", n = total - options.len())
-                } else {
-                    esc_cancel()
-                };
-                self.render_picker_line(
-                    t!("app.status.go_to_child"),
-                    options.iter().map(|o| o.label.as_str()),
-                    tail,
-                )
-            }
-            StatusLine::RelatedPicker { items } => self.render_related_picker_line(items),
-            StatusLine::DeleteBranchPicker { options, total } => {
-                let tail = if *total > options.len() {
-                    t!("app.status.more_tab_view", n = total - options.len())
-                } else {
-                    esc_cancel()
-                };
-                self.render_picker_line(
-                    t!("app.status.delete_branch"),
-                    options.iter().map(String::as_str),
-                    tail,
-                )
-            }
-            StatusLine::DeleteBranchConfirm { name } => {
-                let hint_fg = self.ctx.color_theme.status_interactive_fg;
-                Line::from(vec![
-                    t!("app.status.delete_branch_confirm", name = name).into(),
-                    format!("[y] {}", t!("common.yes")).fg(hint_fg),
-                    " / ".into(),
-                    format!("[n] {}", t!("common.no")).fg(hint_fg),
-                    " / ".into(),
-                    format!("[f] {}", t!("common.force")).fg(hint_fg),
-                ])
-            }
-            // 提示全部在彈窗裡（`render_popup`），狀態列留白。
-            StatusLine::MergePrPrompt { .. } => Line::raw(""),
-            StatusLine::CiRerunPrompt {
-                number,
-                failed_runs,
-                all_runs,
-            } => {
-                let hint_fg = self.ctx.color_theme.status_interactive_fg;
-                let mut spans: Vec<Span<'static>> =
-                    vec![t!("app.status.ci_rerun", number = number)
-                        .into_owned()
-                        .into()];
-                let options = [
-                    (!failed_runs.is_empty()).then(|| ("f", t!("app.status.ci_rerun_failed"))),
-                    (!all_runs.is_empty()).then(|| ("a", t!("app.status.ci_rerun_all"))),
-                ];
-                for (i, (key, label)) in options.into_iter().flatten().enumerate() {
-                    if i > 0 {
-                        spans.push(" / ".into());
-                    }
-                    spans.push(format!("[{key}] {label}").fg(hint_fg));
-                }
-                spans.push(" / ".into());
-                spans.push(format!("[Esc] {}", t!("common.hint.cancel")).fg(hint_fg));
-                Line::from(spans)
-            }
-            StatusLine::ToggleStatePrompt {
-                number,
-                kind,
-                action,
-                ..
-            } => confirm_line(
-                action.prompt(*kind, *number),
-                t!("common.hint.confirm"),
-                &self.ctx,
-            ),
-            StatusLine::TogglePrDraftPrompt { number, action, .. } => {
-                confirm_line(action.prompt(*number), t!("common.hint.confirm"), &self.ctx)
-            }
-            StatusLine::UpdatePrompt { tag } => confirm_line(
-                format!("v{} → {tag}", env!("CARGO_PKG_VERSION")),
-                t!("common.hint.update"),
-                &self.ctx,
-            ),
-            StatusLine::RestartPrompt { tag, .. } => confirm_line(
-                t!("app.status.updated_to", tag = tag).into_owned(),
-                t!("common.hint.restart"),
-                &self.ctx,
-            ),
+            // 內容與提示全部在彈窗裡（`render_popup`），狀態列留白。
+            StatusLine::RefPicker { .. }
+            | StatusLine::CheckoutPicker { .. }
+            | StatusLine::ChildPicker { .. }
+            | StatusLine::RelatedPicker { .. }
+            | StatusLine::DeleteBranchPicker { .. }
+            | StatusLine::DeleteBranchConfirm { .. }
+            | StatusLine::MergePrPrompt { .. }
+            | StatusLine::CiRerunPrompt { .. }
+            | StatusLine::ToggleStatePrompt { .. }
+            | StatusLine::TogglePrDraftPrompt { .. }
+            | StatusLine::UpdatePrompt { .. }
+            | StatusLine::RestartPrompt { .. } => Line::raw(""),
             StatusLine::NotificationInfo(msg) => {
                 Line::raw(msg).fg(self.ctx.color_theme.status_info_fg)
             }
@@ -1206,23 +1402,15 @@ impl StatusLineState {
         //
         // 上面幾支 `Line::raw(..).fg(..)` 的樣式是設在 *line* 上的，這個
         // span 帶自己的 `fg`，不會被蓋掉也不會污染別人。
-        if let Some(secs) = self.countdown_secs() {
-            text.spans.insert(0, self.countdown_span(secs));
+        if let Some(span) = countdown_span {
+            text.spans.insert(0, span);
         }
         if let Some(span) = full_reload_span {
             text.spans.insert(0, span);
         }
 
-        let block = Block::default()
-            .borders(Borders::TOP)
-            .style(Style::default().fg(self.ctx.color_theme.divider_fg))
-            .padding(Padding::horizontal(1));
-
-        // 截斷統一在這裡套一次，不分支 —— picker 那幾行才是真正沒有上限的
-        // （`render_picker_line` 把每個 branch 名 inline 印出來），提示列反而是
-        // 人工策劃過的。可用寬度從 `block.inner()` 拿，不要手算 padding。
-        let inner = block.inner(area);
-        let max_width = inner.width as usize;
+        // 截斷統一在這裡套一次，不分支 —— 輸入框與通知的長度沒有上限，
+        // 提示列反而是人工策劃過的。
         let paragraph = Paragraph::new(truncate_line(text, max_width)).block(block);
         f.render_widget(paragraph, area);
 
@@ -1254,58 +1442,95 @@ impl StatusLineState {
         }
     }
 
-    fn render_related_picker_line<'s>(&self, items: &'s [RelatedItem]) -> Line<'s> {
-        use crate::event::RelatedGroup;
-        let mut spans: Vec<Span<'s>> = Vec::new();
-        let mut last_group: Option<RelatedGroup> = None;
-        for (i, item) in items.iter().enumerate() {
-            if last_group != Some(item.group) {
-                if last_group.is_some() {
-                    spans.push(" ; ".into());
-                }
-                spans.push(format!("{} - ", item.group.label()).into());
-                last_group = Some(item.group);
-            } else {
-                spans.push(t!("app.status.list_separator").into());
-            }
-            spans.push(format!("{}", i + 1).fg(self.ctx.color_theme.status_interactive_fg));
-            let num = format!(":#{}", item.number);
-            let span: Span = if item.state.eq_ignore_ascii_case("CLOSED")
-                || item.state.eq_ignore_ascii_case("MERGED")
-            {
-                num.add_modifier(Modifier::DIM)
-            } else {
-                num.into()
-            };
-            spans.push(span);
-        }
-        spans.push("  ".into());
-        spans.push(esc_cancel().fg(self.ctx.color_theme.status_interactive_fg));
-        Line::from(spans)
-    }
-
-    /// `labels` 收 `impl Iterator<Item = &'s str>` 而非 `&'s [String]`：
-    /// `RefPicker`/`CheckoutPicker`/`DeleteBranchPicker` 的候選本來就是
-    /// `String`，`ChildPicker` 的候選是 `ChildPickOption`，只借它的
-    /// `label` 欄位——不用為了統一型別多 clone 一份 `Vec<String>`。
-    fn render_picker_line<'s>(
-        &self,
-        prompt: Cow<'s, str>,
-        labels: impl Iterator<Item = &'s str>,
-        tail: Cow<'s, str>,
-    ) -> Line<'s> {
-        let mut spans: Vec<Span<'s>> = vec![Span::raw(prompt)];
-        for (i, name) in labels.enumerate() {
-            spans.push(format!("[{}]", i + 1).fg(self.ctx.color_theme.status_interactive_fg));
-            spans.push(name.into());
-            spans.push("  ".into());
-        }
-        spans.push(tail.fg(self.ctx.color_theme.status_interactive_fg));
-        Line::from(spans)
-    }
-
-    /// merge PR 的兩個彈窗（表單／確認），畫在整個 view 區域上方。其餘狀態不畫。
+    /// 彈窗（merge PR 表單／確認，以及所有選單），畫在整個 view 區域上方。
+    /// 其餘狀態不畫。
     pub(super) fn render_popup(&self, f: &mut Frame, area: Rect) {
+        if matches!(self.line, StatusLine::MergePrPrompt { .. }) {
+            self.render_merge_popup(f, area);
+        } else {
+            self.render_menu_popup(f, area);
+        }
+    }
+
+    /// 選單彈窗：每列 `[ ] 1 label`，游標列反白，`l` 勾選後變 `[x]`。
+    /// 列太多時捲動，讓游標那一行一直留在畫面內。
+    fn render_menu_popup(&self, f: &mut Frame, area: Rect) {
+        let (Some(spec), Some(menu)) = (self.line.menu_spec(), self.line.menu()) else {
+            return;
+        };
+        let theme = &self.ctx.color_theme;
+        let fg = theme.fg;
+
+        let mut rows: Vec<(String, Style)> = Vec::new();
+        let mut focus = 0;
+        for (i, item) in spec.items.iter().enumerate() {
+            if let Some(group) = &item.group {
+                rows.push((group.clone(), Style::default().fg(MUTED_FG)));
+            }
+            let mut style = Style::default().fg(fg);
+            if item.dim {
+                style = style.fg(MUTED_FG);
+            }
+            if i == menu.cursor {
+                focus = rows.len();
+                style = style.add_modifier(Modifier::REVERSED);
+            }
+            let mark = if menu.marked == Some(i) { "[x]" } else { "[ ]" };
+            // 第 10 列起按不到數字鍵，不印編號
+            let number = if i < 9 {
+                format!("{} ", i + 1)
+            } else {
+                "  ".to_string()
+            };
+            let quick = item.quick.map(|c| format!(" ({c})")).unwrap_or_default();
+            rows.push((format!("{mark}{number}{}{quick}", item.label), style));
+        }
+        if let Some(footer) = spec.footer {
+            rows.push((footer, Style::default().fg(MUTED_FG)));
+        }
+
+        let content_width = rows
+            .iter()
+            .map(|(text, _)| console::measure_text_width(text))
+            .chain([console::measure_text_width(&spec.title)])
+            .max()
+            .unwrap_or(0);
+        let width = u16::try_from(content_width + 4)
+            .unwrap_or(u16::MAX)
+            .clamp(40, 72)
+            .min(area.width.saturating_sub(4));
+        let lines = rows
+            .into_iter()
+            .map(|(text, style)| Line::from(Span::styled(text, style)))
+            .collect();
+        let hints = vec![
+            h(&[UserEvent::Confirm], t!("common.hint.confirm")),
+            h(
+                &[UserEvent::NavigateLeft, UserEvent::Cancel],
+                t!("common.hint.cancel"),
+            ),
+            h(&[UserEvent::NavigateRight], t!("common.hint.mark")),
+            h(
+                &[UserEvent::NavigateUp, UserEvent::NavigateDown],
+                t!("common.hint.move"),
+            ),
+        ];
+        self.draw_popup(
+            f,
+            area,
+            Popup {
+                title: &spec.title,
+                header: None,
+                lines,
+                hints,
+                width,
+                focus,
+            },
+        );
+    }
+
+    /// merge PR 的兩個彈窗（表單／確認）。
+    fn render_merge_popup(&self, f: &mut Frame, area: Rect) {
         let StatusLine::MergePrPrompt {
             number,
             head_ref,
@@ -1352,7 +1577,7 @@ impl StatusLineState {
                 if !rows.is_empty() {
                     lines.push(Line::from(Span::styled(
                         t!("app.merge.dialog.delete_after"),
-                        Style::default().fg(fg).add_modifier(Modifier::DIM),
+                        Style::default().fg(MUTED_FG),
                     )));
                 }
                 lines.extend(rows.iter().enumerate().map(|(i, &(opt, checked))| {
@@ -1410,41 +1635,96 @@ impl StatusLineState {
             }
         };
 
-        // 上下框線 2 + head_ref 1 + 提示 1 + 內容列
-        let width = 50u16.min(area.width.saturating_sub(4));
-        let height = (lines.len() as u16 + 4).min(area.height.saturating_sub(2));
-        let popup = Rect::new(
+        self.draw_popup(
+            f,
+            area,
+            Popup {
+                title: &title,
+                header: Some(head_ref),
+                lines,
+                hints,
+                width: 50u16.min(area.width.saturating_sub(4)),
+                focus: 0,
+            },
+        );
+    }
+
+    /// 彈窗的共用外框：框線標題、可選的第一行 `header`、內容、換行的提示列。
+    /// 內容比可用高度長時依 `focus`（內容裡要保持可見的那一行）捲動。
+    fn draw_popup(&self, f: &mut Frame, area: Rect, popup: Popup) {
+        let Popup {
+            title,
+            header,
+            lines,
+            hints,
+            width,
+            focus,
+        } = popup;
+        let theme = &self.ctx.color_theme;
+        let fg = theme.fg;
+        // 內層寬 = 彈窗寬 - 框線 2 - 左右留白 2；窄螢幕的提示要換行而不是被切掉
+        let inner_width = (width as usize).saturating_sub(4);
+        let pairs = hint_pairs(&self.ctx.keybind, &hints);
+        let hint_rows = wrap_key_groups(&pairs, inner_width);
+        let header_rows = u16::from(header.is_some());
+        // 上下框線 2 + header + 提示列 + 內容列
+        let height = (lines.len() as u16 + 2 + header_rows + hint_rows.len() as u16)
+            .min(area.height.saturating_sub(2));
+        let rect = Rect::new(
             area.x + area.width.saturating_sub(width) / 2,
             area.y + area.height.saturating_sub(height) / 2,
             width,
             height,
         );
-        f.render_widget(Clear, popup);
+        f.render_widget(Clear, rect);
         let block = Block::default()
-            .title(title)
+            .title(Span::styled(title, Style::default().fg(MUTED_FG)))
             .borders(Borders::ALL)
             .border_style(Style::default().fg(theme.divider_fg))
             .style(Style::default().bg(theme.bg).fg(fg))
             .padding(Padding::horizontal(1));
-        let inner = block.inner(popup);
-        f.render_widget(block, popup);
+        let inner = block.inner(rect);
+        f.render_widget(block, rect);
 
-        let [name_area, body_area, hint_area] = Layout::vertical([
-            Constraint::Length(1),
+        let [header_area, body_area, hint_area] = Layout::vertical([
+            Constraint::Length(header_rows),
             Constraint::Min(0),
-            Constraint::Length(1),
+            Constraint::Length(hint_rows.len() as u16),
         ])
         .areas(inner);
+        if let Some(header) = header {
+            let name = console::truncate_str(header, inner_width, "…");
+            f.render_widget(
+                Paragraph::new(Line::from(Span::raw(name.as_ref()).fg(fg).bold())),
+                header_area,
+            );
+        }
+        let scroll = (focus + 1).saturating_sub(body_area.height as usize);
+        let lines: Vec<Line> = lines
+            .into_iter()
+            .map(|l| truncate_line(l, inner_width))
+            .collect();
         f.render_widget(
-            Paragraph::new(Line::from(Span::raw(head_ref.as_str()).fg(fg).bold())),
-            name_area,
+            Paragraph::new(lines).scroll((u16::try_from(scroll).unwrap_or(u16::MAX), 0)),
+            body_area,
         );
-        f.render_widget(Paragraph::new(lines), body_area);
-        f.render_widget(
-            Paragraph::new(keybind_hint_line(theme, &self.ctx.keybind, &hints)).centered(),
-            hint_area,
-        );
+        let hint_lines: Vec<Line> = hint_rows
+            .into_iter()
+            .map(|row| truncate_line(hint_line(theme, row, theme.help_key_fg), inner_width))
+            .collect();
+        f.render_widget(Paragraph::new(hint_lines).centered(), hint_area);
     }
+}
+
+/// [`StatusLineState::draw_popup`] 的內容。
+struct Popup<'a> {
+    title: &'a str,
+    header: Option<&'a str>,
+    lines: Vec<Line<'a>>,
+    hints: Vec<HintSpec>,
+    width: u16,
+    /// 內容裡要保持在畫面內的那一行（0 起算）。
+    focus: usize,
 }
 
 #[cfg(test)]
@@ -1642,9 +1922,10 @@ mod tests {
         state.line = StatusLine::RefPicker {
             options: vec!["main".into(), "dev".into()],
             kind: RefCopyKind::Local,
+            menu: Menu::default(),
         };
 
-        state.handle_ref_picker_key(char_key('2'));
+        state.handle_menu_key(char_key('2'));
 
         assert!(matches!(state.line, StatusLine::None));
         assert!(matches!(
@@ -1660,9 +1941,10 @@ mod tests {
         state.line = StatusLine::RefPicker {
             options: vec!["main".into()],
             kind: RefCopyKind::Local,
+            menu: Menu::default(),
         };
 
-        state.handle_ref_picker_key(key(KeyCode::Esc));
+        state.handle_menu_key(key(KeyCode::Esc));
 
         assert!(matches!(state.line, StatusLine::None));
         assert!(rx.try_recv().is_err());
@@ -1674,9 +1956,10 @@ mod tests {
         state.line = StatusLine::RefPicker {
             options: vec!["main".into()],
             kind: RefCopyKind::Local,
+            menu: Menu::default(),
         };
 
-        state.handle_ref_picker_key(char_key('9'));
+        state.handle_menu_key(char_key('9'));
 
         assert!(matches!(state.line, StatusLine::RefPicker { .. }));
         assert!(rx.try_recv().is_err());
@@ -1688,9 +1971,10 @@ mod tests {
         state.line = StatusLine::CheckoutPicker {
             options: vec!["v1.0".into(), "v2.0".into()],
             kind: CheckoutPickKind::Tag,
+            menu: Menu::default(),
         };
 
-        state.handle_checkout_picker_key(char_key('1'));
+        state.handle_menu_key(char_key('1'));
 
         assert!(matches!(state.line, StatusLine::None));
         assert!(matches!(
@@ -1714,9 +1998,10 @@ mod tests {
                 },
             ],
             total: 2,
+            menu: Menu::default(),
         };
 
-        state.handle_child_picker_key(char_key('2'));
+        state.handle_menu_key(char_key('2'));
 
         assert!(matches!(state.line, StatusLine::None));
         assert!(matches!(
@@ -1734,9 +2019,10 @@ mod tests {
                 commit_hash: CommitHash::from("aaa"),
             }],
             total: 1,
+            menu: Menu::default(),
         };
 
-        state.handle_child_picker_key(key(KeyCode::Esc));
+        state.handle_menu_key(key(KeyCode::Esc));
 
         assert!(matches!(state.line, StatusLine::None));
         assert!(rx.try_recv().is_err());
@@ -1754,7 +2040,7 @@ mod tests {
 
         state.open_child_picker(options);
 
-        let StatusLine::ChildPicker { options, total } = &state.line else {
+        let StatusLine::ChildPicker { options, total, .. } = &state.line else {
             panic!("expected ChildPicker, got {:?}", state.line);
         };
         assert_eq!(options.len(), 9);
@@ -1767,13 +2053,14 @@ mod tests {
         state.line = StatusLine::DeleteBranchPicker {
             options: vec!["feature/x".into()],
             total: 1,
+            menu: Menu::default(),
         };
 
-        state.handle_delete_branch_picker_key(char_key('1'));
+        state.handle_menu_key(char_key('1'));
 
         assert!(matches!(
             state.line,
-            StatusLine::DeleteBranchConfirm { ref name } if name == "feature/x"
+            StatusLine::DeleteBranchConfirm { ref name, .. } if name == "feature/x"
         ));
     }
 
@@ -1782,9 +2069,10 @@ mod tests {
         let (mut state, rx) = test_state();
         state.line = StatusLine::DeleteBranchConfirm {
             name: "feature/x".into(),
+            menu: Menu::default(),
         };
 
-        state.handle_delete_branch_confirm_key(char_key('y'));
+        state.handle_menu_key(char_key('y'));
 
         assert!(matches!(state.line, StatusLine::None));
         assert!(matches!(
@@ -1794,17 +2082,18 @@ mod tests {
     }
 
     /// `f` 綁在 `fetch`（assets/default-keybind.toml），不是沒綁到任何東西。
-    /// `handle_delete_branch_confirm_key` 靠 `_ if key.code == 'f'|'F'` 這個
-    /// guard arm、而不是靠 keybind 查出的 `UserEvent` 接住強制刪除，這條
-    /// 順序依賴只有真 keybind 才驗得到（見 test_ctx 的說明）。
+    /// `menu_key` 先比對 `MenuItem::quick` 的原始字元、再查 keybind 的
+    /// `UserEvent`，強制刪除才不會被 `fetch` 吃掉，這條順序依賴只有真
+    /// keybind 才驗得到（見 test_ctx 的說明）。
     #[test]
     fn delete_branch_confirm_f_sends_force_request_despite_being_bound_to_fetch() {
         let (mut state, rx) = test_state();
         state.line = StatusLine::DeleteBranchConfirm {
             name: "feature/x".into(),
+            menu: Menu::default(),
         };
 
-        state.handle_delete_branch_confirm_key(char_key('f'));
+        state.handle_menu_key(char_key('f'));
 
         assert!(matches!(state.line, StatusLine::None));
         assert!(matches!(
@@ -1818,9 +2107,10 @@ mod tests {
         let (mut state, rx) = test_state();
         state.line = StatusLine::DeleteBranchConfirm {
             name: "feature/x".into(),
+            menu: Menu::default(),
         };
 
-        state.handle_delete_branch_confirm_key(char_key('n'));
+        state.handle_menu_key(char_key('n'));
 
         assert!(matches!(state.line, StatusLine::None));
         assert!(rx.try_recv().is_err());
@@ -2063,7 +2353,11 @@ mod tests {
         use ratatui::{backend::TestBackend, Terminal};
 
         fn screen(state: &StatusLineState) -> String {
-            let mut terminal = Terminal::new(TestBackend::new(70, 20)).unwrap();
+            screen_at(state, 70)
+        }
+
+        fn screen_at(state: &StatusLineState, width: u16) -> String {
+            let mut terminal = Terminal::new(TestBackend::new(width, 20)).unwrap();
             terminal.draw(|f| state.render_popup(f, f.area())).unwrap();
             let buf = terminal.backend().buffer().clone();
             (0..buf.area.height)
@@ -2090,6 +2384,14 @@ mod tests {
 
         state.line = StatusLine::None;
         assert!(!screen(&state).contains("squash"));
+
+        // 40 欄（手機）：提示換行，每個按鍵說明都完整；彈窗不超出畫面
+        state.line = merge_pr_prompt();
+        let narrow = screen_at(&state, 40);
+        for hint in ["Enter:", "Esc:", "h/l:", "k/j:"] {
+            assert!(narrow.contains(hint), "{hint} missing:\n{narrow}");
+        }
+        assert!(narrow.contains("< squash >"), "{narrow}");
     }
 
     #[test]
@@ -2100,9 +2402,10 @@ mod tests {
             kind: GhItemKind::Issue,
             action: StateAction::Close,
             filter_state: StateFilter::Open,
+            menu: Menu::default(),
         };
 
-        state.handle_yes_no_prompt_key(char_key('y'));
+        state.handle_menu_key(char_key('y'));
 
         assert!(matches!(state.line, StatusLine::None));
         assert!(matches!(
@@ -2123,14 +2426,15 @@ mod tests {
             number: 3,
             failed_runs: vec![],
             all_runs: vec![10, 11],
+            menu: Menu::default(),
         };
 
         // 沒有可重跑的失敗 run：f 無效，prompt 留著
-        state.handle_ci_rerun_prompt_key(char_key('f'));
+        state.handle_menu_key(char_key('f'));
         assert!(matches!(state.line, StatusLine::CiRerunPrompt { .. }));
         assert!(rx.try_recv().is_err());
 
-        state.handle_ci_rerun_prompt_key(char_key('a'));
+        state.handle_menu_key(char_key('a'));
         assert!(matches!(state.line, StatusLine::None));
         assert!(matches!(
             rx.try_recv(),
@@ -2145,8 +2449,9 @@ mod tests {
             number: 3,
             failed_runs: vec![10],
             all_runs: vec![10, 11],
+            menu: Menu::default(),
         };
-        state.handle_ci_rerun_prompt_key(char_key('f'));
+        state.handle_menu_key(char_key('f'));
         assert!(matches!(
             rx.try_recv(),
             Ok(AppEvent::CiRerunRequested {
@@ -2164,9 +2469,13 @@ mod tests {
             number: 9,
             action: PrDraftAction::MarkReady,
             filter_state: StateFilter::Open,
+            menu: Menu::default(),
         };
 
-        state.handle_yes_no_prompt_key(key(KeyCode::Enter));
+        // l 勾選第一列，Enter 才送出
+        state.handle_menu_key(char_key('l'));
+        assert!(rx.try_recv().is_err());
+        state.handle_menu_key(key(KeyCode::Enter));
 
         assert!(matches!(state.line, StatusLine::None));
         assert!(matches!(
@@ -2179,6 +2488,207 @@ mod tests {
         ));
     }
 
+    fn related_items(n: u64) -> Vec<RelatedItem> {
+        use crate::event::RelatedGroup;
+        (1..=n)
+            .map(|number| RelatedItem {
+                number,
+                state: "OPEN".into(),
+                group: if number <= 2 {
+                    RelatedGroup::Parent
+                } else {
+                    RelatedGroup::Sub
+                },
+            })
+            .collect()
+    }
+
+    /// j 移動、l 勾選、Enter 送出游標那一項。
+    #[test]
+    fn menu_moves_marks_and_enter_picks_marked_row() {
+        let (mut state, rx) = test_state();
+        state.line = StatusLine::CheckoutPicker {
+            options: vec!["a".into(), "b".into(), "c".into()],
+            kind: CheckoutPickKind::Branch,
+            menu: Menu::default(),
+        };
+
+        state.handle_menu_key(char_key('j'));
+        state.handle_menu_key(char_key('l'));
+        assert!(rx.try_recv().is_err());
+        state.handle_menu_key(key(KeyCode::Enter));
+
+        assert!(matches!(state.line, StatusLine::None));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AppEvent::CheckoutCommit { target }) if target == "b"
+        ));
+    }
+
+    /// 沒有勾任何列時 Enter 什麼都不做（double check）。
+    #[test]
+    fn menu_enter_without_mark_does_nothing() {
+        let (mut state, rx) = test_state();
+        state.line = StatusLine::CheckoutPicker {
+            options: vec!["a".into()],
+            kind: CheckoutPickKind::Branch,
+            menu: Menu::default(),
+        };
+
+        state.handle_menu_key(key(KeyCode::Enter));
+
+        assert!(matches!(state.line, StatusLine::CheckoutPicker { .. }));
+        assert!(rx.try_recv().is_err());
+    }
+
+    #[test]
+    fn menu_h_cancels_without_sending() {
+        let (mut state, rx) = test_state();
+        state.line = StatusLine::CheckoutPicker {
+            options: vec!["a".into()],
+            kind: CheckoutPickKind::Branch,
+            menu: Menu::default(),
+        };
+
+        state.handle_menu_key(char_key('h'));
+
+        assert!(matches!(state.line, StatusLine::None));
+        assert!(rx.try_recv().is_err());
+    }
+
+    /// 帶 Ctrl 的快選鍵不能觸發強制刪除。
+    #[test]
+    fn menu_quick_key_ignores_ctrl_modifier() {
+        let (mut state, rx) = test_state();
+        state.line = StatusLine::DeleteBranchConfirm {
+            name: "feature/x".into(),
+            menu: Menu::default(),
+        };
+
+        state.handle_menu_key(KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL));
+
+        assert!(matches!(state.line, StatusLine::DeleteBranchConfirm { .. }));
+        assert!(rx.try_recv().is_err());
+    }
+
+    /// y/n 類：`2` 與 `n` 都是取消，不送事件。
+    #[test]
+    fn yes_no_prompt_second_row_and_n_cancel() {
+        for cancel in ['2', 'n'] {
+            let (mut state, rx) = test_state();
+            state.line = StatusLine::UpdatePrompt {
+                tag: "v9.9.9".into(),
+                menu: Menu::default(),
+            };
+
+            state.handle_menu_key(char_key(cancel));
+
+            assert!(matches!(state.line, StatusLine::None));
+            assert!(rx.try_recv().is_err());
+        }
+    }
+
+    /// 只有失敗項時，第 2 列與 `a` 都不存在。
+    #[test]
+    fn ci_rerun_prompt_ignores_rows_that_do_not_exist() {
+        let (mut state, rx) = test_state();
+        state.line = StatusLine::CiRerunPrompt {
+            number: 5,
+            failed_runs: vec![10],
+            all_runs: vec![],
+            menu: Menu::default(),
+        };
+
+        state.handle_menu_key(char_key('2'));
+        state.handle_menu_key(char_key('a'));
+
+        assert!(matches!(state.line, StatusLine::CiRerunPrompt { .. }));
+        assert!(rx.try_recv().is_err());
+    }
+
+    /// group 標題列夾在可選列之間，pick 仍對應到正確的 issue。
+    #[test]
+    fn related_picker_pick_ignores_group_header_rows() {
+        let (mut state, rx) = test_state();
+        state.line = StatusLine::RelatedPicker {
+            items: related_items(4),
+            menu: Menu::default(),
+        };
+
+        state.handle_menu_key(char_key('3'));
+
+        assert!(matches!(state.line, StatusLine::None));
+        assert!(matches!(
+            rx.try_recv(),
+            Ok(AppEvent::GitHubJumpToIssue { number: 3 })
+        ));
+    }
+
+    fn popup_screen(state: &StatusLineState, width: u16, height: u16) -> String {
+        use ratatui::{backend::TestBackend, Terminal};
+
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal.draw(|f| state.render_popup(f, f.area())).unwrap();
+        let buf = terminal.backend().buffer().clone();
+        (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    #[test]
+    fn menu_popup_renders_numbered_rows_and_marks() {
+        let (mut state, _rx) = test_state();
+        state.line = StatusLine::CheckoutPicker {
+            options: vec!["main".into(), "dev".into()],
+            kind: CheckoutPickKind::Branch,
+            menu: Menu::default(),
+        };
+        state.handle_menu_key(char_key('l'));
+
+        let screen = popup_screen(&state, 70, 20);
+
+        assert!(screen.contains("[x]1 main"), "{screen}");
+        assert!(screen.contains("[ ]2 dev"), "{screen}");
+    }
+
+    /// 項目比畫面高時，游標移到最後一個仍然看得到。
+    #[test]
+    fn menu_popup_scrolls_to_keep_cursor_visible() {
+        let (mut state, _rx) = test_state();
+        state.line = StatusLine::RelatedPicker {
+            items: related_items(15),
+            menu: Menu::default(),
+        };
+        for _ in 0..14 {
+            state.handle_menu_key(char_key('j'));
+        }
+
+        let screen = popup_screen(&state, 70, 12);
+
+        assert!(screen.contains("#15"), "{screen}");
+        assert!(!screen.contains("#1 "), "{screen}");
+    }
+
+    /// 選項畫在彈窗裡，不再塞進狀態列。
+    #[test]
+    fn menu_popup_shows_options() {
+        let (mut state, _rx) = test_state();
+        state.line = StatusLine::RefPicker {
+            options: vec!["main".into()],
+            kind: RefCopyKind::Local,
+            menu: Menu::default(),
+        };
+
+        let screen = popup_screen(&state, 70, 20);
+
+        assert!(screen.contains("main"), "{screen}");
+    }
+
     #[test]
     fn yes_no_prompt_n_clears_without_sending() {
         let (mut state, rx) = test_state();
@@ -2187,9 +2697,10 @@ mod tests {
             kind: GhItemKind::Issue,
             action: StateAction::Close,
             filter_state: StateFilter::Open,
+            menu: Menu::default(),
         };
 
-        state.handle_yes_no_prompt_key(char_key('n'));
+        state.handle_menu_key(char_key('n'));
 
         assert!(matches!(state.line, StatusLine::None));
         assert!(rx.try_recv().is_err());
@@ -2201,9 +2712,10 @@ mod tests {
         state.line = StatusLine::RestartPrompt {
             tag: "v2.6.0".to_string(),
             exe: PathBuf::from("/usr/local/bin/ysgit"),
+            menu: Menu::default(),
         };
 
-        state.handle_yes_no_prompt_key(char_key('y'));
+        state.handle_menu_key(char_key('y'));
 
         assert!(matches!(state.line, StatusLine::None));
         assert!(matches!(
@@ -2222,9 +2734,10 @@ mod tests {
         state.line = StatusLine::RestartPrompt {
             tag: "v2.6.0".to_string(),
             exe: PathBuf::from("/usr/local/bin/ysgit"),
+            menu: Menu::default(),
         };
 
-        state.handle_yes_no_prompt_key(char_key('n'));
+        state.handle_menu_key(char_key('n'));
 
         assert!(matches!(
             &state.line,
@@ -2244,6 +2757,7 @@ mod tests {
             let (tx, _rx) = Sender::channel_for_test();
             StatusLineState {
                 line,
+                notification_deadline: None,
                 ctx: test_ctx(),
                 tx,
                 auto_fetch_clock: AutoFetchClock::default(),
@@ -2263,6 +2777,7 @@ mod tests {
                 StatusLine::RefPicker {
                     options: vec![],
                     kind: RefCopyKind::Local,
+                    menu: Menu::default(),
                 },
                 true,
                 true,
@@ -2272,6 +2787,7 @@ mod tests {
                 StatusLine::CheckoutPicker {
                     options: vec![],
                     kind: CheckoutPickKind::Branch,
+                    menu: Menu::default(),
                 },
                 true,
                 true,
@@ -2281,13 +2797,17 @@ mod tests {
                 StatusLine::ChildPicker {
                     options: vec![],
                     total: 0,
+                    menu: Menu::default(),
                 },
                 true,
                 true,
             ),
             (
                 "RelatedPicker",
-                StatusLine::RelatedPicker { items: vec![] },
+                StatusLine::RelatedPicker {
+                    items: vec![],
+                    menu: Menu::default(),
+                },
                 true,
                 true,
             ),
@@ -2296,6 +2816,7 @@ mod tests {
                 StatusLine::DeleteBranchPicker {
                     options: vec![],
                     total: 0,
+                    menu: Menu::default(),
                 },
                 true,
                 true,
@@ -2304,6 +2825,7 @@ mod tests {
                 "DeleteBranchConfirm",
                 StatusLine::DeleteBranchConfirm {
                     name: String::new(),
+                    menu: Menu::default(),
                 },
                 true,
                 true,
@@ -2315,6 +2837,7 @@ mod tests {
                     number: 0,
                     failed_runs: vec![],
                     all_runs: vec![],
+                    menu: Menu::default(),
                 },
                 true,
                 false,
@@ -2326,6 +2849,7 @@ mod tests {
                     kind: GhItemKind::Issue,
                     action: StateAction::Close,
                     filter_state: StateFilter::Open,
+                    menu: Menu::default(),
                 },
                 true,
                 false,
@@ -2336,13 +2860,17 @@ mod tests {
                     number: 0,
                     action: PrDraftAction::MarkReady,
                     filter_state: StateFilter::Open,
+                    menu: Menu::default(),
                 },
                 true,
                 false,
             ),
             (
                 "UpdatePrompt",
-                StatusLine::UpdatePrompt { tag: String::new() },
+                StatusLine::UpdatePrompt {
+                    tag: String::new(),
+                    menu: Menu::default(),
+                },
                 true,
                 false,
             ),
@@ -2351,6 +2879,7 @@ mod tests {
                 StatusLine::RestartPrompt {
                     tag: String::new(),
                     exe: PathBuf::new(),
+                    menu: Menu::default(),
                 },
                 true,
                 false,
@@ -2418,6 +2947,7 @@ mod tests {
             let (tx, _rx) = Sender::channel_for_test();
             StatusLineState {
                 line,
+                notification_deadline: None,
                 ctx: test_ctx(),
                 tx,
                 auto_fetch_clock: AutoFetchClock::default(),
@@ -2452,6 +2982,7 @@ mod tests {
                 StatusLine::RefPicker {
                     options: vec![],
                     kind: RefCopyKind::Local,
+                    menu: Menu::default(),
                 },
                 true,
             ),
@@ -2478,12 +3009,119 @@ mod tests {
         assert!(matches!(&state.line, StatusLine::NotificationError(m) if m == "boom"));
     }
 
+    /// 只有 Warn／Error 吞鍵並清掉；Info／Success 不吞、通知留著；
+    /// 非通知狀態不吞鍵、也不動狀態列。
+    #[test]
+    fn dismiss_notification_only_swallows_warn_and_error() {
+        for line in [
+            StatusLine::NotificationWarn("m".into()),
+            StatusLine::NotificationError("m".into()),
+        ] {
+            let (mut state, _rx) = test_state();
+            state.line = line;
+            assert!(state.dismiss_notification());
+            assert!(matches!(state.line, StatusLine::None));
+        }
+
+        for line in [
+            StatusLine::NotificationInfo("m".into()),
+            StatusLine::NotificationSuccess("m".into()),
+        ] {
+            let (mut state, _rx) = test_state();
+            state.line = line;
+            assert!(!state.dismiss_notification());
+            assert!(!matches!(state.line, StatusLine::None));
+        }
+
+        let (mut state, _rx) = test_state();
+        assert!(!state.dismiss_notification());
+    }
+
+    /// Info／Success 到期前不清、到期時清掉並回報要重畫。
+    #[test]
+    fn expire_notification_clears_info_and_success_at_deadline() {
+        let t0 = Instant::now();
+        for line in [
+            StatusLine::NotificationInfo("m".into()),
+            StatusLine::NotificationSuccess("m".into()),
+        ] {
+            let (mut state, _rx) = test_state();
+            state.set_transient(line, t0 + NOTIFICATION_TTL);
+            assert!(!state.expire_notification(t0 + NOTIFICATION_TTL - Duration::from_millis(1)));
+            assert!(!matches!(state.line, StatusLine::None));
+            assert!(state.expire_notification(t0 + NOTIFICATION_TTL));
+            assert!(matches!(state.line, StatusLine::None));
+            // 清掉之後再問不會重複回報
+            assert!(!state.expire_notification(t0 + NOTIFICATION_TTL * 2));
+        }
+    }
+
+    /// Warn／Error、picker、輸入框就算帶著過期的 deadline 也不能被清掉
+    /// ——延遲事件誤清輸入框正是這個設計要避免的事。
+    #[test]
+    fn expire_notification_never_touches_other_variants() {
+        let past = Instant::now();
+        let later = past + NOTIFICATION_TTL * 2;
+        let others = [
+            StatusLine::NotificationWarn("m".into()),
+            StatusLine::NotificationError("m".into()),
+            StatusLine::Input("q".into(), 1, None),
+            StatusLine::RefPicker {
+                options: vec!["main".into()],
+                kind: RefCopyKind::Local,
+                menu: Menu::default(),
+            },
+        ];
+        for line in others {
+            let (mut state, _rx) = test_state();
+            state.line = line;
+            state.notification_deadline = Some(past);
+            assert!(!state.expire_notification(later));
+            assert!(!matches!(state.line, StatusLine::None));
+        }
+    }
+
+    /// 新通知蓋掉舊的 Info 時，到期時間以新的為準。
+    #[test]
+    fn replacing_notification_resets_deadline() {
+        let t0 = Instant::now();
+        let (mut state, _rx) = test_state();
+        state.set_transient(
+            StatusLine::NotificationInfo("A".into()),
+            t0 + NOTIFICATION_TTL,
+        );
+        state.set_transient(
+            StatusLine::NotificationInfo("B".into()),
+            t0 + Duration::from_secs(10) + NOTIFICATION_TTL,
+        );
+        assert!(!state.expire_notification(t0 + NOTIFICATION_TTL));
+        assert!(state.expire_notification(t0 + Duration::from_secs(10) + NOTIFICATION_TTL));
+    }
+
+    /// 換資料（take → 新 state restore）要帶著原本的到期時間，不能重新計時。
+    #[test]
+    fn restore_notification_keeps_deadline() {
+        let t0 = Instant::now();
+        let (mut old, _rx) = test_state();
+        old.set_transient(
+            StatusLine::NotificationInfo("m".into()),
+            t0 + NOTIFICATION_TTL,
+        );
+        let notification = old.take_notification().expect("應該取到通知");
+
+        let (mut fresh, _rx2) = test_state();
+        fresh.restore_notification(notification);
+        assert!(!fresh.expire_notification(t0 + NOTIFICATION_TTL - Duration::from_millis(1)));
+        assert!(fresh.expire_notification(t0 + NOTIFICATION_TTL));
+    }
+
     #[test]
     fn take_notification_on_picker_returns_none_and_leaves_it_untouched() {
         let (mut state, _rx) = test_state();
         state.line = StatusLine::RefPicker {
             options: vec!["main".into()],
             kind: RefCopyKind::Local,
+            menu: Menu::default(),
         };
 
         assert!(state.take_notification().is_none());

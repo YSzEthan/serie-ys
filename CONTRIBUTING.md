@@ -94,7 +94,7 @@ fix: gh CLI 呼叫加 timeout，並優化 GitHub 資料載入效率 (#57) (#58)
 想自己確認下一版會是什麼：
 
 ```sh
-python3 .github/scripts/prepare_release.py --from "$(git describe --tags --abbrev=0)" --dry-run
+python3 .github/scripts/prepare_release.py --from "$(git describe --tags --abbrev=0 --exclude '*-*' origin/main)" --dry-run
 ```
 
 `pre-push` hook 會自動跑這一行，只提示不擋推。
@@ -104,17 +104,23 @@ python3 .github/scripts/prepare_release.py --from "$(git describe --tags --abbre
 CI 不會自動累計版號。只有推 `vX.Y.Z` tag 才會 build 四個平台並建立 GitHub Release
 （[release.yml](.github/workflows/release.yml)）；`main` 上的 push 只跑 test。
 
-發版變更併進最後一個功能 PR：
+版號 commit 先進 `dev`，再隨 `dev`→`main` 的 merge commit 進 `main`：
 
-1. branch rebase 到最新 `origin/main`，跑 `prepare_release.py --from <上一個 tag> --pr <PR 編號>`，
-   更新 `Cargo.toml`、`Cargo.lock`、`CHANGELOG.md`
-2. amend 進最後一個 commit，`git push --force-with-lease`，CI 過了再 merge。之後別改 PR 標題或加 commit
-3. 對 **PR 的 merge commit** 打 tag：`git tag vX.Y.Z <merge commit> && git push origin vX.Y.Z`
+1. 在 `dev` 上開 branch，跑 `prepare_release.py --from <上一個正式 tag>`，更新 `Cargo.toml`、
+   `Cargo.lock`、`CHANGELOG.md`，commit 成 `chore: release vX.Y.Z`，開 PR（base `dev`）merge
+2. 開 `dev`→`main` 的 PR（標題如 `chore: release vX.Y.Z`），**用 merge commit 合併，不要 squash**
+3. 對該 **merge commit** 打 tag：`git tag vX.Y.Z <merge commit> && git push origin vX.Y.Z`
 
-沒有功能 PR 時，在 `main` 上跑（不加 `--pr`），commit 成 `chore: release vX.Y.Z` 開 PR，merge 後同樣打 tag。
+規則：
 
-tag 不能打在當下的 `origin/main`，否則可能落在 CHANGELOG 沒列到的變更上；跑完腳本到 merge 之間
-`main` 若往前，也要重跑。release notes 讀內嵌的 `CHANGELOG.md`，所以發版 commit 要比 tag 先進 `main`。
+- `main` 只收 `dev` 的 merge，hotfix 也要先進 `dev`；否則 `dev` 的版號會落後 `main`，beta 版號跟著錯
+- 發版會帶走整個 `dev`，不想發的變更先 revert 或延後 merge；預覽的 CHANGELOG 就是確認時機
+- 打 tag 前確認：版號 commit 是 `dev` 的祖先（`git merge-base --is-ancestor <版號 commit> <merge commit>`）、
+  兩邊 tree 相同（`git diff --quiet <版號 commit> <merge commit>`）。前者擋 squash（下一版
+  CHANGELOG 會重列），後者擋版號 PR 之後又進了別的 commit，或 `main` 有不經 `dev` 的 commit
+- 版號 PR merge 進 `dev` 會觸發一次 beta，內容等同該版，不用處理
+
+release notes 讀內嵌的 `CHANGELOG.md`，所以發版 commit 要比 tag 先進 `main`。
 
 release workflow 的 `verify` job 會擋下三種情況：tag 與 `Cargo.toml` 版號不一致、
 `CHANGELOG.md` 沒有該版區塊、tag 指向的 commit 不在 `main` 上。

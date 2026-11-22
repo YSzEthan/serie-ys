@@ -454,7 +454,7 @@ fn main() {
         None
     } else {
         let stage = Stage::begin("filtered");
-        let filtered = compute_filtered_graph_from(&repo, &remote_only, trunc);
+        let filtered = compute_filtered_graph_from(&repo, &remote_only, None, trunc);
         stage.end();
         filtered
     };

@@ -58,6 +58,7 @@
 | <kbd>Ctrl-t</kbd> | 刪除 commit 上的 tag | `delete_tag` |
 | <kbd>d</kbd> | 刪除 commit 上的 local branch | `delete_ref` |
 | <kbd>o</kbd> | 切換 remote refs | `remote_refs_toggle` |
+| <kbd>w</kbd> | 切換精簡模式（只顯示分支與分岔處，窄螢幕自動開啟） | `condensed_toggle` |
 | <kbd>g</kbd> | 開啟 GitHub issues/PRs | `github_toggle` |
 | <kbd>f</kbd> | fetch 所有 remote | `fetch` |
 | <kbd>p</kbd> | pull 目前 branch（只做 fast-forward） | `pull` |
@@ -94,10 +95,12 @@
 | <kbd>B</kbd> | 複製 remote branch 名稱 | `full_branch_copy` |
 | <kbd>v</kbd> | 複製 tag 名稱 | `tag_copy` |
 | <kbd>o</kbd> | 切換 remote refs | `remote_refs_toggle` |
+| <kbd>w</kbd> | 切換精簡模式（只顯示分支與分岔處，窄螢幕自動開啟） | `condensed_toggle` |
 | <kbd>Tab</kbd> | 開啟 refs 清單 | `ref_list` |
 | <kbd>g</kbd> | 開啟 GitHub issues/PRs | `github_toggle` |
 | <kbd>F1</kbd> <kbd>?</kbd> | 開啟說明 | `help_toggle` |
 | <kbd>a</kbd> | 切換 commit 標記 | `mark_toggle` |
+| <kbd>O</kbd> | 用瀏覽器開 repo 首頁（origin，或唯一的 remote） | `open_repo_web` |
 | <kbd>r</kbd> | 重新整理 | `refresh` |
 | <kbd>/</kbd> | 開啟 Shell | `shell_toggle` |
 
@@ -118,6 +121,7 @@
 
 | 按鍵 | 說明 | 設定鍵名 |
 | --- | --- | --- |
+| <kbd>F1</kbd> <kbd>?</kbd> | 開啟說明 | `help_toggle` |
 | <kbd>g</kbd> <kbd>n</kbd> <kbd>Esc</kbd> <kbd>Backspace</kbd> | 關閉 GitHub view | `github_toggle` `cancel` `close` |
 | <kbd>Tab</kbd> <kbd>Shift-Tab</kbd> | 切換 Issues → PRs → Branches → CI 分頁，Shift-Tab 反向，數字鍵 1~4 直接跳到對應分頁（Branches 列出 GitHub 上沒有 OPEN PR 的 branch 與行數差異；CI 監測 head branch 在本地的 open PR 的 CI 狀態） | `ref_list` `ref_list_prev` |
 | <kbd>Down</kbd> <kbd>j</kbd> <kbd>J</kbd> | 向下移動 | `navigate_down` `select_down` |
@@ -127,17 +131,19 @@
 | <kbd>Ctrl-d</kbd> | 向下半頁 | `half_page_down` |
 | <kbd>Ctrl-u</kbd> | 向上半頁 | `half_page_up` |
 | <kbd>i</kbd> | 跳到頂端 | `go_to_top` |
-| <kbd>G</kbd> | 跳到底端 | `go_to_bottom` |
+| <kbd>G</kbd> | 跳到底端（或 `0`） | `go_to_bottom` |
 | <kbd>Enter</kbd> <kbd>y</kbd> <kbd>Right</kbd> <kbd>l</kbd> | 預覽內容／切換 checkbox（Branches：Right/l 移到右側卡片，Enter 無作用；CI：Enter 開啟 PR 的 checks 頁，Right/l 移到右側卡片） | `confirm` `navigate_right` |
 | <kbd>Left</kbd> <kbd>h</kbd> | 返回／取消（Branches、CI：移到左側卡片，不關閉） | `navigate_left` |
 | <kbd>:</kbd> | 搜尋／輸入純數字跳到 #N | `search` |
-| <kbd>'</kbd> | 過濾（Branches：依作者篩選） | `filter` |
+| <kbd>'</kbd> | 過濾（Issues／PRs：切換狀態；Branches：依作者篩選） | `filter` |
+| <kbd>"</kbd> | 依作者篩選（Issues／PRs／Branches） | `author_filter` |
 | <kbd>c</kbd> | 複製 issue/PR URL（Branches：compare URL） | `short_copy` |
 | <kbd>C</kbd> | 在瀏覽器開啟 issue/PR（Branches：開 PR 頁） | `full_copy` |
 | <kbd>v</kbd> | 複製 issue/PR 編號（#N）（Branches：branch 名稱） | `tag_copy` |
 | <kbd>u</kbd> | 開啟相關 issue/PR 選單 | `detail_pane_toggle` |
 | <kbd>r</kbd> | 重新整理 | `refresh` |
 | <kbd>f</kbd> | fetch 所有 remote（完成後重新載入 Branches） | `fetch` |
+| <kbd>O</kbd> | 用瀏覽器開 repo 首頁（origin，或唯一的 remote） | `open_repo_web` |
 | <kbd>p</kbd> | merge PR：彈窗選擇合併方式與要刪除的 branch，再確認 | `merge_pr` |
 | <kbd>X</kbd> | 關閉／重新開啟 issue 或 PR | `toggle_issue_state` |
 | <kbd>P</kbd> | PR 標為可供 review／轉回 draft | `toggle_pr_draft` |

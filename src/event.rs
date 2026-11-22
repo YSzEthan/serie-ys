@@ -1,5 +1,6 @@
 use std::{
     borrow::Cow,
+    cell::Cell,
     ffi::OsStr,
     fmt::{self, Debug, Formatter},
     path::{Component, Path, PathBuf},
@@ -50,7 +51,19 @@ pub enum Scope {
 #[derive(Debug)]
 pub enum AppEvent {
     Key(KeyEvent),
-    Resize(usize, usize),
+    /// 滑鼠左鍵按下（螢幕座標）。拖曳、移動、右鍵一律在輸入 thread 丟掉。
+    Click {
+        col: u16,
+        row: u16,
+    },
+    /// 滑鼠滾輪（螢幕座標）。`delta` 是格數，正數往下、負數往上。輸入 thread
+    /// 每個事件只送 ±1，同位置連續的滾輪由 `Receiver::recv` 合併成一個。
+    Wheel {
+        col: u16,
+        row: u16,
+        delta: i16,
+    },
+    Resize(usize),
     Tick,
     Quit,
     OpenDetail,
@@ -193,10 +206,16 @@ pub enum AppEvent {
     /// `App::view` 現拿（`View::take_refresh_context`），不再靠事件 payload
     /// 一路往前傳，見 `reload::Reloader::request_full`。
     Refresh,
+    /// `w` 鍵：手動切換精簡模式（#215）。
+    ToggleCondensed,
+    /// resize 停住一小段時間之後，檢查寬度是否跨過窄螢幕門檻。
+    CondensedCheck,
     ClearStatusLine,
     /// 訊息、游標在訊息內的 byte 位置、右側的 transient 訊息。
     UpdateStatusInput(String, usize, Option<String>),
     NotifyInfo(String),
+    /// 切換類的一閃即逝提示：只留 `BRIEF_NOTIFICATION_TTL`，不是預設的 15 秒。
+    NotifyInfoBrief(String),
     NotifySuccess(String),
     NotifyWarn(String),
     NotifyError(String),
@@ -400,9 +419,7 @@ pub enum AppEvent {
     },
     /// `auto_fetch` 真的判定要 fetch、且 `git fetch` 成功了——沒有變化、
     /// 不可打斷跳過、或任何一步失敗都不送這個事件（見 `auto_fetch` 模組
-    /// 文件），所以它本身就代表「該讓使用者知道」，不必帶 payload：顯示
-    /// 的文案固定，見 `app.rs` 處理端。顯示與否仍要過守衛：使用者正在
-    /// picker／輸入框裡的時候不搶 status line。
+    /// 文件）。成功不顯示訊息，處理端只負責重新載入。
     AutoFetchCompleted,
     /// 手動 `fetch_all()` 成功後送出——等同「一輪 auto-fetch 已經跑過」，
     /// 讓倒數重新計算、比對基準重新計算，不能讓已排定的舊排程再判定一次
@@ -588,11 +605,52 @@ impl Sender {
 
 pub struct Receiver {
     rx: mpsc::Receiver<AppEvent>,
+    /// 合併滾輪時讀到、但不屬於這一批的事件；下次 `recv` 先交出去，順序不變。
+    pending: Cell<Option<AppEvent>>,
 }
 
 impl Receiver {
+    fn new(rx: mpsc::Receiver<AppEvent>) -> Self {
+        Self {
+            rx,
+            pending: Cell::new(None),
+        }
+    }
+
+    /// 取下一個事件。滾輪會把 channel 裡緊接著、同位置的滾輪一併累加：
+    /// 積壓發生在 render 慢、事件堆在 channel 的時候（觸控板一甩幾十個），
+    /// 不合併就是幾十次完整重畫。累加後 `delta == 0`（上下相消）就不送。
     fn recv(&self) -> AppEvent {
-        self.rx.recv().unwrap_or(AppEvent::Quit)
+        loop {
+            let first = self
+                .pending
+                .take()
+                .unwrap_or_else(|| self.rx.recv().unwrap_or(AppEvent::Quit));
+            let AppEvent::Wheel {
+                col,
+                row,
+                mut delta,
+            } = first
+            else {
+                return first;
+            };
+            while let Ok(next) = self.rx.try_recv() {
+                match next {
+                    AppEvent::Wheel {
+                        col: c,
+                        row: r,
+                        delta: d,
+                    } if (c, r) == (col, row) => delta = delta.saturating_add(d),
+                    other => {
+                        self.pending.set(Some(other));
+                        break;
+                    }
+                }
+            }
+            if delta != 0 {
+                return AppEvent::Wheel { col, row, delta };
+            }
+        }
     }
 }
 
@@ -644,7 +702,7 @@ impl EventController {
     pub fn init() -> Self {
         let (tx, rx) = mpsc::channel();
         let tx = Sender { tx };
-        let rx = Receiver { rx };
+        let rx = Receiver::new(rx);
 
         let term_signal = Arc::new(AtomicBool::new(false));
         #[cfg(unix)]
@@ -747,8 +805,34 @@ impl EventController {
                             ratatui::crossterm::event::Event::Key(key) => {
                                 tx.send(AppEvent::Key(key));
                             }
-                            ratatui::crossterm::event::Event::Resize(w, h) => {
-                                tx.send(AppEvent::Resize(w as usize, h as usize));
+                            ratatui::crossterm::event::Event::Mouse(m)
+                                if m.kind
+                                    == ratatui::crossterm::event::MouseEventKind::Down(
+                                        ratatui::crossterm::event::MouseButton::Left,
+                                    ) =>
+                            {
+                                tx.send(AppEvent::Click {
+                                    col: m.column,
+                                    row: m.row,
+                                });
+                            }
+                            ratatui::crossterm::event::Event::Mouse(m) => {
+                                use ratatui::crossterm::event::MouseEventKind;
+                                let delta = match m.kind {
+                                    MouseEventKind::ScrollDown => 1,
+                                    MouseEventKind::ScrollUp => -1,
+                                    _ => 0,
+                                };
+                                if delta != 0 {
+                                    tx.send(AppEvent::Wheel {
+                                        col: m.column,
+                                        row: m.row,
+                                        delta,
+                                    });
+                                }
+                            }
+                            ratatui::crossterm::event::Event::Resize(w, _) => {
+                                tx.send(AppEvent::Resize(w as usize));
                             }
                             _ => {}
                         },
@@ -1104,6 +1188,7 @@ pub enum UserEvent {
     RefListPrev,
     Search,
     Filter,
+    AuthorFilter,
     UserCommand(usize),
     IgnoreCaseToggle,
     FuzzyToggle,
@@ -1119,6 +1204,7 @@ pub enum UserEvent {
     DeleteTag,
     DeleteRef,
     RemoteRefsToggle,
+    CondensedToggle,
     GitHubToggle,
     ShellToggle,
     TaskListToggle,
@@ -1173,6 +1259,7 @@ impl UserEvent {
             UserEvent::RefListPrev => "ref_list_prev",
             UserEvent::Search => "search",
             UserEvent::Filter => "filter",
+            UserEvent::AuthorFilter => "author_filter",
             UserEvent::UserCommand(n) => return Some(format!("user_command_{n}")),
             UserEvent::IgnoreCaseToggle => "ignore_case_toggle",
             UserEvent::FuzzyToggle => "fuzzy_toggle",
@@ -1188,6 +1275,7 @@ impl UserEvent {
             UserEvent::DeleteTag => "delete_tag",
             UserEvent::DeleteRef => "delete_ref",
             UserEvent::RemoteRefsToggle => "remote_refs_toggle",
+            UserEvent::CondensedToggle => "condensed_toggle",
             UserEvent::GitHubToggle => "github_toggle",
             UserEvent::ShellToggle => "shell_toggle",
             UserEvent::TaskListToggle => "task_list_toggle",
@@ -1246,6 +1334,7 @@ impl UserEvent {
             UserEvent::RefListPrev => t!("event.desc.ref_list_prev"),
             UserEvent::Search => t!("event.desc.search"),
             UserEvent::Filter => t!("event.desc.filter"),
+            UserEvent::AuthorFilter => t!("event.desc.author_filter"),
             UserEvent::UserCommand(_) => return None,
             UserEvent::IgnoreCaseToggle => t!("event.desc.ignore_case_toggle"),
             UserEvent::FuzzyToggle => t!("event.desc.fuzzy_toggle"),
@@ -1261,6 +1350,7 @@ impl UserEvent {
             UserEvent::DeleteTag => t!("event.desc.delete_tag"),
             UserEvent::DeleteRef => t!("event.desc.delete_ref"),
             UserEvent::RemoteRefsToggle => t!("event.desc.remote_refs_toggle"),
+            UserEvent::CondensedToggle => t!("event.desc.condensed_toggle"),
             UserEvent::GitHubToggle => t!("event.desc.git_hub_toggle"),
             UserEvent::ShellToggle => t!("event.desc.shell_toggle"),
             UserEvent::TaskListToggle => t!("event.desc.task_list_toggle"),
@@ -1339,6 +1429,7 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "ref_list_prev" => Ok(UserEvent::RefListPrev),
                         "search" => Ok(UserEvent::Search),
                         "filter" => Ok(UserEvent::Filter),
+                        "author_filter" => Ok(UserEvent::AuthorFilter),
                         "ignore_case_toggle" => Ok(UserEvent::IgnoreCaseToggle),
                         "fuzzy_toggle" => Ok(UserEvent::FuzzyToggle),
                         "target_toggle" => Ok(UserEvent::TargetToggle),
@@ -1353,6 +1444,7 @@ impl<'de> Deserialize<'de> for UserEvent {
                         "delete_tag" => Ok(UserEvent::DeleteTag),
                         "delete_ref" => Ok(UserEvent::DeleteRef),
                         "remote_refs_toggle" => Ok(UserEvent::RemoteRefsToggle),
+                        "condensed_toggle" => Ok(UserEvent::CondensedToggle),
                         "github_toggle" => Ok(UserEvent::GitHubToggle),
                         "shell_toggle" => Ok(UserEvent::ShellToggle),
                         "task_list_toggle" => Ok(UserEvent::TaskListToggle),
@@ -1485,6 +1577,7 @@ impl KeyScope {
                     | E::DeleteTag
                     | E::DeleteRef
                     | E::RemoteRefsToggle
+                    | E::CondensedToggle
                     | E::Fetch
                     | E::Pull
                     | E::Push
@@ -1519,9 +1612,11 @@ impl KeyScope {
                     | E::FullBranchCopy
                     | E::TagCopy
                     | E::RemoteRefsToggle
+                    | E::CondensedToggle
                     | E::RefList
                     | E::MarkToggle
                     | E::Refresh
+                    | E::OpenRepoWeb
                     | E::ShellToggle
             ),
             KeyScope::Refs => matches!(
@@ -1557,12 +1652,14 @@ impl KeyScope {
                     | E::GoToBottom
                     | E::Search
                     | E::Filter
+                    | E::AuthorFilter
                     | E::ShortCopy
                     | E::FullCopy
                     | E::TagCopy
                     | E::DetailPaneToggle
                     | E::Refresh
                     | E::Fetch
+                    | E::OpenRepoWeb
                     | E::MergePr
                     | E::ToggleIssueState
                     | E::CiRerun
@@ -1700,6 +1797,81 @@ mod tests {
             "心跳週期 {TICK_INTERVAL:?} 對 stall 門檻 {WATCHDOG_STALL_TIMEOUT:?} 來說太長"
         );
         assert!(WATCHDOG_INTERVAL < WATCHDOG_STALL_TIMEOUT);
+    }
+
+    // ── Receiver 滾輪合併 ──
+
+    fn wheel(col: u16, row: u16, delta: i16) -> AppEvent {
+        AppEvent::Wheel { col, row, delta }
+    }
+
+    fn wheel_receiver(events: Vec<AppEvent>) -> Receiver {
+        let (tx, rx) = mpsc::channel();
+        for e in events {
+            tx.send(e).unwrap();
+        }
+        // tx 掉了之後 channel 清空會讓 `recv` 回 Quit，測試用它當結尾哨兵。
+        Receiver::new(rx)
+    }
+
+    #[test]
+    fn recv_sums_consecutive_wheel_events_at_the_same_position() {
+        let rx = wheel_receiver(vec![wheel(3, 4, 1), wheel(3, 4, 1), wheel(3, 4, 1)]);
+        assert!(matches!(
+            rx.recv(),
+            AppEvent::Wheel {
+                col: 3,
+                row: 4,
+                delta: 3
+            }
+        ));
+        assert!(matches!(rx.recv(), AppEvent::Quit));
+    }
+
+    #[test]
+    fn recv_drops_a_batch_whose_directions_cancel_out() {
+        let rx = wheel_receiver(vec![wheel(3, 4, 1), wheel(3, 4, -1)]);
+        assert!(
+            matches!(rx.recv(), AppEvent::Quit),
+            "相消到 0 的滾輪不該送出"
+        );
+    }
+
+    #[test]
+    fn recv_keeps_other_events_in_order_after_a_wheel_batch() {
+        let rx = wheel_receiver(vec![
+            wheel(1, 1, -1),
+            wheel(1, 1, -1),
+            AppEvent::Tick,
+            wheel(1, 1, 1),
+        ]);
+        assert!(matches!(rx.recv(), AppEvent::Wheel { delta: -2, .. }));
+        assert!(
+            matches!(rx.recv(), AppEvent::Tick),
+            "夾在中間的事件不能被吞"
+        );
+        assert!(matches!(rx.recv(), AppEvent::Wheel { delta: 1, .. }));
+    }
+
+    #[test]
+    fn recv_does_not_merge_wheel_events_at_different_positions() {
+        let rx = wheel_receiver(vec![wheel(1, 1, 1), wheel(2, 2, 1)]);
+        assert!(matches!(
+            rx.recv(),
+            AppEvent::Wheel {
+                col: 1,
+                row: 1,
+                delta: 1
+            }
+        ));
+        assert!(matches!(
+            rx.recv(),
+            AppEvent::Wheel {
+                col: 2,
+                row: 2,
+                delta: 1
+            }
+        ));
     }
 
     // ── AutoFetchClock ──
@@ -2074,6 +2246,7 @@ mod tests {
             UserEvent::RefListPrev,
             UserEvent::Search,
             UserEvent::Filter,
+            UserEvent::AuthorFilter,
             UserEvent::UserCommand(1),
             UserEvent::UserCommand(42),
             UserEvent::IgnoreCaseToggle,
@@ -2090,6 +2263,7 @@ mod tests {
             UserEvent::DeleteTag,
             UserEvent::DeleteRef,
             UserEvent::RemoteRefsToggle,
+            UserEvent::CondensedToggle,
             UserEvent::GitHubToggle,
             UserEvent::TaskListToggle,
             UserEvent::DetailPaneToggle,

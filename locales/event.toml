@@ -116,6 +116,10 @@ en-US = "Start search"
 zh-TW = "開始過濾"
 en-US = "Start filter"
 
+[event.desc.author_filter]
+zh-TW = "依作者篩選"
+en-US = "Filter by author"
+
 [event.desc.ignore_case_toggle]
 zh-TW = "切換忽略大小寫"
 en-US = "Toggle ignore case"
@@ -171,6 +175,10 @@ en-US = "Delete local branch on commit"
 [event.desc.remote_refs_toggle]
 zh-TW = "切換 remote refs"
 en-US = "Toggle remote refs"
+
+[event.desc.condensed_toggle]
+zh-TW = "切換精簡模式（只顯示分支與分岔處）"
+en-US = "Toggle condensed graph (branches and fork points only)"
 
 [event.desc.git_hub_toggle]
 zh-TW = "開啟 GitHub issues/PRs"

@@ -1,23 +1,35 @@
 use std::time::Instant;
 
-use ratatui::crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers};
+use ratatui::{
+    crossterm::event::{Event, KeyCode, KeyEvent, KeyModifiers},
+    layout::Position,
+};
 use rust_i18n::t;
-use tui_input::backend::crossterm::EventHandler;
+use tui_input::{backend::crossterm::EventHandler, Input};
 
 use crate::{
+    app::WHEEL_LINES,
     event::{AppEvent, RelatedGroup, RelatedItem, UserEvent, UserEventWithCount},
     fuzzy::SearchMatcher,
     github::{self, PrDraftAction, StateAction},
 };
 
-use super::{render::state_label, GitHubFocus, GitHubTab, GitHubView, LoadState, TaskListPanel};
+use super::{
+    render::state_label, ClickTarget, GitHubFocus, GitHubTab, GitHubView, LoadState, TaskListPanel,
+};
 
 impl<'a> GitHubView<'a> {
     pub fn handle_event(&mut self, event_with_count: UserEventWithCount, key: KeyEvent) {
         let count = event_with_count.count;
         // 在偏 modal 的 focus（List/Preview）中，右/左鍵兼作 Confirm/Cancel。
         // Prompt 接收原始按鍵輸入；CheckboxEdit 用左/右鍵切換。
+        // 沒綁定的 `0` 在 List/Preview 等同 GoToBottom。
         let event = match self.focus {
+            GitHubFocus::List | GitHubFocus::Preview
+                if unbound_char(event_with_count.event, key) == Some('0') =>
+            {
+                UserEvent::GoToBottom
+            }
             // Branches、CI 是多欄卡片，左右鍵用來在卡片間橫向移動，不當 Confirm/Cancel
             GitHubFocus::List if self.active_tab.is_card_tab() => event_with_count.event,
             GitHubFocus::List | GitHubFocus::Preview => modal_yesno_aliases(event_with_count.event),
@@ -38,6 +50,109 @@ impl<'a> GitHubView<'a> {
         }
         if self.selected_number_and_kind() != before {
             self.schedule_timeline_for_selected(Instant::now());
+        }
+    }
+
+    /// 滑鼠左鍵點擊：查上一幀 `render` 登記的命中表。
+    ///
+    /// 只做「選取」與「切換焦點／分頁」，不觸發任何 Enter 才有的動作（CI 卡片
+    /// 的 Enter 會開瀏覽器、checkbox 編輯器會改 PR 內文）。搜尋輸入中與
+    /// checkbox 編輯中是 modal，點擊一律忽略。選取變動後的 timeline 排程
+    /// 照 `handle_event` 的 before/after 比對。
+    pub fn click(&mut self, col: u16, row: u16) {
+        if matches!(self.focus, GitHubFocus::Prompt | GitHubFocus::CheckboxEdit) {
+            return;
+        }
+        let pos = Position::new(col, row);
+        let Some(&(_, target)) = self.click_hits.iter().find(|(rect, _)| rect.contains(pos)) else {
+            return;
+        };
+
+        self.flash_message = None;
+        let before = self.selected_number_and_kind();
+        match target {
+            ClickTarget::Tab(tab) => {
+                self.focus = GitHubFocus::List;
+                self.select_tab(tab);
+            }
+            ClickTarget::Item(index) => {
+                self.focus = GitHubFocus::List;
+                self.selected_index = index;
+                self.preview_offset = 0;
+                self.maybe_load_more();
+            }
+            ClickTarget::LoadMore => {
+                if !self.loading_more && !self.has_active_filter() {
+                    self.dispatch_load_more();
+                }
+            }
+            ClickTarget::Preview => self.focus = GitHubFocus::Preview,
+        }
+        if self.selected_number_and_kind() != before {
+            self.schedule_timeline_for_selected(Instant::now());
+        }
+    }
+
+    /// 滑鼠滾輪：捲指標底下那塊內容。
+    ///
+    /// - Preview：捲 `preview_offset`，往下照鍵盤路徑補載 timeline。
+    /// - Issues／PRs 清單：只捲視窗，`selected_index` 不動（這兩個分頁本來就
+    ///   允許選取在畫面外，下次鍵盤移動 `adjust_scroll` 會拉回來）。上限要在
+    ///   這裡夾：render 不夾 `offset`，超過清單長度會整片空白。
+    /// - Branches／CI 卡片：一格捲一整列卡片，選取被捲出畫面就貼邊被推著走
+    ///   （render 每幀 `adjust_scroll` 會把選取拉回畫面，單捲 offset 會被蓋掉）。
+    ///
+    /// 搜尋輸入與 checkbox 編輯是 modal，一律忽略。
+    pub fn wheel(&mut self, col: u16, row: u16, lines: isize) {
+        if matches!(self.focus, GitHubFocus::Prompt | GitHubFocus::CheckboxEdit) {
+            return;
+        }
+        let pos = Position::new(col, row);
+        let on_preview = self
+            .click_hits
+            .iter()
+            .any(|&(rect, target)| target == ClickTarget::Preview && rect.contains(pos));
+        if on_preview {
+            self.preview_offset = self.preview_offset.saturating_add_signed(lines);
+            if lines > 0 {
+                self.maybe_load_more_timeline();
+            }
+            return;
+        }
+        if !self.scroll_area.contains(pos) {
+            return;
+        }
+        if self.active_tab.is_card_tab() {
+            self.wheel_cards(lines / WHEEL_LINES);
+        } else {
+            let max_offset = self.current_list_len().saturating_sub(self.scroll_rows);
+            self.offset = self.offset.saturating_add_signed(lines).min(max_offset);
+        }
+    }
+
+    /// 卡片分頁滾輪：`rows` 整列卡片（正數往下），`offset` 永遠對齊列首。
+    fn wheel_cards(&mut self, rows: isize) {
+        let cols = self.branch_columns().max(1);
+        let len = self.current_list_len();
+        // 跟 render 每幀的 `adjust_branch_scroll` 同一個來源，兩邊才不會互相拉扯。
+        let rows_on_screen = self.branch_visible_rows().max(1);
+        let max_first = len.div_ceil(cols).saturating_sub(rows_on_screen);
+        let first = (self.offset / cols)
+            .saturating_add_signed(rows)
+            .min(max_first);
+        self.offset = first * cols;
+
+        let last = (self.offset + rows_on_screen * cols)
+            .min(len)
+            .saturating_sub(1)
+            .max(self.offset);
+        let selected = self.selected_index.clamp(self.offset, last);
+        if selected != self.selected_index {
+            self.selected_index = selected;
+            self.preview_offset = 0;
+            if rows > 0 {
+                self.maybe_load_more();
+            }
         }
     }
 
@@ -128,6 +243,10 @@ impl<'a> GitHubView<'a> {
             UserEvent::GoToTop => {
                 self.preview_offset = 0;
             }
+            UserEvent::GoToBottom => {
+                self.preview_offset = self.last_preview_len.saturating_sub(self.preview_height);
+                self.maybe_load_more_timeline();
+            }
             UserEvent::Confirm => {
                 self.try_enter_checkbox_edit();
             }
@@ -154,6 +273,9 @@ impl<'a> GitHubView<'a> {
             }
             UserEvent::Fetch => {
                 self.tx.send(AppEvent::FetchAll);
+            }
+            UserEvent::OpenRepoWeb => {
+                self.tx.send(AppEvent::OpenRepoWeb);
             }
             _ => {}
         }
@@ -252,6 +374,10 @@ impl<'a> GitHubView<'a> {
                 self.adjust_scroll();
             }
             UserEvent::Search => {
+                // 每次都從空白開始；上一次的查詢字串留在 last_search，在 prompt 再按一次才還原
+                if !self.search_input.value().is_empty() {
+                    self.clear_search();
+                }
                 self.focus = GitHubFocus::Prompt;
             }
             UserEvent::Filter => {
@@ -262,11 +388,15 @@ impl<'a> GitHubView<'a> {
                 self.bump_generation();
                 self.dispatch_refresh();
             }
+            UserEvent::AuthorFilter => self.cycle_author(),
             UserEvent::Refresh => {
                 self.dispatch_refresh();
             }
             UserEvent::Fetch => {
                 self.tx.send(AppEvent::FetchAll);
+            }
+            UserEvent::OpenRepoWeb => {
+                self.tx.send(AppEvent::OpenRepoWeb);
             }
             UserEvent::ShortCopy => {
                 let name = match self.active_tab.kind() {
@@ -360,8 +490,8 @@ impl<'a> GitHubView<'a> {
                     });
                 }
             }
-            // 沒有 state filter、preview、related picker
-            UserEvent::Filter | UserEvent::DetailPaneToggle => {}
+            // 沒有 state filter、作者篩選、preview、related picker
+            UserEvent::Filter | UserEvent::AuthorFilter | UserEvent::DetailPaneToggle => {}
             _ => return false,
         }
         true
@@ -373,7 +503,7 @@ impl<'a> GitHubView<'a> {
     fn handle_branches_event(&mut self, event: UserEvent, count: usize) -> bool {
         match event {
             UserEvent::Refresh => self.reload_branches(),
-            UserEvent::Filter => self.cycle_branch_author(),
+            UserEvent::Filter | UserEvent::AuthorFilter => self.cycle_author(),
             UserEvent::NavigateLeft | UserEvent::NavigateRight => {
                 self.move_card_horizontally(event, count);
             }
@@ -579,6 +709,12 @@ impl<'a> GitHubView<'a> {
             // 切分頁時保留查詢字串
             UserEvent::RefList => self.switch_tab(self.active_tab.next()),
             UserEvent::RefListPrev => self.switch_tab(self.active_tab.prev()),
+            UserEvent::Search
+                if self.search_input.value().is_empty() && !self.last_search.is_empty() =>
+            {
+                self.search_input = Input::new(self.last_search.clone());
+                self.rebuild_filtered_indices();
+            }
             _ => {
                 // 把按鍵轉發給 tui-input；只有值真的變了才重建
                 let before = self.search_input.value().to_string();
@@ -652,97 +788,61 @@ impl<'a> GitHubView<'a> {
 
     /// 清空搜尋字串；Branches 的作者篩選獨立於搜尋字串，所以重建而非清空索引
     pub(super) fn clear_search(&mut self) {
+        if !self.search_input.value().is_empty() {
+            self.last_search = self.search_input.value().to_string();
+        }
         self.search_input.reset();
         self.rebuild_filtered_indices();
     }
 
+    /// 使用者改了篩選條件：重算索引，並把游標與捲動歸零。資料載入完成的路徑
+    /// 不能用這個（會把使用者捲到一半的位置打回頂端），改用 `recompute_filtered_indices`。
     pub(super) fn rebuild_filtered_indices(&mut self) {
-        let query = self.search_input.value().to_string();
-        let matcher = (!query.is_empty()).then(|| SearchMatcher::new(&query, true, true));
-
-        // Branches 另有作者篩選，沒有搜尋字串時也要算
-        self.filtered_branch_indices = if matcher.is_some() || self.branches_author.is_some() {
-            self.branches
-                .iter()
-                .enumerate()
-                .filter(|(_, b)| {
-                    self.branches_author.as_ref().is_none_or(|a| &b.author == a)
-                        && matcher
-                            .as_ref()
-                            .is_none_or(|m| m.matches(&format!("{} @{}", b.name, b.author)))
-                })
-                .map(|(idx, _)| idx)
-                .collect()
-        } else {
-            Vec::new()
-        };
-
-        self.filtered_ci_indices = match &matcher {
-            Some(m) => self
-                .ci
-                .iter()
-                .enumerate()
-                .filter(|(_, e)| m.matches(&format!("#{} {} {}", e.number, e.title, e.branch)))
-                .map(|(idx, _)| idx)
-                .collect(),
-            None => Vec::new(),
-        };
-
-        let Some(matcher) = matcher else {
-            self.filtered_issue_indices.clear();
-            self.filtered_pr_indices.clear();
-            return;
-        };
-
-        self.filtered_issue_indices = self
-            .issues
-            .iter()
-            .enumerate()
-            .filter(|(_, i)| {
-                let target = format!(
-                    "#{} {} @{} {}",
-                    i.number,
-                    i.title,
-                    i.author.login,
-                    i.labels
-                        .iter()
-                        .map(|l| l.name.as_str())
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                );
-                matcher.matches(&target)
-            })
-            .map(|(idx, _)| idx)
-            .collect();
-
-        self.filtered_pr_indices = self
-            .pull_requests
-            .iter()
-            .enumerate()
-            .filter(|(_, p)| {
-                let target = format!(
-                    "#{} {} @{} {}",
-                    p.number,
-                    p.title,
-                    p.author.login,
-                    p.labels
-                        .iter()
-                        .map(|l| l.name.as_str())
-                        .collect::<Vec<_>>()
-                        .join(" ")
-                );
-                matcher.matches(&target)
-            })
-            .map(|(idx, _)| idx)
-            .collect();
-
-        // 限制 selected_index 的範圍
-        let max = self.current_list_len().saturating_sub(1);
-        if self.selected_index > max {
-            self.selected_index = max;
-        }
+        self.recompute_filtered_indices();
+        self.selected_index = self
+            .selected_index
+            .min(self.current_list_len().saturating_sub(1));
         self.offset = 0;
         self.preview_offset = 0;
+    }
+
+    /// 依搜尋字串與各分頁的作者篩選重算 `filtered_*_indices`，沒有其他副作用。
+    /// 清單內容變動（reload、翻頁）後也要呼叫，不然索引會指向舊資料。
+    pub(super) fn recompute_filtered_indices(&mut self) {
+        let query = self.search_input.value().to_string();
+        let matcher = (!query.is_empty()).then(|| SearchMatcher::new(&query, true, true));
+        let searching = matcher.is_some();
+        let hit = |text: &dyn Fn() -> String| matcher.as_ref().is_none_or(|m| m.matches(&text()));
+        let author_is =
+            |filter: &Option<String>, login: &str| filter.as_deref().is_none_or(|a| a == login);
+
+        self.filtered_branch_indices = filter_indices(
+            &self.branches,
+            searching || self.branches_author.is_some(),
+            |b| {
+                author_is(&self.branches_author, &b.author)
+                    && hit(&|| format!("{} @{}", b.name, b.author))
+            },
+        );
+        self.filtered_ci_indices = filter_indices(&self.ci, searching, |e| {
+            hit(&|| format!("#{} {} {}", e.number, e.title, e.branch))
+        });
+        self.filtered_issue_indices = filter_indices(
+            &self.issues,
+            searching || self.issues_author.is_some(),
+            |i| {
+                author_is(&self.issues_author, &i.author.login)
+                    && hit(&|| search_text(i.number, &i.title, &i.author.login, &i.labels))
+            },
+        );
+        self.filtered_pr_indices = filter_indices(
+            &self.pull_requests,
+            searching || self.prs_author.is_some(),
+            |p| {
+                author_is(&self.prs_author, &p.author.login)
+                    && hit(&|| search_text(p.number, &p.title, &p.author.login, &p.labels))
+            },
+        );
     }
 
     fn start_jump(&mut self, number: u64) {
@@ -767,15 +867,63 @@ impl<'a> GitHubView<'a> {
     }
 }
 
-/// 沒綁定、不帶修飾鍵的數字鍵 1~4 → 對應分頁。綁定過的數字鍵會 resolve
-/// 成別的事件，不會走到這裡。
-fn digit_tab(event: UserEvent, key: KeyEvent) -> Option<GitHubTab> {
-    match (event, key.code) {
-        (UserEvent::Unknown, KeyCode::Char(c)) if key.modifiers == KeyModifiers::NONE => {
-            GitHubTab::from_digit(c)
+/// 篩選沒啟用時回傳空 `Vec`（呼叫端用 `has_active_filter` 判斷要不要看它）。
+fn filter_indices<T>(items: &[T], active: bool, keep: impl Fn(&T) -> bool) -> Vec<usize> {
+    if !active {
+        return Vec::new();
+    }
+    items
+        .iter()
+        .enumerate()
+        .filter(|(_, item)| keep(item))
+        .map(|(idx, _)| idx)
+        .collect()
+}
+
+/// issue／PR 搜尋比對的文字：`#編號 標題 @作者 label…`。
+fn search_text(number: u64, title: &str, login: &str, labels: &[github::GhLabel]) -> String {
+    let labels = labels
+        .iter()
+        .map(|l| l.name.as_str())
+        .collect::<Vec<_>>()
+        .join(" ");
+    format!("#{number} {title} @{login} {labels}")
+}
+
+/// 作者篩選的下一步：所有作者（`None`）→ 依出現順序的各作者 → 回到所有作者。
+/// `cur` 已不在 `authors` 裡（資料重載後作者消失）也回到所有作者。
+pub(super) fn next_author<'a>(
+    authors: impl IntoIterator<Item = &'a str>,
+    cur: Option<&str>,
+) -> Option<String> {
+    let mut seen: Vec<&str> = Vec::new();
+    for author in authors {
+        if !seen.contains(&author) {
+            seen.push(author);
         }
+    }
+    let next = match cur {
+        None => seen.first(),
+        Some(cur) => seen
+            .iter()
+            .position(|a| *a == cur)
+            .and_then(|i| seen.get(i + 1)),
+    };
+    next.map(|a| (*a).to_string())
+}
+
+/// 沒綁定、不帶修飾鍵的單一字元鍵。綁定過的鍵會 resolve 成別的事件，
+/// 不會走到這裡。
+fn unbound_char(event: UserEvent, key: KeyEvent) -> Option<char> {
+    match (event, key.code) {
+        (UserEvent::Unknown, KeyCode::Char(c)) if key.modifiers == KeyModifiers::NONE => Some(c),
         _ => None,
     }
+}
+
+/// 數字鍵 1~4 → 對應分頁。
+fn digit_tab(event: UserEvent, key: KeyEvent) -> Option<GitHubTab> {
+    unbound_char(event, key).and_then(GitHubTab::from_digit)
 }
 
 fn modal_yesno_aliases(event: UserEvent) -> UserEvent {

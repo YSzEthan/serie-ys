@@ -7,6 +7,7 @@ use std::{
 };
 
 use garde::Validate;
+use jiff::{fmt::strtime, tz::TimeZone, Timestamp};
 use rust_i18n::t;
 use rustc_hash::FxHashMap;
 use serde::Deserialize;
@@ -19,7 +20,8 @@ use crate::{
     git::FetchPrune,
     keybind::KeyBind,
     update::{AutoRestart, Beta, ReleaseNotes, UpdateMode, MAX_INTERVAL_HOURS, MIN_INTERVAL_HOURS},
-    CommitOrderType, CompactType, GraphStyle, GraphWidthType, InitialSelection, Locale, Result,
+    CommitOrderType, CompactType, CondensedType, GraphStyle, GraphWidthType, InitialSelection,
+    Locale, Result,
 };
 
 const CONFIG_FILE_NAME: &str = ".ysgit.toml";
@@ -44,7 +46,7 @@ pub fn load() -> Result<(CoreConfig, UiConfig, ColorTheme, Option<KeyBind>)> {
         },
     }?;
 
-    config.validate()?;
+    config.validate().map_err(|error| error.to_string())?;
 
     Ok((config.core, config.ui, config.color, config.keybind))
 }
@@ -207,6 +209,7 @@ pub struct CoreOptionConfig {
     pub order: Option<CommitOrderType>,
     pub graph_width: Option<GraphWidthType>,
     pub compact: Option<CompactType>,
+    pub condensed: Option<CondensedType>,
     pub graph_style: Option<GraphStyle>,
     pub initial_selection: Option<InitialSelection>,
     pub max_count: Option<usize>,
@@ -389,6 +392,17 @@ pub struct UserCommand {
     pub refresh: bool,
 }
 
+/// 試著用格式化一個固定時間來檢查 strftime 格式是否合法：jiff 遇到無效格式
+/// 會回 `Err`，早在載入設定時擋下，使用者才看得到哪個欄位寫錯。
+fn validate_date_format(format: &str, _: &()) -> garde::Result {
+    strtime::format(
+        format,
+        &Timestamp::UNIX_EPOCH.to_zoned_datetime(TimeZone::UTC),
+    )
+    .map(|_| ())
+    .map_err(|error| garde::Error::new(t!("cli.config.invalid_date_format", error = error)))
+}
+
 fn validate_user_command_refresh(
     command_type: &UserCommandType,
 ) -> impl FnOnce(&bool, &()) -> garde::Result + '_ {
@@ -486,7 +500,7 @@ pub struct UiListConfig {
     #[garde(range(min = 1))]
     #[default = 20]
     pub subject_min_width: u16,
-    #[garde(length(min = 1))]
+    #[garde(length(min = 1), custom(validate_date_format))]
     #[default = "%Y-%m-%d"]
     pub date_format: String,
     #[garde(range(min = 0))]
@@ -511,7 +525,7 @@ pub struct UiListConfig {
     #[default = 100]
     pub graph_edge_max_rows: usize,
     /// 截斷啟用時，graph 欄最多佔清單寬度的百分比；超出的 lane 收進最後
-    /// 一欄的溢位欄。
+    /// 一欄的溢位欄。精簡模式（手機版面）固定用 40%，不吃這個設定。
     #[garde(range(min = 10, max = 100))]
     #[default = 50]
     pub graph_max_width_percent: u16,
@@ -531,7 +545,7 @@ pub enum UserListColumnType {
 #[optional(derives = [Deserialize])]
 #[derive(Debug, Clone, PartialEq, Eq, SmartDefault, Validate)]
 pub struct UiDetailConfig {
-    #[garde(length(min = 1))]
+    #[garde(length(min = 1), custom(validate_date_format))]
     #[default = "%Y-%m-%d %H:%M:%S %z"]
     pub date_format: String,
     #[garde(skip)]
@@ -859,14 +873,40 @@ mod tests {
     }
 
     #[test]
+    fn test_config_date_formats_accept_jiff_specifiers() {
+        for format in ["%Q", "%Y-%m-%d %H:%M:%S %:z", "%%", "date"] {
+            let mut config = Config::default();
+            config.ui.list.date_format = format.into();
+            config.ui.detail.date_format = format.into();
+
+            config.validate().unwrap();
+        }
+    }
+
+    #[test]
+    fn test_config_invalid_date_formats_report_both_keys() {
+        for format in ["", "%J", "%"] {
+            let mut config = Config::default();
+            config.ui.list.date_format = format.into();
+            config.ui.detail.date_format = format.into();
+
+            let error = config.validate().unwrap_err().to_string();
+            assert!(error.contains("ui.list.date_format:"), "{error}");
+            assert!(error.contains("ui.detail.date_format:"), "{error}");
+        }
+    }
+
+    #[test]
     fn test_config_default() {
         let actual = Config::default();
+        actual.validate().unwrap();
         let expected = Config {
             core: CoreConfig {
                 option: CoreOptionConfig {
                     order: None,
                     graph_width: None,
                     compact: None,
+                    condensed: None,
                     graph_style: None,
                     initial_selection: None,
                     max_count: None,
@@ -995,6 +1035,7 @@ mod tests {
                     order: Some(CommitOrderType::Topo),
                     graph_width: Some(GraphWidthType::Single),
                     compact: None,
+                    condensed: None,
                     graph_style: Some(GraphStyle::Angular),
                     initial_selection: Some(InitialSelection::Head),
                     max_count: None,

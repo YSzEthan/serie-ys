@@ -75,7 +75,7 @@ pub(crate) fn required_width(
 /// `on`／`off` 照使用者指定（`on` 但版面排不出來時，規則一已經把
 /// `compact_pref` 降級成 `Off`，所以這裡也不會真的打開）。
 ///
-/// 欄寬上限（`max_width_percent`，只在長線截斷啟用的圖才給）：graph 最多佔
+/// 欄寬上限（`max_width_percent`，長線截斷啟用的圖與精簡模式才給）：graph 最多佔
 /// `area_width` 的這個比例，回傳的第三個值是實際畫得下的欄數 `cols`（超出
 /// 時最後一欄是溢位欄）。寬度用還沒套上限的 `cell_count` 判斷——用套過上限
 /// 的欄數，寬圖會從 `Single` 被誤判成 `Double`，能顯示的 lane 少一半；但
@@ -452,6 +452,25 @@ mod tests {
         );
         assert_eq!(w, CellWidthType::Single);
         assert_eq!(cols, 60, "Single 畫得完，沒有溢位欄");
+    }
+
+    /// 手機寬度（20 欄）的 40% 上限只剩 8 格：Double 放不下降成 Single，
+    /// 超出的 lane 收進溢位欄。
+    #[test]
+    fn decide_caps_columns_at_forty_percent_on_phone_width() {
+        let (w, _, cols) = decide(
+            &default_columns(),
+            30,
+            20,
+            Some(GraphWidthType::Auto),
+            Some(CompactType::Auto),
+            Some(40),
+            8,
+            20,
+            10,
+        );
+        assert_eq!(w, CellWidthType::Single);
+        assert_eq!(cols, 8);
     }
 
     /// 寬度用套上限之前的欄數判斷：用套過上限的欄數（100）的話，Double
