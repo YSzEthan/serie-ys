@@ -1,0 +1,7 @@
+●─╮  Merge branch 'topic' into integration
+│ │ ●─╮  Merge branch 'master' into feature
+│ ● │ │  Add topic change
+│ │ ● │  Start feature
+● │ │ │  Start integration
+●─╯─│─╯  Update base
+●───╯  Initial commit

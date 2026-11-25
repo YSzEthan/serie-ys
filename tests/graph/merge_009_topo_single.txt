@@ -1,0 +1,7 @@
+●┬╮  Merge branches 'work' and 'topic' into join
+││●  Add topic change
+│●┤  Merge branch 'base' into work
+││●  Update base
+│●│  Start feature
+●││  Update primary
+●┴╯  Initial commit

@@ -1,0 +1,25 @@
+●╮  Merge branch 'support' into topic
+││●  Continue feature 1
+│││●  Continue feature 2
+││││●  Continue feature 3
+│││││●  Continue feature 4
+││││││●  Review topic 1
+│││││││●  Review topic 2
+││││││││●  Review topic 3
+│││││││││●  Review topic 4
+●┼┼┼┼┼┴┴┴╯  Continue topic
+││●┼┼┼╮  Merge branch 'base-4' into feature-1
+│││●┼┼┼╮  Merge branch 'base-3' into feature-2
+││││●┼┼┼╮  Merge branch 'base-2' into feature-3
+│││││●┼┼┼╮  Merge branch 'base-1' into feature-4
+││●│││││││  Start feature 1
+│││●││││││  Start feature 2
+││││●│││││  Start feature 3
+│││││●││││  Start feature 4
+│●││││││││  Add support change
+●│││││││││  Start topic
+●┼┼┼┼┼╯│││  Update base 4
+●┼┼┼┼┼─╯││  Update base 3
+●┼┼┼┼┼──╯│  Update base 2
+●┼┼┼┼┼───╯  Update base 1
+●┴┴┴┴╯  Initial commit

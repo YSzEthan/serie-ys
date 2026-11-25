@@ -1,0 +1,10 @@
+●╮  Merge branch 'support' into topic
+││●  Continue feature
+│││●  Review topic
+●┼┼╯  Continue topic
+││●╮  Merge branch 'master' into feature
+││●│  Start feature
+│●││  Add support change
+●│││  Start topic
+●┼┼╯  Update base
+●┴╯  Initial commit

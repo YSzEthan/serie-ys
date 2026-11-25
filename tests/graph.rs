@@ -850,6 +850,147 @@ fn merge_006() -> TestResult {
 }
 
 #[test]
+fn merge_007() -> TestResult {
+    // upstream merge_007：merge 繞路要避開時間序中不相關的 commit
+    let dir = tempfile::tempdir()?;
+    let repo_path = dir.path();
+
+    let git = &GitRepository::new(repo_path);
+
+    git.init();
+
+    git.commit("Initial commit", "2024-01-01");
+
+    git.checkout_b("feature");
+    git.commit("Start feature", "2024-01-04");
+
+    git.checkout("master");
+    git.commit("Update base", "2024-01-02");
+
+    git.checkout_b("integration");
+    git.commit("Start integration", "2024-01-03");
+
+    git.checkout("master");
+    git.checkout_b("topic");
+    git.commit("Add topic change", "2024-01-05");
+
+    git.checkout("feature");
+    git.merge(&["master"], "2024-01-06");
+
+    git.checkout("integration");
+    git.merge(&["topic"], "2024-01-07");
+
+    git.log();
+
+    let options = &[
+        GenerateGraphOption::new("merge_007_chrono", git::SortCommit::Chronological),
+        GenerateGraphOption::new("merge_007_topo", git::SortCommit::Topological),
+    ];
+
+    copy_git_dir(repo_path, "merge_007");
+
+    generate_and_output_text_graphs(repo_path, options);
+    assert_text_graphs(options);
+
+    Ok(())
+}
+
+#[test]
+fn merge_008() -> TestResult {
+    // upstream merge_008：merge 繞路優先用不相關分支線前的空欄
+    let dir = tempfile::tempdir()?;
+    let repo_path = dir.path();
+
+    let git = &GitRepository::new(repo_path);
+
+    git.init();
+
+    git.commit("Initial commit", "2024-01-01");
+
+    git.checkout_b("feature");
+    git.commit("Start feature", "2024-01-05");
+
+    git.checkout("master");
+    git.checkout_b("support");
+    git.commit("Add support change", "2024-01-04");
+
+    git.checkout("master");
+    git.commit("Update base", "2024-01-02");
+
+    git.checkout_b("topic");
+    git.commit("Start topic", "2024-01-03");
+    git.commit("Continue topic", "2024-01-07");
+
+    git.checkout_b("review");
+    git.commit("Review topic", "2024-01-08");
+
+    git.checkout("feature");
+    git.merge(&["master"], "2024-01-06");
+    git.commit("Continue feature", "2024-01-09");
+
+    git.checkout("topic");
+    git.merge(&["support"], "2024-01-10");
+
+    git.log();
+
+    let options = &[
+        GenerateGraphOption::new("merge_008_chrono", git::SortCommit::Chronological),
+        GenerateGraphOption::new("merge_008_topo", git::SortCommit::Topological),
+    ];
+
+    copy_git_dir(repo_path, "merge_008");
+
+    generate_and_output_text_graphs(repo_path, options);
+    assert_text_graphs(options);
+
+    Ok(())
+}
+
+#[test]
+fn merge_009() -> TestResult {
+    // upstream primary_branch_002：繞路用主線旁的空欄（此處不帶 primary_branch，只驗 graph 結構）
+    let dir = tempfile::tempdir()?;
+    let repo_path = dir.path();
+
+    let git = &GitRepository::new(repo_path);
+
+    git.init();
+
+    git.commit("Initial commit", "2024-01-01");
+
+    git.checkout_b("base");
+    git.commit("Update base", "2024-01-02");
+
+    git.checkout_b("topic");
+    git.commit("Add topic change", "2024-01-03");
+
+    git.checkout("master");
+    git.checkout_b("work");
+    git.commit("Start feature", "2024-01-04");
+    git.merge(&["base"], "2024-01-05");
+
+    git.checkout("master");
+    git.commit("Update primary", "2024-01-06");
+
+    git.checkout_b("join");
+    git.merge(&["work", "topic"], "2024-01-07");
+
+    git.log();
+
+    let options = &[
+        GenerateGraphOption::new("merge_009_chrono", git::SortCommit::Chronological),
+        GenerateGraphOption::new("merge_009_topo", git::SortCommit::Topological),
+    ];
+
+    copy_git_dir(repo_path, "merge_009");
+
+    generate_and_output_text_graphs(repo_path, options);
+    assert_text_graphs(options);
+
+    Ok(())
+}
+
+#[test]
 fn stash_001() -> TestResult {
     // 測試案例：有多個 stash，最近一筆 commit 是普通 commit
     let dir = tempfile::tempdir()?;
@@ -1221,6 +1362,70 @@ fn complex_001() -> TestResult {
     ];
 
     copy_git_dir(repo_path, "complex_001");
+
+    generate_and_output_text_graphs(repo_path, options);
+    assert_text_graphs(options);
+
+    Ok(())
+}
+
+#[test]
+fn complex_002() -> TestResult {
+    // upstream complex_003：多條 sync merge 的繞路不可穿過 commit，欄位要合理重用
+    let dir = tempfile::tempdir()?;
+    let repo_path = dir.path();
+
+    let git = &GitRepository::new(repo_path);
+
+    git.init();
+    let date = |day: u32| format!("2024-01-{day:02}");
+
+    git.commit("Initial commit", &date(1));
+
+    for feature in 1..=4 {
+        git.checkout("master");
+        git.checkout_b(&format!("feature-{feature}"));
+        git.commit(&format!("Start feature {feature}"), &date(12 - feature));
+    }
+
+    git.checkout("master");
+    git.checkout_b("support");
+    git.commit("Add support change", &date(7));
+
+    git.checkout("master");
+    for base in 1..=4 {
+        git.commit(&format!("Update base {base}"), &date(base + 1));
+        git.checkout_b(&format!("base-{base}"));
+        git.checkout("master");
+    }
+
+    git.checkout_b("topic");
+    git.commit("Start topic", &date(6));
+    git.commit("Continue topic", &date(16));
+
+    for review in 1..=4 {
+        git.checkout("topic");
+        git.checkout_b(&format!("review-{review}"));
+        git.commit(&format!("Review topic {review}"), &date(21 - review));
+    }
+
+    for feature in 1..=4 {
+        git.checkout(&format!("feature-{feature}"));
+        git.merge(&[&format!("base-{}", 5 - feature)], &date(16 - feature));
+        git.commit(&format!("Continue feature {feature}"), &date(25 - feature));
+    }
+
+    git.checkout("topic");
+    git.merge(&["support"], &date(25));
+
+    git.log();
+
+    let options = &[
+        GenerateGraphOption::new("complex_002_chrono", git::SortCommit::Chronological),
+        GenerateGraphOption::new("complex_002_topo", git::SortCommit::Topological),
+    ];
+
+    copy_git_dir(repo_path, "complex_002");
 
     generate_and_output_text_graphs(repo_path, options);
     assert_text_graphs(options);
